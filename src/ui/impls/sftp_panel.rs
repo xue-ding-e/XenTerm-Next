@@ -126,6 +126,8 @@ pub(crate) enum PanelAction {
     TreeToggle(String),
     /// Dock the panel to an edge: right when true, bottom when false.
     Redock { right: bool },
+    /// Hide the dock without closing its session or cancelling transfers.
+    Collapse,
     /// Open this remote file in the built-in viewer, read-only.
     View(String),
     /// Open it in the built-in editor, where a save goes back to the server.
@@ -996,7 +998,22 @@ impl Render for SftpPanelView {
                                         .with_size(Size::Medium)
                                         .color(muted),
                                 )
-                            }),
+                            })
+                            .child(
+                                Button::new("sftp-collapse")
+                                    .debug_selector(|| "sftp-collapse".to_string())
+                                    .icon(IconName::X)
+                                    .ghost()
+                                    .tooltip(crate::i18n::t("隐藏文件面板", "Hide file panel"))
+                                    .accessibility_label(crate::i18n::t(
+                                        "隐藏文件面板",
+                                        "Hide file panel",
+                                    ))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.pending = Some(PanelAction::Collapse);
+                                        cx.notify();
+                                    })),
+                            ),
                     )
                     .child(
                         // Where you are, with the icon that says this is a path rather than a

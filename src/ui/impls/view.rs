@@ -1607,7 +1607,14 @@ impl Render for TerminalView {
                     // known, which is what turns a later click into a cell.
                     // `View::update` cannot come from here, so the bounds are
                     // handed to the view through a shared cell instead.
+                    let old_size = grid_bounds_cell.get().map(|old| old.size);
                     grid_bounds_cell.set(Some(bounds));
+                    // A dock toggle can resize an otherwise idle terminal.
+                    // Its PTY size is read on the next render, so request that
+                    // frame instead of waiting for keyboard input or output.
+                    if old_size != Some(bounds.size) {
+                        window.request_animation_frame();
+                    }
                 },
             )))
             .on_mouse_down(

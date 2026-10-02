@@ -1233,6 +1233,29 @@ impl Render for SettingsView {
             )
             .item(
                 SettingItem::new(
+                    crate::i18n::t("启动时隐藏文件面板", "Hide file panel on startup"),
+                    {
+                        let store = store.clone();
+                        let current = store.borrow().collapse_sftp_default();
+                        SettingField::switch(
+                            move |_| current,
+                            move |value, _| {
+                                persist(
+                                    &store,
+                                    |s| s.set_collapse_sftp_default(value),
+                                    "the file panel startup visibility",
+                                )
+                            },
+                        )
+                    },
+                )
+                .description(crate::i18n::t(
+                    "新窗口默认隐藏文件面板；可从终端标签栏的文件夹按钮重新显示。",
+                    "New windows start with the file panel hidden. Reopen it with the folder button in the terminal tab bar.",
+                )),
+            )
+            .item(
+                SettingItem::new(
                     crate::i18n::t("面板区域高度", "Panel strip height"),
                     panel_height,
                 )

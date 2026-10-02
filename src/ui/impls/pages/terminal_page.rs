@@ -215,6 +215,9 @@ pub(crate) struct TerminalPage {
     /// user asked for back to the shell — the shell is what holds the session handle,
     /// so the panel cannot send an SFTP command itself.
     sftp: Entity<SftpPanelView>,
+    /// Hiding the dock only releases its layout space; the SFTP session and
+    /// transfers keep running and the same listing is restored on reopen.
+    sftp_collapsed: bool,
     /// The transfer list, drawn as a popover off the tab strip's transfer button.
     transfers: Entity<TransferListView>,
     /// The quick-command dock, as a popover off the command line.
@@ -262,6 +265,7 @@ impl TerminalPage {
         let appearance = TerminalSettings::from_store(&state.store.borrow());
 
         let sftp = cx.new(SftpPanelView::new);
+        let sftp_collapsed = state.store.borrow().collapse_sftp_default();
         let transfers = cx.new(|cx| TransferListView::new(state.transfers.clone(), cx));
         let quick_edge = DockEdge::from_setting(&state.store.borrow().quick_panel_dock());
         let quick = cx.new(|_| QuickCommandsView::new(state.store.clone(), quick_edge, true));
@@ -317,6 +321,7 @@ impl TerminalPage {
             _rename_subscription: None,
             tab_action: Rc::new(RefCell::new(None)),
             sftp,
+            sftp_collapsed,
             transfers,
             quick,
             history,
@@ -349,6 +354,13 @@ impl TerminalPage {
     /// the files page's panel.
     pub(crate) fn dock_panel(&self) -> &Entity<SftpPanelView> {
         &self.sftp
+    }
+
+    pub(crate) fn set_sftp_collapsed(&mut self, collapsed: bool, cx: &mut Context<Self>) {
+        if self.sftp_collapsed != collapsed {
+            self.sftp_collapsed = collapsed;
+            cx.notify();
+        }
     }
 
     /// The transfer list, whose actions the shell drains alongside the transfers
@@ -1144,7 +1156,7 @@ impl TerminalPage {
         let pane_w = (self.window_width.get()
             - super::super::nav::RAIL_WIDTH
             - sidebar_width
-            - if sftp_right { STRIP_WIDTH } else { 0.0 })
+            - file_panel_width(sftp_right, self.sftp_collapsed))
         .max(0.0);
         self.pane_width.set(pane_w);
         let (_, _, _, pane_h) = self.pane_area.get();
@@ -1197,9 +1209,8 @@ impl TerminalPage {
                     .overflow_hidden()
                     .child(tab_strip)
                     .child(
-                        // The terminal takes the whole width and its whole height, and
-                        // the command line floats along its bottom edge instead of
-                        // taking a row from it. The pane area and the file panel: a
+                        // The command line owns a separate row below the terminal.
+                        // The pane area and the file panel form a
                         // column when the panel is docked to the bottom, a row when it
                         // is docked to the right.
                         div()
@@ -1233,6 +1244,8 @@ impl TerminalPage {
                             // session had just written.
                             .child(
                                 div()
+                                    .id("terminal-pane-area")
+                                    .debug_selector(|| "terminal-pane-area".to_string())
                                     .flex_1()
                                     .min_w_0()
                                     .min_h_0()
@@ -1241,13 +1254,19 @@ impl TerminalPage {
                                     .child(
                                         // What this area measured, recorded for the
                                         // next frame's pane rects. A prepaint callback
-                                        // is the only place an element's size is known,
-                                        // and it must not notify: a size arriving
-                                        // during layout is a repaint already in
-                                        // progress, not a reason for another one.
+                                        // is the only place an element's size is known.
+                                        // Schedule a frame only when the size changes,
+                                        // so an idle terminal adopts a toggled dock
+                                        // without waiting for new session output.
                                         gpui_kit::canvas(
-                                            move |bounds, _window, _cx| {
+                                            move |bounds, window, _cx| {
                                                 let size = bounds.size;
+                                                let (_, _, old_width, old_height) = pane_area.get();
+                                                if (old_width, old_height)
+                                                    != (f32::from(size.width), f32::from(size.height))
+                                                {
+                                                    window.request_animation_frame();
+                                                }
                                                 pane_area.set((
                                                     f32::from(bounds.origin.x),
                                                     f32::from(bounds.origin.y),
@@ -1285,10 +1304,12 @@ impl TerminalPage {
                             // that row exactly as tall as the bar.
                             .child(command_bar),
                     )
-                    .child(
+                    .when(!self.sftp_collapsed, |this| this.child(
                         // A strip off the bottom, or a column at the right: the same
                         // panel, and the same children inside it either way.
                         div()
+                            .id("file-panel-dock")
+                            .debug_selector(|| "file-panel-dock".to_string())
                             .when(sftp_right, |this| this.h_full().w(px(STRIP_WIDTH)))
                             .when(!sftp_right, |this| {
                                 this.w_full().h(px(self.strip_height()))
@@ -1305,7 +1326,7 @@ impl TerminalPage {
                             // off the command line now, so there is nothing left to switch
                             // between and no tab row to spend a line on.
                             .child(sftp),
-                    ),
+                    )),
                 ),
             )
     }
@@ -1652,6 +1673,25 @@ impl TerminalPage {
             // the line being typed, and a command line that carried them would spend
             // the width the command needs.
             .child(
+                Button::new("toggle-sftp-panel")
+                    .debug_selector(|| "toggle-sftp-panel".to_string())
+                    .icon(IconName::FolderOpen)
+                    .ghost()
+                    .tooltip(if self.sftp_collapsed {
+                        crate::i18n::t("显示文件面板", "Show file panel")
+                    } else {
+                        crate::i18n::t("隐藏文件面板", "Hide file panel")
+                    })
+                    .accessibility_label(if self.sftp_collapsed {
+                        crate::i18n::t("显示文件面板", "Show file panel")
+                    } else {
+                        crate::i18n::t("隐藏文件面板", "Hide file panel")
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.set_sftp_collapsed(!this.sftp_collapsed, cx);
+                    })),
+            )
+            .child(
                 // The transfer records' door, and its indicator: a label while anything
                 // is still running, because a transfer you cannot see is the one you
                 // forget you started. The list opens as a bubble off this button, the
@@ -1691,13 +1731,13 @@ impl TerminalPage {
 
     /// The command line: type a line, send it to the active session.
     ///
-    /// It floats along the terminal's bottom edge rather than being a row of the page —
-    /// see `render_workspace` — and carries exactly the two things reached for while
+    /// It owns a row below the terminal — see `render_workspace` — and carries
+    /// exactly the two things reached for while
     /// typing: the quick commands and what has been run before, both as popovers, because
     /// each is opened to pick one line and then closed.
     fn render_command_bar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        // Terminal-dark, in both window themes: the bar floats at the bottom of
-        // the pane area, and a light strip under a dark grid read as two
+        // Terminal-dark, in both window themes: the bar sits below the pane
+        // area, and a light strip under a dark grid would read as two
         // surfaces colliding. The input loses its own chrome
         // (`appearance(false)`) and takes this background, so the bar and the
         // grid read as one surface.
@@ -1707,6 +1747,8 @@ impl TerminalPage {
         let light = rgb(0xd4d4d4);
         let command = self.command.clone();
         h_flex()
+            .id("terminal-command-bar")
+            .debug_selector(|| "terminal-command-bar".to_string())
             .w_full()
             .min_w_0()
             .flex_shrink_0()
@@ -1849,6 +1891,14 @@ impl Render for TerminalPage {
 /// timestamp, so it needs the room the bottom strip had.
 const STRIP_WIDTH: f32 = 420.0;
 
+fn file_panel_width(right: bool, collapsed: bool) -> f32 {
+    if right && !collapsed {
+        STRIP_WIDTH
+    } else {
+        0.0
+    }
+}
+
 /// Point the dock at `tab_id`: the listing it shows, the tree beside it, and
 /// the other sessions a cross-session copy can name. `tab_id` of `None` leaves
 /// the panel showing what it has — there is nothing to describe.
@@ -1882,4 +1932,191 @@ fn sync_panel(
         // again next frame rather than swallowing the change.
         panel.mark_synced(tab_id, generation, cx);
     });
+}
+
+#[cfg(test)]
+mod dock_tests {
+    use super::*;
+    use gpui_kit::gpui::TestAppContext;
+    use gpui_kit::Modifiers;
+    use std::sync::{Arc, Mutex};
+
+    fn fixture_state(
+        collapsed: bool,
+        right: bool,
+    ) -> (
+        crate::ui::SessionState,
+        tokio::sync::mpsc::UnboundedReceiver<SessionCommand>,
+    ) {
+        let mut store = crate::config::ConfigStore {
+            path: std::env::temp_dir().join(format!("xenterm-dock-{}.db", uuid::Uuid::new_v4())),
+            backup_dir: None,
+            cache: crate::config::ConfigFile::default(),
+            key: [7; 32],
+            keyring_enabled: false,
+            saved_state: Mutex::new(crate::config::SavedState::default()),
+        };
+        store.set_collapse_sftp_default(collapsed);
+        store.set_sidebar_collapsed(true);
+        store.set_sftp_panel_dock(if right { "right" } else { "bottom" }.into());
+        let runtime = Arc::new(tokio::runtime::Runtime::new().unwrap());
+        let state = crate::ui::SessionState::new(
+            runtime.clone(),
+            Arc::new(Mutex::new(std::collections::HashMap::new())),
+            Rc::new(RefCell::new(store)),
+        );
+        let (commands, receiver) = tokio::sync::mpsc::unbounded_channel();
+        state.handles.borrow_mut().insert(
+            "fixture".into(),
+            crate::session::protocol::SessionHandle {
+                tab_id: "fixture".into(),
+                commands,
+                join: runtime.spawn(async {}),
+            },
+        );
+        (state, receiver)
+    }
+
+    #[test]
+    fn hidden_file_docks_never_reserve_terminal_columns() {
+        assert_eq!(file_panel_width(true, false), STRIP_WIDTH);
+        assert_eq!(file_panel_width(true, true), 0.0);
+        assert_eq!(file_panel_width(false, false), 0.0);
+        assert_eq!(file_panel_width(false, true), 0.0);
+    }
+
+    #[gpui_kit::gpui::test]
+    fn file_panel_startup_visibility_uses_the_saved_preference(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        for collapsed in [false, true] {
+            let (state, _receiver) = fixture_state(collapsed, false);
+            let (view, cx) = cx.add_window_view(move |window, cx| {
+                TerminalPage::new(state, Rc::new(Cell::new(1280.)), window, cx)
+            });
+            assert_eq!(view.read_with(cx, |page, _| page.sftp_collapsed), collapsed);
+        }
+    }
+
+    #[gpui_kit::gpui::test]
+    fn file_panel_close_and_reopen_reclaims_space_and_keeps_the_terminal(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        for right in [false, true] {
+            let (state, mut receiver) = fixture_state(false, right);
+            let (view, cx) = cx.add_window_view(move |window, cx| {
+                let width = Rc::new(Cell::new(f32::from(window.viewport_size().width)));
+                let mut page = TerminalPage::new(state, width, window, cx);
+                // A real terminal view and buffer, but no local process, network,
+                // saved credentials or connection worker.
+                let tab = TerminalPage::open_tab(
+                    &page.state,
+                    "fixture",
+                    "Fixture",
+                    page.appearance.clone(),
+                    cx,
+                );
+                PENDING_SINKS.with(|sinks| sinks.borrow_mut().remove("fixture"));
+                page.tabs.push(tab);
+                page.active_tab = Some("fixture".into());
+                page.panes = crate::layout::Layout::new(vec!["fixture".into()], "fixture".into());
+                page
+            });
+            // Pane geometry is measured by the previous frame's canvas.
+            for _ in 0..3 {
+                cx.update(|window, cx| {
+                    window.simulate_next_frame(cx);
+                    window.draw(cx).clear(cx);
+                });
+            }
+            let before = cx
+                .debug_bounds("terminal-pane-area")
+                .expect("terminal is drawn");
+            let bar = cx
+                .debug_bounds("terminal-command-bar")
+                .expect("command bar is drawn");
+            assert!(
+                before.origin.y + before.size.height <= bar.origin.y,
+                "terminal output must stop above the command bar"
+            );
+            assert!(cx.debug_bounds("file-panel-dock").is_some());
+            while receiver.try_recv().is_ok() {}
+            let original_panel = view.read_with(cx, |page, _| page.sftp.entity_id());
+            let original_terminal = view.read_with(cx, |page, _| page.tabs[0].view.entity_id());
+
+            let close = cx
+                .debug_bounds("sftp-collapse")
+                .expect("file panel has a close button");
+            cx.simulate_click(close.center(), Modifiers::default());
+            view.update(cx, |page, cx| {
+                let action = page.sftp.update(cx, |panel, _| panel.take_action());
+                assert_eq!(action, Some(crate::ui::PanelAction::Collapse));
+                // The same local-only action performed by Shell::drain_panel.
+                page.set_sftp_collapsed(true, cx);
+            });
+            for _ in 0..3 {
+                cx.update(|window, cx| {
+                    window.simulate_next_frame(cx);
+                    window.draw(cx).clear(cx);
+                });
+            }
+            assert!(cx.debug_bounds("file-panel-dock").is_none());
+            let hidden = cx
+                .debug_bounds("terminal-pane-area")
+                .expect("terminal stays visible");
+            if right {
+                assert!(hidden.size.width > before.size.width);
+            } else {
+                assert!(hidden.size.height > before.size.height);
+            }
+            let bar = cx.debug_bounds("terminal-command-bar").unwrap();
+            assert!(hidden.origin.y + hidden.size.height <= bar.origin.y);
+            let mut resized = false;
+            while let Ok(command) = receiver.try_recv() {
+                assert!(
+                    !matches!(command, SessionCommand::Close),
+                    "hiding must not close the terminal"
+                );
+                resized |= matches!(command, SessionCommand::Resize(_, _));
+            }
+            assert!(resized, "an idle terminal must receive the new PTY size");
+
+            let toggle = cx
+                .debug_bounds("toggle-sftp-panel")
+                .expect("reopen control remains available");
+            cx.simulate_click(toggle.center(), Modifiers::default());
+            for _ in 0..3 {
+                cx.update(|window, cx| {
+                    window.simulate_next_frame(cx);
+                    window.draw(cx).clear(cx);
+                });
+            }
+            assert!(cx.debug_bounds("file-panel-dock").is_some());
+            let reopened = cx.debug_bounds("terminal-pane-area").unwrap();
+            assert_eq!(reopened.size, before.size, "reopening restores the dock extent");
+            let mut resized_back = false;
+            while let Ok(command) = receiver.try_recv() {
+                assert!(!matches!(command, SessionCommand::Close));
+                resized_back |= matches!(command, SessionCommand::Resize(_, _));
+            }
+            assert!(resized_back, "reopening also resizes the idle PTY");
+            // Repeated tab-bar toggles use the same state and keep the reopen
+            // control reachable even when the panel itself is absent.
+            for collapsed in [true, false] {
+                let toggle = cx.debug_bounds("toggle-sftp-panel").unwrap();
+                cx.simulate_click(toggle.center(), Modifiers::default());
+                for _ in 0..3 {
+                    cx.update(|window, cx| {
+                        window.simulate_next_frame(cx);
+                        window.draw(cx).clear(cx);
+                    });
+                }
+                assert_eq!(cx.debug_bounds("file-panel-dock").is_none(), collapsed);
+            }
+            view.read_with(cx, |page, _| {
+                assert!(!page.sftp_collapsed);
+                assert_eq!(page.sftp.entity_id(), original_panel);
+                assert_eq!(page.tabs[0].view.entity_id(), original_terminal);
+                assert_eq!(page.active_tab.as_deref(), Some("fixture"));
+            });
+        }
+    }
 }

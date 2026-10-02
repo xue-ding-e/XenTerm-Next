@@ -1569,6 +1569,11 @@ impl Shell {
                 .and_then(|map| map.get(&tab_id).map(|h| h.commands.clone()));
 
             match action {
+                PanelAction::Collapse => {
+                    self.pages.terminal.update(cx, |page, cx| {
+                        page.set_sftp_collapsed(true, cx);
+                    });
+                }
                 PanelAction::Navigate(path) => {
                     if let Some(commands) = &handle {
                         let _ = commands.send(crate::sftp::SftpCommand::ListDir(path.clone()));

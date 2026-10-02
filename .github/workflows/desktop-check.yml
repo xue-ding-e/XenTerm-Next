@@ -1,0 +1,49 @@
+name: Desktop compile checks
+
+# Compilation only: branch/PR validation must never publish or replace packages.
+on:
+  push:
+    paths: ["Cargo.toml", "Cargo.lock", "build.rs", "src/**", ".github/workflows/desktop-check.yml"]
+  pull_request:
+    paths: ["Cargo.toml", "Cargo.lock", "build.rs", "src/**", ".github/workflows/desktop-check.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, name: Linux desktop }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, name: Windows desktop }
+          - { os: macos-14, target: aarch64-apple-darwin, name: macOS desktop }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux desktop development libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config cmake \
+            libfontconfig1-dev libfreetype6-dev \
+            libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libgl1-mesa-dev libegl1-mesa-dev libgtk-3-dev libudev-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: desktop-check-${{ matrix.target }}
+      # Keep the upstream stable/MSVC Windows configuration. Debug checking
+      # avoids the release-only fxc.exe shader compilation and package tooling.
+      - run: cargo check --locked --target ${{ matrix.target }} --jobs 2
