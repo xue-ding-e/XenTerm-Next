@@ -1422,12 +1422,11 @@ impl Render for TerminalView {
         };
         // The colour a cursor falls back to: the theme's foreground, which is what the
         // terminal's text is drawn in.
-        // The cursor's default rides on the terminal's own palette, not the
-        // application theme: the grid is dark in both themes, and a
-        // theme-following cursor is dark-on-dark there — invisible exactly
-        // where the user is looking. Same answer as the grid's background,
-        // which also never follows the theme.
-        let cursor = rgba_to_hsla(terminal::terminal_foreground(true));
+        // The cursor's default is plain white, in both window themes: the
+        // grid it is drawn on is terminal-dark either way, and a block cursor
+        // reads best at full contrast. An explicit colour in settings still
+        // overrides it.
+        let cursor = gpui_kit::white();
 
         // A prompt parked by `apply_event` gets its window here, which is the only
         // place one exists. Answered or not, the slot is cleared: the policy in
