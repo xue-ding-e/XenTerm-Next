@@ -1210,6 +1210,8 @@ impl TerminalPage {
                             .min_h_0()
                     .child(
                         div()
+                            .flex()
+                            .flex_col()
                             .flex_1()
                             .min_w_0()
                             .min_h_0()
@@ -1220,54 +1222,68 @@ impl TerminalPage {
                             // two surfaces colliding wherever the grid left a
                             // gap.
                             .bg(background)
-                            // What this area measured, recorded for the next frame's pane
-                            // rects. A prepaint callback is the only place an element's size
-                            // is known, and it must not notify: a size arriving during layout
-                            // is a repaint already in progress, not a reason for another one.
+                            // Everything above the command line, and nothing
+                            // else. The canvas here measures the box the panes
+                            // are drawn in, so shrinking it by the bar's row is
+                            // what makes the grid's last line end *above* the
+                            // input instead of behind it: a pane rect is the
+                            // size its terminal really has, and the terminal
+                            // sizes its rows from that. The command line used to
+                            // float over this box, which hid exactly the line the
+                            // session had just written.
                             .child(
-                                gpui_kit::canvas(
-                                    move |bounds, _window, _cx| {
-                                        let size = bounds.size;
-                                        pane_area.set((
-                                            f32::from(bounds.origin.x),
-                                            f32::from(bounds.origin.y),
-                                            f32::from(size.width),
-                                            f32::from(size.height),
-                                        ));
-                                    },
-                                    |_, _, _, _| {},
-                                )
-                                .absolute()
-                                .inset_0(),
-                            )
-                            .when(has_panes, |this| {
-                                this.child(panes::render_layout(
-                                    &self.panes,
-                                    pane_w,
-                                    pane_h,
-                                    border,
-                                    pane_contents,
-                                    pane_focus,
-                                    pane_press,
-                                    pane_pointer,
-                                ))
-                            })
-                            .child(
-                                // The command line floats along the pane's bottom edge,
-                                // over output already read, rather than taking a row of
-                                // the page. Anchored to the pane container explicitly:
-                                // this container is block-display, and an in-flow
-                                // sibling after the full-size pane layer lands *below*
-                                // it — outside the clip — where the docked file panel
-                                // then paints over it. Anchored, it is the float the
-                                // comment always described.
                                 div()
-                                    .absolute()
-                                    .bottom_0()
-                                    .left_0()
-                                    .right_0()
-                                    .child(command_bar),
-                            ),
+                                    .flex_1()
+                                    .min_w_0()
+                                    .min_h_0()
+                                    .relative()
+                                    .overflow_hidden()
+                                    .child(
+                                        // What this area measured, recorded for the
+                                        // next frame's pane rects. A prepaint callback
+                                        // is the only place an element's size is known,
+                                        // and it must not notify: a size arriving
+                                        // during layout is a repaint already in
+                                        // progress, not a reason for another one.
+                                        gpui_kit::canvas(
+                                            move |bounds, _window, _cx| {
+                                                let size = bounds.size;
+                                                pane_area.set((
+                                                    f32::from(bounds.origin.x),
+                                                    f32::from(bounds.origin.y),
+                                                    f32::from(size.width),
+                                                    f32::from(size.height),
+                                                ));
+                                            },
+                                            |_, _, _, _| {},
+                                        )
+                                        .absolute()
+                                        .inset_0(),
+                                    )
+                                    // The panes fill that measured box rather than the
+                                    // whole container, so the rect a click and a
+                                    // splitter drag resolve against is the rect the
+                                    // terminal is drawn at.
+                                    .when(has_panes, |this| {
+                                        this.child(panes::render_layout(
+                                            &self.panes,
+                                            pane_w,
+                                            pane_h,
+                                            border,
+                                            pane_contents,
+                                            pane_focus,
+                                            pane_press,
+                                            pane_pointer,
+                                        ))
+                                    }),
+                            )
+                            // The command line, in flow rather than anchored: it
+                            // takes a row of its own along the bottom edge and
+                            // the pane layer above keeps the rest. The bar itself
+                            // is untouched — same background, same hairline, same
+                            // controls — and its `flex_shrink_0` is what keeps
+                            // that row exactly as tall as the bar.
+                            .child(command_bar),
                     )
                     .child(
                         // A strip off the bottom, or a column at the right: the same
