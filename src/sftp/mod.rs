@@ -7,7 +7,5 @@ mod transfer;
 
 pub(crate) use sftp::*;
 pub(crate) use transfer::{DownloadConflict, SftpCommand, SftpHandles, SftpLastCwd};
-// The handle struct itself is only ever built by tests; production code holds
-// the map type and talks through the command channel.
-#[cfg(test)]
+// Automation owns a handle so cancellation can abort its worker.
 pub(crate) use transfer::SftpHandle;

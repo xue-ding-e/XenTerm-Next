@@ -112,9 +112,13 @@ pub struct Session {
     pub proxy: String,
     /// Optional SSH jump host (bastion): the id of another saved SSH session to
     /// tunnel this connection through, like OpenSSH's ProxyJump. Empty = direct.
-    /// Single hop only; the jump session supplies its own host/user/auth (#211).
+    /// Legacy route link; used only when `jump_session_ids` is empty.
     #[serde(default)]
     pub jump_session_id: String,
+    /// Explicit route in connection order: outermost bastion first. Each hop
+    /// supplies its own credentials; nested routes on these sessions are ignored.
+    #[serde(default)]
+    pub jump_session_ids: Vec<String>,
     #[serde(default)]
     pub last_used: Option<String>,
     /// Optional folder/group name to organize sessions in the list (#41).
@@ -235,6 +239,7 @@ impl Session {
             private_key_inline: Secret::default(),
             proxy: String::new(),
             jump_session_id: String::new(),
+            jump_session_ids: Vec::new(),
             last_used: None,
             group: String::new(),
             kind: SessionKind::Ssh,

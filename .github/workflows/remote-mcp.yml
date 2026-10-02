@@ -1,0 +1,30 @@
+name: Headless MCP regression
+on:
+  push:
+    paths: ["Cargo.toml", "Cargo.lock", "src/**", "tests/*_e2e.py", "tests/tls_proxy_fixture.py", ".github/workflows/remote-mcp.yml"]
+  pull_request:
+    paths: ["Cargo.toml", "Cargo.lock", "src/**", "tests/*_e2e.py", "tests/tls_proxy_fixture.py", ".github/workflows/remote-mcp.yml"]
+permissions:
+  contents: read
+jobs:
+  headless:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: sudo apt-get update && sudo apt-get install --no-install-recommends -y nginx
+      - run: python -m pip install cryptography paramiko
+      - name: Headless unit tests (no GUI system dependencies)
+        run: env -u ALL_PROXY -u all_proxy -u HTTP_PROXY -u http_proxy -u HTTPS_PROXY -u https_proxy cargo test --locked --no-default-features --features headless
+      - run: cargo build --locked --no-default-features --features headless
+      - run: python tests/config_import_e2e.py --exe target/debug/xenterm
+      - run: python tests/ssh_jump_chain_e2e.py --exe target/debug/xenterm
+      - run: python tests/ssh_jump_chain_e2e.py --exe target/debug/xenterm --stage-timeouts
+      - run: python tests/stdio_mcp_e2e.py --exe target/debug/xenterm
+      - run: python tests/remote_mcp_e2e.py --exe target/debug/xenterm --path /mcp
+      - run: python tests/remote_mcp_e2e.py --exe target/debug/xenterm --nginx /usr/sbin/nginx --path /xenterm/mcp
+      - run: python tests/remote_mcp_e2e.py --exe target/debug/xenterm --nginx /usr/sbin/nginx --path /xenterm/mcp --protocol-version 2025-11-25

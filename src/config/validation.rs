@@ -32,6 +32,35 @@ pub(crate) fn is_valid_hostname(s: &str) -> bool {
     })
 }
 
+/// Borrowed structural pieces shared by connection parsing and credential
+/// mapping. Userinfo is literal: percent characters are not URL-decoded, and
+/// the final `@` separates it from the endpoint. No Debug impl because auth can
+/// contain a password.
+pub(crate) struct ProxyUrlParts<'a> {
+    pub(crate) scheme: Option<&'a str>,
+    pub(crate) auth: Option<(&'a str, &'a str)>,
+    pub(crate) hostport: &'a str,
+}
+
+pub(crate) fn split_proxy_url(value: &str) -> ProxyUrlParts<'_> {
+    let (scheme, rest) = match value.split_once("://") {
+        Some((scheme, rest)) => (Some(scheme), rest),
+        None => (None, value),
+    };
+    let (auth, hostport) = match rest.rsplit_once('@') {
+        Some((userinfo, hostport)) => (
+            Some(userinfo.split_once(':').unwrap_or((userinfo, ""))),
+            hostport,
+        ),
+        None => (None, rest),
+    };
+    ProxyUrlParts {
+        scheme,
+        auth,
+        hostport,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

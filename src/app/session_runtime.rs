@@ -13,14 +13,11 @@ pub(super) fn take_closed_event(events: &mut Vec<SessionEvent>) -> Option<Sessio
     Some(closed)
 }
 
-pub(super) fn resolve_jump(store: &Rc<RefCell<ConfigStore>>, session: &Session) -> Option<Session> {
-    if session.kind != SessionKind::Ssh || session.jump_session_id.trim().is_empty() {
-        return None;
-    }
-    if session.jump_session_id == session.id {
-        return None;
-    }
-    store.borrow().get(&session.jump_session_id).cloned()
+pub(super) fn resolve_jump(
+    store: &Rc<RefCell<ConfigStore>>,
+    session: &Session,
+) -> Result<Vec<Session>> {
+    store.borrow().resolve_jump_chain(session)
 }
 
 pub(super) fn should_start_sftp(session: &Session) -> bool {
@@ -42,7 +39,18 @@ pub(crate) fn start_session_in_tab(tab_id: &str, session: Session, ctx: &Connect
     let (initial_cols, initial_rows) = *ctx.last_term_size.lock().unwrap();
     // Resolve the optional SSH jump host now (on the UI thread, where the store
     // lives) so the owned Session can be handed to the worker threads (#211).
-    let jump = resolve_jump(&ctx.store, &session);
+    let jump = match resolve_jump(&ctx.store, &session) {
+        Ok(chain) => chain,
+        Err(error) => {
+            // Invalid routes must fail before any transport starts, never direct.
+            if let Ok(route) = ctx.route.lock() {
+                route
+                    .sink
+                    .deliver(tab_id, vec![SessionEvent::Closed(error.to_string())]);
+            }
+            return;
+        }
+    };
     let (handle, rx) = match session.kind {
         SessionKind::Ssh => spawn_session(
             ctx.runtime.handle(),

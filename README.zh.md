@@ -62,6 +62,7 @@ XenTerm 是一个原生桌面终端客户端。它保留了大家喜欢 FinalShe
 - **四种会话类型** —— SSH、本地 Shell、Telnet、串口，共用同一套标签页界面。
 - **开箱即用的本地 Shell** —— Windows 上是 PowerShell、`cmd.exe` 以及所有已配置的 WSL
   发行版；其他平台使用 `$SHELL`。Windows Shell 默认以 UTF-8 启动。
+- **多级跳板** —— 在会话编辑器的“多级跳板”页选择已保存的 SSH 会话，按实际连接顺序添加、上下移动或移除；每级独立使用自己的密码或私钥，旧单跳配置仍兼容。
 - **SSH 认证方式** —— 密码、私钥、带密码短语的私钥，以及用于 2FA / OTP 提示的键盘交互。
 - **PuTTY `.ppk` 私钥** —— PPK v2/v3 在内存中解密并校验，无需先用 `puttygen` 转换。
 - **出站代理** —— SOCKS5（`socks5://`、`socks5h://`）与 HTTP/HTTPS CONNECT，可按会话配置，
@@ -72,8 +73,10 @@ XenTerm 是一个原生桌面终端客户端。它保留了大家喜欢 FinalShe
 - **会话分组** —— 新建、重命名、删除分组，每个会话可写备注。
 - **主机密钥校验** —— 首次连接提示 SHA-256 指纹并要求确认；之后密钥变化会给出明确警告。
 
-> 配置本身还支持跳板机与按会话指定字符编码，但会话编辑器目前没有对应输入框，
-> 因此这两项暂时需要手工编辑或导入 `sessions.json`。
+> 多级跳板在界面中按“本机 → 最外层跳板 → 内层跳板 → 目标”排列。
+> 导入的 `jump_session_ids` 数组也按这个顺序，非空时优先于旧 `jump_session_id`。
+> 循环、重复、缺失、非 SSH 或超过 16 级的链路会在联网前报错。
+> 按会话指定的字符编码仍可通过导入配置设置。
 
 ### 终端
 
@@ -498,3 +501,8 @@ xenterm/
 
 第三方署名（包括彩色 emoji 使用的 Twemoji 图形）见
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+
+## 无界面 CLI / 认证远程 MCP
+
+使用 `cargo build --locked --release --no-default-features --features headless` 可构建不依赖 GPUI 的 Linux 服务。默认桌面构建保留 GUI、CLI 和 stdio MCP 全部功能。HTTP 模式必须显式选择独立配置目录并配置外部 OAuth 认证，通过已有 OpenResty/Nginx 终止 HTTPS。部署模板、同域名不同路径和验证步骤见 [REMOTE_MCP.md](docs/REMOTE_MCP.md)。

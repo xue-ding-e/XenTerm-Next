@@ -1,0 +1,20 @@
+# Template only. Create the dedicated unprivileged account, configure its private
+# profile and supply trusted public JWKS before installing/enabling this unit.
+[Unit]
+Description=XenTerm authenticated MCP
+After=network-online.target
+[Service]
+User=xenterm
+Group=xenterm
+ExecStart=/opt/xenterm/xenterm --data-dir /var/lib/xenterm/profile mcp serve --http-config /etc/xenterm/http.json
+WorkingDirectory=/var/lib/xenterm
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/xenterm
+Restart=on-failure
+TimeoutStopSec=15
+[Install]
+WantedBy=multi-user.target

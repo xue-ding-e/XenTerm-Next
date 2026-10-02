@@ -10,14 +10,36 @@ use crate::config::Session;
 use crate::session::protocol::SessionEvent;
 use crate::sftp::SftpCommand;
 
+// Every automation call owns its SFTP task. A timeout or cancellation must
+// abort it even when sending Close would wait behind a stalled transfer.
+// The parent automation transport group also cancels spawned child transfers.
+struct AutomationSftp(crate::sftp::SftpHandle);
+impl std::ops::Deref for AutomationSftp {
+    type Target = crate::sftp::SftpHandle;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl Drop for AutomationSftp {
+    fn drop(&mut self) {
+        let _ = self.0.commands.send(SftpCommand::Close);
+        self.0.join.abort();
+    }
+}
+
 pub(super) async fn list(
     session: Session,
-    jump: Option<Session>,
+    jump: Vec<Session>,
     path: String,
     timeout: Duration,
 ) -> Result<Value> {
     let (events, mut event_rx) = mpsc::unbounded_channel();
-    let handle = crate::sftp::spawn_sftp(&tokio::runtime::Handle::current(), session, jump, events);
+    let handle = AutomationSftp(crate::sftp::spawn_sftp(
+        &tokio::runtime::Handle::current(),
+        session,
+        jump,
+        events,
+    ));
     handle
         .commands
         .send(SftpCommand::ListDir(path.clone()))
@@ -79,12 +101,17 @@ pub(super) async fn list(
 
 pub(super) async fn read_text(
     session: Session,
-    jump: Option<Session>,
+    jump: Vec<Session>,
     path: String,
     timeout: Duration,
 ) -> Result<Value> {
     let (events, mut event_rx) = mpsc::unbounded_channel();
-    let handle = crate::sftp::spawn_sftp(&tokio::runtime::Handle::current(), session, jump, events);
+    let handle = AutomationSftp(crate::sftp::spawn_sftp(
+        &tokio::runtime::Handle::current(),
+        session,
+        jump,
+        events,
+    ));
     handle
         .commands
         .send(SftpCommand::ReadText {
@@ -141,13 +168,18 @@ pub(super) async fn read_text(
 
 pub(super) async fn transfer(
     session: Session,
-    jump: Option<Session>,
+    jump: Vec<Session>,
     command: SftpCommand,
     upload: bool,
     timeout: Duration,
 ) -> Result<Value> {
     let (events, mut event_rx) = mpsc::unbounded_channel();
-    let handle = crate::sftp::spawn_sftp(&tokio::runtime::Handle::current(), session, jump, events);
+    let handle = AutomationSftp(crate::sftp::spawn_sftp(
+        &tokio::runtime::Handle::current(),
+        session,
+        jump,
+        events,
+    ));
     handle
         .commands
         .send(command)
@@ -209,4 +241,29 @@ pub(super) async fn transfer(
     .map_err(|_| anyhow!("SFTP transfer timed out"))?;
     let _ = handle.commands.send(SftpCommand::Close);
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn dropping_an_operation_closes_and_aborts_its_worker() {
+        let (commands, mut rx) = mpsc::unbounded_channel();
+        let join = tokio::spawn(std::future::pending::<()>());
+        let abort = join.abort_handle();
+        let operation = AutomationSftp(crate::sftp::SftpHandle { commands, join });
+        drop(operation);
+        assert!(matches!(rx.recv().await, Some(SftpCommand::Close)));
+        for _ in 0..10 {
+            if abort.is_finished() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            abort.is_finished(),
+            "cancelled worker was detached instead of aborted"
+        );
+    }
 }

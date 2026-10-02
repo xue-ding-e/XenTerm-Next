@@ -1,0 +1,11 @@
+{
+  "bind": "127.0.0.1:8765",
+  "allowed_origins": [],
+  "oauth": {
+    "issuer": "https://identity.example.com/",
+    "resource": "https://shell.example.com/xenterm/mcp",
+    "jwks_file": "public-jwks.json",
+    "required_scope": "xenterm:mcp",
+    "allowed_subjects": ["REPLACE_WITH_VERIFIED_SUBJECT"]
+  }
+}

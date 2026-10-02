@@ -26,34 +26,48 @@ use crate::config::Secret;
 /// **error**, not a silent direct connection — a typo'd URL must never quietly
 /// bypass the proxy the user asked for (audit M-13).
 pub fn resolve(session_proxy: &str) -> Result<Option<ProxyConfig>> {
+    resolve_with_env(session_proxy, |name| std::env::var(name).ok())
+}
+
+/// Keep environment lookup injectable so tests need not mutate process-global
+/// proxy settings while other tests may be resolving connections.
+fn resolve_with_env(
+    session_proxy: &str,
+    mut env: impl FnMut(&str) -> Option<String>,
+) -> Result<Option<ProxyConfig>> {
     let s = session_proxy.trim();
     if !s.is_empty() {
         return parse(s)
             .map(Some)
-            .ok_or_else(|| invalid_proxy_url(s, "session proxy"));
+            .ok_or_else(|| invalid_proxy_url("session proxy"));
     }
     for var in ["ALL_PROXY", "all_proxy"] {
-        if let Ok(v) = std::env::var(var) {
+        if let Some(v) = env(var) {
             if !v.trim().is_empty() {
                 let v = v.trim();
-                return parse(v).map(Some).ok_or_else(|| invalid_proxy_url(v, var));
+                return parse(v).map(Some).ok_or_else(|| invalid_proxy_url(var));
             }
         }
     }
     Ok(None)
 }
 
-fn invalid_proxy_url(url: &str, source: &str) -> anyhow::Error {
+fn invalid_proxy_url(source: &str) -> anyhow::Error {
     anyhow!(
-        "invalid {source} URL {url:?}: expected socks5://, socks5h:// or http:// \
+        "invalid {source} URL: expected socks5://, socks5h:// or http:// \
          [user:pass@]host:port"
     )
 }
 
 /// Parse a proxy URL: `scheme://[user:pass@]host:port`.
 fn parse(url: &str) -> Option<ProxyConfig> {
-    let (scheme, rest) = url.split_once("://").unwrap_or(("socks5", url));
-    let kind = match scheme.to_ascii_lowercase().as_str() {
+    let parts = crate::config::validation::split_proxy_url(url);
+    let kind = match parts
+        .scheme
+        .unwrap_or("socks5")
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "socks5" | "socks5h" | "socks" => ProxyKind::Socks5,
         "http" => ProxyKind::Http,
         // Kept distinct so connect() can reject it explicitly instead of
@@ -61,15 +75,10 @@ fn parse(url: &str) -> Option<ProxyConfig> {
         "https" => ProxyKind::Https,
         _ => return None,
     };
-    // Optional userinfo before '@'.
-    let (auth, hostport) = match rest.rsplit_once('@') {
-        Some((userinfo, hp)) => {
-            let (u, p) = userinfo.split_once(':').unwrap_or((userinfo, ""));
-            (Some((u.to_string(), Secret::new(p))), hp)
-        }
-        None => (None, rest),
-    };
-    let hostport = hostport.trim_end_matches('/');
+    let auth = parts
+        .auth
+        .map(|(user, password)| (user.to_string(), Secret::new(password)));
+    let hostport = parts.hostport.trim_end_matches('/');
     let (host, port) = hostport.rsplit_once(':')?;
     let port: u16 = port.parse().ok()?;
     // Bracketed IPv6 (`[::1]:1080`) — validate the address, keep it unbracketed
@@ -184,8 +193,21 @@ mod tests {
 
     #[test]
     fn empty_setting_means_direct() {
-        assert!(resolve("").unwrap().is_none());
-        assert!(resolve("   ").unwrap().is_none());
+        assert!(resolve_with_env("", |_| None).unwrap().is_none());
+        assert!(resolve_with_env("   ", |_| None).unwrap().is_none());
+    }
+
+    #[test]
+    fn empty_setting_uses_the_environment_proxy_when_present() {
+        for variable in ["ALL_PROXY", "all_proxy"] {
+            let proxy = resolve_with_env("", |name| {
+                (name == variable).then(|| "socks5://proxy.example:1080".to_string())
+            })
+            .unwrap()
+            .expect("an environment proxy is a supported fallback");
+            assert_eq!(proxy.host, "proxy.example");
+            assert_eq!(proxy.port, 1080);
+        }
     }
 
     #[test]
@@ -194,6 +216,37 @@ mod tests {
         // bypass the proxy the user configured (audit M-13).
         for bad in ["socks9://proxy:1080", "http://proxy:notaport", "http://"] {
             assert!(resolve(bad).is_err(), "{bad} should not resolve");
+        }
+    }
+
+    #[test]
+    fn supported_proxy_forms_preserve_literal_credentials() {
+        for scheme in ["", "socks5://", "socks5h://", "http://", "SOCKS5://"] {
+            for password in ["synthetic-proxy-secret", "synthetic%40%3A%25secret", "synthetic:p@ss%word", "enc:v1:synthetic-literal"] {
+                let proxy = format!("{scheme}fixture:{password}@127.0.0.1:1080");
+                let parsed = resolve(&proxy).unwrap().unwrap();
+                assert_eq!(parsed.auth.as_ref().unwrap().0, "fixture");
+                assert_eq!(parsed.auth.as_ref().unwrap().1.as_str(), password);
+            }
+        }
+        for proxy in ["127.0.0.1:1080", "fixture@127.0.0.1:1080", "fixture:@127.0.0.1:1080", "http://fixture:@127.0.0.1:1080"] {
+            assert!(resolve(proxy).unwrap().is_some());
+        }
+    }
+
+    #[test]
+    fn malformed_proxy_errors_never_echo_credentials_or_endpoints() {
+        let malformed = "socks9://synthetic-user:synthetic-secret@private.example:1080";
+        for error in [
+            resolve(malformed).unwrap_err(),
+            resolve_with_env("", |name| (name == "ALL_PROXY").then(|| malformed.to_string())).unwrap_err(),
+        ] {
+            let diagnostic = format!("{error:#}");
+            for hidden in [malformed, "synthetic-user", "synthetic-secret", "private.example"] {
+                assert!(!diagnostic.contains(hidden));
+            }
+            assert!(diagnostic.contains("invalid"));
+            assert!(diagnostic.contains("expected socks5://"));
         }
     }
 

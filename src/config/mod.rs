@@ -1,3 +1,4 @@
+pub(crate) mod jump_chain;
 #[path = "impls/config.rs"]
 mod config;
 #[path = "impls/finalshell.rs"]

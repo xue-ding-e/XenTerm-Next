@@ -1,3 +1,6 @@
+#[path = "impls/connection.rs"]
+pub(crate) mod connection;
+pub(crate) use connection::{network_stage, disconnect_ssh};
 #[path = "impls/known_hosts.rs"]
 pub(crate) mod known_hosts;
 #[path = "impls/ppk.rs"]

@@ -1045,6 +1045,8 @@ mod tests {
             // The ungrouped section is a real, foldable heading even though
             // "default" is not an entry of `groups()`.
             groups.push("default".to_string());
+            // Built-in shells live in a separate, initially folded system group.
+            groups.push("system".to_string());
             for group in groups {
                 owned.set_session_group_collapsed(&group, false);
             }

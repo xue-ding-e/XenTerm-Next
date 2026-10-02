@@ -337,6 +337,13 @@ struct CurFile {
 
 /// Native yes/no dialog: the receive was auto-triggered by channel output, so
 /// the user decides before anything touches the disk (audit M-01).
+#[cfg(not(feature = "desktop"))]
+async fn confirm_receive(_name: &str, _size: u64) -> bool {
+    // An unsolicited terminal transfer cannot obtain interactive approval.
+    false
+}
+
+#[cfg(feature = "desktop")]
 async fn confirm_receive(name: &str, size: u64) -> bool {
     let size_text = match size {
         0 => String::new(),

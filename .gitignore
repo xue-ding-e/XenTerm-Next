@@ -15,3 +15,7 @@
 /AGENTS.md
 /opencode.jsonc
 /docs/superpowers
+
+# Test fixtures create ephemeral keys/profiles at runtime, never in source.
+__pycache__/
+*.pyc

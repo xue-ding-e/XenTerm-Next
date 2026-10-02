@@ -6,11 +6,25 @@
 /// whether the MCP server itself is enabled.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Frontend {
-    Mcp,
+    Mcp { allow_config_import: bool },
     Cli,
 }
 
 impl Frontend {
+    pub(crate) fn is_mcp(self) -> bool {
+        matches!(self, Self::Mcp { .. })
+    }
+
+    pub(crate) fn allows_config_import(self) -> bool {
+        matches!(
+            self,
+            Self::Cli
+                | Self::Mcp {
+                    allow_config_import: true
+                }
+        )
+    }
+
     /// Whether this caller has to pass the persisted gates before reaching a
     /// session's credentials, running a command or transferring a file.
     ///
@@ -21,6 +35,6 @@ impl Frontend {
     /// Deliberately does not cover `mcp_enabled`, which is the MCP server's own
     /// on-switch rather than a gate on a capability.
     pub(crate) fn is_unattended(self) -> bool {
-        matches!(self, Self::Mcp)
+        matches!(self, Self::Mcp { .. })
     }
 }

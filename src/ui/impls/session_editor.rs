@@ -56,6 +56,8 @@ pub(crate) struct SessionEditor {
     store: Rc<RefCell<ConfigStore>>,
     /// Set when the dialog is finished, so the shell can take the outcome.
     outcome: Option<EditorOutcome>,
+    /// A failed save leaves the form open and explains how to retry.
+    save_error: Option<&'static str>,
     /// The port-forwarding rows. Their text fields are entities and so cannot be rebuilt
     /// every frame the way the settings fields are; the rows are kept here instead, and
     /// copied into the draft when the form is saved — the only moment they are read.
@@ -205,6 +207,7 @@ impl SessionEditor {
             original: None,
             store,
             outcome: None,
+            save_error: None,
             forwards: Rc::new(RefCell::new(Vec::new())),
             next_forward_id: 1,
             triggers: Rc::new(RefCell::new(Vec::new())),
@@ -220,6 +223,7 @@ impl SessionEditor {
             original: Some(session),
             store,
             outcome: None,
+            save_error: None,
             forwards: Rc::new(RefCell::new(Vec::new())),
             next_forward_id: 1,
             triggers: Rc::new(RefCell::new(Vec::new())),
@@ -303,11 +307,6 @@ impl SessionEditor {
         self.draft.borrow_mut().triggers = rows;
     }
 
-    /// Write the draft and persist it.
-    ///
-    /// Saving is one step rather than two, because a session that exists only in memory
-    /// is a session the list shows and the next window does not: a save the user was
-    /// not told about having failed is worse than no save at all.
     pub(crate) fn heading(&self) -> &'static str {
         if self.original.is_some() {
             crate::i18n::t("编辑会话", "Edit session")
@@ -316,6 +315,7 @@ impl SessionEditor {
         }
     }
 
+    /// Only finish the dialog after the store has accepted the change on disk.
     fn save(&mut self, cx: &Context<Self>) {
         // The forwarding rows hold their own text, so it is copied into the draft first:
         // what the save reads is the draft, and a row typed into but never copied across
@@ -324,21 +324,36 @@ impl SessionEditor {
         self.sync_triggers(cx);
         self.sync_password(cx);
         let session = {
-            let draft = self.draft.borrow();
+            let mut draft = self.draft.borrow_mut();
+            // Keep this id through a failed save and retry, rather than minting a
+            // new identity on every click (or leaving an unsaved row in the store).
+            if draft.id.is_empty() {
+                draft.id = uuid::Uuid::new_v4().to_string();
+            }
             draft.to_session(self.original.as_ref())
         };
-        let mut store = self.store.borrow_mut();
-        // A new session has no id until one is minted here; the store cannot know which
-        // drafts are new.
-        let mut session = session;
-        if session.id.is_empty() {
-            session.id = uuid::Uuid::new_v4().to_string();
+        if self.store.borrow().resolve_jump_chain(&session).is_err() {
+            self.save_error = Some(crate::i18n::t(
+                "跳板链路无效，请在“多级跳板”页检查缺失会话、重复、循环或过多层级。",
+                "Invalid SSH route. Check missing sessions, duplicates, cycles or too many hops on the SSH bastions page.",
+            ));
+            self.outcome = None;
+            return;
         }
-        store.upsert(session);
-        if let Err(error) = store.save() {
-            tracing::warn!("could not save the session: {error:#}");
+        match self.store.borrow_mut().upsert_and_save(session) {
+            Ok(()) => {
+                self.save_error = None;
+                self.outcome = Some(EditorOutcome::Saved);
+            }
+            Err(error) => {
+                // The diagnostic is deliberately selected from static text: an
+                // arbitrary error chain must never echo credentials into the UI/log.
+                let message = save_failure_message(&error);
+                tracing::warn!("could not save the session: {message}");
+                self.save_error = Some(message);
+                self.outcome = None;
+            }
         }
-        self.outcome = Some(EditorOutcome::Saved);
     }
 
     /// Copy what the password box holds into the draft. Empty keeps the
@@ -408,6 +423,37 @@ impl SessionEditor {
             },
         )
     }
+}
+
+/// Actionable persistence errors without interpolating a session or raw error text.
+fn save_failure_message(error: &anyhow::Error) -> &'static str {
+    if error.is::<crate::config::SessionCredentialRollbackFailed>() {
+        return crate::i18n::t(
+            "保存失败，且无法确认系统钥匙串中的原密码已恢复。输入已保留；钥匙串中的密码可能已改变，请检查后再重试。",
+            "Could not save or verify that the original keyring password was restored. Your entries are kept, but the keyring password may have changed; check it before retrying.",
+        );
+    }
+    if let Some(rusqlite::Error::SqliteFailure(failure, _)) = error.downcast_ref() {
+        match failure.code {
+            rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked => {
+                return crate::i18n::t(
+                    "配置数据库正忙。输入已保留，请稍后再试。",
+                    "The configuration database is busy. Your entries are kept; try again shortly.",
+                );
+            }
+            rusqlite::ErrorCode::DiskFull => {
+                return crate::i18n::t(
+                    "磁盘空间不足，无法保存。输入已保留，请释放空间后重试。",
+                    "There is not enough disk space to save. Your entries are kept; free some space and retry.",
+                );
+            }
+            _ => {}
+        }
+    }
+    crate::i18n::t(
+        "保存失败。输入已保留，请检查配置目录是否可写及磁盘空间，然后重试。",
+        "Could not save. Your entries are kept; check that the configuration folder is writable and the disk has free space, then retry.",
+    )
 }
 
 /// The port-forwarding table, as a settings field draws it.
@@ -1152,6 +1198,7 @@ impl Render for SessionEditor {
             );
 
         let cancel = Button::new("editor-cancel")
+            .debug_selector(|| "editor-cancel".to_string())
             .icon(IconName::X)
             .label(crate::i18n::t("取消", "Cancel"))
             .ghost()
@@ -1161,6 +1208,7 @@ impl Render for SessionEditor {
             }));
 
         let save = Button::new("editor-save")
+            .debug_selector(|| "editor-save".to_string())
             .icon(IconName::Check)
             .label(crate::i18n::t("保存", "Save"))
             .primary()
@@ -1189,23 +1237,38 @@ impl Render for SessionEditor {
                                 .group(advanced),
                         )
                         .when(is_ssh, |settings| {
-                            settings.page(forwards_page).page(triggers_page)
+                            settings.page(super::jump_chain_editor::page(self.draft.clone(), self.store.clone(), cx.entity().downgrade())).page(forwards_page).page(triggers_page)
                         })
                         .into_any_element(),
                 ),
             )
             .child(
-                h_flex()
+                v_flex()
                     .w_full()
                     .flex_shrink_0()
-                    .justify_end()
                     .gap_2()
                     .px_3()
                     .py_2()
                     .border_t_1()
                     .border_color(theme.border)
-                    .child(cancel)
-                    .child(save),
+                    .when_some(self.save_error, |footer, error| {
+                        footer.child(
+                            div()
+                                .id("editor-save-error")
+                                .debug_selector(|| "editor-save-error".to_string())
+                                .text_sm()
+                                .text_color(theme.danger)
+                                .child(error),
+                        )
+                    })
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .justify_end()
+                            .gap_2()
+                            .child(cancel)
+                            .child(save),
+                    ),
             )
     }
 }
@@ -1214,7 +1277,272 @@ impl Render for SessionEditor {
 mod tests {
     use super::*;
     use crate::core::PortForwardDraft;
-    use gpui_kit::gpui::TestAppContext;
+    use gpui_kit::gpui::{Modifiers, TestAppContext};
+    use std::{fs, path::PathBuf};
+
+    /// A disposable database with no user-config lookup, backups, or keyring access.
+    struct StoreFixture {
+        directory: PathBuf,
+        store: Rc<RefCell<ConfigStore>>,
+    }
+
+    impl StoreFixture {
+        fn new() -> Self {
+            let directory =
+                std::env::temp_dir().join(format!("xenterm-editor-test-{}", uuid::Uuid::new_v4()));
+            fs::create_dir_all(&directory).unwrap();
+            let store = ConfigStore {
+                path: directory.join("sessions.db"),
+                backup_dir: None,
+                cache: Default::default(),
+                key: [7; 32],
+                keyring_enabled: false,
+                saved_state: Default::default(),
+            };
+            Self {
+                directory,
+                store: Rc::new(RefCell::new(store)),
+            }
+        }
+
+        // A directory where SQLite needs a file fails on all platforms, including
+        // privileged CI users for whom chmod-based "read only" fixtures still write.
+        fn block_database(&self) {
+            let path = self.store.borrow().path.clone();
+            if path.exists() {
+                fs::rename(&path, self.directory.join("saved.db")).unwrap();
+            }
+            fs::create_dir(&path).unwrap();
+        }
+
+        fn unblock_database(&self) {
+            let path = self.store.borrow().path.clone();
+            fs::remove_dir(&path).unwrap();
+            let saved = self.directory.join("saved.db");
+            if saved.exists() {
+                fs::rename(saved, path).unwrap();
+            }
+        }
+
+        fn disk_sessions(&self) -> Vec<Session> {
+            let connection = rusqlite::Connection::open(&self.store.borrow().path).unwrap();
+            let mut statement = connection
+                .prepare("SELECT data FROM sessions ORDER BY ordinal")
+                .unwrap();
+            statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .unwrap()
+                .map(|row| serde_json::from_str(&row.unwrap()).unwrap())
+                .collect()
+        }
+    }
+
+    impl Drop for StoreFixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.directory);
+        }
+    }
+
+    #[gpui_kit::gpui::test]
+    fn invalid_jump_route_keeps_editor_open_without_writing(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let fixture = StoreFixture::new();
+        let (view, cx) = cx.add_window_view({
+            let store = fixture.store.clone();
+            move |_, _| SessionEditor::new_session(store, String::new())
+        });
+        view.update(cx, |editor, cx| {
+            editor.draft.borrow_mut().jump_session_ids = vec!["missing-hop".into()];
+            editor.save(cx);
+            assert!(editor.take_outcome().is_none());
+            assert!(editor.save_error.is_some());
+            assert!(editor.store.borrow().sessions().is_empty());
+            assert!(!editor.store.borrow().path.exists());
+            editor.draft.borrow_mut().jump_session_ids.clear();
+            editor.save(cx);
+            assert_eq!(editor.take_outcome(), Some(EditorOutcome::Saved));
+            assert!(editor.save_error.is_none());
+        });
+        assert_eq!(fixture.disk_sessions().len(), 1);
+    }
+
+    #[gpui_kit::gpui::test]
+    fn a_failed_new_session_save_keeps_the_form_and_retries_once(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let fixture = StoreFixture::new();
+        fixture.block_database();
+        let (view, cx) = cx.add_window_view({
+            let store = fixture.store.clone();
+            move |_, _| SessionEditor::new_session(store, "fixture-group".into())
+        });
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            view.update(cx, |editor, cx| {
+                editor.draft.borrow_mut().host = "fixture.example".into();
+                editor.password.as_ref().unwrap().update(cx, |input, cx| {
+                    input.set_value("fixture-only-password", window, cx);
+                });
+            });
+        });
+
+        let mut first_id = None;
+        for _ in 0..2 {
+            cx.update(|window, cx| {
+                window.draw(cx).clear(cx);
+            });
+            let save = cx.debug_bounds("editor-save").expect("visible save button");
+            cx.simulate_click(save.center(), Modifiers::default());
+            view.update(cx, |editor, cx| {
+                assert_eq!(editor.take_outcome(), None, "the dialog stays open");
+                let error = editor.save_error.expect("the failure has an explanation");
+                assert!(!error.contains("fixture-only-password"));
+                let draft = editor.draft.borrow();
+                assert_eq!(draft.host, "fixture.example");
+                assert_eq!(draft.group, "fixture-group");
+                assert_eq!(draft.password, "fixture-only-password");
+                assert_eq!(
+                    editor.password.as_ref().unwrap().read(cx).value().as_ref(),
+                    "fixture-only-password"
+                );
+                assert!(!draft.id.is_empty());
+                assert_eq!(first_id.get_or_insert(draft.id.clone()), &draft.id);
+            });
+            assert!(fixture.store.borrow().sessions().is_empty());
+        }
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        assert!(cx.debug_bounds("editor-save-error").is_some());
+
+        fixture.unblock_database();
+        for _ in 0..2 {
+            let save = cx.debug_bounds("editor-save").unwrap();
+            cx.simulate_click(save.center(), Modifiers::default());
+            view.update(cx, |editor, _| {
+                assert_eq!(editor.take_outcome(), Some(EditorOutcome::Saved));
+                assert!(editor.save_error.is_none());
+            });
+            cx.update(|window, cx| {
+                window.draw(cx).clear(cx);
+            });
+            let store = fixture.store.borrow();
+            assert_eq!(store.sessions().len(), 1);
+            assert_eq!(Some(&store.sessions()[0].id), first_id.as_ref());
+            assert_eq!(
+                store.sessions()[0].password.as_str(),
+                "fixture-only-password"
+            );
+            let disk = fixture.disk_sessions();
+            assert_eq!(disk.len(), 1, "a retry never creates a duplicate session");
+            assert_eq!(disk[0].id, store.sessions()[0].id);
+            assert_eq!(disk[0].host, "fixture.example");
+            assert_ne!(disk[0].password.as_str(), "fixture-only-password");
+        }
+        assert!(cx.debug_bounds("editor-save-error").is_none());
+    }
+
+    #[gpui_kit::gpui::test]
+    fn a_failed_edit_restores_the_saved_session_until_retry(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let fixture = StoreFixture::new();
+        let mut draft = SessionDraft::new_ssh();
+        draft.id = "existing-fixture".into();
+        draft.host = "original.example".into();
+        draft.password = "original-fixture-password".into();
+        let original = draft.to_session(None);
+        fixture
+            .store
+            .borrow_mut()
+            .upsert_and_save(original.clone())
+            .unwrap();
+        fixture.block_database();
+        let (view, cx) = cx.add_window_view({
+            let store = fixture.store.clone();
+            let original = original.clone();
+            move |_, _| SessionEditor::edit(store, original)
+        });
+        view.update(cx, |editor, cx| {
+            editor.draft.borrow_mut().host = "edited.example".into();
+            editor.save(cx);
+            assert_eq!(editor.take_outcome(), None);
+            assert!(editor.save_error.is_some());
+            assert_eq!(editor.draft.borrow().host, "edited.example");
+        });
+        assert_eq!(
+            serde_json::to_value(&fixture.store.borrow().sessions()[0]).unwrap(),
+            serde_json::to_value(&original).unwrap(),
+            "a failed edit must not change the live session"
+        );
+        fixture.unblock_database();
+        fixture.store.borrow().save().unwrap();
+        assert_eq!(fixture.disk_sessions()[0].host, "original.example");
+        view.update(cx, |editor, cx| {
+            editor.save(cx);
+            assert_eq!(editor.take_outcome(), Some(EditorOutcome::Saved));
+            assert!(editor.save_error.is_none());
+        });
+        let store = fixture.store.borrow();
+        assert_eq!(store.sessions().len(), 1);
+        assert_eq!(store.sessions()[0].host, "edited.example");
+        assert_eq!(
+            store.sessions()[0].password.as_str(),
+            "original-fixture-password"
+        );
+        let disk = fixture.disk_sessions();
+        assert_eq!(disk.len(), 1);
+        assert_eq!(disk[0].id, original.id);
+        assert_eq!(disk[0].host, "edited.example");
+    }
+
+    #[test]
+    fn save_diagnostics_do_not_echo_error_details() {
+        let error = anyhow::anyhow!("fixture-secret-in-an-arbitrary-error");
+        assert!(!save_failure_message(&error).contains("fixture-secret"));
+        let uncertain = error.context(crate::config::SessionCredentialRollbackFailed);
+        let message = save_failure_message(&uncertain);
+        assert!(!message.contains("fixture-secret"));
+        assert_eq!(
+            message,
+            crate::i18n::t(
+                "保存失败，且无法确认系统钥匙串中的原密码已恢复。输入已保留；钥匙串中的密码可能已改变，请检查后再重试。",
+                "Could not save or verify that the original keyring password was restored. Your entries are kept, but the keyring password may have changed; check it before retrying.",
+            )
+        );
+        for code in [rusqlite::ffi::SQLITE_BUSY, rusqlite::ffi::SQLITE_FULL] {
+            let error = anyhow::Error::new(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(code),
+                Some("fixture-secret-in-a-database-error".into()),
+            ));
+            assert!(!save_failure_message(&error).contains("fixture-secret"));
+        }
+    }
+
+    #[gpui_kit::gpui::test]
+    fn a_failed_save_can_still_be_cancelled(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let fixture = StoreFixture::new();
+        fixture.block_database();
+        let (view, cx) = cx.add_window_view({
+            let store = fixture.store.clone();
+            move |_, _| SessionEditor::new_session(store, String::new())
+        });
+        view.update(cx, |editor, cx| {
+            editor.save(cx);
+            assert_eq!(editor.take_outcome(), None);
+        });
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        let cancel = cx
+            .debug_bounds("editor-cancel")
+            .expect("visible cancel button");
+        cx.simulate_click(cancel.center(), Modifiers::default());
+        assert_eq!(
+            view.update(cx, |editor, _| editor.take_outcome()),
+            Some(EditorOutcome::Cancelled)
+        );
+        assert!(fixture.store.borrow().sessions().is_empty());
+    }
 
     fn session_with_one_forward() -> Session {
         let mut draft = SessionDraft::new_ssh();
@@ -1243,9 +1571,8 @@ mod tests {
     #[gpui_kit::gpui::test]
     fn the_forward_rows_follow_the_session_and_the_draft(cx: &mut TestAppContext) {
         cx.update(gpui_kit::init);
-        let store = Rc::new(RefCell::new(
-            crate::config::ConfigStore::load().expect("the configuration this machine has"),
-        ));
+        let fixture = StoreFixture::new();
+        let store = fixture.store.clone();
         let session = session_with_one_forward();
         let (view, cx) = cx.add_window_view(move |_, _| SessionEditor::edit(store, session));
         cx.update(|window, cx| {

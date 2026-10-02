@@ -74,6 +74,8 @@ pub struct SessionDraft {
     pub note: String,
     /// Another saved session to tunnel through, or empty for a direct connection.
     pub jump_session_id: String,
+    /// Explicit bastion route, outermost first; the UI may reorder freely.
+    pub jump_session_ids: Vec<String>,
     /// The port forwards, which the editor edits as rows rather than as the parsed
     /// config type.
     pub forwards: Vec<PortForwardDraft>,
@@ -131,6 +133,7 @@ impl SessionDraft {
             disable_shell_integration: session.disable_shell_integration,
             note: session.note.clone(),
             jump_session_id: session.jump_session_id.clone(),
+            jump_session_ids: session.jump_session_ids.clone(),
             forwards: session
                 .forwards
                 .iter()
@@ -285,6 +288,7 @@ impl SessionDraft {
             disable_shell_integration: self.disable_shell_integration,
             note: self.note.clone(),
             jump_session_id: self.jump_session_id.clone(),
+            jump_session_ids: self.jump_session_ids.clone(),
         }
     }
 }

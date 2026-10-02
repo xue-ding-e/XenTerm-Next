@@ -67,6 +67,7 @@ panels, so they stay attached to the window whose sessions they belong to.
 - **Four session types** — SSH, local shell, Telnet and serial, in the same tabbed UI.
 - **Local shells out of the box** — PowerShell, `cmd.exe` and every configured WSL
   distribution on Windows; `$SHELL` elsewhere. Windows shells start in UTF-8.
+- **Ordered SSH bastions** — add saved SSH sessions on the session editor’s SSH bastions page, move any hop earlier/later, or remove it. The displayed order is outermost first; each hop uses its own credentials. Existing `jump_session_id` configurations still work, including nested legacy routes.
 - **SSH authentication** — password, private key, passphrase-protected key, and
   keyboard-interactive for 2FA / OTP prompts.
 - **PuTTY `.ppk` keys** — PPK v2/v3 is decrypted and verified in memory; no `puttygen`
@@ -81,9 +82,10 @@ panels, so they stay attached to the window whose sessions they belong to.
   hard warning if a key later changes.
 
 > Session passwords and keys can also be entered without the GUI, and the config supports
-> hand-written jump hosts and per-session encodings — but the session editor does not
-> expose fields for those yet, so they currently need a hand-edited or imported
-> `sessions.json`.
+> per-session encodings. Ordered jump routes can be edited in the GUI. Imported
+> `jump_session_ids` are ordered from the outermost bastion toward the target;
+> when present, they override legacy `jump_session_id` links. Invalid, repeated,
+> missing, non-SSH or more-than-16-hop routes fail before network activity.
 
 ### Terminal
 
@@ -258,6 +260,21 @@ cargo run --release
 On first launch XenTerm creates an empty session store. Add your first server with **New
 Session**, or import one — `~/.ssh/config`, a FinalShell connection export, a previous
 XenTerm export, or a pasted `host|port|user|password|name` list are all supported.
+
+### Headless CLI / authenticated remote MCP
+
+Build without the GPUI desktop libraries:
+
+```sh
+cargo build --locked --release --no-default-features --features headless
+```
+
+The default build still includes the complete GUI, CLI and stdio MCP. The opt-in
+HTTP service uses external OAuth access tokens, a deliberately selected private
+profile, and an existing HTTPS reverse proxy. See [remote MCP deployment and
+verification](docs/REMOTE_MCP.md), including OpenResty routing for multiple MCP
+services on one domain. No public listener, account or deployment is created by
+the build.
 
 ### Building on Linux
 

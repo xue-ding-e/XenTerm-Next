@@ -46,6 +46,8 @@ mod quick_commands;
 mod quick_manager;
 #[path = "impls/rule_editor.rs"]
 mod rule_editor;
+#[path = "impls/jump_chain_editor.rs"]
+mod jump_chain_editor;
 #[path = "impls/session_editor.rs"]
 mod session_editor;
 #[path = "impls/session_list.rs"]

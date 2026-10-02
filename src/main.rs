@@ -1,12 +1,16 @@
 // Entry point. Wires the UI shell to the config store, system sampler and
 // SSH session manager.
 
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![cfg_attr(
+    all(not(debug_assertions), feature = "desktop"),
+    windows_subsystem = "windows"
+)]
 
 mod allocator;
 
 #[global_allocator]
 static GLOBAL: allocator::Allocator = allocator::Allocator;
+#[cfg(feature = "desktop")]
 mod app;
 // The layering rules, asserted rather than assumed. Test-only: the module is
 // nothing but `#[cfg(test)]` readers of this source tree.
@@ -17,6 +21,7 @@ mod cli;
 mod config;
 mod core;
 mod i18n;
+#[cfg(feature = "desktop")]
 mod layout;
 mod logging;
 mod mcp;
@@ -26,6 +31,7 @@ mod sftp;
 mod ssh;
 mod terminal;
 mod tunnel;
+#[cfg(feature = "desktop")]
 mod ui;
 mod webdav;
 
@@ -52,20 +58,51 @@ impl StartMode {
 }
 
 fn main() -> anyhow::Result<()> {
-    let args: Vec<String> = std::env::args().collect();
-
+    let mut args: Vec<String> = std::env::args().collect();
+    config::configure_profile(&mut args)?;
     let mode = StartMode::detect(&args);
     if matches!(mode, StartMode::Version) {
         println!("xenterm {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
 
+    #[cfg(not(feature = "desktop"))]
+    anyhow::ensure!(config::has_explicit_data_dir(),
+        "headless CLI/MCP requires --data-dir <independent-service-profile> or XENTERM_DATA_DIR; import an export into that profile instead of opening the default desktop profile");
+
+    if args.get(1).is_some_and(|a| a == "--config-info") {
+        anyhow::ensure!(
+            args.len() == 2,
+            "--config-info does not accept command arguments"
+        );
+        let store = config::ConfigStore::load()?;
+        println!(
+            "{}",
+            serde_json::json!({
+                "executable": std::env::current_exe()?, "version": env!("CARGO_PKG_VERSION"),
+                "data_dir": config::data_dir(), "session_count": store.sessions().len()
+            })
+        );
+        return Ok(());
+    }
+
+    // Refuse before initializing file logging: a service launch must not even
+    // touch the default desktop profile when an explicit profile is missing.
+    if matches!(mode, StartMode::Mcp) && args.iter().any(|arg| arg == "--http-config") {
+        anyhow::ensure!(
+            config::has_explicit_data_dir(),
+            "HTTP service requires an explicitly selected --data-dir or XENTERM_DATA_DIR profile"
+        );
+    }
     init_tracing();
 
     match mode {
-        StartMode::Mcp => mcp::run_stdio(),
+        StartMode::Mcp => mcp::run(&args),
         StartMode::Cli => cli::run(&args),
+        #[cfg(feature = "desktop")]
         StartMode::Ui => ui::run(),
+        #[cfg(not(feature = "desktop"))]
+        StartMode::Ui => anyhow::bail!("headless build: use xenterm cli help or xenterm mcp serve"),
         StartMode::Version => unreachable!("handled above"),
     }
 }

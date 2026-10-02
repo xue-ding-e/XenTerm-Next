@@ -1,0 +1,23 @@
+# Add inside the EXISTING HTTPS virtual host; do not replace its TLS configuration.
+# Set oauth.resource to https://YOUR_DOMAIN/xenterm/mcp. Preserve the path.
+location = /xenterm/mcp {
+    proxy_pass http://127.0.0.1:8765;
+    proxy_http_version 1.1;
+    proxy_set_header Host $http_host;
+    proxy_set_header Authorization $http_authorization;
+    proxy_set_header Connection "";
+    proxy_buffering off;
+    proxy_request_buffering off;
+    proxy_read_timeout 310s;
+    proxy_send_timeout 10s;
+    client_body_timeout 10s;
+    client_max_body_size 1m;
+    access_log off;
+}
+location = /.well-known/oauth-protected-resource/xenterm/mcp {
+    proxy_pass http://127.0.0.1:8765;
+    proxy_set_header Host $http_host;
+    access_log off;
+}
+# For another MCP service on this domain, use a distinct exact endpoint,
+# path-specific well-known endpoint, audience, loopback port, account and profile.

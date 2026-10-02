@@ -4,6 +4,9 @@
 //! on the shared Tokio runtime; commands come in via an MPSC channel and
 //! output lines are pushed back via an `UnboundedSender<SessionEvent>`.
 
+use crate::ssh::connection::{
+    connect_ssh_stream, disconnect_ssh, network_stage, HandshakeHandler, HostKeyWait,
+};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -928,7 +931,7 @@ pub fn spawn_session(
     runtime: &tokio::runtime::Handle,
     tab_id: String,
     session: Session,
-    jump: Option<Session>,
+    jump: Vec<Session>,
     initial_cols: u32,
     initial_rows: u32,
 ) -> (SessionHandle, UnboundedReceiver<SessionEvent>) {
@@ -1051,10 +1054,10 @@ fn start_runtime_forward(
 /// already failed (#86).
 async fn connect_ssh(
     session: &Session,
-    jump: Option<&Session>,
+    jump: &[Session],
     config: Arc<client::Config>,
     events: &UnboundedSender<SessionEvent>,
-) -> Result<(Handle<ClientHandler>, Option<Handle<ClientHandler>>)> {
+) -> Result<(Handle<ClientHandler>, Vec<Handle<ClientHandler>>)> {
     // Remote (-R) forwards are serviced inside the handler when the server opens
     // channels back, so it needs the bind-port → local-target map up front (the
     // handler is moved into `connect`) (#56).
@@ -1069,6 +1072,7 @@ async fn connect_ssh(
         port: session.port,
         remote_forwards,
         events: events.clone(),
+        host_key_wait: HostKeyWait::default(),
         forwarded_open: std::collections::HashMap::new(),
     };
     let addr = format!("{}:{}", session.host, session.port);
@@ -1077,7 +1081,7 @@ async fn connect_ssh(
     // a direct-tcpip channel through it to this host and run the SSH handshake
     // over that tunnel. The returned jump handle must be kept alive for the whole
     // session (the tunnel lives on it) (#211).
-    if let Some(j) = jump {
+    if let Some(j) = jump.first() {
         let _ = events.send(SessionEvent::Status(format!(
             "{} {}@{} → {}",
             t("经跳板机连接", "via jump host"),
@@ -1086,15 +1090,29 @@ async fn connect_ssh(
             addr
         )));
         let (handle, jump_handle) =
-            connect_target_via_jump(j, &session.host, session.port, config, handler, events)
+            connect_target_via_jump(jump, &session.host, session.port, config, handler, events)
                 .await
                 .with_context(|| format!("connect {} via jump failed", addr))?;
-        return Ok((handle, Some(jump_handle)));
+        return Ok((handle, jump_handle));
     }
 
-    // Connect directly, or tunnel through a SOCKS5 / HTTP proxy (issue #7).
-    // An unparseable proxy URL is an error, never a silent direct connection.
-    let handle = match crate::ssh::proxy::resolve(&session.proxy)? {
+    let handle = connect_direct_ssh(session, config, handler, events).await?;
+    Ok((handle, Vec::new()))
+}
+
+/// The shell and SFTP use identical network deadlines and host-key handling.
+pub(crate) async fn connect_direct_ssh<H>(
+    session: &Session,
+    config: Arc<client::Config>,
+    handler: H,
+    events: &UnboundedSender<SessionEvent>,
+) -> Result<Handle<H>>
+where
+    H: HandshakeHandler + Send + 'static,
+    H::Error: std::error::Error + Send + Sync + 'static,
+{
+    let addr = format!("{}:{}", session.host, session.port);
+    let stream = match crate::ssh::proxy::resolve(&session.proxy)? {
         Some(p) => {
             let _ = events.send(SessionEvent::Status(format!(
                 "{} {} → {}",
@@ -1102,18 +1120,23 @@ async fn connect_ssh(
                 crate::ssh::proxy::describe(&p),
                 addr
             )));
-            let stream = crate::ssh::proxy::connect(&p, &session.host, session.port)
-                .await
-                .with_context(|| format!("proxy connect to {} failed", addr))?;
-            client::connect_stream(config, stream, handler)
-                .await
-                .with_context(|| format!("connect {} failed", addr))?
+            network_stage(
+                &format!("proxy connect to {addr}"),
+                crate::ssh::proxy::connect(&p, &session.host, session.port),
+            )
+            .await?
         }
-        None => client::connect(config, addr.as_str(), handler)
-            .await
-            .with_context(|| format!("connect {} failed", addr))?,
+        None => {
+            network_stage(
+                &format!("TCP connect to {addr}"),
+                tokio::net::TcpStream::connect((session.host.as_str(), session.port)),
+            )
+            .await?
+        }
     };
-    Ok((handle, None))
+    let stage = format!("SSH handshake to {addr}");
+    let _ = events.send(SessionEvent::Status(stage.clone()));
+    connect_ssh_stream(config, stream, handler, &stage).await
 }
 
 /// Outcome of authenticating an SSH session, so callers can distinguish a user
@@ -1131,9 +1154,9 @@ pub(crate) enum AuthResult {
 /// both `handle` and `jump_handle` in place so the caller keeps the live tunnel.
 pub(crate) async fn authenticate_session(
     handle: &mut Handle<ClientHandler>,
-    jump_handle: &mut Option<Handle<ClientHandler>>,
+    jump_handle: &mut Vec<Handle<ClientHandler>>,
     session: &Session,
-    jump: Option<&Session>,
+    jump: &[Session],
     config: Arc<client::Config>,
     events: &UnboundedSender<SessionEvent>,
 ) -> Result<AuthResult> {
@@ -1142,17 +1165,29 @@ pub(crate) async fn authenticate_session(
         None => return Ok(AuthResult::Cancelled),
     };
 
+    let _ = events.send(SessionEvent::Status(format!(
+        "{} {}@{}:{}",
+        t("正在认证", "Authenticating"),
+        user,
+        session.host,
+        session.port
+    )));
+
     let authed = match session.auth {
         AuthMethod::Password => {
-            let mut ok = handle
-                .authenticate_password(&user, password.as_str())
-                .await
-                .context("password auth failed")?;
+            let mut ok = network_stage(
+                &format!(
+                    "password authentication at {}:{}",
+                    session.host, session.port
+                ),
+                handle.authenticate_password(&user, password.as_str()),
+            )
+            .await?;
             if !ok {
                 // russh can't switch auth methods on a handle whose first attempt
                 // already failed (it hangs), so reconnect on a fresh handle before
                 // trying keyboard-interactive (#86).
-                let _ = handle.disconnect(Disconnect::ByApplication, "", "").await;
+                disconnect_ssh(handle, "authentication fallback").await;
                 let (h, jh) = Box::pin(connect_ssh(session, jump, config.clone(), events)).await?;
                 *handle = h;
                 *jump_handle = jh;
@@ -1189,10 +1224,14 @@ pub(crate) async fn authenticate_session(
             let hash = keypair.algorithm().is_rsa().then_some(HashAlg::Sha256);
             let key_with_hash = PrivateKeyWithHashAlg::new(Arc::new(keypair), hash)
                 .context("invalid private key / hash algorithm combination")?;
-            handle
-                .authenticate_publickey(&user, key_with_hash)
-                .await
-                .context("publickey auth failed")?
+            network_stage(
+                &format!(
+                    "public-key authentication at {}:{}",
+                    session.host, session.port
+                ),
+                handle.authenticate_publickey(&user, key_with_hash),
+            )
+            .await?
         }
     };
 
@@ -1205,30 +1244,33 @@ pub(crate) async fn authenticate_session(
 
 /// Connect + authenticate a jump/bastion session, open a `direct-tcpip` channel
 /// to `target_host:target_port`, and run the target's SSH handshake over it.
-/// Returns the target handle plus the jump handle, which the caller MUST keep
-/// alive for as long as the target session lives (the tunnel rides on it) (#211).
+/// Returns the target handle plus all ancestor handles, outermost first. Keep
+/// every ancestor alive until the target session closes; close in reverse order.
 pub(crate) async fn connect_target_via_jump<H>(
-    jump: &Session,
+    chain: &[Session],
     target_host: &str,
     target_port: u16,
     config: Arc<client::Config>,
     handler: H,
     events: &UnboundedSender<SessionEvent>,
-) -> Result<(Handle<H>, Handle<ClientHandler>)>
+) -> Result<(Handle<H>, Vec<Handle<ClientHandler>>)>
 where
-    H: client::Handler + 'static,
+    H: HandshakeHandler + Send + 'static,
     H::Error: std::error::Error + Send + Sync + 'static,
 {
-    // Single hop: the jump session itself never goes through another jump.
+    let (jump, ancestors) = chain.split_first().context("empty SSH jump chain")?;
+    // Connect to this hop through its ancestors. Keep every transport alive,
+    // including replacement transports created by keyboard-interactive fallback.
     // `Box::pin` breaks the async recursion (connect_ssh → jump → connect_ssh).
-    let (mut jhandle, mut no_nested) = Box::pin(connect_ssh(jump, None, config.clone(), events))
-        .await
-        .with_context(|| format!("connect jump host {}:{} failed", jump.host, jump.port))?;
+    let (mut jhandle, mut ancestors_alive) =
+        Box::pin(connect_ssh(jump, ancestors, config.clone(), events))
+            .await
+            .with_context(|| format!("connect jump host {}:{} failed", jump.host, jump.port))?;
     match authenticate_session(
         &mut jhandle,
-        &mut no_nested,
+        &mut ancestors_alive,
         jump,
-        None,
+        ancestors,
         config.clone(),
         events,
     )
@@ -1245,19 +1287,29 @@ where
             )))
         }
     }
-    let channel = jhandle
-        .channel_open_direct_tcpip(
+    let stage = format!(
+        "open jump tunnel {}:{} → {target_host}:{target_port}",
+        jump.host, jump.port
+    );
+    let _ = events.send(SessionEvent::Status(stage.clone()));
+    let channel = network_stage(
+        &stage,
+        jhandle.channel_open_direct_tcpip(
             target_host.to_string(),
             target_port as u32,
             "127.0.0.1".to_string(),
             0,
-        )
-        .await
-        .with_context(|| format!("open jump tunnel to {target_host}:{target_port}"))?;
-    let handle = client::connect_stream(config, channel.into_stream(), handler)
-        .await
-        .with_context(|| format!("SSH handshake to {target_host}:{target_port} via jump"))?;
-    Ok((handle, jhandle))
+        ),
+    )
+    .await?;
+    let stage = format!(
+        "SSH handshake to {target_host}:{target_port} via jump {}:{}",
+        jump.host, jump.port
+    );
+    let _ = events.send(SessionEvent::Status(stage.clone()));
+    let handle = connect_ssh_stream(config, channel.into_stream(), handler, &stage).await?;
+    ancestors_alive.push(jhandle);
+    Ok((handle, ancestors_alive))
 }
 
 // Key-exchange algorithms offered to the server, strongest first. This is the
@@ -1339,7 +1391,39 @@ pub struct CommandExecution {
 /// this headless path has no UI in which to ask the user.
 pub async fn execute_command(
     session: Session,
-    jump: Option<Session>,
+    jump: Vec<Session>,
+    command: &str,
+    timeout: std::time::Duration,
+    max_output_bytes: usize,
+) -> Result<CommandExecution> {
+    // A hop which accepts TCP but never completes SSH must not bypass the
+    // caller's timeout. Bound the entire route, authentication and command.
+    match tokio::time::timeout(
+        timeout,
+        crate::ssh::connection::with_automation_cancellation(execute_command_inner(
+            session,
+            jump,
+            command,
+            timeout,
+            max_output_bytes,
+        )),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Ok(CommandExecution {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: None,
+            timed_out: true,
+            truncated: false,
+        }),
+    }
+}
+
+async fn execute_command_inner(
+    session: Session,
+    jump: Vec<Session>,
     command: &str,
     timeout: std::time::Duration,
     max_output_bytes: usize,
@@ -1348,13 +1432,13 @@ pub async fn execute_command(
     drop(event_rx);
     let config = ssh_client_config();
     let (mut handle, mut jump_handle) =
-        connect_ssh(&session, jump.as_ref(), config.clone(), &events).await?;
+        connect_ssh(&session, &jump, config.clone(), &events).await?;
 
     match authenticate_session(
         &mut handle,
         &mut jump_handle,
         &session,
-        jump.as_ref(),
+        &jump,
         config,
         &events,
     )
@@ -1416,7 +1500,7 @@ pub async fn execute_command(
     let _ = handle
         .disconnect(Disconnect::ByApplication, "command complete", "")
         .await;
-    if let Some(jump_handle) = jump_handle {
+    for jump_handle in jump_handle.into_iter().rev() {
         let _ = jump_handle
             .disconnect(Disconnect::ByApplication, "command complete", "")
             .await;
@@ -1433,7 +1517,7 @@ fn append_bounded(target: &mut Vec<u8>, data: &[u8], limit: usize, truncated: &m
 
 async fn run_session(
     session: Session,
-    jump: Option<Session>,
+    jump: Vec<Session>,
     mut commands: UnboundedReceiver<SessionCommand>,
     events: UnboundedSender<SessionEvent>,
     initial_cols: u32,
@@ -1451,7 +1535,7 @@ async fn run_session(
     let config = ssh_client_config();
 
     let (mut handle, mut jump_handle) =
-        connect_ssh(&session, jump.as_ref(), config.clone(), &events).await?;
+        connect_ssh(&session, &jump, config.clone(), &events).await?;
     tracing::info!(
         "[SESSION_START] id={} stage=transport-ready elapsed_ms={}",
         session.id,
@@ -1466,7 +1550,7 @@ async fn run_session(
         &mut handle,
         &mut jump_handle,
         &session,
-        jump.as_ref(),
+        &jump,
         config.clone(),
         &events,
     )
@@ -1870,6 +1954,7 @@ async fn run_session(
                                         .await
                                 }
                                 ZmodemDirection::Upload => {
+                                    #[cfg(feature = "desktop")]
                                     let files = tokio::task::spawn_blocking(|| {
                                         rfd::FileDialog::new()
                                             .set_title(t(
@@ -1881,6 +1966,8 @@ async fn run_session(
                                     })
                                     .await
                                     .unwrap_or_default();
+                                    #[cfg(not(feature = "desktop"))]
+                                    let files: Vec<std::path::PathBuf> = Vec::new();
                                     if files.is_empty() {
                                         let _ = channel.data(&ZMODEM_CANCEL[..]).await;
                                         let _ = events.send(SessionEvent::Output(format!(
@@ -2419,10 +2506,7 @@ fn parse_monitor_block(
         // Show busiest first so the default-selected NIC is the active one.
         // Saturating, because a forged counter pair near u64::MAX would
         // otherwise overflow (debug panic / release wrap) in the comparison.
-        net.sort_by(|a, b| {
-            b.1.saturating_add(b.2)
-                .cmp(&a.1.saturating_add(a.2))
-        });
+        net.sort_by(|a, b| b.1.saturating_add(b.2).cmp(&a.1.saturating_add(a.2)));
     }
 
     let cpu_percent = if have_cpu {
@@ -2754,9 +2838,12 @@ where
     H::Error: std::error::Error + Send + Sync + 'static,
 {
     use russh::client::KeyboardInteractiveAuthResponse as Kb;
-    let mut res = handle
-        .authenticate_keyboard_interactive_start(user.to_string(), None)
-        .await?;
+    let stage = format!("keyboard-interactive authentication at {host}");
+    let mut res = network_stage(
+        &stage,
+        handle.authenticate_keyboard_interactive_start(user.to_string(), None),
+    )
+    .await?;
     let mut password_used = false;
     // Bound the exchange so a misbehaving server can't loop us forever.
     for _ in 0..16 {
@@ -2778,9 +2865,11 @@ where
                         }
                     }
                 }
-                res = handle
-                    .authenticate_keyboard_interactive_respond(responses)
-                    .await?;
+                res = network_stage(
+                    &stage,
+                    handle.authenticate_keyboard_interactive_respond(responses),
+                )
+                .await?;
             }
         }
     }
@@ -2816,6 +2905,7 @@ async fn ask_mfa_prompt(
 /// Carries the remote-forward (-R) map so we can service channels the server
 /// opens back to us: server bind-port → local `(host, port)` target (#56).
 pub(crate) struct ClientHandler {
+    host_key_wait: HostKeyWait,
     pub(crate) host: String,
     pub(crate) port: u16,
     pub(crate) remote_forwards: std::collections::HashMap<u32, (String, u16)>,
@@ -2827,6 +2917,12 @@ pub(crate) struct ClientHandler {
         std::collections::HashMap<u32, std::sync::Arc<std::sync::atomic::AtomicUsize>>,
 }
 
+impl HandshakeHandler for ClientHandler {
+    fn host_key_wait(&self) -> &HostKeyWait {
+        &self.host_key_wait
+    }
+}
+
 /// Shared host-key check used by both the shell and SFTP connections: trust a
 /// matching stored key silently; otherwise ask the UI (via `events`) and, on
 /// acceptance, remember the key. A dropped/closed reply channel (UI gone)
@@ -2836,11 +2932,13 @@ pub(crate) async fn verify_host_key(
     port: u16,
     key: &PublicKey,
     events: &UnboundedSender<SessionEvent>,
+    host_key_wait: &HostKeyWait,
 ) -> bool {
     use crate::ssh::HostKeyStatus;
     match crate::ssh::known_hosts::verify(host, port, key) {
         HostKeyStatus::Match => true,
         status => {
+            let _pause = host_key_wait.pause();
             let changed = status == HostKeyStatus::Changed;
             let (tx, rx) = tokio::sync::oneshot::channel();
             let sent = events.send(SessionEvent::HostKeyPrompt {
@@ -2947,7 +3045,14 @@ impl Handler for ClientHandler {
         &mut self,
         server_public_key: &PublicKey,
     ) -> Result<bool, Self::Error> {
-        Ok(verify_host_key(&self.host, self.port, server_public_key, &self.events).await)
+        Ok(verify_host_key(
+            &self.host,
+            self.port,
+            server_public_key,
+            &self.events,
+            &self.host_key_wait,
+        )
+        .await)
     }
 
     async fn data(

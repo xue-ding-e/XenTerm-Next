@@ -19,6 +19,7 @@ mod presentation;
 mod render;
 #[path = "impls/render_gate.rs"]
 mod render_gate;
+#[cfg(feature = "desktop")]
 #[path = "impls/serial.rs"]
 pub(crate) mod serial;
 #[path = "impls/telnet.rs"]
@@ -29,16 +30,16 @@ mod term_buffer;
 pub(crate) mod zmodem;
 
 pub(crate) use charset::CharsetTracker;
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop"))]
 pub(crate) use term_buffer::find_matches_in_rows;
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop"))]
 pub(crate) use term_buffer::OSC_CAP;
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop"))]
 use std::collections::VecDeque;
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop"))]
 pub(crate) use input::terminal_uses_bracketed_paste;
 pub(crate) use encoding::TerminalEncoding;
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop"))]
 pub(crate) use input::normalize_pasted_newlines;
 pub(crate) use input::{
     encode_command_bar_input, encode_mouse_event,
@@ -54,22 +55,22 @@ pub(crate) use output_highlight::compile_output_rules;
 pub(crate) use presentation::{highlight_plain_output, render_term_span};
 // The terminal view paints its pane with this; the grid paints its own text over it.
 pub(crate) use presentation::{terminal_background, terminal_foreground};
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop"))]
 pub(crate) use presentation::{log_level_marker, text_cell_width, vt_span_colors};
 
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop"))]
 use crate::app::term_buf;
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop"))]
 use crate::config::OutputHighlightRule;
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop"))]
 use std::sync::{Arc, Mutex};
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop"))]
 #[path = "../../tests/app/output_highlighting/mod.rs"]
 mod log_highlight_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop"))]
 #[path = "../../tests/app/terminal_rendering/mod.rs"]
 mod selection_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop"))]
 #[path = "../../tests/app/terminal_bench/mod.rs"]
 mod terminal_bench;
 pub(crate) use render::{
