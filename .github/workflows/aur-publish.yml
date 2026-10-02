@@ -20,8 +20,9 @@ jobs:
       AUR_USERNAME: ${{ secrets.AUR_USERNAME }}
       AUR_EMAIL: ${{ secrets.AUR_EMAIL }}
       AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
-    # Release and manual-dispatch events are the only supported triggers.
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.release != null }}
+    # Fork releases must never publish to the upstream's third-party package.
+    # Preview/beta releases must not replace the stable AUR package either.
+    if: ${{ github.repository == 'ixbaicn/XenTerm' && (github.event_name == 'workflow_dispatch' || (github.event.release != null && !github.event.release.prerelease && !github.event.release.draft)) }}
     steps:
       - uses: actions/checkout@v4
 

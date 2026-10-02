@@ -316,6 +316,9 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          # Custom fork builds must stay separate from upstream stable releases.
+          prerelease: ${{ github.repository != 'ixbaicn/XenTerm' }}
+          make_latest: ${{ github.repository == 'ixbaicn/XenTerm' && 'true' || 'false' }}
           files: ${{ env.ASSET }}
           fail_on_unmatched_files: true
 
@@ -323,6 +326,9 @@ jobs:
         if: matrix.name == 'linux-x86_64' && startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          # Custom fork builds must stay separate from upstream stable releases.
+          prerelease: ${{ github.repository != 'ixbaicn/XenTerm' }}
+          make_latest: ${{ github.repository == 'ixbaicn/XenTerm' && 'true' || 'false' }}
           files: ${{ env.APPIMAGE }}
           fail_on_unmatched_files: true
 
@@ -330,6 +336,9 @@ jobs:
         if: runner.os == 'Linux' && startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          # Custom fork builds must stay separate from upstream stable releases.
+          prerelease: ${{ github.repository != 'ixbaicn/XenTerm' }}
+          make_latest: ${{ github.repository == 'ixbaicn/XenTerm' && 'true' || 'false' }}
           files: ${{ env.DEB }}
           fail_on_unmatched_files: true
 
@@ -337,6 +346,9 @@ jobs:
         if: matrix.name == 'windows-x86_64' && env.MSI != '' && startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          # Custom fork builds must stay separate from upstream stable releases.
+          prerelease: ${{ github.repository != 'ixbaicn/XenTerm' }}
+          make_latest: ${{ github.repository == 'ixbaicn/XenTerm' && 'true' || 'false' }}
           files: ${{ env.MSI }}
           fail_on_unmatched_files: false
 
@@ -383,6 +395,9 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          # Custom fork builds must stay separate from upstream stable releases.
+          prerelease: ${{ github.repository != 'ixbaicn/XenTerm' }}
+          make_latest: ${{ github.repository == 'ixbaicn/XenTerm' && 'true' || 'false' }}
           files: xenterm-${{ github.ref_name }}-linux-x86_64.flatpak
           fail_on_unmatched_files: true
 
@@ -472,6 +487,9 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          # Custom fork builds must stay separate from upstream stable releases.
+          prerelease: ${{ github.repository != 'ixbaicn/XenTerm' }}
+          make_latest: ${{ github.repository == 'ixbaicn/XenTerm' && 'true' || 'false' }}
           files: ${{ env.ASSET }}
           fail_on_unmatched_files: true
 
@@ -561,5 +579,8 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          # Custom fork builds must stay separate from upstream stable releases.
+          prerelease: ${{ github.repository != 'ixbaicn/XenTerm' }}
+          make_latest: ${{ github.repository == 'ixbaicn/XenTerm' && 'true' || 'false' }}
           files: ${{ env.ASSET }}
           fail_on_unmatched_files: true

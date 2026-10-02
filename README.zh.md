@@ -187,13 +187,35 @@ tar -xzf xenterm-*-linux-x86_64.tar.gz
 cd xenterm-*-linux-x86_64
 ./xenterm
 
-# 可选：系统级安装程序、图标和启动器（需要 sudo）
+# 可选：将程序、图标和启动器安装到 /usr/local
+# 仅目标目录需要权限时请求 sudo；root 不需要 sudo
 chmod +x install-linux.sh && ./install-linux.sh
+
+# 或仅为当前用户安装到 ~/.local，不使用 sudo
+./install-linux.sh --user
+
+# 或指定安装目录（路径包含空格时请加引号）
+./install-linux.sh --prefix "$HOME/Apps/XenTerm"
+# 等价的环境变量写法；仍可传入可选的二进制文件路径
+PREFIX="$HOME/Apps/XenTerm" ./install-linux.sh /path/to/xenterm
 ```
 
-一键安装会把程序装到 `/usr/local/bin/xenterm`，启动器装到
-`/usr/local/share/applications/xenterm.desktop`，图标装到
-`/usr/local/share/icons/hicolor/512x512/apps/xenterm.png`。
+默认安装前缀为 `/usr/local`。安装器会创建 `<prefix>/bin/xenterm`、
+`<prefix>/share/applications/xenterm.desktop` 和
+`<prefix>/share/icons/hicolor/512x512/apps/xenterm.png`。前缀优先级为
+`--prefix` > `PREFIX` 环境变量 > 默认值（使用 `--user` 时为 `$HOME/.local`）。
+`--user` 绝不调用 sudo；所选目标不可写时会明确报错。
+相对前缀会转换为绝对路径。包含 `=` 或控制字符的前缀无法构成安全的桌面启动路径，会被拒绝。
+
+启动器及其「新建窗口」动作均使用已安装程序的绝对路径，不依赖 `PATH`。
+若要在命令行使用，请将 `<prefix>/bin` 加入 `PATH`。
+自定义前缀若不在桌面搜索路径内，还需在桌面会话环境中将 `<prefix>/share` 加入
+`XDG_DATA_DIRS`，然后注销并重新登录。
+
+其他位置的用户启动器会保留；若可能遮蔽本次安装，安装器会给出提示。
+再次运行脚本可以更新带有本安装器管理标记的启动器，也能升级原版安装器生成且
+未经修改的启动器（要求内容完全一致）。如果目标启动器没有管理标记，且与原版模板
+不一致，安装会在修改文件前停止。请检查并移走该自定义启动器后重试。
 
 > 需要 glibc ≥ 2.35（Ubuntu 22.04+ / Debian 12+）。如果需要更老的基线，`-glibc228`
 > 后缀的 tar 包是针对 glibc 2.28（Debian 10）构建的。

@@ -2,6 +2,8 @@ name: Beta Release
 
 # Rolling pre-release build: every push to any branch builds all platforms and
 # publishes them to a single rolling "beta" Release marked as a pre-release.
+# Forks run this only with an explicit workflow_dispatch; feature pushes do not
+# publish or replace any release. Tagged releases use release.yml.
 # The previous beta release is deleted first, so the release list keeps
 # exactly one pre-release at all times. Tag pushes are handled by release.yml
 # and are excluded here (a branches filter makes this workflow ignore tags).
@@ -14,6 +16,7 @@ name: Beta Release
 on:
   push:
     branches: ["**"]
+  workflow_dispatch:
 
 permissions:
   contents: write   # needed to delete / create the beta Release
@@ -25,6 +28,7 @@ concurrency:
 
 jobs:
   build:
+    if: ${{ github.repository == 'ixbaicn/XenTerm' || github.event_name == 'workflow_dispatch' }}
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -260,6 +264,7 @@ jobs:
           path: ${{ env.MSI }}
 
   build-flatpak:
+    if: ${{ github.repository == 'ixbaicn/XenTerm' || github.event_name == 'workflow_dispatch' }}
     name: beta-linux-x86_64-flatpak
     needs: [build]
     runs-on: ubuntu-22.04
@@ -303,6 +308,7 @@ jobs:
           path: xenterm-${{ env.BETA_VERSION }}-linux-x86_64.flatpak
 
   build-linux-aarch64-glibc228:
+    if: ${{ github.repository == 'ixbaicn/XenTerm' || github.event_name == 'workflow_dispatch' }}
     name: beta-linux-aarch64-glibc228
     runs-on: ubuntu-22.04-arm
     container: debian:10
@@ -384,6 +390,7 @@ jobs:
           path: ${{ env.ASSET }}
 
   build-linux-x86_64-glibc228:
+    if: ${{ github.repository == 'ixbaicn/XenTerm' || github.event_name == 'workflow_dispatch' }}
     name: beta-linux-x86_64-glibc228
     runs-on: ubuntu-22.04
     container: debian:10
@@ -465,6 +472,7 @@ jobs:
           path: ${{ env.ASSET }}
 
   publish:
+    if: ${{ github.repository == 'ixbaicn/XenTerm' || github.event_name == 'workflow_dispatch' }}
     name: Publish rolling beta release
     needs: [build, build-flatpak, build-linux-aarch64-glibc228, build-linux-x86_64-glibc228]
     runs-on: ubuntu-latest
@@ -476,19 +484,14 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Delete previous beta release (keep exactly one pre-release)
+      - name: Replace only the rolling beta release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
           # Drop the rolling beta release/tag...
           gh release delete beta --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
-          # ...and any other stray pre-releases, so at most one remains.
-          gh release list --repo "$GITHUB_REPOSITORY" --json tagName,isPrerelease \
-            --jq '.[] | select(.isPrerelease) | .tagName' \
-            | while read -r TAG; do
-                [ "$TAG" = "beta" ] || gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
-              done
+          # Versioned preview releases belong to the user and are never purged.
 
       - name: Create beta pre-release
         env:

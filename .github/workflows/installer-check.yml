@@ -1,0 +1,31 @@
+name: Linux Installer Check
+
+on:
+  push:
+    paths:
+      - assets/install-linux.sh
+      - tests/install_linux_test.py
+      - .github/workflows/installer-check.yml
+  pull_request:
+    paths:
+      - assets/install-linux.sh
+      - tests/install_linux_test.py
+      - .github/workflows/installer-check.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  installer-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install desktop validation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y desktop-file-utils python3-gi gir1.2-glib-2.0
+      - name: Check installer syntax
+        run: bash -n assets/install-linux.sh
+      - name: Run isolated installer regressions
+        run: /usr/bin/python3 tests/install_linux_test.py

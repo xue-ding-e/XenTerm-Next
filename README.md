@@ -208,13 +208,38 @@ tar -xzf xenterm-*-linux-x86_64.tar.gz
 cd xenterm-*-linux-x86_64
 ./xenterm
 
-# Optional: system-wide install of the binary, icon and launcher (needs sudo)
+# Optional: install the binary, icon and launcher under /usr/local
+# sudo is requested only when the destination needs it; root does not need sudo
 chmod +x install-linux.sh && ./install-linux.sh
+
+# Or install for this user under ~/.local, without sudo
+./install-linux.sh --user
+
+# Or choose an installation directory (quote paths containing spaces)
+./install-linux.sh --prefix "$HOME/Apps/XenTerm"
+# Equivalent environment setting; an optional binary path still works
+PREFIX="$HOME/Apps/XenTerm" ./install-linux.sh /path/to/xenterm
 ```
 
-The installer puts the binary in `/usr/local/bin/xenterm`, the launcher in
-`/usr/local/share/applications/xenterm.desktop` and the icon in
-`/usr/local/share/icons/hicolor/512x512/apps/xenterm.png`.
+The default prefix is `/usr/local`. The installer creates `<prefix>/bin/xenterm`,
+`<prefix>/share/applications/xenterm.desktop` and
+`<prefix>/share/icons/hicolor/512x512/apps/xenterm.png`. Prefix precedence is
+`--prefix` > `PREFIX` > the default (`$HOME/.local` with `--user`). `--user` never
+invokes sudo and fails with a clear error if the selected destination is not writable.
+Relative prefixes are resolved to absolute paths. Prefixes containing `=` or control
+characters are rejected because they cannot form a safe desktop launcher path.
+
+The launcher and its **New Window** action use the installed binary's absolute path,
+so they do not depend on `PATH`. For command-line use, add `<prefix>/bin` to `PATH`.
+For a custom prefix outside the desktop's search path, also add `<prefix>/share` to
+`XDG_DATA_DIRS` in your desktop session environment, then log out and back in.
+
+Other user launchers are preserved; the installer warns if one may override the new
+installation. Rerunning the installer updates launchers marked as managed by it, and
+also upgrades the original installer's unchanged launcher (an exact content match).
+If an existing destination launcher is unmarked and differs from that original
+template, installation stops before changing files. Review and move that customized
+launcher before retrying.
 
 > Requires glibc ≥ 2.35 (Ubuntu 22.04+ / Debian 12+). If you need an older baseline, the
 > `-glibc228` tarballs are built against glibc 2.28 (Debian 10).
