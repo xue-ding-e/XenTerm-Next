@@ -898,8 +898,8 @@ impl Render for SettingsView {
             .item(
                 SettingItem::new(crate::i18n::t("颜色", "Colour"), cursor_color).description(
                     crate::i18n::t(
-                        "十六进制颜色,如 #2D2D2F。留空跟随主题。",
-                        "A hex colour such as #2D2D2F. Empty follows the theme.",
+                        "十六进制颜色,如 #2D2D2F。留空为默认的浅白色。",
+                        "A hex colour such as #2D2D2F. Empty means the default light grey.",
                     ),
                 ),
             );
