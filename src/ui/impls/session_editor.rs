@@ -25,7 +25,7 @@ use gpui_kit::{
         h_flex,
         input::{Input, InputState},
         setting::{SettingField, SettingGroup, SettingItem, SettingPage, Settings},
-        v_flex, ActiveTheme, Icon, Sizable as _,
+        v_flex, ActiveTheme, AxisExt as _, Icon, Sizable as _,
     },
     div,
     prelude::*,
@@ -853,16 +853,31 @@ impl Render for SessionEditor {
         // Masked: a password being typed is shoulder-surfable in plain form
         // (audit N-低1). The entity keeps the text; `sync_password` moves it
         // into the draft at save time.
+        // An `element` field is rendered without any of the styling the framework
+        // gives its own fields, so a bare `Input` here collapsed to its intrinsic
+        // width and the row drew a stamp-sized box. Mirror what `gpui-component`'s
+        // `StringField::render` does — same size, same width rule — so this row
+        // lines up with every other one in the form.
         let password = {
             let input = self
                 .password
                 .clone()
                 .expect("seed_password ran above while rendering");
             SettingField::element(
-                move |_: &gpui_kit::component::setting::RenderOptions,
+                move |options: &gpui_kit::component::setting::RenderOptions,
                       _: &mut Window,
                       _: &mut gpui_kit::App| {
-                    Input::new(&input).into_any_element()
+                    Input::new(&input)
+                        .disabled(options.is_disabled())
+                        .with_size(options.size())
+                        .map(|this| {
+                            if options.layout().is_horizontal() {
+                                this.w_64()
+                            } else {
+                                this.w_full()
+                            }
+                        })
+                        .into_any_element()
                 },
             )
         };

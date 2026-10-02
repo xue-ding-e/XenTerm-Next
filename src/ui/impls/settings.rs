@@ -33,7 +33,7 @@ use gpui_kit::{
         setting::{SettingField, SettingGroup, SettingItem, SettingPage, Settings},
         switch::Switch,
         ActiveTheme as _,
-        v_flex, Icon, Sizable as _,
+        v_flex, AxisExt as _, Icon, Sizable as _,
     },
     div,
     prelude::*,
@@ -1464,15 +1464,28 @@ impl Render for SettingsView {
                 self.webdav_password_input = Some(input);
                 self._webdav_password_subscription = Some(subscription);
             }
+            // Same defect as the session editor's password box: an `element`
+            // field gets none of the framework's field styling, so without this
+            // the box is only as wide as the input's own intrinsic width.
             let state = self
                 .webdav_password_input
                 .clone()
                 .expect("created just above when missing");
             SettingField::element(
-                move |_: &gpui_kit::component::setting::RenderOptions,
+                move |options: &gpui_kit::component::setting::RenderOptions,
                       _: &mut Window,
                       _: &mut gpui_kit::App| {
-                    Input::new(&state).into_any_element()
+                    Input::new(&state)
+                        .disabled(options.is_disabled())
+                        .with_size(options.size())
+                        .map(|this| {
+                            if options.layout().is_horizontal() {
+                                this.w_64()
+                            } else {
+                                this.w_full()
+                            }
+                        })
+                        .into_any_element()
                 },
             )
         };
