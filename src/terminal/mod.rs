@@ -53,7 +53,7 @@ pub(crate) use json_output::format_json_output;
 pub(crate) use output_highlight::compile_output_rules;
 pub(crate) use presentation::{highlight_plain_output, render_term_span};
 // The terminal view paints its pane with this; the grid paints its own text over it.
-pub(crate) use presentation::terminal_background;
+pub(crate) use presentation::{terminal_background, terminal_foreground};
 #[cfg(test)]
 pub(crate) use presentation::{log_level_marker, text_cell_width, vt_span_colors};
 

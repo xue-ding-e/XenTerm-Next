@@ -680,6 +680,15 @@ fn vt_fg_rgba(color: vt100::Color, bold: bool, is_dark: bool) -> Rgba {
     Rgba::rgb(r, g, b)
 }
 
+/// The colour a terminal paints its default text in, for the pane that holds
+/// it. The cursor's default rides on this rather than on the application
+/// theme: the terminal is dark in both themes, and a theme-following cursor
+/// (dark in the light theme) is invisible on a dark grid.
+pub(crate) fn terminal_foreground(is_dark: bool) -> Rgba {
+    let (r, g, b) = vt_default_fg_rgb(is_dark);
+    Rgba::rgb(r, g, b)
+}
+
 fn vt_default_fg_rgb(is_dark: bool) -> (u8, u8, u8) {
     if is_dark {
         (0xd4, 0xd4, 0xd4)
