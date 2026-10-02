@@ -1,0 +1,150 @@
+name: 问题反馈 / Bug report
+description: 报告 XenTerm 中可复现的问题，并提供定位问题所需的环境信息
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢你帮助改进 XenTerm！
+
+        提交前请先搜索现有 Issue，避免重复报告。请勿粘贴密码、私钥、访问令牌等敏感信息；日志和截图中的敏感内容也请先打码。
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 问题描述
+      description: 请说明实际发生了什么，以及你原本期望发生什么。
+      placeholder: |
+        实际结果：
+
+        期望结果：
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 请提供能够稳定触发问题的完整步骤。
+      placeholder: |
+        1. 打开……
+        2. 点击……
+        3. 输入……
+        4. 出现……
+    validations:
+      required: true
+
+  - type: dropdown
+    id: frequency
+    attributes:
+      label: 出现频率
+      options:
+        - 每次都能复现
+        - 经常出现
+        - 偶尔出现
+        - 只出现过一次
+    validations:
+      required: true
+
+  - type: input
+    id: xenterm_version
+    attributes:
+      label: XenTerm 版本
+      description: 可查看窗口右下角的版本号，或运行 `xenterm --version`。
+      placeholder: 例如：0.6.7
+    validations:
+      required: true
+
+  - type: dropdown
+    id: operating_system
+    attributes:
+      label: 操作系统
+      options:
+        - Windows
+        - macOS
+        - Linux
+        - 其他
+    validations:
+      required: true
+
+  - type: input
+    id: operating_system_version
+    attributes:
+      label: 操作系统版本
+      placeholder: 例如：Windows 11 24H2、Ubuntu 24.04、macOS 15.5
+    validations:
+      required: true
+
+  - type: dropdown
+    id: installation
+    attributes:
+      label: 安装方式
+      options:
+        - Windows 安装包
+        - Windows 便携版
+        - AUR
+        - Cargo 或源码构建
+        - 其他
+    validations:
+      required: true
+
+  - type: dropdown
+    id: affected_feature
+    attributes:
+      label: 涉及的功能
+      options:
+        - SSH 终端
+        - 本地终端
+        - 串口
+        - Telnet
+        - SFTP
+        - 快捷命令
+        - 设置或界面
+        - 启动或渲染
+        - 其他
+    validations:
+      required: true
+
+  - type: dropdown
+    id: renderer
+    attributes:
+      label: 渲染方式
+      description: 如果不清楚，请选择“不确定”。
+      options:
+        - 自动或默认
+        - GPU
+        - 软件渲染
+        - 不确定
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志
+      description: 请粘贴相关日志，或将日志文件拖到这里。提交前请移除密码、私钥、令牌、内网地址等敏感信息。
+      placeholder: 如果没有可用日志，请填写“无”。
+    validations:
+      required: true
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: 截图或录屏
+      description: 如有界面异常，可将截图或录屏拖到这里。
+
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: 其他补充
+      description: 可填写最近发生的配置变化、是否可以稳定复现，以及任何可能有帮助的信息。
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已搜索现有 Issue，确认没有相同或高度相似的问题。
+          required: true
+        - label: 我已移除日志和截图中的密码、私钥、令牌等敏感信息。
+          required: true

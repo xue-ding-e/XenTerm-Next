@@ -1,0 +1,22 @@
+[Desktop Entry]
+Type=Application
+Name=xenterm
+GenericName=SSH Client
+Comment=Lightweight Rust + GPUI SSH/SFTP client
+Comment[zh_CN]=轻量级 Rust + GPUI SSH/SFTP 客户端
+Exec=xenterm
+Icon=xenterm
+Terminal=false
+# Network is the single freedesktop main category; the remaining category is
+# an additional hint. Multiple main categories can make GNOME app-grid
+# indexing inconsistent on Ubuntu 26.04.
+Categories=Network;TerminalEmulator;
+Keywords=ssh;sftp;terminal;shell;
+StartupNotify=true
+StartupWMClass=xenterm
+Actions=new-window;
+
+[Desktop Action new-window]
+Name=New Window
+Name[zh_CN]=新建窗口
+Exec=xenterm --new-window

@@ -1,0 +1,1083 @@
+//! The session list: what you can connect to, grouped and searchable.
+//!
+//! The first view migrated to GPUI Kit, and first because it is the most used and
+//! because it exercises the shell's layering hardest: a list beside a terminal is
+//! where a shell built for one pane has to become a shell built for several.
+//!
+//! The projection is not reimplemented. `crate::core::SessionRow` is built by
+//! `crate::app::session_models`, which owns the grouping, the search matching and the
+//! group-header bookkeeping and names no toolkit type — so this view renders the same
+//! rows that projection defines, in the same order, because it is the same function.
+//!
+//! What it does not have is drag-to-reorder, which in the original was some four
+//! hundred lines of pointer-grab bookkeeping. Moving a session between groups is a
+//! menu action here, and dragging can be added later if anyone misses it. Carrying that
+//! machinery over would also mean building it against a toolkit that offers list
+//! virtualisation instead and has no drag model at all.
+
+use std::rc::Rc;
+
+use gpui_kit::{
+    component::{
+        button::{Button, ButtonVariants, DropdownButton},
+        h_flex,
+        list::{List, ListDelegate, ListItem, ListState},
+        menu::{ContextMenuExt, PopupMenuItem},
+        ActiveTheme as _, Icon, IndexPath,
+    },
+    div,
+    prelude::*,
+    AnyElement, App, Context, Entity, FontWeight, IntoElement, Render, SharedString, Window,
+};
+
+use gpui_kit::assets::IconName;
+
+use crate::config::ConfigStore;
+use crate::core::SessionRow;
+
+/// The second line of a row: what it connects to.
+///
+/// A serial session has a device and a framing where a host has an address, which is
+/// why the projection carries both spellings rather than making the view decide.
+fn row_detail(row: &SessionRow) -> SharedString {
+    if !row.serial_detail.is_empty() {
+        return row.serial_detail.clone().into();
+    }
+    if row.user.is_empty() {
+        return row.host.clone().into();
+    }
+    format!("{}@{}:{}", row.user, row.host, row.port).into()
+}
+
+/// Whether this row is a session rather than a group heading.
+///
+/// Both are rows in the projection and only one is connectable. Empty ids mark the
+/// headings — the convention `crate::app::session_models` documents — so this test
+/// lives in one place instead of being respelled at each action.
+fn is_connectable(row: &SessionRow) -> bool {
+    !row.id.is_empty()
+}
+
+/// An icon for the row, by what it connects to.
+///
+/// From the full Lucide catalog rather than the component crate's compatibility
+/// subset, so the icon can be the one that means this thing: a terminal for a
+/// built-in local shell, a plug for a serial device, a server for a saved host.
+fn session_icon(row: &SessionRow) -> IconName {
+    if row.builtin {
+        IconName::SquareTerminal
+    } else if !row.serial_detail.is_empty() {
+        IconName::Plug
+    } else {
+        IconName::Server
+    }
+}
+
+/// The list's rows and its selection.
+///
+/// Owns the store rather than a snapshot because the list's own search box filters
+/// through `perform_search`, and re-running the projection is the only way to filter
+/// that cannot disagree with the unfiltered list: the matching rules live in the
+/// projection (`session_matches_normalized_query`), and a second filter here would be
+/// a second set of them.
+pub(crate) struct SessionListDelegate {
+    store: Rc<std::cell::RefCell<ConfigStore>>,
+    rows: Vec<SessionRow>,
+    /// What a row's context menu asked for, waiting for the shell.
+    ///
+    /// A cell rather than a channel because the menu handler is synchronous and runs on
+    /// this thread; a channel would be a queue with one producer and one consumer that
+    /// are never concurrent.
+    pending: Rc<std::cell::RefCell<Option<SessionListAction>>>,
+    /// The session the terminal is showing, so the list marks it.
+    active: Option<String>,
+    /// The last search the list asked for.
+    ///
+    /// Kept because a group toggle has to rebuild the rows and the rebuild must honour
+    /// the same filter: rebuilding with an empty query while a search is active would
+    /// quietly show rows the user had filtered away. The list has no public getter for
+    /// its own query, so the value is captured where it is handed over.
+    query: String,
+    /// Palette shape: one-line rows and divider-word headings. The delegate
+    /// draws the rows, so the flag lives here rather than on the view.
+    compact: bool,
+    /// Group boundaries within `rows`: one span per display group. The
+    /// toolkit's list lays every entry out at one measured height, so rows of
+    /// *different* heights — a group heading riding on its first session, as
+    /// the old render did — leave a mystery gap in every shorter slot. With
+    /// one group per section the heading lives in the toolkit's own header
+    /// slot and every session row is the same height.
+    sections: Vec<SectionSpan>,
+    /// The list entity holding this delegate, set right after construction.
+    /// Section headers' click handlers receive only an `App`, so folding or
+    /// opening a group goes through this handle to rebuild the rows.
+    list: Option<gpui_kit::WeakEntity<ListState<Self>>>,
+    /// How many times each group has turned, which is what makes its chevron
+    /// swing rather than swap. Shared with the click handlers, which receive
+    /// an `App` and so cannot reach `&mut self`.
+    chevron_turn: super::chevron::TurnCounter,
+}
+
+/// One display group's slice of the flat `rows` vector.
+struct SectionSpan {
+    group: String,
+    start: usize,
+    len: usize,
+    collapsed: bool,
+}
+
+impl SessionListDelegate {
+    fn new(
+        store: Rc<std::cell::RefCell<ConfigStore>>,
+        active: Option<String>,
+        compact: bool,
+    ) -> Self {
+        let rows = rows_for(&store, "");
+        let mut delegate = Self {
+            store,
+            rows,
+            active,
+            query: String::new(),
+            pending: Rc::new(std::cell::RefCell::new(None)),
+            compact,
+            sections: Vec::new(),
+            list: None,
+            chevron_turn: super::chevron::new_turn_counter(),
+        };
+        delegate.rebuild_sections();
+        delegate
+    }
+
+    /// Recompute the group spans from the flat rows: a new span starts where
+    /// a row's group differs from the previous row's. The projection orders
+    /// rows grouped, so transitions are the whole of the structure.
+    fn rebuild_sections(&mut self) {
+        let mut sections: Vec<SectionSpan> = Vec::new();
+        for (index, row) in self.rows.iter().enumerate() {
+            match sections.last_mut() {
+                Some(span) if span.group == row.group => span.len += 1,
+                _ => sections.push(SectionSpan {
+                    group: row.group.clone(),
+                    start: index,
+                    len: 1,
+                    collapsed: row.collapsed,
+                }),
+            }
+        }
+        self.sections = sections;
+    }
+
+    /// Re-read the rows and the group spans after the store changed.
+    fn rebuild_after_store_change(&mut self) {
+        self.rows = rows_for(&self.store, &self.query);
+        self.rebuild_sections();
+    }
+
+    /// Remember the list entity, so section-header clicks can rebuild the
+    /// rows through it.
+    fn set_list(&mut self, list: gpui_kit::WeakEntity<ListState<Self>>) {
+        self.list = Some(list);
+    }
+
+    /// Fold or open a group. Runs in a section header's click handler, which
+    /// only receives an `App`; the rebuild goes through the remembered list
+    /// entity.
+    fn toggle_group(&self, group: &str, cx: &mut App) {
+        {
+            let mut store = self.store.borrow_mut();
+            let collapsed = store
+                .collapsed_session_groups()
+                .map(|groups| groups.iter().any(|g| g == group))
+                .unwrap_or(false);
+            store.set_session_group_collapsed(group, !collapsed);
+        }
+        if let Some(list) = self.list.as_ref().and_then(|list| list.upgrade()) {
+            list.update(cx, |state, cx| {
+                state.delegate_mut().rebuild_after_store_change();
+                cx.notify();
+            });
+        }
+    }
+
+    /// The row at `ix`: `row` is relative to the section.
+    fn row_at(&self, ix: IndexPath) -> Option<&SessionRow> {
+        let span = self.sections.get(ix.section)?;
+        self.rows.get(span.start + ix.row)
+    }
+
+    /// How many rows are showing, for the header.
+    pub(crate) fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// The row at `ix` if it is a session rather than a heading.
+    ///
+    /// The one place the "row or heading" test is applied on the way out, so a heading
+    /// can never be connected to even if a caller forgets to check.
+    pub(crate) fn connectable_at(&self, ix: IndexPath) -> Option<String> {
+        let row = self.row_at(ix)?;
+        is_connectable(row).then(|| row.id.clone())
+    }
+}
+
+impl ListDelegate for SessionListDelegate {
+    type Item = ListItem;
+
+    fn sections_count(&self, _cx: &App) -> usize {
+        self.sections.len()
+    }
+
+    fn items_count(&self, section: usize, _cx: &App) -> usize {
+        let Some(span) = self.sections.get(section) else {
+            return 0;
+        };
+        // A folded group renders one "expand" row instead of its sessions —
+        // the count has to say so, or the toolkit skips the section entirely
+        // (sections with zero items are not rendered, and the heading with
+        // them, leaving no way back).
+        if span.collapsed && self.query.is_empty() {
+            1
+        } else {
+            span.len
+        }
+    }
+
+    /// Nothing to do on selection: a click on a session is a Confirm (the
+    /// toolkit emits it straight away), and a group heading is folded or
+    /// opened in its own slot, where the click handler lives.
+    fn set_selected_index(
+        &mut self,
+        _ix: Option<IndexPath>,
+        _window: &mut Window,
+        _cx: &mut Context<ListState<Self>>,
+    ) {
+    }
+
+    /// Filtering, done by rebuilding the projection with the query.
+    ///
+    /// The list calls this as its search box changes. Rebuilding rather than filtering
+    /// the existing rows keeps one implementation of what a match is — the collapse
+    /// rules, the expanded-groups-while-searching rule and the empty-folder
+    /// placeholders all change with the query, which is exactly what
+    /// `build_session_rows` already handles.
+    fn perform_search(
+        &mut self,
+        query: &str,
+        _window: &mut Window,
+        _cx: &mut Context<ListState<Self>>,
+    ) -> gpui_kit::Task<()> {
+        self.query = query.to_string();
+        self.rows = rows_for(&self.store, query);
+        self.rebuild_sections();
+        gpui_kit::Task::ready(())
+    }
+
+    fn render_item(
+        &mut self,
+        ix: IndexPath,
+        _window: &mut Window,
+        cx: &mut Context<ListState<Self>>,
+    ) -> Option<Self::Item> {
+        // `row` is relative to the section; map it onto the flat vector. The
+        // group heading is NOT part of the row any more — it lives in the
+        // section-header slot above, where the toolkit gives it its own
+        // height, so every row here is one uniform height and the list has no
+        // mystery gaps.
+        let row = self.row_at(ix)?.clone();
+
+        // A folded group: one row that IS the collapsed heading — chevron
+        // right, folder, name, and how many sessions are folded away.
+        // Clicking it expands; the section header stays empty so the heading
+        // is not drawn twice. No hint text: a folded folder in a tree needs
+        // no caption.
+        let span = self.sections.get(ix.section)?;
+        if span.collapsed && self.query.is_empty() {
+            let group = span.group.clone();
+            let group_for_label = group.clone();
+            let count = span.len;
+            let store = self.store.clone();
+            let list = self.list.clone();
+            let muted = cx.theme().muted_foreground;
+            let sessions_word = if count == 1 {
+                crate::i18n::t("1 个会话", "1 session").to_string()
+            } else {
+                match crate::i18n::t("个会话", "sessions") {
+                    "个会话" => format!("{count} 个会话"),
+                    other => format!("{count} {other}"),
+                }
+            };
+            return Some(
+                ListItem::new(SharedString::from(format!("group-folded-{group}")))
+                    .disabled(true)
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("group-expand-{group}")))
+                            .w_full()
+                            .h_full()
+                            .cursor_pointer()
+                            .on_click(move |_, _, cx| {
+                                // The list wrapper treats every click as
+                                // Confirm (connect); without cutting the
+                                // event here, expanding a folded group also
+                                // connected its first session.
+                                cx.stop_propagation();
+                                {
+                                    let mut store = store.borrow_mut();
+                                    store.set_session_group_collapsed(&group, false);
+                                }
+                                if let Some(list) = list.as_ref().and_then(|l| l.upgrade()) {
+                                    list.update(cx, |state, cx| {
+                                        state.delegate_mut().rebuild_after_store_change();
+                                        cx.notify();
+                                    });
+                                }
+                            })
+                            .child(if self.compact {
+                                h_flex()
+                                    .w_full()
+                                    .gap_1()
+                                    .items_center()
+                                    .child(
+                                        Icon::new(IconName::ChevronRight)
+                                            .size_3()
+                                            .text_color(muted),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_color(muted)
+                                            .child(SharedString::from(group_for_label)),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(muted)
+                                            .child(SharedString::from(sessions_word)),
+                                    )
+                            } else {
+                                // Two lines, the same shape as a session row:
+                                // the toolkit gives every entry the height it
+                                // measured from the first row, so a one-line
+                                // heading here would leave a large blank under
+                                // itself. Matching the session-row shape keeps
+                                // folded groups at the same slot height.
+                                h_flex()
+                                    .w_full()
+                                    .gap_2()
+                                    .child(
+                                        Icon::new(IconName::ChevronRight)
+                                            .size_4()
+                                            .text_color(muted),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .gap_0p5()
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .font_weight(FontWeight::MEDIUM)
+                                                    .child(SharedString::from(
+                                                        group_for_label,
+                                                    )),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(muted)
+                                                    .child(SharedString::from(sessions_word)),
+                                            ),
+                                    )
+                            }),
+                    ),
+            );
+        }
+
+        // The section header above already draws the group's name. The first
+        // row also carries `group_header` from the projection, but that is
+        // bookkeeping, not a second title — nothing to draw here for it.
+        //
+        // An empty group's single placeholder row: the section header above
+        // says the group's name, this says it is empty, in the same one-row
+        // height as a session so the slots stay uniform.
+        if !is_connectable(&row) {
+            return Some(
+                ListItem::new(SharedString::from(format!("group-empty-{}", row.group)))
+                    .disabled(true)
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(crate::i18n::t("（空分组）", "(empty group)")),
+                    ),
+            );
+        }
+
+        let is_active = self.active.as_deref() == Some(row.id.as_str());
+        // Palette rows are one line: name, then the detail muted beside it. A
+        // palette is scanned vertically for one match; two stacked lines per
+        // row halve how many fit in the same height for information that only
+        // matters once the match is found.
+        let body = if self.compact {
+            h_flex()
+                .gap_2()
+                .items_center()
+                .child(Icon::new(session_icon(&row)).size_4())
+                .child(
+                    div()
+                        .flex()
+                        .min_w_0()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(SharedString::from(row.name.clone())),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(row_detail(&row)),
+                        ),
+                )
+        } else {
+            h_flex()
+                .gap_2()
+                .child(Icon::new(session_icon(&row)).size_4())
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_0p5()
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(SharedString::from(row.name.clone())),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(row_detail(&row)),
+                        ),
+                )
+        };
+
+        // The heading rides with the row it introduces rather than becoming its own
+        // list item, because the projection already marks which row starts a group: a
+        // separate item would need the list's index space to agree with the
+        // projection's, and two index spaces over one list eventually disagree.
+        let id = row.id.clone();
+        let menu_id = row.id.clone();
+        // The menu's handlers only receive an `App`, which cannot reach this view's
+        // context. So a row records what was asked for and the shell drains it at the
+        // top of the next frame — the same shape the SFTP panel uses for its actions,
+        // rather than a weak-entity hop that would need the handler to hold one.
+        //
+        // The clones happen inside the outer closure rather than outside it: that
+        // closure is a `Fn` and runs for every menu build, while the handlers it hands
+        // out are `move` closures that must own what they capture.
+        let pending = self.pending.clone();
+        let row_id = row.id.clone();
+        // Where this session could go: the groups in the store that are not the one it is
+        // already in, and the ungrouped entry when it is in a group at all. Computed here
+        // rather than in the menu closure because the closure runs while the menu is being
+        // built, which is no place to borrow the store.
+        let move_targets: Vec<String> = {
+            let store = self.store.borrow();
+            // The session's *stored* group, not the heading it is shown under: "default"
+            // is the display name for the ungrouped rows, so a menu built from the
+            // heading would offer an ungrouped session a move into the group it is
+            // already not in.
+            let current = store
+                .get(&row.id)
+                .map(|session| session.group.trim().to_string())
+                .unwrap_or_default();
+            let mut targets = Vec::new();
+            if !current.is_empty() {
+                targets.push(String::new());
+            }
+            for group in store.groups() {
+                // Reserved names are not destinations: `system` belongs to the built-in
+                // local shells and `default` is the ungrouped heading, so offering either
+                // would be a menu entry that refuses to work.
+                if !group.trim().is_empty()
+                    && group.trim() != current
+                    && !crate::config::is_reserved_session_group(group.trim())
+                {
+                    targets.push(group.clone());
+                }
+            }
+            targets
+        };
+        // The menu hangs off the row's own content, not a wrapper: `context_menu`
+        // makes its element relative and gives it an absolutely-positioned
+        // child, so attaching it to an empty div would be a menu on a
+        // zero-sized target that can never be right-clicked. It is also where
+        // the original keeps these actions — a row is a thing you click to
+        // open, and permanent buttons would make every row a toolbar.
+        //
+        // Built-in local shells are part of the interface, not the user's
+        // data: edit, duplicate, delete and move would all either refuse or
+        // corrupt them, so their rows carry no menu at all.
+        let row_content = div()
+            .id(SharedString::from(format!("row-menu-{menu_id}")))
+            // The id names the element for the hit test and the debug selector
+            // makes it findable by a test. Two different things, and the file
+            // panel has now taught me that six times.
+            .debug_selector({
+                let selector = format!("row-menu-{menu_id}");
+                move || selector.clone()
+            });
+        let row_content: AnyElement = if row.builtin {
+            row_content.into_any_element()
+        } else {
+            row_content.context_menu(move |menu, _, _| {
+                            let for_edit = pending.clone();
+                            let for_duplicate = pending.clone();
+                            let for_delete = pending.clone();
+                            let edit_id = row_id.clone();
+                            let duplicate_id = row_id.clone();
+                            let delete_id = row_id.clone();
+                            let move_targets = move_targets.clone();
+                            let mut menu = menu
+                                .item(PopupMenuItem::new(crate::i18n::t("编辑", "Edit")).on_click(
+                                    move |_, _, _| {
+                                        *for_edit.borrow_mut() =
+                                            Some(SessionListAction::Edit(edit_id.clone()));
+                                    },
+                                ))
+                                .item(
+                                    PopupMenuItem::new(crate::i18n::t("复制", "Duplicate"))
+                                        .on_click(move |_, _, _| {
+                                            *for_duplicate.borrow_mut() = Some(
+                                                SessionListAction::Duplicate(duplicate_id.clone()),
+                                            );
+                                        }),
+                                )
+                                .separator();
+                            // The groups this session could move to: every group the
+                            // store knows except the one it is already in, plus the
+                            // ungrouped entry — and that one only for a session that is in
+                            // a group, because moving out of nothing is not an action.
+                            for choice in move_targets {
+                                let target = choice.clone();
+                                let id = row_id.clone();
+                                let pending = pending.clone();
+                                let label = if choice.is_empty() {
+                                    crate::i18n::t("默认分组", "Default").to_string()
+                                } else {
+                                    choice
+                                };
+                                menu = menu.item(
+                                    PopupMenuItem::new(SharedString::from(label)).on_click(
+                                        move |_, _, _| {
+                                            *pending.borrow_mut() = Some(SessionListAction::Move {
+                                                id: id.clone(),
+                                                group: target.clone(),
+                                            });
+                                        },
+                                    ),
+                                );
+                            }
+                            menu.separator().item(
+                                PopupMenuItem::new(crate::i18n::t("删除", "Delete")).on_click(
+                                    move |_, _, _| {
+                                        *for_delete.borrow_mut() =
+                                            Some(SessionListAction::Delete(delete_id.clone()));
+                                    },
+                                ),
+                            )
+                        })
+                        .into_any_element()
+        };
+        Some(
+            ListItem::new(SharedString::from(format!("session-{id}")))
+                .selected(is_active)
+                .child(div().flex().flex_col().child(row_content).child(body)),
+        )
+    }
+
+
+    /// The group heading, in the toolkit's own slot: clickable to fold or
+    /// open the group, one height per shape (compact divider word, full
+    /// chevron+folder row) so the slots above and below stay uniform.
+    fn render_section_header(
+        &mut self,
+        section: usize,
+        _window: &mut Window,
+        cx: &mut Context<ListState<Self>>,
+    ) -> Option<impl IntoElement> {
+        let span = self.sections.get(section)?;
+        let group = span.group.clone();
+        let collapsed = span.collapsed;
+        let muted = cx.theme().muted_foreground;
+        let store = self.store.clone();
+        let list = self.list.clone();
+        let searching = !self.query.is_empty();
+
+        // A folded section's heading is drawn by its single item row (the
+        // collapsed-folder row), so the header stays out of the way here.
+        if collapsed && !searching {
+            return None::<AnyElement>;
+        }
+
+        // `system` is an interface: the built-in local shells live there and
+        // the rail's terminal entry assumes they are visible. `default` is
+        // just the ungrouped rows — a user with many of those folds it like
+        // any other folder.
+        let reserved = group == "system";
+
+        let group_for_toggle = group.clone();
+        let chevron_turn = self.chevron_turn.clone();
+        let toggle = move |_: &_, _: &mut Window, cx: &mut App| {
+            if reserved || searching {
+                return;
+            }
+            let group = group_for_toggle.clone();
+            {
+                let mut store = store.borrow_mut();
+                let was = store
+                    .collapsed_session_groups()
+                    .map(|groups| groups.iter().any(|g| g == group.as_str()))
+                    .unwrap_or(false);
+                store.set_session_group_collapsed(&group, !was);
+            }
+            // Before the repaint the rebuild schedules: this is what tells the
+            // header's chevron that the coming frame is a turn, not a re-render.
+            super::chevron::bump_turn(&chevron_turn, &group);
+            if let Some(list) = list.as_ref().and_then(|list| list.upgrade()) {
+                list.update(cx, |state, cx| {
+                    state.delegate_mut().rebuild_after_store_change();
+                    cx.notify();
+                });
+            }
+        };
+
+        // The header is the toggle, and it is drawn like one: full slot
+        // height, generous padding, and a hover background across the whole
+        // row — so the click target matches what the eye reads as "the group
+        // header", and a click aimed at it never lands on the session row
+        // below (which connects).
+        if self.compact {
+            return Some(
+                div()
+                    .id(SharedString::from(format!("group-hdr-{group}")))
+                    .w_full()
+                    .pt_1p5()
+                    .pb_0p5()
+                    .px_1()
+                    .text_xs()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(muted)
+                    .when(!reserved && !searching, |this| {
+                        this.cursor_pointer()
+                            .hover(|this| this.text_color(cx.theme().foreground))
+                            .on_click(toggle)
+                    })
+                    .child(SharedString::from(group.clone()))
+                    .into_any_element(),
+            );
+        }
+
+        Some(
+            h_flex()
+                .id(SharedString::from(format!("group-hdr-{group}")))
+                .w_full()
+                .h_full()
+                .px_1()
+                .gap_1()
+                .items_center()
+                .rounded_sm()
+                .when(!reserved && !searching, |this| {
+                    this.cursor_pointer()
+                        .hover(|this| {
+                            this.bg(cx.theme().muted)
+                                .text_color(cx.theme().foreground)
+                        })
+                        .on_click(toggle)
+                })
+                .child(
+                    // The expand/collapse chevron, which the original shows for every
+                    // group — empty folders included, so they line up and can still be
+                    // toggled. One icon, rotated: the swing runs when this header's
+                    // group just turned, and the resting angle otherwise.
+                    super::chevron::folding_chevron(
+                        &group,
+                        collapsed,
+                        self.chevron_turn
+                            .try_borrow()
+                            .ok()
+                            .and_then(|map| map.get(&group).copied()),
+                        muted,
+                    ),
+                )
+                .child(Icon::new(IconName::Folder).size_3().text_color(muted))
+                .child(
+                    div()
+                        .text_xs()
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(muted)
+                        .child(SharedString::from(group)),
+                )
+                .into_any_element(),
+        )
+    }
+}
+
+/// Build the rows for `query` from the store.
+pub(crate) fn rows_for(
+    store: &Rc<std::cell::RefCell<ConfigStore>>,
+    query: &str,
+) -> Vec<SessionRow> {
+    let store = store.borrow();
+    let builtin = crate::app::session_models::builtin_local_sessions(store.wsl_profiles());
+    crate::app::session_models::session_rows(
+        store.sessions(),
+        store.groups(),
+        store.collapsed_session_groups(),
+        &builtin,
+        query,
+    )
+}
+
+/// The session list, as the shell holds it.
+pub(crate) struct SessionListView {
+    /// The list widget's own state: the delegate, the scroll position and the search
+    /// box. Everything about the list that persists between frames lives here.
+    list: Entity<ListState<SessionListDelegate>>,
+}
+
+impl SessionListView {
+    pub(crate) fn new(
+        store: Rc<std::cell::RefCell<ConfigStore>>,
+        active: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::new_inner(store, active, false, window, cx)
+    }
+
+    /// The palette's shape: rows only, no header. The shell draws its own
+    /// hint bar under the list.
+    pub(crate) fn new_compact(
+        store: Rc<std::cell::RefCell<ConfigStore>>,
+        active: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::new_inner(store, active, true, window, cx)
+    }
+
+    fn new_inner(
+        store: Rc<std::cell::RefCell<ConfigStore>>,
+        active: Option<String>,
+        compact: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let delegate = SessionListDelegate::new(store.clone(), active, compact);
+        // `searchable` gives the list its own search box: type to filter, Escape to
+        // clear.
+        let list = cx.new(|cx| ListState::new(delegate, window, cx).searchable(true));
+        // The delegate learns the entity it lives in, so a section header's
+        // click (which only receives an `App`) can rebuild the rows through it.
+        list.update(cx, |state, cx| {
+            state.delegate_mut().set_list(cx.entity().downgrade());
+        });
+        Self { list }
+    }
+
+    /// How many rows are showing, so the header can say whether a search is filtering.
+    fn len(&self, cx: &App) -> usize {
+        self.list.read(cx).delegate().len()
+    }
+
+    /// Rebuild the rows from the store.
+    ///
+    /// Used after anything outside the list changes what should be shown — a session
+    /// saved in the editor, a group collapsed by a menu — because the projection is the
+    /// only thing that knows which rows exist and in what order. Filtering is preserved,
+    /// since a rebuild that ignored the active search would quietly reveal rows the user
+    /// had filtered away.
+    pub(crate) fn reload(&mut self, cx: &mut Context<Self>) {
+        self.list.update(cx, |state, cx| {
+            let delegate = state.delegate_mut();
+            let query = delegate.query.clone();
+            delegate.rows = rows_for(&delegate.store, &query);
+            cx.notify();
+        });
+    }
+
+    /// Set when a session is opened. The row keeps its highlight after the session ends,
+    /// because the reconnect path wants to know which one died.
+    pub(crate) fn set_active(&mut self, active: Option<String>, cx: &mut Context<Self>) {
+        self.list.update(cx, |state, cx| {
+            state.delegate_mut().active = active;
+            cx.notify();
+        });
+    }
+
+    /// The list's own state, so the shell can subscribe to its `ListEvent`s.
+    ///
+    /// A click reaches the shell as an event rather than a callback because the delegate
+    /// cannot hold a reference to the shell that owns it — that would be a cycle. The
+    /// shell subscribes and resolves the index here.
+    pub(crate) fn list(&self) -> &Entity<ListState<SessionListDelegate>> {
+        &self.list
+    }
+
+    /// Put the caret in the search box, so a list that just opened — the
+    /// quick-connect palette — can be typed into at once: the whole point of
+    /// the palette is Ctrl+K, a few letters, Enter.
+    pub(crate) fn focus_search(&self, window: &mut Window, cx: &mut App) {
+        self.list.update(cx, |state, cx| state.focus(window, cx));
+    }
+
+    /// Which session `ix` names, if it names one rather than a group heading.
+    pub(crate) fn session_at(&self, ix: IndexPath, cx: &App) -> Option<String> {
+        self.list.read(cx).delegate().connectable_at(ix)
+    }
+
+    /// Ask for a new session.
+    ///
+    /// An event rather than a callback because the view cannot reach the shell that
+    /// owns it — that would be a reference cycle. The shell subscribes, the same way it
+    /// already does for a row click, and owns the dialog this opens.
+    fn request_new_session(&mut self, cx: &mut Context<Self>) {
+        cx.emit(SessionListEvent::NewSession);
+    }
+
+    /// Take whatever a row's context menu asked for.
+    pub(crate) fn take_action(&mut self, cx: &App) -> Option<SessionListAction> {
+        self.list.read(cx).delegate().pending.borrow_mut().take()
+    }
+}
+
+/// What the list asks the shell to do through its event channel.
+///
+/// Only the header button uses this; a row's context menu records into
+/// [`SessionListAction`] instead, because its handler has no view context to emit from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SessionListEvent {
+    /// The user pressed the new-session button.
+    NewSession,
+}
+
+impl gpui_kit::EventEmitter<SessionListEvent> for SessionListView {}
+
+/// What a row's context menu asked for.
+///
+/// Recorded rather than emitted because the menu handler only receives an `App`: it
+/// cannot reach this view's context to emit, and the shell that must act is not
+/// reachable from there either. The shell drains this at the top of the frame, which is
+/// the same arrangement the SFTP panel uses for its buttons.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SessionListAction {
+    Edit(String),
+    Duplicate(String),
+    Delete(String),
+    /// Move a session into a group, or out of every group when `group` is empty.
+    Move {
+        id: String,
+        group: String,
+    },
+    /// Open the group manager, where the folders are made, renamed and deleted.
+    ManageGroups,
+}
+
+impl Render for SessionListView {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let shown = self.len(cx);
+        let muted = theme.muted_foreground;
+        let sidebar = theme.sidebar;
+        // The header's menu records where a row's menu records, so the shell has one
+        // place to look for "the list asked for something".
+        let pending_for_menu = self.list.read(cx).delegate().pending.clone();
+
+        // Palette mode: the search box first, the rows second, nothing else —
+        // no count, no menu, no new button. The shell's hint bar under the
+        // list carries what those said, and a right-click on a row still
+        // opens the row's menu, so editing stays one gesture away.
+        if self
+            .list
+            .read(cx)
+            .delegate()
+            .compact
+        {
+            return div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .bg(theme.background)
+                .child(
+                    div().flex_1().overflow_hidden().child(
+                        List::new(&self.list).search_placeholder(crate::i18n::t(
+                            "输入以过滤会话…",
+                            "Type to filter sessions…",
+                        )),
+                    ),
+                );
+        }
+
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(sidebar)
+            .child(
+                // The header the original has: what the panel is, and the one action
+                // that adds to it. The count beside the title is not decoration — a
+                // bare label is read once and never again, while a number answers
+                // whether a search is currently hiding anything.
+                h_flex()
+                    .w_full()
+                    .flex_shrink_0()
+                    .justify_between()
+                    .px_3()
+                    .py_2()
+                    .child(
+                        // No title: the column's tab above says which panel this is, and a
+                        // header repeating it spends a line saying nothing new. What is
+                        // worth the line is how many are shown, and the three things you
+                        // can do to them.
+                        h_flex()
+                            .gap_2()
+                            .child(Icon::new(IconName::Search).size_4().text_color(muted))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(muted)
+                                    .child(SharedString::from(shown.to_string())),
+                            ),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .child(
+                                // One menu instead of three buttons. Managing folders,
+                                // importing a config and exporting the list are things a
+                                // user does occasionally; a header strip that shows every
+                                // one of them permanently spends its width on the tools
+                                // rather than on what they act on — and the original
+                                // keeps its occasional actions behind menus for exactly
+                                // that reason.
+                                DropdownButton::new("list-more")
+                                    .button(
+                                        Button::new("list-more-trigger")
+                                            .icon(IconName::Ellipsis)
+                                            .ghost()
+                                            .tooltip(crate::i18n::t("更多", "More"))
+                                            .accessibility_label(crate::i18n::t("更多", "More")),
+                                    )
+                                    .dropdown_menu(move |menu, _, _| {
+                                        let groups = pending_for_menu.clone();
+                                        menu.item(
+                                            PopupMenuItem::new(crate::i18n::t(
+                                                "管理分组",
+                                                "Manage groups",
+                                            ))
+                                            .on_click(move |_, _, _| {
+                                                *groups.borrow_mut() =
+                                                    Some(SessionListAction::ManageGroups);
+                                            }),
+                                        )
+                                    }),
+                            )
+                            .child(
+                                Button::new("new-session")
+                                    .icon(IconName::Plus)
+                                    .ghost()
+                                    .tooltip(crate::i18n::t("新建会话", "New session"))
+                                    .accessibility_label(crate::i18n::t("新建会话", "New session"))
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.request_new_session(cx)),
+                                    ),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .overflow_hidden()
+                    // The list's own search field comes with the toolkit's English
+                    // placeholder, which was the one string in this window not ours. It is
+                    // set here, the way every other input in this shell sets its own.
+                    .child(
+                        List::new(&self.list)
+                            .search_placeholder(crate::i18n::t("搜索…", "Search…")),
+                    ),
+            )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui_kit::gpui::TestAppContext;
+
+    /// The list draws a row for every session the store holds.
+    ///
+    /// The projection from the store to the rows is `core`'s and is tested there; what this
+    /// covers is the next step, which nothing covered before: that the view actually renders
+    /// what the projection produced, and that each row's target is in the tree under the id
+    /// the shell's click and context menu hang off.
+    ///
+    /// The store is loaded and never written, so the machine's configuration is untouched.
+    #[gpui_kit::gpui::test]
+    fn every_saved_session_gets_a_row(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let store = Rc::new(std::cell::RefCell::new(
+            crate::config::ConfigStore::load().expect("the configuration this machine has"),
+        ));
+        // Folded groups draw a one-line hint instead of their sessions, so
+        // the test expands everything first: what it asserts is that session
+        // rows are drawn, not which fold state the machine happens to have
+        // saved.
+        {
+            let mut owned = store.borrow_mut();
+            let mut groups = owned.groups().to_vec();
+            // The ungrouped section is a real, foldable heading even though
+            // "default" is not an entry of `groups()`.
+            groups.push("default".to_string());
+            for group in groups {
+                owned.set_session_group_collapsed(&group, false);
+            }
+        }
+        let expected: Vec<String> = rows_for(&store, "")
+            .iter()
+            .filter(|row| !row.id.is_empty())
+            .map(|row| row.id.clone())
+            .collect();
+        assert!(
+            !expected.is_empty(),
+            "this machine's configuration has sessions to draw"
+        );
+
+        let (view, cx) = cx.add_window_view({
+            let store = store.clone();
+            move |window, cx| SessionListView::new(store, None, window, cx)
+        });
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+
+        let mut missing = Vec::new();
+        for id in &expected {
+            let selector = Box::leak(format!("row-menu-{id}").into_boxed_str());
+            if cx.debug_bounds(selector).is_none() {
+                missing.push(id.clone());
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "rows the store has and the list did not draw: {missing:?}"
+        );
+        let _ = view;
+    }
+}

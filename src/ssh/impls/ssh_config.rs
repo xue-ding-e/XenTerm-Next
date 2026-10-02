@@ -1,0 +1,303 @@
+//! Minimal `~/.ssh/config` parser used to import hosts as xenterm sessions.
+//!
+//! We only read the handful of fields a session needs — `HostName`, `User`,
+//! `Port`, `IdentityFile` — grouped under each concrete `Host` alias.  Wildcard
+//! patterns (`Host *`) and unsupported directives are ignored; this is a
+//! convenience importer, not a full ssh_config implementation.
+
+use super::structs::ImportedHost;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+
+const MAX_INCLUDE_DEPTH: usize = 16;
+
+/// Parse the user's `~/.ssh/config` (returns empty if it doesn't exist).
+pub fn parse_default() -> Vec<ImportedHost> {
+    let Some(home) = home_dir() else {
+        return Vec::new();
+    };
+    let path = home.join(".ssh").join("config");
+    parse_file(&path, &home)
+}
+
+fn parse_file(path: &Path, home: &Path) -> Vec<ImportedHost> {
+    let mut visited = HashSet::new();
+    let text = read_with_includes(path, home, &mut visited, 0);
+    parse_str(&text, home)
+}
+
+fn read_with_includes(
+    path: &Path,
+    home: &Path,
+    visited: &mut HashSet<PathBuf>,
+    depth: usize,
+) -> String {
+    if depth > MAX_INCLUDE_DEPTH {
+        tracing::warn!(path = %path.display(), "SSH config Include depth limit reached");
+        return String::new();
+    }
+    let canonical = match path.canonicalize() {
+        Ok(path) => path,
+        Err(_) => return String::new(),
+    };
+    if !visited.insert(canonical.clone()) {
+        tracing::warn!(path = %canonical.display(), "skipping cyclic SSH config Include");
+        return String::new();
+    }
+    let Ok(text) = std::fs::read_to_string(&canonical) else {
+        return String::new();
+    };
+    let ssh_dir = home.join(".ssh");
+    let mut expanded = String::new();
+    for raw in text.lines() {
+        let include = split_kv(raw).filter(|(key, _)| key == "include");
+        if let Some((_, patterns)) = include {
+            for pattern in patterns.split_whitespace() {
+                let pattern = pattern.trim_matches('"');
+                let resolved = if let Some(rest) = pattern.strip_prefix("~/") {
+                    home.join(rest)
+                } else if Path::new(pattern).is_absolute() {
+                    PathBuf::from(pattern)
+                } else {
+                    ssh_dir.join(pattern)
+                };
+                let glob_pattern = resolved.to_string_lossy().to_string();
+                let mut matches: Vec<PathBuf> = glob::glob(&glob_pattern)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Result::ok)
+                    .filter(|path| path.is_file())
+                    .collect();
+                matches.sort();
+                for included in matches {
+                    expanded.push_str(&read_with_includes(&included, home, visited, depth + 1));
+                }
+            }
+        } else {
+            expanded.push_str(raw);
+            expanded.push('\n');
+        }
+    }
+    expanded
+}
+
+pub(crate) fn home_dir() -> Option<PathBuf> {
+    directories::UserDirs::new().map(|u| u.home_dir().to_path_buf())
+}
+
+/// Split a config line into its keyword and value, supporting both
+/// `Keyword value` and `Keyword=value`, and stripping surrounding quotes.
+fn split_kv(line: &str) -> Option<(String, String)> {
+    let line = line.trim();
+    // Separator is the first '=' or run of whitespace.
+    let (k, v) = if let Some(eq) = line.find('=') {
+        // Only treat '=' as the separator if it comes before any space.
+        let sp = line.find(char::is_whitespace).unwrap_or(usize::MAX);
+        if eq < sp {
+            (&line[..eq], &line[eq + 1..])
+        } else {
+            line.split_once(char::is_whitespace)?
+        }
+    } else {
+        line.split_once(char::is_whitespace)?
+    };
+    let v = v.trim().trim_matches('"').trim();
+    if v.is_empty() {
+        return None;
+    }
+    Some((k.trim().to_ascii_lowercase(), v.to_string()))
+}
+
+fn expand_tilde(path: &str, home: &Path) -> String {
+    if let Some(rest) = path.strip_prefix("~/") {
+        home.join(rest).to_string_lossy().replace('\\', "/")
+    } else if path == "~" {
+        home.to_string_lossy().replace('\\', "/")
+    } else {
+        path.replace('\\', "/")
+    }
+}
+
+fn is_concrete(pattern: &str) -> bool {
+    !pattern.is_empty() && !pattern.contains(['*', '?', '!'])
+}
+
+// Shared with every import path and the proxy CONNECT builder; defined in the
+// bottom `config` layer (see src/config/validation.rs) because config-layer
+// imports must not depend on this crate.
+pub(crate) use crate::config::validation::is_valid_hostname;
+
+pub fn parse_str(text: &str, home: &Path) -> Vec<ImportedHost> {
+    let mut hosts: Vec<ImportedHost> = Vec::new();
+    let mut cur: Option<ImportedHost> = None;
+
+    let flush = |cur: &mut Option<ImportedHost>, out: &mut Vec<ImportedHost>| {
+        if let Some(mut h) = cur.take() {
+            if h.hostname.is_empty() {
+                h.hostname = h.alias.clone();
+            }
+            // Skip entries whose HostName isn't a valid IP / hostname (issue #33).
+            if is_valid_hostname(&h.hostname) {
+                out.push(h);
+            } else {
+                tracing::warn!(
+                    alias = %h.alias,
+                    "skipping ~/.ssh/config host with invalid HostName"
+                );
+            }
+        }
+    };
+
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, val)) = split_kv(line) else {
+            continue;
+        };
+        match key.as_str() {
+            "host" => {
+                flush(&mut cur, &mut hosts);
+                // Take the first concrete (non-wildcard) alias of the block.
+                if let Some(alias) = val.split_whitespace().find(|p| is_concrete(p)) {
+                    cur = Some(ImportedHost {
+                        alias: alias.to_string(),
+                        hostname: String::new(),
+                        user: String::new(),
+                        port: 22,
+                        identity_file: String::new(),
+                    });
+                }
+            }
+            "hostname" => {
+                if let Some(h) = cur.as_mut() {
+                    h.hostname = val;
+                }
+            }
+            "user" => {
+                if let Some(h) = cur.as_mut() {
+                    h.user = val;
+                }
+            }
+            "port" => {
+                if let Some(h) = cur.as_mut() {
+                    if let Ok(p) = val.parse::<u16>() {
+                        h.port = p;
+                    }
+                }
+            }
+            "identityfile" => {
+                if let Some(h) = cur.as_mut() {
+                    if h.identity_file.is_empty() {
+                        h.identity_file = expand_tilde(&val, home);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    flush(&mut cur, &mut hosts);
+    hosts
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn parses_basic_blocks() {
+        let cfg = "\
+# comment
+Host prod web-prod
+    HostName 10.0.0.5
+    User deploy
+    Port 2222
+    IdentityFile ~/.ssh/id_ed25519
+
+Host *
+    User nobody
+
+Host alias-only
+";
+        let home = Path::new("/home/me");
+        let hosts = parse_str(cfg, home);
+        assert_eq!(hosts.len(), 2);
+        assert_eq!(hosts[0].alias, "prod");
+        assert_eq!(hosts[0].hostname, "10.0.0.5");
+        assert_eq!(hosts[0].user, "deploy");
+        assert_eq!(hosts[0].port, 2222);
+        assert!(hosts[0].identity_file.ends_with("/.ssh/id_ed25519"));
+        // alias-only: hostname falls back to the alias
+        assert_eq!(hosts[1].alias, "alias-only");
+        assert_eq!(hosts[1].hostname, "alias-only");
+    }
+
+    #[test]
+    fn rejects_invalid_hostnames() {
+        let cfg = "\
+Host good
+    HostName 10.0.0.5
+Host ipv6
+    HostName ::1
+Host evil
+    HostName a;rm -rf /
+Host spaced
+    HostName foo bar
+Host scheme
+    HostName http://x.com
+";
+        let home = Path::new("/home/me");
+        let aliases: Vec<String> = parse_str(cfg, home).into_iter().map(|h| h.alias).collect();
+        assert!(aliases.contains(&"good".to_string()));
+        assert!(aliases.contains(&"ipv6".to_string()));
+        assert!(!aliases.contains(&"evil".to_string()));
+        assert!(!aliases.contains(&"spaced".to_string()));
+        assert!(!aliases.contains(&"scheme".to_string()));
+    }
+
+    #[test]
+    fn validates_hostname_formats() {
+        assert!(is_valid_hostname("192.168.1.1"));
+        assert!(is_valid_hostname("::1"));
+        assert!(is_valid_hostname("example.com"));
+        assert!(is_valid_hostname("my-server_01.internal"));
+        assert!(!is_valid_hostname("a;rm -rf /"));
+        assert!(!is_valid_hostname("foo bar"));
+        assert!(!is_valid_hostname("http://x.com"));
+        assert!(!is_valid_hostname("-bad.com"));
+        assert!(!is_valid_hostname(""));
+    }
+
+    #[test]
+    fn expands_relative_globbed_includes_and_ignores_cycles() {
+        let home =
+            std::env::temp_dir().join(format!("xenterm-ssh-config-{}", uuid::Uuid::new_v4()));
+        let ssh = home.join(".ssh");
+        let config_d = ssh.join("config.d");
+        std::fs::create_dir_all(&config_d).unwrap();
+        std::fs::write(
+            ssh.join("config"),
+            "Include config.d/*\nHost main\n  HostName main.example.com\n",
+        )
+        .unwrap();
+        std::fs::write(
+            config_d.join("10-prod"),
+            "Host prod\n  HostName 10.0.0.8\n  User deploy\n",
+        )
+        .unwrap();
+        std::fs::write(
+            config_d.join("20-cycle"),
+            "Include ~/.ssh/config\nHost backup\n  HostName backup.example.com\n",
+        )
+        .unwrap();
+
+        let hosts = parse_file(&ssh.join("config"), &home);
+        let aliases: Vec<&str> = hosts.iter().map(|host| host.alias.as_str()).collect();
+        assert_eq!(aliases, vec!["prod", "backup", "main"]);
+        assert_eq!(hosts[0].user, "deploy");
+
+        std::fs::remove_dir_all(home).unwrap();
+    }
+}

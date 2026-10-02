@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.yituorou.xenterm</id>
+  <name>XenTerm</name>
+  <summary>Lightweight SSH, SFTP, and terminal client</summary>
+  <summary xml:lang="zh-CN">轻量级 SSH、SFTP 和终端客户端</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <description>
+    <p>XenTerm is a cross-platform SSH, SFTP, and terminal client written in Rust and GPUI.</p>
+    <p xml:lang="zh-CN">XenTerm 是使用 Rust 和 GPUI 编写的跨平台 SSH、SFTP 和终端客户端。</p>
+  </description>
+  <launchable type="desktop-id">io.github.yituorou.xenterm.desktop</launchable>
+  <url type="homepage">https://github.com/ixbaicn/XenTerm</url>
+  <url type="bugtracker">https://github.com/ixbaicn/XenTerm/issues</url>
+  <provides>
+    <binary>xenterm</binary>
+  </provides>
+  <content_rating type="oars-1.1"/>
+</component>

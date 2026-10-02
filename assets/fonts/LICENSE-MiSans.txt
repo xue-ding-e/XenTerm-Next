@@ -1,0 +1,17 @@
+MiSans
+======
+
+Source: downloaded from the official Xiaomi MiSans distribution
+(https://hyperos.mi.com/font/ — "MiSans.zip").
+
+MiSans is the property of Beijing Xiaomi Mobile Software Co., Ltd. It is
+provided under Xiaomi's "MiSans 字体知识产权许可协议" (MiSans Font
+Intellectual Property License), which permits free use — including
+commercial use, redistribution and embedding in applications — provided
+the font files are not sold on their own, the copyright notice is kept,
+and the fonts are not used to defame or misrepresent Xiaomi.
+
+This file is a summary for repository readers, not the license text
+itself; the bundle shipped without a license file, so the terms above
+are those published with the official download. If Xiaomi's published
+terms ever change, the official page governs.

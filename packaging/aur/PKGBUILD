@@ -1,0 +1,35 @@
+# Maintainer: ixbaicn <REPLACE_WITH_YOUR_EMAIL>
+#
+# Binary package: installs the pre-built release tarball from GitHub, so Arch
+# users don't have to compile Rust + GPUI themselves. The CI in
+# .github/workflows/aur-publish.yml keeps pkgver + checksums in sync on each
+# release; you can also `makepkg -si` this file directly.
+pkgname=xenterm-bin
+pkgver=0.6.6
+pkgrel=1
+pkgdesc="Lightweight FinalShell-style SSH/SFTP/terminal client (Rust + GPUI)"
+arch=('x86_64' 'aarch64')
+url="https://github.com/ixbaicn/XenTerm"
+license=('MIT')
+provides=('xenterm')
+conflicts=('xenterm')
+depends=('fontconfig' 'freetype2' 'libxkbcommon' 'gtk3' 'hicolor-icon-theme')
+# The released binary is already stripped (Cargo.toml: strip = "symbols").
+options=('!strip')
+source_x86_64=("xenterm-${pkgver}-x86_64.tar.gz::${url}/releases/download/v${pkgver}/xenterm-v${pkgver}-linux-x86_64.tar.gz")
+source_aarch64=("xenterm-${pkgver}-aarch64.tar.gz::${url}/releases/download/v${pkgver}/xenterm-v${pkgver}-linux-aarch64.tar.gz")
+# `updpkgsums` (run by CI, or by you locally) fills these in. SKIP just disables
+# the integrity check for a manual build.
+sha256sums_x86_64=('SKIP')
+sha256sums_aarch64=('SKIP')
+
+package() {
+    # The tarball extracts to xenterm-v<ver>-linux-<arch>/ ; $CARCH is
+    # x86_64 / aarch64, matching the archive's name suffix.
+    local _dir="${srcdir}/xenterm-v${pkgver}-linux-${CARCH}"
+    install -Dm755 "${_dir}/xenterm"          "${pkgdir}/usr/bin/xenterm"
+    install -Dm644 "${_dir}/xenterm.desktop"  "${pkgdir}/usr/share/applications/xenterm.desktop"
+    install -Dm644 "${_dir}/icon@512.png"       "${pkgdir}/usr/share/icons/hicolor/512x512/apps/xenterm.png"
+    install -Dm644 "${_dir}/README.md"          "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+    install -Dm644 "${_dir}/THIRD_PARTY_NOTICES.md" "${pkgdir}/usr/share/doc/${pkgname}/THIRD_PARTY_NOTICES.md"
+}

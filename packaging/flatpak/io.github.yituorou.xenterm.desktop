@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Name=XenTerm
+GenericName=SSH Client
+GenericName[zh_CN]=SSH 客户端
+Comment=Lightweight Rust + GPUI SSH/SFTP client
+Comment[zh_CN]=轻量级 Rust + GPUI SSH/SFTP 客户端
+Exec=xenterm
+Icon=io.github.yituorou.xenterm
+Terminal=false
+# Keep one freedesktop main category so GNOME app-grid indexing is stable.
+Categories=Network;TerminalEmulator;
+Keywords=ssh;sftp;terminal;shell;
+StartupNotify=true
+StartupWMClass=xenterm

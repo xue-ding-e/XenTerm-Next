@@ -1,0 +1,17 @@
+/target
+# Cargo.lock is deliberately tracked: xenterm is a binary application crate,
+# so the lockfile is what makes release builds reproducible. Cargo.toml carries
+# security-motivated pins (russh 0.49, see RUSTSEC-2026-0154) that only mean
+# something if the resolved graph is committed.
+/output
+*.rs.bk
+.DS_Store
+/.vscode
+/.idea
+/.claude
+/.codegraph
+/.qoder
+/.zcode
+/AGENTS.md
+/opencode.jsonc
+/docs/superpowers
