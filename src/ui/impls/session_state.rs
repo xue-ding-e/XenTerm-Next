@@ -334,7 +334,7 @@ mod tests {
             cache: crate::config::ConfigFile::default(),
             key: [7u8; 32],
             keyring_enabled: false,
-            saved_state: Mutex::new(crate::config::SavedState::default()),
+            saved_state: Mutex::new(crate::config::SavedState::default()).into(),
         }));
         let state = SessionState::new(runtime.clone(), gates, store);
 

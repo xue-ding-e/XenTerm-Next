@@ -342,7 +342,7 @@ mod ui_tests {
             },
             key: [0; 32],
             keyring_enabled: false,
-            saved_state: std::sync::Mutex::new(SavedState::default()),
+            saved_state: std::sync::Mutex::new(SavedState::default()).into(),
         }));
         let draft = Rc::new(RefCell::new(SessionDraft::from_session(&target)));
         let (view, cx) = cx.add_window_view(move |_, cx| {

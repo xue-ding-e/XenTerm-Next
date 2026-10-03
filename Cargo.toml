@@ -96,6 +96,10 @@ chacha20poly1305 = "0.10"
 # any target; the C build needs a host C compiler (MSVC cl / MinGW gcc /
 # cc), which every CI image already has.
 rusqlite = { version = "0.39", features = ["bundled"] }
+# Short cross-process profile locks cover SQLite/keyring compensation windows.
+fs2 = "0.4.3"
+# Platform-native no-clobber publication (also supports removable filesystems).
+tempfile = "=3.27.0"
 # Lightweight synchronous HTTPS client (bundled rustls, no OpenSSL) for the
 # in-app update check against the GitHub releases API (#48). Runs on a
 # background thread so it never blocks startup; failure is silently ignored.

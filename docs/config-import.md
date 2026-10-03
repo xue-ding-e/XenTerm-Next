@@ -22,13 +22,21 @@ logs, and never restores or mirrors another profile or uses the shared OS
 keyring. Make this directory private to the service account. The normal GUI
 profile selection is unchanged when neither option nor variable is supplied.
 
-Do not run the GUI and a headless service against the same profile at the same
-time. Use a separate `--data-dir` for the service, and close any GUI using a
-profile before importing into it. The importer detects stale state during its
-own transaction, but existing GUI/background writers do not all perform that
-check: a later save from an already-open GUI can replace newer session state.
-Directory selection does not enforce exclusive use or provide a cross-process
-profile lock. Pointing `--data-dir` at an installed profile backed by the OS
+Use a separate `--data-dir` for the service. All current GUI, background-save,
+CLI and MCP import writers compare their loaded snapshot and a per-commit token
+inside a SQLite write transaction. A stale writer is rejected before changing
+rows or credentials; queued background snapshots cannot overwrite newer saves.
+The GUI keeps a persistent warning on a failed save. Keep any pending edits,
+reopen XenTerm to reload the latest profile, then reapply them deliberately.
+There is no automatic merge, forced overwrite, or silent retry. See
+[profile consistency and recovery](profile-consistency.md) for the lock,
+credential-recovery and backup behavior.
+
+Raw database rows are checked as well, so changes written without the new token
+are detected. An older application can still overwrite data after a new writer
+commits: upgrade every writer, and never rely on this protection when mixing old
+versions or directly replacing profile files. Directory selection itself does
+not grant exclusive ownership of a profile. Pointing `--data-dir` at an installed profile backed by the OS
 keyring is unsupported. Startup checks reject keyring markers, encrypted values
 without a local key, and values that the local key cannot decrypt before creating
 keys, logs or database sidecars. Export from the original application and import

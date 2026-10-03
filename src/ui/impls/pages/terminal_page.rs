@@ -1954,7 +1954,7 @@ mod dock_tests {
             cache: crate::config::ConfigFile::default(),
             key: [7; 32],
             keyring_enabled: false,
-            saved_state: Mutex::new(crate::config::SavedState::default()),
+            saved_state: Mutex::new(crate::config::SavedState::default()).into(),
         };
         store.set_collapse_sftp_default(collapsed);
         store.set_sidebar_collapsed(true);

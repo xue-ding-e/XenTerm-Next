@@ -1,0 +1,33 @@
+name: Profile consistency tests
+
+on:
+  push:
+    paths: ["Cargo.toml", "Cargo.lock", "src/config/**", ".github/workflows/profile-consistency.yml"]
+  pull_request:
+    paths: ["Cargo.toml", "Cargo.lock", "src/config/**", ".github/workflows/profile-consistency.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: profile-consistency-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  config:
+    name: ${{ matrix.os }} profile transactions
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-14]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: profile-consistency-${{ runner.os }}
+      # Uses the same stable/MSVC toolchain on Windows, with no GUI system
+      # dependencies, credentials, publishing permissions, or real profiles.
+      - run: cargo test --locked --no-default-features --features headless --jobs 2 config::config -- --nocapture

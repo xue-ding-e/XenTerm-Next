@@ -95,8 +95,16 @@ impl ConfigStore {
     pub(super) fn preflight_explicit_profile(directory: &Path) -> Result<()> {
         let db = directory.join("sessions.db");
         let json = directory.join("sessions.json");
-        let config = if db.exists() {
+        if super::profile_io::pending_journal(&db)? {
+            bail!("profile has unfinished desktop credential recovery; reopen it in the original desktop application before selecting it as an explicit service profile");
+        }
+        let from_db = if db.exists() {
             read_database(&db)?
+        } else {
+            None
+        };
+        let config = if from_db.is_some() {
+            from_db
         } else if json.exists() {
             let raw = fs::read(&json).map_err(|_| {
                 anyhow::anyhow!("explicit profile JSON could not be read; original file preserved")

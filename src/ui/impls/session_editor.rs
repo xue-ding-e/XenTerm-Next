@@ -56,7 +56,7 @@ pub(crate) struct SessionEditor {
     store: Rc<RefCell<ConfigStore>>,
     /// Set when the dialog is finished, so the shell can take the outcome.
     outcome: Option<EditorOutcome>,
-    /// A failed save leaves the form open and explains how to retry.
+    /// A failed save leaves the form open and explains how to recover safely.
     save_error: Option<&'static str>,
     /// The port-forwarding rows. Their text fields are entities and so cannot be rebuilt
     /// every frame the way the settings fields are; the rows are kept here instead, and
@@ -429,8 +429,14 @@ impl SessionEditor {
 fn save_failure_message(error: &anyhow::Error) -> &'static str {
     if error.is::<crate::config::SessionCredentialRollbackFailed>() {
         return crate::i18n::t(
-            "保存失败，且无法确认系统钥匙串中的原密码已恢复。输入已保留；钥匙串中的密码可能已改变，请检查后再重试。",
-            "Could not save or verify that the original keyring password was restored. Your entries are kept, but the keyring password may have changed; check it before retrying.",
+            "无法确认保存结果或系统钥匙串中的原密码已恢复。输入已保留；请先保留修改并重新打开 XenTerm 尝试恢复，检查凭据后再重试。",
+            "Could not confirm the save outcome or verify that the original keyring password was restored. Your entries are kept; copy pending edits, reopen XenTerm to attempt recovery, and check credentials before retrying.",
+        );
+    }
+    if error.is::<crate::config::ConfigurationChanged>() {
+        return crate::i18n::t(
+            "配置已在其他窗口或进程中更改，本次编辑未保存。输入仍保留在此处；请先复制待保存的修改，再重新打开 XenTerm 以重新加载配置，然后再保存。",
+            "Configuration changed elsewhere, so your changes were not saved. Your entries are kept here; copy pending edits, then reopen XenTerm to reload before saving.",
         );
     }
     if let Some(rusqlite::Error::SqliteFailure(failure, _)) = error.downcast_ref() {
@@ -1494,6 +1500,107 @@ mod tests {
         assert_eq!(disk[0].host, "edited.example");
     }
 
+    #[gpui_kit::gpui::test]
+    fn a_conflicting_save_keeps_the_editor_draft_and_external_changes(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let fixture = StoreFixture::new();
+        let mut draft = SessionDraft::new_ssh();
+        draft.id = "conflicting-fixture".into();
+        draft.host = "original.example".into();
+        draft.password = "original-fixture-password".into();
+        let original = draft.to_session(None);
+        fixture
+            .store
+            .borrow_mut()
+            .upsert_and_save(original.clone())
+            .unwrap();
+
+        // Another window starts from the same loaded snapshot, but its save
+        // bookkeeping is independent of the editor's stale in-memory store.
+        let mut other_window = {
+            let store = fixture.store.borrow();
+            let saved = store.saved_state.lock().unwrap().clone();
+            ConfigStore {
+                path: store.path.clone(),
+                backup_dir: None,
+                cache: store.cache.clone(),
+                key: store.key,
+                keyring_enabled: false,
+                saved_state: std::sync::Mutex::new(saved).into(),
+            }
+        };
+        let (view, cx) = cx.add_window_view({
+            let store = fixture.store.clone();
+            let original = original.clone();
+            move |_, _| SessionEditor::edit(store, original)
+        });
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            view.update(cx, |editor, cx| {
+                editor.draft.borrow_mut().host = "pending.example".into();
+                editor.password.as_ref().unwrap().update(cx, |input, cx| {
+                    input.set_value("pending-fixture-password", window, cx);
+                });
+            });
+        });
+
+        let mut external = original.clone();
+        external.host = "external.example".into();
+        other_window.upsert_and_save(external).unwrap();
+
+        for _ in 0..2 {
+            cx.update(|window, cx| {
+                window.draw(cx).clear(cx);
+            });
+            let save = cx.debug_bounds("editor-save").expect("visible save button");
+            cx.simulate_click(save.center(), Modifiers::default());
+            view.update(cx, |editor, cx| {
+                assert_eq!(editor.take_outcome(), None, "the stale dialog stays open");
+                assert_eq!(
+                    editor.save_error,
+                    Some(save_failure_message(&crate::config::ConfigurationChanged.into()))
+                );
+                let draft = editor.draft.borrow();
+                assert_eq!(draft.id, original.id);
+                assert_eq!(draft.host, "pending.example");
+                assert_eq!(draft.password, "pending-fixture-password");
+                assert_eq!(
+                    editor.password.as_ref().unwrap().read(cx).value().as_ref(),
+                    "pending-fixture-password"
+                );
+            });
+            assert_eq!(fixture.store.borrow().sessions()[0].host, "original.example");
+            let disk = fixture.disk_sessions();
+            assert_eq!(disk.len(), 1);
+            assert_eq!(disk[0].host, "external.example");
+        }
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        assert!(cx.debug_bounds("editor-save-error").is_some());
+    }
+
+    #[test]
+    fn configuration_conflict_guidance_requires_the_typed_error() {
+        let expected = crate::i18n::t(
+            "配置已在其他窗口或进程中更改，本次编辑未保存。输入仍保留在此处；请先复制待保存的修改，再重新打开 XenTerm 以重新加载配置，然后再保存。",
+            "Configuration changed elsewhere, so your changes were not saved. Your entries are kept here; copy pending edits, then reopen XenTerm to reload before saving.",
+        );
+        let conflict = anyhow::Error::new(crate::config::ConfigurationChanged);
+        assert_eq!(save_failure_message(&conflict), expected);
+        let wrapped = conflict.context("fixture-secret-in-a-path-or-error");
+        assert_eq!(save_failure_message(&wrapped), expected);
+        assert!(!save_failure_message(&wrapped).contains("fixture-secret"));
+        assert_ne!(
+            save_failure_message(&anyhow::anyhow!("configuration changed elsewhere")),
+            expected,
+            "arbitrary error text must not be classified as a typed conflict"
+        );
+        let uncertain = wrapped.context(crate::config::SessionCredentialRollbackFailed);
+        assert_ne!(save_failure_message(&uncertain), expected);
+        assert!(!save_failure_message(&uncertain).contains("fixture-secret"));
+    }
+
     #[test]
     fn save_diagnostics_do_not_echo_error_details() {
         let error = anyhow::anyhow!("fixture-secret-in-an-arbitrary-error");
@@ -1504,8 +1611,8 @@ mod tests {
         assert_eq!(
             message,
             crate::i18n::t(
-                "保存失败，且无法确认系统钥匙串中的原密码已恢复。输入已保留；钥匙串中的密码可能已改变，请检查后再重试。",
-                "Could not save or verify that the original keyring password was restored. Your entries are kept, but the keyring password may have changed; check it before retrying.",
+                "无法确认保存结果或系统钥匙串中的原密码已恢复。输入已保留；请先保留修改并重新打开 XenTerm 尝试恢复，检查凭据后再重试。",
+                "Could not confirm the save outcome or verify that the original keyring password was restored. Your entries are kept; copy pending edits, reopen XenTerm to attempt recovery, and check credentials before retrying.",
             )
         );
         for code in [rusqlite::ffi::SQLITE_BUSY, rusqlite::ffi::SQLITE_FULL] {

@@ -9,7 +9,7 @@ fn temp_store() -> ConfigStore {
         cache: ConfigFile::default(),
         key: [7; 32],
         keyring_enabled: false,
-        saved_state: std::sync::Mutex::new(SavedState::default()),
+        saved_state: std::sync::Mutex::new(SavedState::of_cache(&ConfigFile::default())).into(),
     }
 }
 fn session(id: &str) -> Session {
@@ -321,6 +321,7 @@ fn external_writer_or_unsaved_edits_are_rejected_without_overwriting_either_side
     let mut external = temp_store();
     external.path = store.path.clone();
     external.cache = store.cache.clone();
+    *external.saved_state.lock().unwrap() = store.saved_state.lock().unwrap().clone();
     external.cache.sessions.push(session("external"));
     external.save().unwrap();
     let externally_written = disk(&store);
@@ -743,7 +744,10 @@ fn proxy_forms_share_connection_mapping_storage_export_and_preflight_semantics()
             ConfigStore::session_from_disk_form(&mut reloaded, &destination.key);
             assert_eq!(reloaded.proxy, proxy);
             assert_eq!(
-                crate::config::validation::split_proxy_url(&reloaded.proxy).auth.unwrap().1,
+                crate::config::validation::split_proxy_url(&reloaded.proxy)
+                    .auth
+                    .unwrap()
+                    .1,
                 password
             );
             cleanup(&destination);
@@ -769,4 +773,63 @@ fn proxy_password_mapping_preserves_empty_and_missing_auth() {
         assert_eq!(disk_session(&store, 0).proxy, proxy);
         cleanup(&store);
     }
+}
+
+#[test]
+fn preflight_checks_retained_json_after_an_interrupted_empty_database_migration() {
+    let directory =
+        std::env::temp_dir().join(format!("xenterm-empty-migration-{}", Uuid::new_v4()));
+    fs::create_dir_all(&directory).unwrap();
+    let database = directory.join("sessions.db");
+    drop(ConfigStore::open_db(&database).unwrap());
+    let mut original = session("retained");
+    original.password =
+        Secret::new(ConfigStore::encrypt(&[7; 32], "fixture retained secret").unwrap());
+    fs::write(directory.join("sessions.json"), native(vec![original])).unwrap();
+    assert!(ConfigStore::preflight_explicit_profile(&directory).is_err());
+    assert!(!directory.join("secret.key").exists());
+    fs::write(directory.join("secret.key"), [7; 32]).unwrap();
+    ConfigStore::preflight_explicit_profile(&directory).unwrap();
+    let _ = fs::remove_dir_all(directory);
+}
+
+#[test]
+fn a_fresh_dirty_profile_cannot_be_implicitly_saved_by_import() {
+    for change in ["settings", "history", "session"] {
+        let mut store = temp_store();
+        match change {
+            "settings" => store.cache.wallpaper = "fixture unsaved setting".into(),
+            "history" => store
+                .cache
+                .command_history
+                .push("fixture unsaved history".into()),
+            "session" => store.cache.sessions.push(session("fixture-unsaved")),
+            _ => unreachable!(),
+        }
+        let before = snapshot(&store);
+        for payload in [native(vec![session("incoming")]), native(vec![])] {
+            let error = store.import_json(&payload).unwrap_err();
+            assert!(error.to_string().contains("pending configuration changes"));
+            assert_eq!(snapshot(&store), before);
+            assert!(!store.path.exists());
+        }
+        cleanup(&store);
+    }
+}
+
+#[test]
+fn explicit_profile_rejects_pending_desktop_recovery_without_side_effects() {
+    let directory =
+        std::env::temp_dir().join(format!("xenterm-pending-recovery-{}", Uuid::new_v4()));
+    fs::create_dir_all(&directory).unwrap();
+    let journal = directory.join("sessions.db.credential-journal");
+    fs::write(&journal, b"synthetic pending encrypted recovery").unwrap();
+    let error = ConfigStore::preflight_explicit_profile(&directory).unwrap_err();
+    assert!(error.to_string().contains("original desktop"));
+    assert_eq!(
+        fs::read(&journal).unwrap(),
+        b"synthetic pending encrypted recovery"
+    );
+    assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
+    let _ = fs::remove_dir_all(directory);
 }

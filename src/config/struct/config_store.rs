@@ -21,6 +21,15 @@ pub(crate) struct SavedState {
     pub(crate) sessions: HashMap<String, String>,
     /// The command-history list as a compact JSON string.
     pub(crate) history: String,
+    /// Digest of every raw persistent row, including the per-commit token.
+    /// None means a database with no rows, never an unchecked baseline.
+    pub(crate) disk_fingerprint: Option<[u8; 32]>,
+    /// Submission order is separate from OS thread scheduling order.
+    pub(crate) submitted: u64,
+    pub(crate) attempted: u64,
+    pub(crate) error: Option<String>,
+    /// Incomplete credential compensation needs a fresh load/recovery.
+    pub(crate) credentials_uncertain: bool,
 }
 
 impl SavedState {
@@ -37,6 +46,7 @@ impl SavedState {
                 .map(|s| (s.id.clone(), serde_json::to_string(s).unwrap_or_default()))
                 .collect(),
             history: serde_json::to_string(&cache.command_history).unwrap_or_default(),
+            ..Self::default()
         }
     }
 }
@@ -107,11 +117,7 @@ pub struct ConfigStore {
     /// store; the test constructors turn it off so tests stay deterministic
     /// and never write into the user's keyring.
     pub(crate) keyring_enabled: bool,
-    /// What the last successful load/save left on disk. Shared with the
-    /// background saver only in the sense that its snapshot is taken here and
-    /// never written back: a background save leaves the snapshot alone, so
-    /// the next foreground save re-diffs against pre-background state and
-    /// rewrites whatever the background already wrote — harmless, and it
-    /// keeps this field confined to the UI thread's `&mut` world.
-    pub(crate) saved_state: std::sync::Mutex<SavedState>,
+    /// Shared by foreground and queued background saves. Updated only after
+    /// successful commits; generation bookkeeping also suppresses older jobs.
+    pub(crate) saved_state: std::sync::Arc<std::sync::Mutex<SavedState>>,
 }

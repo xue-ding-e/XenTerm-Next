@@ -22,9 +22,13 @@ requires an explicit profile for CLI, stdio MCP and `--config-info` too (except
 `--version`), before it opens logging or configuration files. Headless builds do
 not use the desktop OS keyring. Export from the desktop and import into a separate
 service profile; do not point headless at an installed desktop profile whose key
-may live only in the OS keyring. Do not concurrently write the same profile from
-different GUI/service instances. The explicit path is a deliberate choice of
-storage, not a conversion of desktop keyring credentials.
+may live only in the OS keyring. Current profile writers reject stale snapshots
+instead of overwriting newer commits; keep pending edits and reload on a conflict.
+Use upgraded writers only: older versions can still overwrite newer saves, and
+external replacement of database/key files is unsupported while the profile is
+open. The explicit path is a deliberate choice of storage, not a conversion of
+desktop keyring credentials. See [configuration consistency](config-import.md)
+for recovery instructions.
 You can import an export using the existing CLI, or configure that profile in
 the desktop application. Never place profile files, credentials or SSH keys in
 web roots or release packages.

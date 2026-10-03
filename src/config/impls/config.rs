@@ -76,8 +76,13 @@ use super::structs::*;
 /// The database save failed and the original keyring credential could not be
 /// restored and verified. Callers must not describe this as a complete rollback.
 #[derive(Debug, thiserror::Error)]
-#[error("the session was not saved, and its original keyring credential could not be restored")]
+#[error("could not confirm the save outcome or restore the original keyring credential")]
 pub(crate) struct SessionCredentialRollbackFailed;
+
+/// A stale cache must never become an implicit last-writer-wins overwrite.
+#[derive(Debug, thiserror::Error)]
+#[error("configuration changed since it was loaded; keep pending edits and reload before saving")]
+pub(crate) struct ConfigurationChanged;
 
 // ── Data directory resolution (portable-first, #141) ──────────────────────────
 //
@@ -178,7 +183,9 @@ fn dir_is_writable(dir: &Path) -> bool {
 }
 
 fn resolve_data_dir() -> PathBuf {
-    if let Some(dir) = PINNED_DATA_DIR.get() { return dir.clone(); }
+    if let Some(dir) = PINNED_DATA_DIR.get() {
+        return dir.clone();
+    }
     let legacy = legacy_data_dir();
 
     if let Some(portable) = portable_data_dir() {
@@ -199,7 +206,7 @@ fn resolve_data_dir() -> PathBuf {
 
     // The per-user dir under the XenTerm name, carrying the pre-rename
     // location's files over on first use. `ConfigStore::load` additionally
-    // restores sessions from the legacy dir when the migrated ones are empty.
+    // restores missing profiles from dedicated backups or the legacy source.
     if let Some(user) = user_data_dir() {
         if fs::create_dir_all(&user).is_ok() && dir_is_writable(&user) {
             if let Some(ref legacy) = legacy {
@@ -223,37 +230,12 @@ fn resolve_data_dir() -> PathBuf {
 /// originals are left in place (copy, not move) as a safety net, and existing
 /// destination files are never overwritten (#141).
 fn migrate_legacy(legacy: &Path, portable: &Path) {
-    if legacy == portable {
-        return;
-    }
-    for name in ["sessions.json", "secret.key", "known_hosts"] {
-        let src = legacy.join(name);
-        let dst = portable.join(name);
-        if src.exists() && !dst.exists() {
-            match fs::copy(&src, &dst) {
-                Ok(_) => {
-                    // Keep the key owner-only on Unix (copy preserves bytes, not
-                    // necessarily the mode).
-                    #[cfg(unix)]
-                    if name == "secret.key" {
-                        use std::os::unix::fs::PermissionsExt;
-                        let _ = fs::set_permissions(&dst, fs::Permissions::from_mode(0o600));
-                    }
-                    tracing::info!(
-                        "migrated {name} to portable config dir {}",
-                        portable.display()
-                    );
-                }
-                Err(e) => tracing::warn!(
-                    "data migration: failed to copy {} → {}: {e}",
-                    src.display(),
-                    dst.display()
-                ),
-            }
-        }
+    if let Err(error) = recovery::migrate_legacy(legacy, portable) {
+        tracing::warn!("profile recovery deferred: {error:#}");
     }
 }
 
+#[cfg(test)]
 fn sessions_file_has_connections(path: &Path) -> bool {
     let Ok(raw) = fs::read_to_string(path) else {
         return false;
@@ -265,6 +247,7 @@ fn sessions_file_has_connections(path: &Path) -> bool {
 
 /// Whether the directory holds any saved session, in either storage format.
 /// Guards the one-time backup restore so it never clobbers live data.
+#[cfg(test)]
 fn config_dir_has_sessions(dir: &Path) -> bool {
     db_has_sessions(&dir.join("sessions.db")).unwrap_or(false)
         || sessions_file_has_connections(&dir.join("sessions.json"))
@@ -272,6 +255,7 @@ fn config_dir_has_sessions(dir: &Path) -> bool {
 
 /// Read-only probe: does this database contain at least one session? Errors
 /// (missing file, no table yet, a WAL file we can't open read-only) mean "no".
+#[cfg(test)]
 fn db_has_sessions(path: &Path) -> Result<bool> {
     if !path.exists() {
         return Ok(false);
@@ -288,52 +272,8 @@ fn db_has_sessions(path: &Path) -> Result<bool> {
 /// format is a sessions.db snapshot; older installs left a sessions.json
 /// behind, which [`ConfigStore::load`] then imports and renames. `secret.key`
 /// only matters for portable/keychain-less installs, where it still exists.
-fn restore_user_backup_if_needed(primary_dir: &Path, backup_dir: &Path) {
-    if primary_dir == backup_dir {
-        return;
-    }
-    if config_dir_has_sessions(primary_dir) || !config_dir_has_sessions(backup_dir) {
-        return;
-    }
-    let _ = fs::create_dir_all(primary_dir);
-    let db_backup = backup_dir.join("sessions.db").exists();
-    let names: &[&str] = if db_backup {
-        ["sessions.db", "secret.key", "known_hosts"].as_slice()
-    } else {
-        ["sessions.json", "secret.key", "known_hosts"].as_slice()
-    };
-    for &name in names {
-        let src = backup_dir.join(name);
-        let dst = primary_dir.join(name);
-        if src.exists() {
-            match fs::copy(&src, &dst) {
-                Ok(_) => {
-                    #[cfg(unix)]
-                    if name == "secret.key" {
-                        use std::os::unix::fs::PermissionsExt;
-                        let _ = fs::set_permissions(&dst, fs::Permissions::from_mode(0o600));
-                    }
-                    tracing::info!(
-                        "restored {name} from user config backup {}",
-                        backup_dir.display()
-                    );
-                }
-                Err(e) => tracing::warn!(
-                    "failed to restore {} from {} to {}: {e}",
-                    name,
-                    src.display(),
-                    dst.display()
-                ),
-            }
-        }
-    }
-    // A restored database must not inherit WAL sidecars from the file that
-    // was here before — they describe a different database.
-    if db_backup {
-        for suffix in ["-wal", "-shm"] {
-            let _ = fs::remove_file(primary_dir.join(format!("sessions.db{suffix}")));
-        }
-    }
+fn restore_user_backup_if_needed(primary_dir: &Path, backup_dir: &Path) -> Result<()> {
+    recovery::restore_user_backup_if_needed(primary_dir, backup_dir)
 }
 
 fn normalize_hex_color(value: &str) -> Option<String> {
@@ -593,7 +533,10 @@ impl ConfigStore {
             return None;
         }
         let mapped = map(pass)?;
-        let prefix = parts.scheme.map(|scheme| format!("{scheme}://")).unwrap_or_default();
+        let prefix = parts
+            .scheme
+            .map(|scheme| format!("{scheme}://"))
+            .unwrap_or_default();
         Some(format!("{prefix}{user}:{mapped}@{}", parts.hostport))
     }
 
@@ -762,10 +705,7 @@ impl ConfigStore {
                     // Best effort: creation already used mode 0600, so this only
                     // repairs a file someone chmod'd wide in between.
                     use std::os::unix::fs::PermissionsExt;
-                    let _ = fs::set_permissions(
-                        &key_path,
-                        fs::Permissions::from_mode(0o600),
-                    );
+                    let _ = fs::set_permissions(&key_path, fs::Permissions::from_mode(0o600));
                 }
                 tracing::info!("generated new encryption key at {}", key_path.display());
                 Ok(key)
@@ -793,11 +733,9 @@ impl ConfigStore {
 
     // ── Public API ────────────────────────────────────────────────────────
 
-    /// Load (or initialise) the config store. On any parse error we back up
-    /// the broken file and start fresh — losing saved sessions is better than
-    /// crashing at launch. A legacy sessions.json found without a database is
-    /// imported once and renamed to `sessions.json.migrated` (kept, never
-    /// deleted, as a user-visible safety net).
+    /// Load (or initialise) the config store. Read/locking failures preserve
+    /// the original database instead of treating an active profile as corrupt.
+    /// Legacy JSON is archived only after its optimistic migration commits.
     pub fn load() -> Result<Self> {
         let path = Self::config_path()?;
         let config_dir = path
@@ -811,81 +749,78 @@ impl ConfigStore {
         if has_explicit_data_dir() {
             Self::preflight_explicit_profile(&config_dir)?;
         }
-        let backup_dir = legacy_data_dir().filter(|dir| !has_explicit_data_dir() && dir != &config_dir);
-        if let Some(ref backup) = backup_dir {
-            restore_user_backup_if_needed(&config_dir, backup);
+        let legacy_backup =
+            legacy_data_dir().filter(|dir| !has_explicit_data_dir() && dir != &config_dir);
+        if let Some(ref legacy) = legacy_backup {
+            restore_user_backup_if_needed(&config_dir, legacy)?;
         }
+        let backup_dir = legacy_backup
+            .as_deref()
+            .map(|legacy| recovery::backup_directory(&config_dir, legacy))
+            .transpose()?;
 
+        // Short cross-process protection spans master-key initialization,
+        // legacy decryption, pending credential recovery, and a consistent load.
+        // It is released before migration saving (which acquires its own guard).
+        let ordered = Self::save_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let profile_io = profile_io::ProfileIoGuard::acquire(&path)?;
         // The master key: OS keychain when installed, key file when portable
         // or when the platform has no usable keyring (see resolve_master_key).
-        let portable = has_explicit_data_dir() || portable_data_dir().is_some_and(|dir| dir == config_dir);
+        let portable =
+            has_explicit_data_dir() || portable_data_dir().is_some_and(|dir| dir == config_dir);
         let key = Self::resolve_master_key(&config_dir, portable)?;
 
         // Legacy file left by an upgrade; imported below, then renamed.
         let legacy_json = path.with_file_name("sessions.json");
+        let mut disk_fingerprint = None;
         let mut force_full_write = false;
         let mut imported_legacy_json = false;
         let mut cache = if path.exists() {
-            match Self::open_db(&path).and_then(|conn| Self::read_disk_store(&conn)) {
-                Ok(Some((settings_raw, sessions_disk, history))) => {
-                    let mut cfg: ConfigFile =
-                        serde_json::from_str(&settings_raw).map_err(|_| {
-                            anyhow::anyhow!("sessions.db settings blob is not a valid config document")
-                        })?;
-                    if let Some(plain) = Self::try_decrypt(&key, cfg.webdav_password.as_str()) {
-                        cfg.webdav_password = Secret::new(plain);
+            match Self::read_cache_snapshot_locked(&path, &key, &profile_io) {
+                Ok((cfg, fingerprint)) => {
+                    disk_fingerprint = fingerprint;
+                    if fingerprint.is_none() && legacy_json.exists() {
+                        // A failed/aborted first migration may have created an
+                        // empty schema. The retained source must still import.
+                        imported_legacy_json = true;
+                        force_full_write = true;
+                        Self::read_json_store(&legacy_json, &key).context(
+                            "legacy configuration could not be read; original file preserved",
+                        )?
+                    } else {
+                        cfg
                     }
-                    cfg.sessions = sessions_disk;
-                    for session in &mut cfg.sessions {
-                        Self::session_from_disk_form(session, &key);
-                    }
-                    cfg.command_history = history;
-                    cfg
                 }
-                // A database with no settings row: created but never written.
-                Ok(None) => fresh_config(),
                 Err(err) => {
-                    if has_explicit_data_dir() {
-                        bail!("explicit profile database could not be read; original file preserved");
-                    }
-                    Self::quarantine_broken_db(&path, &err);
-                    fresh_config()
+                    return Err(err
+                        .context("configuration could not be loaded; original database preserved"))
                 }
             }
+        } else if profile_io::pending_journal(&path)? {
+            return Err(SessionCredentialRollbackFailed.into());
         } else if legacy_json.exists() {
             match Self::read_json_store(&legacy_json, &key) {
                 Ok(cfg) => {
                     imported_legacy_json = true;
-                    if !has_explicit_data_dir() {
-                        let migrated = legacy_json.with_extension("json.migrated");
-                        let _ = fs::remove_file(&migrated);
-                        if let Err(error) = fs::rename(&legacy_json, &migrated) {
-                            tracing::warn!(
-                                "keeping {} after all: renaming it failed: {error}",
-                                legacy_json.display()
-                            );
-                        }
-                    }
                     force_full_write = true;
                     cfg
                 }
                 Err(err) => {
-                    if has_explicit_data_dir() {
-                        bail!("explicit profile JSON could not be read; original file preserved");
-                    }
-                    let backup = legacy_json.with_extension("json.broken");
-                    let _ = fs::rename(&legacy_json, &backup);
-                    tracing::warn!(
-                        "config file was corrupt ({err:#}); backed up to {}",
-                        backup.display()
-                    );
-                    fresh_config()
+                    return Err(err.context(
+                        "legacy configuration could not be read; original file preserved",
+                    ))
                 }
             }
         } else {
             fresh_config()
         };
 
+        drop(profile_io);
+        drop(ordered);
+        // Keep the actually loaded cache as the diff baseline even if a
+        // migration fails; a later retry must still have work to persist.
+        let mut saved_state = SavedState::of_cache(&cache);
+        saved_state.disk_fingerprint = disk_fingerprint;
         // Clean up any duplicate history accumulated before #113, keeping the
         // last (most recent) occurrence of each command.
         dedup_keep_last(&mut cache.command_history);
@@ -898,14 +833,13 @@ impl ConfigStore {
         migrated |= migrate_defaults(&mut cache);
         force_full_write |= migrated;
 
-        let saved_state = SavedState::of_cache(&cache);
         let store = Self {
             path,
             backup_dir,
             cache,
             key,
             keyring_enabled: cfg!(feature = "desktop") && !has_explicit_data_dir(),
-            saved_state: std::sync::Mutex::new(saved_state),
+            saved_state: std::sync::Mutex::new(saved_state).into(),
         };
         // Persist the migrations so they run exactly once (and so a later
         // opt-out — e.g. turning the welcome sidebar back off — isn't reverted
@@ -916,12 +850,9 @@ impl ConfigStore {
                     bail!("failed to persist explicit profile migration; source JSON preserved");
                 }
                 tracing::warn!("failed to persist config migration: {e:#}");
-            } else if imported_legacy_json && has_explicit_data_dir() {
-                // Service profiles retain their source until the SQLite commit
-                // succeeds, and never overwrite an earlier migration backup.
-                let migrated = legacy_json.with_extension("json.migrated");
-                if !migrated.exists() {
-                    let _ = fs::rename(&legacy_json, migrated);
+            } else if imported_legacy_json {
+                if let Err(error) = recovery::finish_legacy_migration(&legacy_json) {
+                    tracing::warn!("could not archive legacy configuration: {error:#}");
                 }
             }
         }
@@ -1059,12 +990,6 @@ impl ConfigStore {
             session.group.clear();
         }
         if let Some(existing) = self.cache.sessions.iter_mut().find(|s| s.id == session.id) {
-            // Clearing a saved password must also drop the credential parked
-            // in the OS keyring, or it would silently outlive the edit.
-            if self.keyring_enabled && !existing.password.is_empty() && session.password.is_empty()
-            {
-                Self::forget_keyring_password(&session.id);
-            }
             *existing = session;
         } else {
             self.cache.sessions.push(session);
@@ -1085,41 +1010,19 @@ impl ConfigStore {
         }
         let id = session.id.clone();
         let index = self.cache.sessions.iter().position(|s| s.id == id);
-        let clear_password = self.keyring_enabled
-            && session.password.is_empty()
-            && index.is_some_and(|i| !self.cache.sessions[i].password.is_empty());
-        // SQLite cannot roll back a keyring write. Snapshot the actual credential,
-        // including its absence, before persist can replace it. If the keyring
-        // cannot be read, use our normal encrypted-file fallback for this save
-        // instead of risking an overwrite that we could not undo.
-        let writes_password = self.keyring_enabled && !session.password.is_empty();
-        let credential_before = writes_password
-            .then(|| Self::read_keyring_password(&id).ok())
-            .flatten();
-        let use_keyring = self.keyring_enabled && (!writes_password || credential_before.is_some());
         let previous = if let Some(index) = index {
             Some(std::mem::replace(&mut self.cache.sessions[index], session))
         } else {
             self.cache.sessions.push(session);
             None
         };
-        if let Err(error) = self.save_impl_locked(None, use_keyring) {
+        if let Err(error) = self.save_impl_locked(None, self.keyring_enabled) {
             if let (Some(index), Some(previous)) = (index, previous) {
                 self.cache.sessions[index] = previous;
             } else {
                 self.cache.sessions.pop();
             }
-            if let Some(credential_before) = credential_before {
-                if Self::restore_keyring_password(&id, credential_before.as_ref()).is_err() {
-                    return Err(error.context(SessionCredentialRollbackFailed));
-                }
-            }
             return Err(error);
-        }
-        // Unlike `upsert`, defer deleting an old credential until the database
-        // accepted the edit. Otherwise a failed save could erase its password.
-        if clear_password {
-            Self::forget_keyring_password(&id);
         }
         Ok(())
     }
@@ -1138,7 +1041,10 @@ impl ConfigStore {
         if Self::read_keyring_password(id).as_ref().is_ok_and(matches) {
             return Ok(());
         }
-        Self::keyring_set_password(id, expected.unwrap_or_default())?;
+        match expected {
+            Some(password) => Self::keyring_entry(id)?.set_password(password)?,
+            None => Self::keyring_set_password(id, "")?,
+        }
         if !matches(&Self::read_keyring_password(id)?) {
             bail!("could not verify the original keyring credential after a failed save");
         }
@@ -1147,19 +1053,6 @@ impl ConfigStore {
 
     pub fn remove(&mut self, id: &str) {
         self.cache.sessions.retain(|s| s.id != id);
-        // The keyring entry used to outlive its deleted session, leaving a
-        // credential no UI could ever reach again.
-        if self.keyring_enabled {
-            Self::forget_keyring_password(id);
-        }
-    }
-
-    /// Best-effort deletion of a session's parked keyring credential. Never
-    /// fails the caller: an unreachable entry is a leak, not an error.
-    fn forget_keyring_password(session_id: &str) {
-        if let Err(error) = Self::keyring_set_password(session_id, "") {
-            tracing::warn!("keyring cleanup for session {session_id} failed: {error}");
-        }
     }
 
     pub fn get(&self, id: &str) -> Option<&Session> {
@@ -2188,6 +2081,19 @@ CREATE TABLE IF NOT EXISTS command_history (seq INTEGER PRIMARY KEY AUTOINCREMEN
         Ok(conn)
     }
 
+    /// Existing snapshots never initialize or replace their destination.
+    /// Schema/row validation happens before any persistence work.
+    fn open_existing_db(path: &Path) -> Result<rusqlite::Connection> {
+        let conn = rusqlite::Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE,
+        )
+        .context("failed to open existing configuration")?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.pragma_update(None, "synchronous", "FULL")?;
+        Ok(conn)
+    }
+
     /// Read the disk-form store out of the database: the settings blob (its
     /// secrets still encrypted), sessions in disk form, and the history.
     /// `None` means the database was never written — created and abandoned,
@@ -2222,13 +2128,12 @@ CREATE TABLE IF NOT EXISTS command_history (seq INTEGER PRIMARY KEY AUTOINCREMEN
     /// Write the planned slice of `cache`. One transaction: a half-written
     /// config is worse than an unwritten one.
     fn write_store(
-        conn: &mut rusqlite::Connection,
+        tx: &rusqlite::Transaction<'_>,
         cache: &ConfigFile,
         plan: &SavePlan,
         key: [u8; 32],
-        keyring_enabled: bool,
+        credentials: &std::collections::HashMap<String, Option<Secret>>,
     ) -> Result<()> {
-        let tx = conn.transaction()?;
         if plan.settings {
             // The settings blob keeps the secret treatment the JSON file had:
             // everything plaintext except the WebDAV password.
@@ -2256,7 +2161,13 @@ CREATE TABLE IF NOT EXISTS command_history (seq INTEGER PRIMARY KEY AUTOINCREMEN
         if plan.all_sessions {
             tx.execute("DELETE FROM sessions", [])?;
             for (ordinal, session) in cache.sessions.iter().enumerate() {
-                Self::upsert_session_row(&tx, ordinal, session, key, keyring_enabled)?;
+                Self::upsert_session_row(
+                    tx,
+                    ordinal,
+                    session,
+                    key,
+                    credentials.contains_key(&session.id),
+                )?;
             }
         } else {
             for id in &plan.sessions {
@@ -2266,7 +2177,7 @@ CREATE TABLE IF NOT EXISTS command_history (seq INTEGER PRIMARY KEY AUTOINCREMEN
                         ordinal,
                         &cache.sessions[ordinal],
                         key,
-                        keyring_enabled,
+                        credentials.contains_key(id),
                     )?,
                     // A planned id that is no longer in the cache was removed.
                     None => {
@@ -2281,8 +2192,6 @@ CREATE TABLE IF NOT EXISTS command_history (seq INTEGER PRIMARY KEY AUTOINCREMEN
                 tx.execute("INSERT INTO command_history(command) VALUES(?1)", [command])?;
             }
         }
-        tx.commit()
-            .context("failed to commit the config transaction")?;
         Ok(())
     }
 
@@ -2303,30 +2212,6 @@ CREATE TABLE IF NOT EXISTS command_history (seq INTEGER PRIMARY KEY AUTOINCREMEN
             rusqlite::params![ordinal as i64, disk.id, serde_json::to_string(&disk)?],
         )?;
         Ok(())
-    }
-
-    /// Whether the database has state of ours to diff against. A save against
-    /// a database that doesn't (first save ever, or the file was replaced
-    /// underneath us) upgrades its plan to "write everything".
-    fn db_has_state(conn: &rusqlite::Connection) -> Result<bool> {
-        Ok(conn.query_row("SELECT COUNT(*) FROM meta", [], |row| row.get::<_, i64>(0))? > 0)
-    }
-
-    /// Rename a corrupt database out of the way and start over, mirroring the
-    /// corrupt-JSON policy. The WAL sidecars belong to the broken database
-    /// and must not survive it.
-    fn quarantine_broken_db(path: &Path, err: &anyhow::Error) {
-        let backup = path.with_extension("db.broken");
-        let _ = fs::remove_file(&backup);
-        if fs::rename(path, &backup).is_ok() {
-            for suffix in ["-wal", "-shm"] {
-                let _ = fs::remove_file(PathBuf::from(format!("{}{suffix}", path.display())));
-            }
-        }
-        tracing::warn!(
-            "config database was corrupt ({err:#}); backed up to {}",
-            backup.display()
-        );
     }
 
     /// Transform one session into its on-disk form: the password moves to the
@@ -2358,7 +2243,9 @@ CREATE TABLE IF NOT EXISTS command_history (seq INTEGER PRIMARY KEY AUTOINCREMEN
                 session.password = Secret::new(enc);
             }
         }
-        if !session.private_key_inline.is_empty() && !session.private_key_inline.is_local_ciphertext() {
+        if !session.private_key_inline.is_empty()
+            && !session.private_key_inline.is_local_ciphertext()
+        {
             let enc = Self::encrypt(key, session.private_key_inline.as_str())?;
             session.private_key_inline = Secret::new(enc);
         }
@@ -2461,28 +2348,27 @@ CREATE TABLE IF NOT EXISTS command_history (seq INTEGER PRIMARY KEY AUTOINCREMEN
 
     /// The caller holds `save_lock`, including during saved-state bookkeeping.
     fn save_impl_locked(&self, forced: Option<SavePlan>, keyring_enabled: bool) -> Result<()> {
-        let saved = self
-            .saved_state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone();
-        let plan = forced.unwrap_or_else(|| Self::plan_save(&self.cache, &saved));
-        if plan.is_empty() {
-            return Ok(());
-        }
-        let new_state = Self::persist_locked(
-            self.cache.clone(),
-            plan,
+        let mut saved = {
+            let mut shared = self.saved_state.lock().unwrap_or_else(|p| p.into_inner());
+            shared.submitted += 1;
+            let mut saved = shared.clone();
+            saved.attempted = shared.submitted;
+            saved
+        };
+        let result = Self::persist_snapshot(
+            &self.cache,
+            &mut saved,
+            forced,
             self.key,
-            self.path.clone(),
-            self.backup_dir.clone(),
+            &self.path,
+            self.backup_dir.as_deref(),
             keyring_enabled,
-        )?;
-        *self
-            .saved_state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = new_state;
-        Ok(())
+        );
+        if let Err(ref error) = result {
+            Self::record_save_error(&mut saved, error);
+        }
+        Self::publish_snapshot(&self.saved_state, saved);
+        result
     }
 
     /// Diff the cache against what was last written: which rows would differ
@@ -2516,91 +2402,38 @@ CREATE TABLE IF NOT EXISTS command_history (seq INTEGER PRIMARY KEY AUTOINCREMEN
         plan
     }
 
-    /// Persist the current state without blocking the caller.
-    ///
-    /// The diff and the whole disk write run on a plain thread against a
-    /// snapshot taken here, so a UI action that only wants to remember a
-    /// preference (folding the resource panel) does not stall the frame it
-    /// happened in. Later saves are ordered against this one by
-    /// [`Self::save_lock`]. The snapshot bookkeeping is deliberately left
-    /// alone: the next foreground save diffs against pre-background state
-    /// and rewrites whatever the background already wrote — a few identical
-    /// rows, never a lost change.
+    /// Queue a snapshot without blocking the UI. The shared commit state and
+    /// submission counter reject out-of-order tasks and surface failures.
     pub fn save_in_background(&self) {
+        let sequence = {
+            let mut saved = self.saved_state.lock().unwrap_or_else(|p| p.into_inner());
+            saved.submitted += 1;
+            saved.submitted
+        };
         let cache = self.cache.clone();
-        let saved = self
-            .saved_state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone();
-        let plan = Self::plan_save(&cache, &saved);
-        if plan.is_empty() {
-            return;
-        }
+        let shared = self.saved_state.clone();
         let key = self.key;
         let path = self.path.clone();
         let backup_dir = self.backup_dir.clone();
         let keyring_enabled = self.keyring_enabled;
         std::thread::spawn(move || {
-            if let Err(error) = Self::persist(cache, plan, key, path, backup_dir, keyring_enabled) {
-                tracing::warn!("background config save failed: {error:#}");
-            }
+            Self::run_background_save(
+                cache,
+                sequence,
+                shared,
+                key,
+                path,
+                backup_dir,
+                keyring_enabled,
+            )
         });
     }
 
-    /// Serialises every save — sync or background — process-wide. SQLite
-    /// serialises concurrent writers too, but two saves racing would
-    /// otherwise land in the wrong order and leave an older snapshot's rows
-    /// on disk.
+    /// Orders process-local keyring and SQLite work. Background submission
+    /// order is separately enforced by the shared persistence generations.
     fn save_lock() -> &'static Mutex<()> {
         static LOCK: std::sync::OnceLock<Mutex<()>> = std::sync::OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
-    }
-
-    /// Write the planned slice of the store: keyring writes, field
-    /// encryption, the transaction, the backup mirror. All the inputs are
-    /// owned, which is what lets [`Self::save_in_background`] run it
-    /// off-thread. Returns the saved-state snapshot the next save should
-    /// diff against.
-    fn persist(
-        cache: ConfigFile,
-        plan: SavePlan,
-        key: [u8; 32],
-        path: PathBuf,
-        backup_dir: Option<PathBuf>,
-        keyring_enabled: bool,
-    ) -> Result<SavedState> {
-        let _ordered = Self::save_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        Self::persist_locked(cache, plan, key, path, backup_dir, keyring_enabled)
-    }
-
-    /// The caller holds `save_lock`; editor compensation must share that lock.
-    fn persist_locked(
-        cache: ConfigFile,
-        plan: SavePlan,
-        key: [u8; 32],
-        path: PathBuf,
-        backup_dir: Option<PathBuf>,
-        keyring_enabled: bool,
-    ) -> Result<SavedState> {
-        let mut conn = Self::open_db(&path)?;
-        let plan = if Self::db_has_state(&conn)? {
-            plan
-        } else {
-            SavePlan::all()
-        };
-        Self::write_store(&mut conn, &cache, &plan, key, keyring_enabled)?;
-        // The backup mirror exists so a lost config directory can be
-        // restored. It is refreshed whenever sessions or settings change; a
-        // history-only save — the most frequent one — skips it, because
-        // losing a few command entries in a backup is what being a backup of
-        // sessions means.
-        if plan.settings || plan.all_sessions || !plan.sessions.is_empty() {
-            Self::sync_backup_to(backup_dir.as_deref(), &path, path.parent());
-        }
-        Ok(SavedState::of_cache(&cache))
     }
 
     /// Mirror the just-written database into the user config backup dir, when
@@ -2608,52 +2441,8 @@ CREATE TABLE IF NOT EXISTS command_history (seq INTEGER PRIMARY KEY AUTOINCREMEN
     /// mirror is a consistent `VACUUM INTO` snapshot — safe while the WAL is
     /// live — written to a temp name and renamed over the previous one.
     fn sync_backup_to(backup_dir: Option<&Path>, db_path: &Path, config_dir: Option<&Path>) {
-        let Some(backup_dir) = backup_dir else {
-            return;
-        };
-        if let Err(e) = fs::create_dir_all(backup_dir) {
-            tracing::warn!(
-                "failed to create user config backup dir {}: {e}",
-                backup_dir.display()
-            );
-            return;
-        }
-        let backup_db = backup_dir.join("sessions.db");
-        let tmp = PathBuf::from(format!("{}.tmp", backup_db.display()));
-        let _ = fs::remove_file(&tmp);
-        let vacuum = rusqlite::Connection::open(db_path)
-            .and_then(|conn| conn.execute("VACUUM INTO ?1", [tmp.to_string_lossy().as_ref()]));
-        match vacuum {
-            Ok(_) => {
-                if let Err(e) = fs::rename(&tmp, &backup_db) {
-                    tracing::warn!("failed to finalise {}: {e}", backup_db.display());
-                }
-            }
-            Err(e) => {
-                let _ = fs::remove_file(&tmp);
-                tracing::warn!("failed to back up the config database: {e}");
-            }
-        }
-
-        if let Some(config_dir) = config_dir {
-            for name in ["secret.key", "known_hosts"] {
-                let src = config_dir.join(name);
-                let dst = backup_dir.join(name);
-                if src.exists() {
-                    if let Err(e) = fs::copy(&src, &dst) {
-                        tracing::warn!(
-                            "failed to sync {} to user config backup {}: {e}",
-                            src.display(),
-                            dst.display()
-                        );
-                    }
-                    #[cfg(unix)]
-                    if name == "secret.key" {
-                        use std::os::unix::fs::PermissionsExt;
-                        let _ = fs::set_permissions(&dst, fs::Permissions::from_mode(0o600));
-                    }
-                }
-            }
+        if let Err(error) = recovery::sync_backup_to(backup_dir, db_path, config_dir) {
+            tracing::warn!("could not refresh profile backup: {error:#}");
         }
     }
 
@@ -2737,18 +2526,22 @@ CREATE TABLE IF NOT EXISTS command_history (seq INTEGER PRIMARY KEY AUTOINCREMEN
         fs::write(path, raw).with_context(|| format!("failed to write {}", path.display()))?;
         Ok(count)
     }
-
-
 }
 
 #[path = "import.rs"]
 mod import;
+#[path = "persistence.rs"]
+mod persistence;
+#[path = "profile_io.rs"]
+mod profile_io;
+#[path = "recovery.rs"]
+mod recovery;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn temp_store() -> ConfigStore {
+    pub(super) fn temp_store() -> ConfigStore {
         let path = std::env::temp_dir().join(format!("ms-test-{}.db", Uuid::new_v4()));
         ConfigStore {
             path,
@@ -2756,7 +2549,7 @@ mod tests {
             cache: ConfigFile::default(),
             key: [7u8; 32],
             keyring_enabled: false,
-            saved_state: std::sync::Mutex::new(SavedState::default()),
+            saved_state: std::sync::Mutex::new(SavedState::of_cache(&ConfigFile::default())).into(),
         }
     }
 
@@ -3135,7 +2928,7 @@ mod tests {
         assert_eq!(store.terminal_cursor_color(), "#ABCDEF");
     }
 
-    fn sample_session(name: &str) -> Session {
+    pub(super) fn sample_session(name: &str) -> Session {
         Session {
             name: name.into(),
             host: "192.168.100.2".into(),
@@ -3166,7 +2959,7 @@ mod tests {
         .unwrap();
         std::fs::write(backup.join("secret.key"), [9u8; 32]).unwrap();
 
-        restore_user_backup_if_needed(&primary, &backup);
+        restore_user_backup_if_needed(&primary, &backup).unwrap();
         assert!(sessions_file_has_connections(
             &primary.join("sessions.json")
         ));
@@ -3175,27 +2968,32 @@ mod tests {
             [9u8; 32]
         );
 
-        // A save into the restored primary mirrors the database snapshot into
-        // the backup dir — the current backup format is a sessions.db copy.
+        // A save mirrors into dedicated passive storage, never the live
+        // legacy profile directory used as a recovery source.
+        let dedicated = recovery::backup_directory(&primary, &backup).unwrap();
         let store = ConfigStore {
             path: primary.join("sessions.db"),
-            backup_dir: Some(backup.clone()),
+            backup_dir: Some(dedicated.clone()),
             cache: ConfigFile {
                 sessions: vec![sample_session("new")],
                 ..ConfigFile::default()
             },
             key: [7u8; 32],
             keyring_enabled: false,
-            saved_state: std::sync::Mutex::new(SavedState::default()),
+            saved_state: std::sync::Mutex::new(SavedState::default()).into(),
         };
         std::fs::write(primary.join("secret.key"), [7u8; 32]).unwrap();
         store.save().unwrap();
 
         assert!(
-            db_has_sessions(&backup.join("sessions.db")).unwrap(),
+            db_has_sessions(&dedicated.join("sessions.db")).unwrap(),
             "the backup mirror must be a live sessions.db snapshot"
         );
-        assert_eq!(std::fs::read(backup.join("secret.key")).unwrap(), [7u8; 32]);
+        assert_eq!(
+            std::fs::read(dedicated.join("secret.key")).unwrap(),
+            [7u8; 32]
+        );
+        assert_eq!(std::fs::read(backup.join("secret.key")).unwrap(), [9u8; 32]);
 
         let _ = std::fs::remove_dir_all(base);
     }
@@ -3540,7 +3338,7 @@ mod tests {
     /// behave — so write-then-read flows like the master-key migration are
     /// exercised realistically. The read-back kill switch simulates a
     /// keychain that accepts a write but won't hand the secret back.
-    mod fake_keyring {
+    pub(super) mod fake_keyring {
         use keyring::credential::{Credential, CredentialApi, CredentialBuilderApi};
         use std::any::Any;
         use std::collections::HashMap;
@@ -3681,7 +3479,7 @@ mod tests {
     /// The fake keyring's map and keyring's process-wide default credential
     /// builder are global state; keyring tests serialize on this so they
     /// never observe each other's entries.
-    static KEYRING_TESTS: Mutex<()> = Mutex::new(());
+    pub(super) static KEYRING_TESTS: Mutex<()> = Mutex::new(());
 
     #[test]
     #[cfg(feature = "desktop")]
@@ -3772,11 +3570,15 @@ mod tests {
         let mut cleared = store.get(&id).unwrap().clone();
         cleared.password = Secret::default();
         store.upsert(cleared);
+        assert_eq!(parked.get_password().unwrap(), "hunter2");
+        store.save().unwrap();
         assert!(parked.get_password().is_err());
 
         // …and so does deleting the session outright.
         parked.set_password("hunter3").unwrap();
         store.remove(&id);
+        assert_eq!(parked.get_password().unwrap(), "hunter3");
+        store.save().unwrap();
         assert!(parked.get_password().is_err());
     }
 
@@ -4153,11 +3955,13 @@ mod tests {
         // First save after the import lands everything in SQLite, and the
         // snapshot it leaves says the disk is now current.
         let db_path = dir.join("sessions.db");
-        let state = ConfigStore::persist(
-            cache.clone(),
-            SavePlan::all(),
+        let mut state = SavedState::default();
+        ConfigStore::persist_snapshot(
+            &cache,
+            &mut state,
+            Some(SavePlan::all()),
             key,
-            db_path.clone(),
+            &db_path,
             None,
             false,
         )
@@ -4184,23 +3988,15 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_database_is_quarantined_and_starts_fresh() {
+    fn corrupt_database_is_preserved_without_recovery_overwrite() {
         let dir = std::env::temp_dir().join(format!("ms-broken-{}", Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         let db = dir.join("sessions.db");
-        fs::write(&db, b"this is definitely not a sqlite database").unwrap();
-
-        let err = ConfigStore::open_db(&db)
-            .and_then(|conn| ConfigStore::read_disk_store(&conn).map(|_| ()))
-            .expect_err("garbage bytes must not read as a config store");
-        ConfigStore::quarantine_broken_db(&db, &err);
-
-        assert!(!db.exists(), "the broken database is moved out of the way");
-        assert!(dir.join("sessions.db.broken").exists());
-        // A store opened after the quarantine behaves like a fresh install.
-        let conn = ConfigStore::open_db(&db).unwrap();
-        assert!(ConfigStore::read_disk_store(&conn).unwrap().is_none());
-
+        let original = b"this is definitely not a sqlite database";
+        fs::write(&db, original).unwrap();
+        assert!(ConfigStore::read_cache_snapshot(&db, &[7u8; 32]).is_err());
+        assert_eq!(fs::read(&db).unwrap(), original);
+        assert!(!dir.join("sessions.db.broken").exists());
         let _ = fs::remove_dir_all(&dir);
     }
 

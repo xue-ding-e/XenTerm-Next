@@ -255,6 +255,7 @@ pub(crate) fn run() -> Result<()> {
                         open_file: None,
                         state,
                         overlay: Overlay::None,
+                        persistence_warning: PersistenceWarning::default(),
                         status: None,
                         status_epoch: 0,
                         status_expiry: None,
@@ -325,6 +326,46 @@ const STATUS_TTL: std::time::Duration = std::time::Duration::from_secs(6);
 /// How long the fade out takes.
 const STATUS_FADE: std::time::Duration = std::time::Duration::from_millis(400);
 
+/// Save failures outlive the transient status line. The message comes only from
+/// `ConfigStore::persistence_error`, which returns fixed, sanitized guidance,
+/// never raw database errors, paths, or session details. The store owns when a
+/// successful save clears it.
+#[derive(Default)]
+struct PersistenceWarning {
+    message: Option<String>,
+}
+
+impl PersistenceWarning {
+    /// Returns whether the window needs repainting. Repeated failed polls must
+    /// neither dismiss the warning nor request a new frame every second.
+    fn refresh(&mut self, error: Option<String>) -> bool {
+        let changed = self.message != error;
+        self.message = error;
+        changed
+    }
+
+    fn render(&self, cx: &gpui_kit::App) -> Option<impl IntoElement> {
+        self.message.as_ref().map(|message| {
+            div()
+                .id("configuration-save-warning")
+                .debug_selector(|| "configuration-save-warning".to_string())
+                .w_full()
+                .min_w_0()
+                .flex_shrink_0()
+                .px_3()
+                .py_2()
+                .border_t_1()
+                .border_color(cx.theme().warning)
+                .bg(cx.theme().warning)
+                .text_color(cx.theme().warning_foreground)
+                .text_sm()
+                // Let the recovery advice wrap, rather than truncating the
+                // part that tells the user to preserve their pending edits.
+                .child(SharedString::from(message.clone()))
+        })
+    }
+}
+
 /// The window's contents: a navigation rail beside the active page.
 ///
 /// The first real layout decision of the migration, and the one this pass is about:
@@ -390,6 +431,9 @@ pub(crate) struct Shell {
     /// left here is what is genuinely modal — a form being filled in, a file
     /// being read, a thing the user is mid-way through.
     overlay: Overlay,
+    /// A persistent warning independent of transient connection/status notices.
+    /// Refreshed after foreground actions and by the existing background poll.
+    persistence_warning: PersistenceWarning,
     /// A status line for the window, under the content: connect and disconnect notices,
     /// and the answer to a command that had none of its own.
     status: Option<StatusNote>,
@@ -504,6 +548,75 @@ mod join_remote_tests {
     }
 }
 
+#[cfg(test)]
+mod persistence_warning_tests {
+    use super::*;
+    use gpui_kit::gpui::TestAppContext;
+
+    const CONFLICT: &str = "Configuration changed elsewhere. Your changes were not saved. Keep pending edits, then reopen XenTerm to reload.";
+    const STORAGE_FAILURE: &str = "Configuration could not be saved. Keep pending edits before closing XenTerm.";
+
+    /// A minimal host exercises the shell's actual banner without starting
+    /// terminals, resource samplers, approval scans, or database workers.
+    struct WarningHost {
+        warning: PersistenceWarning,
+    }
+
+    impl Render for WarningHost {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().children(self.warning.render(cx))
+        }
+    }
+
+    #[test]
+    fn only_changed_save_feedback_requests_a_repaint() {
+        let mut warning = PersistenceWarning::default();
+        assert!(!warning.refresh(None));
+        assert!(warning.refresh(Some(CONFLICT.into())));
+        assert!(!warning.refresh(Some(CONFLICT.into())));
+        assert_eq!(warning.message.as_deref(), Some(CONFLICT));
+        assert!(warning.refresh(Some(STORAGE_FAILURE.into())));
+        assert!(warning.refresh(None));
+        assert!(!warning.refresh(None));
+    }
+
+    #[gpui_kit::gpui::test]
+    fn save_warning_stays_visible_until_the_store_clears_it(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let (view, cx) = cx.add_window_view(|_, _| WarningHost {
+            warning: PersistenceWarning::default(),
+        });
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        assert!(cx.debug_bounds("configuration-save-warning").is_none());
+
+        for message in [CONFLICT, CONFLICT, STORAGE_FAILURE] {
+            view.update(cx, |host, cx| {
+                if host.warning.refresh(Some(message.into())) {
+                    cx.notify();
+                }
+            });
+            cx.update(|window, cx| {
+                window.draw(cx).clear(cx);
+            });
+            assert!(cx.debug_bounds("configuration-save-warning").is_some());
+            view.read_with(cx, |host, _| {
+                assert_eq!(host.warning.message.as_deref(), Some(message));
+            });
+        }
+
+        view.update(cx, |host, cx| {
+            assert!(host.warning.refresh(None));
+            cx.notify();
+        });
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        assert!(cx.debug_bounds("configuration-save-warning").is_none());
+    }
+}
+
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Measured before anything else: the terminal page derives its pane width
@@ -538,6 +651,9 @@ impl Render for Shell {
         self.drain_group_manager(window, cx);
         self.drain_rule_editor(window, cx);
         self.drain_approval_queue(window, cx);
+        // A synchronous save can fail during a drain. Display it in this frame
+        // without closing or recreating the editor that still owns the draft.
+        self.refresh_persistence_warning();
 
         let background = cx.theme().background;
 
@@ -559,6 +675,7 @@ impl Render for Shell {
             .flex_col()
             .bg(background)
             .child(body_element)
+            .children(self.persistence_warning.render(cx))
             .child(status_bar)
             // Last, so a dialog covers the window.
             .children(sheet_layer)
@@ -567,11 +684,18 @@ impl Render for Shell {
 }
 
 impl Shell {
+    fn refresh_persistence_warning(&mut self) -> bool {
+        let error = self.state.store.borrow().persistence_error();
+        self.persistence_warning.refresh(error)
+    }
+
     /// Start the approval poll: once a second, sweep the approval queue.
     /// Three jobs in one pass — new pending requests join the dialog queue,
     /// finished requests (the human answered, or a timer did) are reported
     /// once on the status line and removed, and the audit journal's retention
-    /// sweep runs when the day turns. Started once, at construction.
+    /// sweep runs when the day turns. The same tick observes background-save
+    /// failures without a second timer or a busy repaint loop. Started once,
+    /// at construction.
     fn start_approval_poll(&mut self, cx: &mut Context<Self>) {
         self.approval_poll = Some(cx.spawn(async move |this, cx| loop {
             cx.background_executor()
@@ -588,6 +712,9 @@ impl Shell {
                 })
                 .await;
             let alive = this.update(cx, |shell, cx| {
+                if shell.refresh_persistence_warning() {
+                    cx.notify();
+                }
                 let queue_root = crate::automation::approval::queue_dir();
                 for request in requests {
                     match request.status.as_str() {

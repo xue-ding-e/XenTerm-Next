@@ -348,7 +348,7 @@ impl ConfigStore {
                 anyhow::anyhow!("import entry {} has an invalid SSH jump chain (missing/non-SSH hop, cycle or too many hops)", index + 1)
             })?;
         }
-        if !dry_run && summary.added > 0 {
+        if !dry_run {
             self.commit_import(candidate)?;
         }
         Ok(summary)
@@ -361,46 +361,74 @@ impl ConfigStore {
     /// non-transactional OS-keyring side effects.
     fn commit_import(&mut self, candidate: ConfigFile) -> Result<()> {
         let _ordered = Self::save_lock().lock().unwrap_or_else(|p| p.into_inner());
-        let saved = self
-            .saved_state
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone();
-        let mut conn = Self::open_db(&self.path)
-            .map_err(|_| anyhow::anyhow!("failed to open destination configuration"))?;
+        let mut saved = {
+            let mut shared = self.saved_state.lock().unwrap_or_else(|p| p.into_inner());
+            shared.submitted += 1;
+            let mut saved = shared.clone();
+            saved.attempted = shared.submitted;
+            saved
+        };
+        let result = self.commit_import_locked(&candidate, &saved);
+        match result {
+            Ok(fingerprint) => {
+                Self::finish_snapshot(&mut saved, &candidate, fingerprint);
+                self.cache = candidate;
+                Self::publish_snapshot(&self.saved_state, saved);
+                Self::sync_backup_to(self.backup_dir.as_deref(), &self.path, self.path.parent());
+                Ok(())
+            }
+            Err(error) => {
+                Self::record_save_error(&mut saved, &error);
+                Self::publish_snapshot(&self.saved_state, saved);
+                Err(error)
+            }
+        }
+    }
+
+    fn commit_import_locked(
+        &self,
+        candidate: &ConfigFile,
+        saved: &SavedState,
+    ) -> Result<Option<[u8; 32]>> {
+        if saved.credentials_uncertain {
+            return Err(super::SessionCredentialRollbackFailed.into());
+        }
+        // Pending foreground edits or an older queued snapshot are never
+        // silently folded into a successful import.
+        let cache = SavedState::of_cache(&self.cache);
+        if cache.sessions != saved.sessions
+            || cache.order != saved.order
+            || cache.settings != saved.settings
+            || cache.history != saved.history
+        {
+            bail!("save or discard pending configuration changes before importing");
+        }
+        if saved.disk_fingerprint.is_none()
+            && !self.path.exists()
+            && candidate.sessions.len() == self.cache.sessions.len()
+        {
+            return Ok(None);
+        }
+        if saved.disk_fingerprint.is_some() && !self.path.exists() {
+            return Err(super::ConfigurationChanged.into());
+        }
+        let io = super::profile_io::ProfileIoGuard::acquire(&self.path)?;
+        let mut conn = if saved.disk_fingerprint.is_some() {
+            Self::open_existing_db(&self.path)
+        } else {
+            Self::open_db(&self.path)
+        }
+        .map_err(|_| anyhow::anyhow!("failed to open destination configuration"))?;
         let tx = conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|_| anyhow::anyhow!("failed to lock destination configuration"))?;
-        let existing = Self::read_disk_store(&tx)
-            .map_err(|_| anyhow::anyhow!("failed to read destination configuration"))?;
-        if let Some((settings, mut sessions, history)) = existing {
-            let mut disk: ConfigFile = serde_json::from_str(&settings)
-                .map_err(|_| anyhow::anyhow!("invalid destination settings"))?;
-            if let Some(plain) = Self::try_decrypt(&self.key, disk.webdav_password.as_str()) {
-                disk.webdav_password = Secret::new(plain);
-            }
-            for session in &mut sessions {
-                Self::session_from_disk_form(session, &self.key);
-            }
-            disk.sessions = sessions;
-            disk.command_history = history;
-            let current = SavedState::of_cache(&disk);
-            if current.sessions != saved.sessions
-                || current.order != saved.order
-                || current.settings != saved.settings
-                || current.history != saved.history
-            {
-                bail!("configuration changed since it was loaded; reload before importing");
-            }
-            // Unsaved editor changes must not be falsely marked persisted.
-            let cache = SavedState::of_cache(&self.cache);
-            if cache.sessions != saved.sessions
-                || cache.order != saved.order
-                || cache.settings != saved.settings
-                || cache.history != saved.history
-            {
-                bail!("save or discard pending configuration changes before importing");
-            }
+        io.recover(&tx, &self.key)?;
+        Self::validate_snapshot(&tx, saved)?;
+        if saved.disk_fingerprint.is_some() && candidate.sessions.len() == self.cache.sessions.len()
+        {
+            return Ok(saved.disk_fingerprint);
+        }
+        if saved.disk_fingerprint.is_some() {
             for (ordinal, session) in candidate
                 .sessions
                 .iter()
@@ -411,9 +439,6 @@ impl ConfigStore {
                     .map_err(|_| anyhow::anyhow!("failed to write imported session"))?;
             }
         } else {
-            if !saved.sessions.is_empty() {
-                bail!("destination configuration disappeared; reload before importing");
-            }
             let mut settings = candidate.clone();
             settings.sessions.clear();
             settings.command_history.clear();
@@ -442,14 +467,11 @@ impl ConfigStore {
                     .map_err(|_| anyhow::anyhow!("failed to initialise import history"))?;
             }
         }
+        Self::stamp_commit(&tx, &Uuid::new_v4().to_string())?;
+        let fingerprint = Self::disk_fingerprint(&tx)?;
         tx.commit()
             .map_err(|_| anyhow::anyhow!("failed to commit imported sessions"))?;
-        // Mutate the cache and snapshot only after the database commit succeeds.
-        *self.saved_state.lock().unwrap_or_else(|p| p.into_inner()) =
-            SavedState::of_cache(&candidate);
-        self.cache = candidate;
-        Self::sync_backup_to(self.backup_dir.as_deref(), &self.path, self.path.parent());
-        Ok(())
+        Ok(fingerprint)
     }
 
     fn decode_import_secret(&self, secret: &mut Secret, index: usize, field: &str) -> Result<()> {
