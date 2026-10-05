@@ -64,14 +64,21 @@ between profiles or computers. Unsupported transport kinds are rejected instead
 of silently changing their meaning. A batch containing RDP sessions is rejected
 in full because XenTerm does not implement that transport.
 
-The public MeatShell branch also exports `session_log`, `allow_secret_reveal`
-and `rdp_domain`/`rdp_width`/`rdp_height`/`rdp_fullscreen` metadata. This XenTerm
+The public MeatShell branch also exports `session_log` and
+`rdp_domain`/`rdp_width`/`rdp_height`/`rdp_fullscreen` metadata. This XenTerm
 version does not implement those settings. Preview and apply explicitly return
-`warnings` naming these known unsupported fields and the number of affected
-entries; no field values or session identifiers are included. Unknown optional
-fields produce a generic warning without echoing their names or values. These
-settings are not applied, and importing never enables secret reveal. Review the
+`warnings` naming known unsupported fields and the number of affected entries;
+no field values or session identifiers are included. Unknown optional fields
+produce a generic warning without echoing their names or values. Review the
 preview and retain your original export if these preferences matter to you.
+
+`allow_secret_reveal` is understood and exported, but importing always resets it
+to `false`. A `true` value produces a `local_permission_reset` warning in both
+preview and apply: opt in again through the local session editor if desired.
+This local permission is excluded from duplicate matching, so reimporting an
+otherwise identical session neither creates a duplicate nor changes an
+existing local choice. CLI/MCP metadata remains credential-free even if a local
+session permits GUI reveal.
 
 Imports are **append-only**. An equivalent complete profile, including its
 credentials and resolved jump route, is skipped. Profiles sharing an endpoint

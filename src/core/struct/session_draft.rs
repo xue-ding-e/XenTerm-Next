@@ -59,6 +59,8 @@ pub struct SessionDraft {
     pub private_key_inline: String,
     /// Whether the key is provided inline rather than by path.
     pub private_key_inline_mode: bool,
+    /// Permit an explicit, local GUI action to reveal saved credentials.
+    pub allow_secret_reveal: bool,
     pub proxy: String,
     /// The folder this session belongs to; empty is the default group.
     pub group: String,
@@ -120,6 +122,7 @@ impl SessionDraft {
             private_key_path: session.private_key_path.clone(),
             private_key_inline: String::new(),
             private_key_inline_mode: !session.private_key_inline.is_empty(),
+            allow_secret_reveal: session.allow_secret_reveal,
             proxy: session.proxy.clone(),
             group: session.group.clone(),
             serial_port: session.serial_port.clone(),
@@ -253,6 +256,7 @@ impl SessionDraft {
             password,
             private_key_path,
             private_key_inline,
+            allow_secret_reveal: self.allow_secret_reveal,
             proxy: self.proxy.clone(),
             last_used: existing.and_then(|session| session.last_used.clone()),
             group: self.group.clone(),
@@ -304,16 +308,19 @@ mod tests {
     fn a_blank_password_keeps_the_saved_one() {
         let mut saved = Session::new_empty();
         saved.password = Secret::new("hunter2");
+        saved.allow_secret_reveal = true;
         // `Session` has no "inline mode" flag: a non-empty inline key *is* the mode,
         // which is why the draft derives it rather than storing a second copy.
         saved.private_key_inline = Secret::new("-----BEGIN KEY-----");
 
         let draft = SessionDraft::from_session(&saved);
+        assert!(draft.allow_secret_reveal);
         assert!(draft.password.is_empty(), "never echoed back");
         assert!(draft.private_key_inline.is_empty());
         assert!(draft.private_key_inline_mode, "derived from the saved key");
 
         let out = draft.to_session(Some(&saved));
+        assert!(out.allow_secret_reveal);
         assert_eq!(out.password.as_str(), "hunter2");
         assert_eq!(out.private_key_inline.as_str(), "-----BEGIN KEY-----");
     }
@@ -522,5 +529,23 @@ mod tests {
 
         draft.triggers.clear();
         assert!(draft.to_session(None).triggers.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod reveal_preference_tests {
+    use super::*;
+
+    #[test]
+    fn old_and_new_sessions_default_to_no_reveal_permission() {
+        assert!(!SessionDraft::new_ssh().allow_secret_reveal);
+        let mut value = serde_json::to_value(Session::new_empty()).unwrap();
+        value.as_object_mut().unwrap().remove("allow_secret_reveal");
+        let session: Session = serde_json::from_value(value).unwrap();
+        assert!(!session.allow_secret_reveal);
+        let mut draft = SessionDraft::from_session(&session);
+        draft.allow_secret_reveal = true;
+        let persisted = serde_json::to_value(draft.to_session(Some(&session))).unwrap();
+        assert_eq!(persisted["allow_secret_reveal"], true);
     }
 }

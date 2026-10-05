@@ -74,6 +74,9 @@ mod tunnels;
 mod view;
 
 #[cfg(test)]
+mod dialog_parity_tests;
+
+#[cfg(test)]
 #[path = "../../tests/app/ui_animations/mod.rs"]
 mod ui_animation_probes;
 

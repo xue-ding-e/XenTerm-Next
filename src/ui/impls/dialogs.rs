@@ -27,6 +27,24 @@ use gpui_kit::{
     px, App, Context, Entity, IntoElement, SharedString, Subscription, Window,
 };
 
+/// Extend the toolkit's dialog keys with the native macOS cancel shortcut.
+/// Dispatch its existing Cancel action so focused inputs and nested dropdowns
+/// keep the same dismissal order as Escape; never intercept keys globally.
+pub(crate) fn init(cx: &mut App) {
+    if cfg!(target_os = "macos") {
+        bind_macos_cancel(cx);
+    }
+}
+
+// Shared with event-level tests so the macOS key path is exercised on CI too.
+pub(super) fn bind_macos_cancel(cx: &mut App) {
+    cx.bind_keys([gpui_kit::KeyBinding::new(
+        "cmd-.",
+        gpui_kit::component::dialog::Cancel,
+        Some("Dialog"),
+    )]);
+}
+
 /// Keep `view` repainting whenever the window's [`Root`] changes.
 ///
 /// `Root` owns the queue of open dialogs and sheets, and it draws none of them: the view

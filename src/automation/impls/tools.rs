@@ -502,6 +502,7 @@ mod tests {
     fn session_metadata_never_serializes_credential_or_note_fields() {
         let mut session = Session::new_empty();
         let sentinel = "synthetic-secret-redaction-sentinel";
+        session.allow_secret_reveal = true;
         session.password = crate::config::Secret::new(sentinel);
         session.private_key_inline = crate::config::Secret::new(sentinel);
         session.private_key_path = sentinel.into();

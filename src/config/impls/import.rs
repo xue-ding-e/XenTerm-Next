@@ -41,7 +41,7 @@ fn compatibility_warnings(value: &serde_json::Value) -> Result<Vec<ImportWarning
     };
     let legacy = [
         ("session_log", "Legacy session logging preferences were not applied; this XenTerm version does not implement them."),
-        ("allow_secret_reveal", "Legacy secret-reveal preferences were not applied; importing never enables credential reveal."),
+        ("allow_secret_reveal", "Saved-credential reveal is disabled for imported sessions. Enable it explicitly in the local GUI to allow subsequent reveal clicks."),
         ("rdp_domain", "Legacy RDP domain settings were not applied; this XenTerm version does not implement RDP."),
         ("rdp_width", "Legacy RDP width settings were not applied; this XenTerm version does not implement RDP."),
         ("rdp_height", "Legacy RDP height settings were not applied; this XenTerm version does not implement RDP."),
@@ -58,11 +58,21 @@ fn compatibility_warnings(value: &serde_json::Value) -> Result<Vec<ImportWarning
     for (field, message) in legacy {
         let entries = sessions
             .iter()
-            .filter(|session| session.get(field).is_some())
+            .filter(|session| {
+                if field == "allow_secret_reveal" {
+                    session.get(field).and_then(serde_json::Value::as_bool) == Some(true)
+                } else {
+                    session.get(field).is_some()
+                }
+            })
             .count();
         if entries > 0 {
             warnings.push(ImportWarning {
-                code: "unsupported_session_field",
+                code: if field == "allow_secret_reveal" {
+                    "local_permission_reset"
+                } else {
+                    "unsupported_session_field"
+                },
                 field,
                 entries,
                 message,
@@ -111,7 +121,7 @@ fn identity(session: &Session, sessions: &[Session]) -> Result<SessionIdentity> 
         let object = value
             .as_object_mut()
             .expect("Session serializes as an object");
-        for key in ["id", "last_used", "jump_session_id", "jump_session_ids"] {
+        for key in ["id", "last_used", "jump_session_id", "jump_session_ids", "allow_secret_reveal"] {
             object.remove(key);
         }
         Ok(value)
@@ -195,6 +205,8 @@ impl ConfigStore {
 
         let mut source_ids = HashSet::new();
         for (index, session) in sessions.iter_mut().enumerate() {
+            // Imported preferences never grant local permission to reveal credentials.
+            session.allow_secret_reveal = false;
             // Match the editor/load normalization for display-only group names,
             // so repeating an import after a reload remains idempotent.
             if super::is_reserved_session_group(session.group.trim()) {

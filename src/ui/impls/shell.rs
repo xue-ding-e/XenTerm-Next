@@ -94,6 +94,7 @@ pub(crate) fn run() -> Result<()> {
             // is English: passing this app's own `"zh"` left every toolkit string English.
             gpui_kit::component::set_locale(if crate::i18n::is_en() { "en" } else { "zh-CN" });
             gpui_kit::init(cx);
+            super::dialogs::init(cx);
             // The taskbar's "新建窗口" task, for *this* entry point: the GPUI window is
             // started with `gpui`, so that is what the task has to pass. Registered
             // before the first window shows, so the entry is there when the taskbar icon
@@ -2358,9 +2359,17 @@ impl Shell {
     /// that covers the window hides the thing being edited. The dialog keeps the list
     /// visible and insets the form into a card — which only works because the form carries
     /// its own sidebar (会话 / 端口转发 / 自动应答) rather than being one long column.
-    fn editor_dialog(editor: Entity<SessionEditor>, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn editor_dialog(editor: Entity<SessionEditor>, window: &mut Window, cx: &mut gpui_kit::App) {
         let title = SharedString::from(editor.read(cx).heading());
-        Self::overlay_dialog(editor, title, 940., 560., window, cx);
+        let weak_editor = editor.downgrade();
+        Self::overlay_dialog_with_close(
+            editor, title, 940., 560., window, cx,
+            move |window, cx| {
+                if let Some(editor) = weak_editor.upgrade() {
+                    editor.update(cx, |editor, cx| editor.clear_sensitive_inputs(window, cx));
+                }
+            },
+        );
     }
 
     /// Any create-or-edit view, as a dialog rather than across the window.
@@ -2379,6 +2388,21 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        Self::overlay_dialog_with_close(view, title, width, height, window, cx, |_, _| {});
+    }
+
+    /// Every toolkit dismissal path (Escape, platform cancel, or the close button)
+    /// runs this callback before a hidden editor can retain sensitive input entities.
+    fn overlay_dialog_with_close<T: Render + 'static>(
+        view: Entity<T>,
+        title: SharedString,
+        width: f32,
+        height: f32,
+        window: &mut Window,
+        cx: &mut gpui_kit::App,
+        on_close: impl Fn(&mut Window, &mut gpui_kit::App) + 'static,
+    ) {
+        let on_close = Rc::new(on_close);
         // One card at a time. `open_dialog` pushes onto the layer's queue rather than
         // replacing what is there, so opening a second one leaves the first underneath it —
         // a dialog with something unexpected beneath it, which is the overlap this avoids.
@@ -2405,7 +2429,9 @@ impl Shell {
         let width = width.min(window_width - MARGIN * 2.0).max(240.0);
         let margin_top = ((window_height - (height + CHROME)) / 2.0).max(24.0);
         window.open_dialog(cx, move |dialog, _window, _cx| {
+            let on_close = on_close.clone();
             dialog
+                .on_close(move |_, window, cx| on_close(window, cx))
                 .title(title.clone())
                 .width(px(width))
                 .margin_top(px(margin_top))

@@ -342,6 +342,8 @@ pub(crate) fn move_session(store: &mut ConfigStore, id: &str, group: &str) -> bo
 pub(crate) fn duplicate_of(session: &Session) -> Session {
     let mut copy = session.clone();
     copy.id = uuid::Uuid::new_v4().to_string();
+    // A new session needs its own explicit local reveal choice.
+    copy.allow_secret_reveal = false;
     copy.name = format!("{} copy", copy.name);
     copy
 }
@@ -497,11 +499,14 @@ mod session_edit_tests {
         let mut original = Session::new_empty();
         original.id = "keep-me".into();
         original.name = "Prod".into();
+        original.allow_secret_reveal = true;
 
         let copy = duplicate_of(&original);
 
         assert_ne!(copy.id, original.id);
         assert_eq!(copy.name, "Prod copy");
+        assert!(!copy.allow_secret_reveal);
+        assert!(original.allow_secret_reveal);
         // The original is untouched: both rows would otherwise move together.
         assert_eq!(original.id, "keep-me");
         assert_eq!(original.name, "Prod");

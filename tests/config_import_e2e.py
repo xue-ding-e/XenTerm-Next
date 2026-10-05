@@ -158,7 +158,8 @@ def main():
         applied = mcp(dict(local_path=str(legacy_options), dry_run=False), allow=True)["structuredContent"]
         assert applied["warnings"] == preview["warnings"] and applied["added"] == 1
         imported = next(item for item in config()["sessions"] if item["name"] == "legacy-options")
-        assert "session_log" not in imported and "allow_secret_reveal" not in imported
+        assert "session_log" not in imported and imported["allow_secret_reveal"] is False
+        assert any(w["code"] == "local_permission_reset" for w in preview["warnings"])
         print("PASS: unsupported legacy preferences are warned in preview/apply without exposing values")
 
         for permission in ("mcp_allow_file_transfers", "mcp_enabled"):

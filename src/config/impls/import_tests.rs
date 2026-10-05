@@ -571,7 +571,8 @@ fn compatibility_warnings_are_explicit_non_sensitive_and_preview_matches_apply()
     let applied = store.import_json_preview(&raw, false).unwrap();
     assert_eq!(applied, preview);
     let stored = serde_json::to_value(&store.sessions()[0]).unwrap();
-    assert!(stored.get("allow_secret_reveal").is_none());
+    assert_eq!(stored["allow_secret_reveal"], false);
+    assert_eq!(applied.warnings[1].code, "local_permission_reset");
     assert!(stored.get("session_log").is_none());
     let repeated = store.import_json_preview(&raw, false).unwrap();
     assert_eq!((repeated.added, repeated.skipped), (0, 1));
@@ -832,4 +833,25 @@ fn explicit_profile_rejects_pending_desktop_recovery_without_side_effects() {
     );
     assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
     let _ = fs::remove_dir_all(directory);
+}
+
+#[test]
+fn imported_reveal_permission_is_reset_without_duplicate_or_erasing_local_consent() {
+    let mut store = temp_store();
+    let mut imported = session("reveal-import");
+    imported.allow_secret_reveal = true;
+    imported.password = Secret::new("synthetic-reveal-import-password");
+    let raw = native(vec![imported]);
+    let preview = store.import_json_preview(&raw, true).unwrap();
+    assert_eq!(preview.warnings.len(), 1);
+    assert_eq!(preview.warnings[0].code, "local_permission_reset");
+    assert_eq!(store.import_json_preview(&raw, false).unwrap(), preview);
+    assert!(!store.sessions()[0].allow_secret_reveal);
+    let mut locally_enabled = store.sessions()[0].clone();
+    locally_enabled.allow_secret_reveal = true;
+    store.upsert_and_save(locally_enabled).unwrap();
+    let repeated = store.import_json_preview(&raw, false).unwrap();
+    assert_eq!((repeated.added, repeated.skipped), (0, 1));
+    assert!(store.sessions()[0].allow_secret_reveal);
+    cleanup(&store);
 }

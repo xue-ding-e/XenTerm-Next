@@ -1,6 +1,6 @@
 name: Desktop compile checks
 
-# Compilation only: branch/PR validation must never publish or replace packages.
+# Compile and isolated GUI event tests; never publish or replace packages.
 on:
   push:
     paths: ["Cargo.toml", "Cargo.lock", "build.rs", "src/**", ".github/workflows/desktop-check.yml"]
@@ -47,3 +47,17 @@ jobs:
       # Keep the upstream stable/MSVC Windows configuration. Debug checking
       # avoids the release-only fxc.exe shader compilation and package tooling.
       - run: cargo check --locked --target ${{ matrix.target }} --jobs 2
+      # Separate invocations so PowerShell cannot hide a failing first command
+      # behind the second native command's successful exit status.
+      - name: Test session editor interactions
+        env:
+          XDG_CONFIG_HOME: ${{ runner.temp }}/xenterm-gui-config
+          XDG_DATA_HOME: ${{ runner.temp }}/xenterm-gui-data
+          XDG_RUNTIME_DIR: ${{ runner.temp }}/xenterm-gui-runtime
+        run: cargo test --locked --target ${{ matrix.target }} --jobs 2 ui::session_editor::tests
+      - name: Test native dialog interactions
+        env:
+          XDG_CONFIG_HOME: ${{ runner.temp }}/xenterm-gui-config
+          XDG_DATA_HOME: ${{ runner.temp }}/xenterm-gui-data
+          XDG_RUNTIME_DIR: ${{ runner.temp }}/xenterm-gui-runtime
+        run: cargo test --locked --target ${{ matrix.target }} --jobs 2 ui::dialog_parity_tests

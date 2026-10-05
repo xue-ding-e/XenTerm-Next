@@ -106,6 +106,10 @@ pub struct Session {
     pub private_key_path: String,
     #[serde(default)]
     pub private_key_inline: Secret,
+    /// Local GUI permission only. Editors start hidden and require a separate reveal click.
+    /// Imports reset this permission so a file cannot enable it on another machine.
+    #[serde(default)]
+    pub allow_secret_reveal: bool,
     /// Optional outbound proxy, e.g. "socks5://127.0.0.1:1080" or
     /// "http://user:pass@host:8080". Empty = use $ALL_PROXY, else direct.
     #[serde(default)]
@@ -237,6 +241,7 @@ impl Session {
             password: Secret::default(),
             private_key_path: String::new(),
             private_key_inline: Secret::default(),
+            allow_secret_reveal: false,
             proxy: String::new(),
             jump_session_id: String::new(),
             jump_session_ids: Vec::new(),

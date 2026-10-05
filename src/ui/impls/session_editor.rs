@@ -18,18 +18,21 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use zeroize::Zeroize;
 
 use gpui_kit::{
     component::{
         button::{Button, ButtonVariants},
         h_flex,
-        input::{Input, InputState},
+        input::{Input, InputState, Textarea, TextareaState},
         setting::{SettingField, SettingGroup, SettingItem, SettingPage, Settings},
-        v_flex, ActiveTheme, AxisExt as _, Icon, Sizable as _,
+        switch::Switch,
+        v_flex, ActiveTheme, AxisExt as _, Disableable as _, Icon, Sizable as _,
     },
     div,
     prelude::*,
-    px, relative, AnyElement, Context, Entity, Hsla, IntoElement, Render, SharedString, Window,
+    px, relative, AnyElement, Context, Entity, Focusable as _, Hsla, IntoElement, Render,
+    SharedString, Window,
 };
 
 use gpui_kit::assets::IconName;
@@ -74,6 +77,17 @@ pub(crate) struct SessionEditor {
     /// The password box, masked (audit N-低1): its text lives in the entity and
     /// reaches the draft when the form is saved, like the table rows.
     password: Option<Entity<InputState>>,
+    /// Read-only, disposable previews. They never feed a replacement input or its undo history.
+    secret_previews: [Option<Entity<TextareaState>>; 2],
+    reset_previews: bool,
+}
+
+impl Drop for SessionEditor {
+    fn drop(&mut self) {
+        let mut draft = self.draft.borrow_mut();
+        draft.password.zeroize();
+        draft.private_key_inline.zeroize();
+    }
 }
 
 /// One row of the trigger table: what to watch for, and what to answer.
@@ -213,6 +227,8 @@ impl SessionEditor {
             triggers: Rc::new(RefCell::new(Vec::new())),
             next_trigger_id: 1,
             password: None,
+            secret_previews: [None, None],
+            reset_previews: false,
         }
     }
 
@@ -229,6 +245,8 @@ impl SessionEditor {
             triggers: Rc::new(RefCell::new(Vec::new())),
             next_trigger_id: 1,
             password: None,
+            secret_previews: [None, None],
+            reset_previews: false,
         }
     }
 
@@ -340,10 +358,12 @@ impl SessionEditor {
             self.outcome = None;
             return;
         }
-        match self.store.borrow_mut().upsert_and_save(session) {
+        let result = self.store.borrow_mut().upsert_and_save(session.clone());
+        match result {
             Ok(()) => {
                 self.save_error = None;
                 self.outcome = Some(EditorOutcome::Saved);
+                self.original = Some(session);
             }
             Err(error) => {
                 // The diagnostic is deliberately selected from static text: an
@@ -354,6 +374,151 @@ impl SessionEditor {
                 self.outcome = None;
             }
         }
+    }
+
+    /// Drop all credential UI entities, including selection/undo history. The toolkit's
+    /// text storage is not zeroizable, so do not claim that this erases every heap copy.
+    /// No clipboard write occurs: copying a revealed selection is a separate user action.
+    pub(crate) fn clear_sensitive_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.clear_secret_previews(window, cx);
+        if let Some(input) = self.password.take() {
+            input.update(cx, |input, cx| {
+                if input.focus_handle(cx).is_focused(window) {
+                    window.blur(cx);
+                }
+                input.set_value("", window, cx);
+            });
+        }
+        let mut draft = self.draft.borrow_mut();
+        draft.password.zeroize();
+        draft.private_key_inline.zeroize();
+    }
+
+    fn hide_secret_preview(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(preview) = self.secret_previews[index].take() {
+            preview.update(cx, |preview, cx| {
+                if preview.focus_handle(cx).is_focused(window) {
+                    window.blur(cx);
+                }
+                // Root's focused-input registry or the previous frame can retain an
+                // entity. Clear text, selection and undo history before releasing ours.
+                preview.set_value("", window, cx);
+            });
+        }
+    }
+
+    fn clear_secret_previews(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        for index in 0..2 {
+            self.hide_secret_preview(index, window, cx);
+        }
+    }
+
+    fn set_secret_reveal_allowed(
+        &mut self,
+        allowed: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.draft.borrow_mut().allow_secret_reveal = allowed;
+        if !allowed {
+            self.clear_secret_previews(window, cx);
+        }
+        cx.notify();
+    }
+
+    fn toggle_secret_preview(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.draft.borrow().allow_secret_reveal {
+            self.clear_secret_previews(window, cx);
+            return;
+        }
+        if self.secret_previews[index].is_some() {
+            self.hide_secret_preview(index, window, cx);
+            cx.notify();
+            return;
+        }
+        let Some(original) = self.original.as_ref() else {
+            return;
+        };
+        let secret = if index == 0 {
+            &original.password
+        } else {
+            &original.private_key_inline
+        };
+        // Never reveal a ciphertext/marker if a profile could not decrypt the value.
+        if secret.is_empty() || secret.is_local_ciphertext() {
+            return;
+        }
+        self.secret_previews[index] = Some(cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .rows(if index == 0 { 2 } else { 5 })
+                .default_value(secret.as_str().to_string())
+        }));
+        cx.notify();
+    }
+
+    fn saved_secret_field(&self, index: usize, cx: &Context<Self>) -> SettingField<SharedString> {
+        let editor = cx.entity().downgrade();
+        let allowed = self.draft.borrow().allow_secret_reveal;
+        let preview = self.secret_previews[index].clone();
+        let available = self.original.as_ref().is_some_and(|session| {
+            let secret = if index == 0 {
+                &session.password
+            } else {
+                &session.private_key_inline
+            };
+            !secret.is_empty() && !secret.is_local_ciphertext()
+        });
+        SettingField::element(
+            move |_: &gpui_kit::component::setting::RenderOptions,
+                  _: &mut Window,
+                  _: &mut gpui_kit::App| {
+                let editor = editor.clone();
+                let visible = preview.is_some();
+                v_flex()
+                    .w_full()
+                    .gap_2()
+                    .child(
+                        Button::new(if index == 0 {
+                            "saved-password-reveal"
+                        } else {
+                            "saved-key-reveal"
+                        })
+                        .debug_selector(move || {
+                            if index == 0 {
+                                "saved-password-reveal".into()
+                            } else {
+                                "saved-key-reveal".into()
+                            }
+                        })
+                        .icon(if visible {
+                            IconName::EyeOff
+                        } else {
+                            IconName::Eye
+                        })
+                        .label(if visible {
+                            crate::i18n::t("隐藏", "Hide")
+                        } else {
+                            crate::i18n::t("查看已保存值", "Show saved value")
+                        })
+                        .disabled(!allowed || !available)
+                        .on_click(move |_, window, cx| {
+                            if let Some(editor) = editor.upgrade() {
+                                editor.update(cx, |editor, cx| {
+                                    editor.toggle_secret_preview(index, window, cx)
+                                });
+                            }
+                        }),
+                    )
+                    .when_some(preview.clone(), |field, preview| {
+                        field.child(Textarea::new(&preview).readonly(true).h(px(if index == 0 {
+                            60.
+                        } else {
+                            120.
+                        })))
+                    })
+                    .into_any_element()
+            },
+        )
     }
 
     /// Copy what the password box holds into the draft. Empty keeps the
@@ -418,7 +583,11 @@ impl SessionEditor {
             move |value, cx| {
                 set(&mut write.borrow_mut(), value.to_string());
                 if let Some(editor) = editor.upgrade() {
-                    editor.update(cx, |_, cx| cx.notify());
+                    editor.update(cx, |editor, cx| {
+                        // Changing transport/auth must not restore a previously visible secret.
+                        editor.reset_previews = true;
+                        cx.notify();
+                    });
                 }
             },
         )
@@ -837,12 +1006,16 @@ fn triggers_element(
 
 impl Render for SessionEditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.reset_previews {
+            self.clear_secret_previews(window, cx);
+            self.reset_previews = false;
+        }
         self.seed_forwards(window, cx);
         self.seed_triggers(window, cx);
         self.seed_password(window, cx);
         let draft = self.draft.clone();
         let editor = cx.entity().downgrade();
-        let theme = cx.theme();
+        let theme = cx.theme().clone();
         // Which fields apply is read here, once per frame, because the form is rebuilt
         // every frame and the kind can change while it is open. `SettingField::visible`
         // takes a plain bool set at build time, so a field that showed or hid itself
@@ -933,6 +1106,36 @@ impl Render for SessionEditor {
                 },
             )
         };
+        let reveal_allowed = {
+            let allowed = draft.borrow().allow_secret_reveal;
+            let editor = editor.clone();
+            SettingField::element(
+                move |options: &gpui_kit::component::setting::RenderOptions,
+                      _: &mut Window,
+                      _: &mut gpui_kit::App| {
+                    let editor = editor.clone();
+                    div()
+                        .debug_selector(|| "allow-secret-reveal".into())
+                        .w(px(36.))
+                        .child(
+                            Switch::new("allow-secret-reveal")
+                                .checked(allowed)
+                                .disabled(options.is_disabled())
+                                .with_size(options.size())
+                                .on_click(move |allowed, window, cx| {
+                                    if let Some(editor) = editor.upgrade() {
+                                        editor.update(cx, |editor, cx| {
+                                            editor.set_secret_reveal_allowed(*allowed, window, cx)
+                                        });
+                                    }
+                                }),
+                        )
+                        .into_any_element()
+                },
+            )
+        };
+        let saved_password = self.saved_secret_field(0, cx);
+        let saved_key = self.saved_secret_field(1, cx);
         let key_path = Self::text(
             &draft,
             |d| d.private_key_path.clone(),
@@ -1077,9 +1280,8 @@ impl Render for SessionEditor {
                 .item(
                     SettingItem::new(crate::i18n::t("密码", "Password"), password).description(
                         crate::i18n::t(
-                            "留空表示保留已保存的密码，密码不会被读回界面。",
-                            "Left blank, the saved password is kept. A password is never read \
-                             back into a form.",
+                            "留空保留原密码。私钥认证时，此字段是密钥口令。",
+                            "Leave empty to keep the saved value. For key authentication this is the key passphrase.",
                         ),
                     ),
                 )
@@ -1100,6 +1302,19 @@ impl Render for SessionEditor {
                     ),
                 ),
             );
+        }
+
+        if !is_serial {
+            credentials = credentials
+                .item(SettingItem::new(crate::i18n::t("允许查看已保存凭据", "Allow viewing saved credentials"), reveal_allowed)
+                    .description(crate::i18n::t("仅本机会话编辑器。仍需点击眼睛查看；关闭后再次打开总是隐藏。复制需自行选择文本。", "Local session editor only. A separate reveal click is required; reopening always starts hidden. Select text explicitly to copy.")))
+                .item(SettingItem::new(crate::i18n::t("已保存密码 / 密钥口令", "Saved password / key passphrase"), saved_password));
+            if is_ssh && draft.borrow().private_key_inline_mode {
+                credentials = credentials.item(SettingItem::new(
+                    crate::i18n::t("已保存内联私钥", "Saved inline private key"),
+                    saved_key,
+                ));
+            }
         }
 
         let advanced = SettingGroup::new()
@@ -1208,7 +1423,8 @@ impl Render for SessionEditor {
             .icon(IconName::X)
             .label(crate::i18n::t("取消", "Cancel"))
             .ghost()
-            .on_click(cx.listener(|this, _, _, cx| {
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.clear_sensitive_inputs(window, cx);
                 this.outcome = Some(EditorOutcome::Cancelled);
                 cx.notify();
             }));
@@ -1218,8 +1434,11 @@ impl Render for SessionEditor {
             .icon(IconName::Check)
             .label(crate::i18n::t("保存", "Save"))
             .primary()
-            .on_click(cx.listener(|this, _, _, cx| {
+            .on_click(cx.listener(|this, _, window, cx| {
                 this.save(cx);
+                if this.outcome == Some(EditorOutcome::Saved) {
+                    this.clear_sensitive_inputs(window, cx);
+                }
                 cx.notify();
             }));
 
@@ -1243,7 +1462,14 @@ impl Render for SessionEditor {
                                 .group(advanced),
                         )
                         .when(is_ssh, |settings| {
-                            settings.page(super::jump_chain_editor::page(self.draft.clone(), self.store.clone(), cx.entity().downgrade())).page(forwards_page).page(triggers_page)
+                            settings
+                                .page(super::jump_chain_editor::page(
+                                    self.draft.clone(),
+                                    self.store.clone(),
+                                    cx.entity().downgrade(),
+                                ))
+                                .page(forwards_page)
+                                .page(triggers_page)
                         })
                         .into_any_element(),
                 ),
@@ -1347,6 +1573,367 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.directory);
         }
+    }
+
+    fn secret_fixture() -> Session {
+        let mut session = Session::new_empty();
+        session.host = "synthetic.invalid".into();
+        session.password = crate::config::Secret::new("synthetic-saved-password");
+        session.private_key_inline = crate::config::Secret::new(
+            "-----BEGIN SYNTHETIC KEY-----\nfixture-only\n-----END SYNTHETIC KEY-----",
+        );
+        session
+    }
+
+    struct EditorDialogHarness {
+        root_subscription: Option<gpui_kit::Subscription>,
+    }
+
+    impl Render for EditorDialogHarness {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            if self.root_subscription.is_none() {
+                self.root_subscription = super::super::follow_root(window, cx);
+            }
+            div()
+                .size_full()
+                .children(gpui_kit::component::Root::render_dialog_layer(window, cx))
+        }
+    }
+
+    #[gpui_kit::gpui::test]
+    fn native_dialog_dismissal_clears_actual_editor_and_replacement_drops_old_view(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui_kit::component::{Root, WindowExt as _};
+        cx.update(gpui_kit::init);
+        let fixture = StoreFixture::new();
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let harness = cx.new(|_| EditorDialogHarness {
+                root_subscription: None,
+            });
+            Root::new(harness, window, cx)
+        });
+        for cancel_key in ["escape", "cmd-."] {
+            let editor = cx.update(|window, cx| {
+                super::super::dialogs::bind_macos_cancel(cx);
+                let mut session = secret_fixture();
+                session.allow_secret_reveal = true;
+                let editor = cx.new(|_| SessionEditor::edit(fixture.store.clone(), session));
+                super::super::shell::Shell::editor_dialog(editor.clone(), window, cx);
+                window.draw(cx).clear(cx);
+                editor.update(cx, |editor, cx| {
+                    editor.toggle_secret_preview(0, window, cx);
+                    editor.toggle_secret_preview(1, window, cx);
+                    editor.password.as_ref().unwrap().update(cx, |input, cx| {
+                        input.set_value("synthetic-unsaved", window, cx);
+                        input.focus(window, cx);
+                    });
+                });
+                window.draw(cx).clear(cx);
+                editor
+            });
+            cx.simulate_keystrokes(cancel_key);
+            cx.update(|window, cx| {
+                window.draw(cx).clear(cx);
+                assert!(!window.has_active_dialog(cx));
+                editor.read_with(cx, |editor, _| {
+                    assert!(editor.secret_previews.iter().all(Option::is_none));
+                    assert!(editor.password.is_none());
+                    assert!(editor.draft.borrow().password.is_empty());
+                    assert!(editor.outcome.is_none(), "native dismissal never saves");
+                });
+            });
+        }
+        // Programmatic replacement skips toolkit on_close. Releasing the old view
+        // must still clear its shared draft, even while a field closure owns that draft.
+        let (old, draft) = cx.update(|window, cx| {
+            let mut session = secret_fixture();
+            session.allow_secret_reveal = true;
+            let editor = cx.new(|_| SessionEditor::edit(fixture.store.clone(), session));
+            super::super::shell::Shell::editor_dialog(editor.clone(), window, cx);
+            window.draw(cx).clear(cx);
+            let draft = editor.update(cx, |editor, cx| {
+                editor.toggle_secret_preview(0, window, cx);
+                editor.draft.borrow_mut().password = "synthetic-old-draft".into();
+                editor.draft.clone()
+            });
+            window.close_dialog(cx);
+            window.draw(cx).clear(cx);
+            (editor, draft)
+        });
+        let old_weak = old.downgrade();
+        drop(old);
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        assert!(old_weak.upgrade().is_none());
+        assert!(draft.borrow().password.is_empty());
+        assert!(fixture.store.borrow().sessions().is_empty());
+    }
+
+    #[gpui_kit::gpui::test]
+    fn saved_secrets_require_permission_and_separate_click_and_never_autocopy(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(gpui_kit::init);
+        let fixture = StoreFixture::new();
+        let handle = Rc::new(RefCell::new(None));
+        let (_, cx) = cx.add_window_view({
+            let store = fixture.store.clone();
+            let handle = handle.clone();
+            move |window, cx| {
+                let editor = cx.new(|_| SessionEditor::edit(store, secret_fixture()));
+                *handle.borrow_mut() = Some(editor.clone());
+                gpui_kit::component::Root::new(editor, window, cx)
+            }
+        });
+        let view = handle.borrow_mut().take().unwrap();
+        cx.update(|window, cx| {
+            window.resize(gpui_kit::size(px(1100.), px(1900.)));
+            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
+                "clipboard-sentinel".into(),
+            ));
+            window.draw(cx).clear(cx);
+        });
+        let eye = cx
+            .debug_bounds("saved-password-reveal")
+            .expect("real eye button");
+        cx.simulate_click(eye.center(), Modifiers::default());
+        view.update(cx, |editor, cx| {
+            assert!(editor.secret_previews.iter().all(Option::is_none));
+            assert!(editor
+                .password
+                .as_ref()
+                .unwrap()
+                .read(cx)
+                .value()
+                .is_empty());
+
+            assert!(
+                editor.secret_previews.iter().all(Option::is_none),
+                "permission alone never loads credentials"
+            );
+        });
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        let permission = cx.debug_bounds("allow-secret-reveal").unwrap();
+        cx.simulate_click(permission.center(), Modifiers::default());
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        let eye = cx.debug_bounds("saved-password-reveal").unwrap();
+        cx.simulate_click(eye.center(), Modifiers::default());
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        let preview = view.read_with(cx, |editor, cx| {
+            assert!(editor
+                .password
+                .as_ref()
+                .unwrap()
+                .read(cx)
+                .value()
+                .is_empty());
+            assert!(editor.draft.borrow().password.is_empty());
+            let preview = editor.secret_previews[0].clone().unwrap();
+            assert_eq!(
+                preview.read(cx).value().as_ref(),
+                "synthetic-saved-password"
+            );
+            preview
+        });
+        cx.update(|window, cx| {
+            assert_eq!(
+                cx.read_from_clipboard().unwrap().text().as_deref(),
+                Some("clipboard-sentinel")
+            );
+            preview.update(cx, |state, cx| state.focus(window, cx));
+        });
+        cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-a cmd-c"
+        } else {
+            "ctrl-a ctrl-c"
+        });
+        cx.update(|_, cx| {
+            assert_eq!(
+                cx.read_from_clipboard().unwrap().text().as_deref(),
+                Some("synthetic-saved-password")
+            );
+        });
+        cx.simulate_input("must-not-change-preview");
+        assert_eq!(
+            preview.read_with(cx, |state, _| state.value().to_string()),
+            "synthetic-saved-password"
+        );
+        let eye = cx.debug_bounds("saved-password-reveal").unwrap();
+        cx.simulate_click(eye.center(), Modifiers::default());
+        assert!(view.read_with(cx, |editor, _| editor.secret_previews[0].is_none()));
+        preview.read_with(cx, |preview, _| {
+            assert!(
+                preview.value().is_empty(),
+                "even a retained preview has no text/history after hiding"
+            );
+            assert_eq!(preview.selected_range(), 0..0);
+        });
+        cx.update(|window, cx| {
+            use gpui_kit::component::WindowExt as _;
+            assert!(
+                window.focused_input(cx).is_none(),
+                "Root must not retain a focused hidden secret"
+            );
+        });
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        cx.update(|_, cx| {
+            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
+                "hidden-sentinel".into(),
+            ))
+        });
+        cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-a cmd-c"
+        } else {
+            "ctrl-a ctrl-c"
+        });
+        cx.update(|_, cx| {
+            assert_eq!(
+                cx.read_from_clipboard().unwrap().text().as_deref(),
+                Some("hidden-sentinel")
+            )
+        });
+        let eye = cx.debug_bounds("saved-password-reveal").unwrap();
+        cx.simulate_click(eye.center(), Modifiers::default());
+        let fresh_preview =
+            view.read_with(cx, |editor, _| editor.secret_previews[0].clone().unwrap());
+        assert_ne!(fresh_preview.entity_id(), preview.entity_id());
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        let eye = cx.debug_bounds("saved-password-reveal").unwrap();
+        cx.simulate_click(eye.center(), Modifiers::default());
+        assert!(fresh_preview.read_with(cx, |state, _| state.value().is_empty()));
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        let eye = cx.debug_bounds("saved-key-reveal").unwrap();
+        cx.simulate_click(eye.center(), Modifiers::default());
+        view.update(cx, |editor, cx| {
+            assert_eq!(
+                editor.secret_previews[1]
+                    .as_ref()
+                    .unwrap()
+                    .read(cx)
+                    .value()
+                    .as_ref(),
+                secret_fixture().private_key_inline.as_str()
+            );
+            assert!(editor.draft.borrow().private_key_inline.is_empty());
+        });
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        let permission = cx.debug_bounds("allow-secret-reveal").unwrap();
+        cx.simulate_click(permission.center(), Modifiers::default());
+        assert!(view.read_with(cx, |editor, _| editor
+            .secret_previews
+            .iter()
+            .all(Option::is_none)));
+        assert!(
+            fixture.store.borrow().sessions().is_empty(),
+            "viewing never saves"
+        );
+    }
+
+    #[gpui_kit::gpui::test]
+    fn reveal_cancel_save_and_reopen_keep_secrets_hidden_and_unchanged(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let fixture = StoreFixture::new();
+        let mut original = secret_fixture();
+        original.allow_secret_reveal = true;
+        fixture
+            .store
+            .borrow_mut()
+            .upsert_and_save(original.clone())
+            .unwrap();
+        let (view, cx) = cx.add_window_view({
+            let store = fixture.store.clone();
+            let original = original.clone();
+            move |_, _| SessionEditor::edit(store, original)
+        });
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            view.update(cx, |editor, cx| {
+                assert!(editor.secret_previews.iter().all(Option::is_none));
+                assert!(editor
+                    .password
+                    .as_ref()
+                    .unwrap()
+                    .read(cx)
+                    .value()
+                    .is_empty());
+                editor.toggle_secret_preview(0, window, cx);
+                editor.toggle_secret_preview(1, window, cx);
+                editor.password.as_ref().unwrap().update(cx, |input, cx| {
+                    input.set_value("synthetic-unsaved-password", window, cx)
+                });
+                editor.draft.borrow_mut().password = "synthetic-draft-password".into();
+            });
+            window.draw(cx).clear(cx);
+        });
+        let cancel = cx.debug_bounds("editor-cancel").unwrap();
+        cx.simulate_click(cancel.center(), Modifiers::default());
+        view.update(cx, |editor, cx| {
+            assert_eq!(editor.take_outcome(), Some(EditorOutcome::Cancelled));
+            assert!(editor.secret_previews.iter().all(Option::is_none));
+            assert!(editor
+                .password
+                .as_ref()
+                .is_none_or(|input| input.read(cx).value().is_empty()));
+            assert!(editor.draft.borrow().password.is_empty());
+        });
+        assert_eq!(
+            fixture.store.borrow().sessions()[0].password.as_str(),
+            original.password.as_str()
+        );
+        // A fresh editor reuses the persisted opt-in, never a previous preview/selection.
+        view.update(cx, |editor, _| {
+            *editor = SessionEditor::edit(fixture.store.clone(), original.clone())
+        });
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            view.update(cx, |editor, cx| {
+                assert!(editor.secret_previews.iter().all(Option::is_none));
+                assert!(editor
+                    .password
+                    .as_ref()
+                    .unwrap()
+                    .read(cx)
+                    .value()
+                    .is_empty());
+                editor.toggle_secret_preview(0, window, cx);
+                editor.save(cx);
+                editor.clear_sensitive_inputs(window, cx);
+                assert_eq!(editor.take_outcome(), Some(EditorOutcome::Saved));
+                assert!(editor.secret_previews.iter().all(Option::is_none));
+                assert!(editor.password.is_none());
+            });
+        });
+        let saved = fixture.store.borrow().sessions()[0].clone();
+        assert!(saved.allow_secret_reveal);
+        assert_eq!(saved.password.as_str(), original.password.as_str());
+        assert_eq!(
+            saved.private_key_inline.as_str(),
+            original.private_key_inline.as_str()
+        );
+        let disk = fixture.disk_sessions();
+        assert!(disk[0].allow_secret_reveal);
+        assert_ne!(disk[0].password.as_str(), original.password.as_str());
+        assert_ne!(
+            disk[0].private_key_inline.as_str(),
+            original.private_key_inline.as_str()
+        );
     }
 
     #[gpui_kit::gpui::test]
