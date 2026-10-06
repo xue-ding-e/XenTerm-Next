@@ -194,7 +194,13 @@ fn transfer_row(
                     .child(SharedString::from(transfer.name.clone())),
             )
             .child(
-                div().w(px(160.)).flex_shrink_0().child(
+                // A neutral floor under the bar, for the same reason the
+                // sidebar's stat rows have one: the track is the fill at 20%
+                // alpha, and on a white popover the red/green/yellow fills
+                // measured 2.2-2.9:1 against it.
+                div().w(px(160.)).flex_shrink_0().rounded(px(3.)).bg(
+                    theme.foreground.opacity(0.15),
+                ).child(
                     Progress::new(SharedString::from(format!("transfer-{}", transfer.id)))
                         .value(percent * 100.0)
                         .loading(unknown_total)

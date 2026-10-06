@@ -898,18 +898,37 @@ impl Render for SftpPanelView {
                     // saying out loud: the spinner gave up, and "目录为空" over a
                     // silent panel would claim an answer that never arrived. A
                     // permission refusal arrives as the session's own error text
-                    // and shows below as it is.
+                    // and shows below as it is. The warning colour rides a bar
+                    // rather than the text: yellow type on the light theme's
+                    // near-white sidebar measured 1.84:1 — the warning was the
+                    // one thing the panel did not show. Grey type carries the
+                    // words; the bar carries the alarm.
                     .when(self.loading_timed_out(), |this| {
                         this.child(
-                            div()
+                            h_flex()
+                                .w_full()
                                 .px_2()
                                 .py_1()
-                                .text_xs()
-                                .text_color(warning)
-                                .child(crate::i18n::t(
-                                    "目录列表无响应——会话可能已断开,可刷新或重连",
-                                    "The directory listing never answered — the session                                      may be gone; refresh or reconnect",
-                                )),
+                                .gap_1p5()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .w(px(3.))
+                                        .h(px(14.))
+                                        .rounded(px(1.))
+                                        .bg(warning),
+                                )
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_xs()
+                                        .text_color(muted)
+                                        .child(crate::i18n::t(
+                                            "目录列表无响应——会话可能已断开,可刷新或重连",
+                                            "The directory listing never answered — the                                              session may be gone; refresh or reconnect",
+                                        )),
+                                ),
                         )
                     })
                     .when_some(self.status.clone(), |this, status| {

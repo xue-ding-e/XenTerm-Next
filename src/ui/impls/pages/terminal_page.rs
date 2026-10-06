@@ -1251,6 +1251,7 @@ impl TerminalPage {
         // from paying for the strip. See `tab_strip.rs`.
         let tab_strip = self.tab_strip.clone();
         let border = cx.theme().border;
+        let primary = cx.theme().primary;
 
         // No session open: the landing view — quick connect and the local
         // shells, centred — in place of a pane area pretending a dead tab is
@@ -1554,7 +1555,7 @@ impl TerminalPage {
                                         .top_0()
                                         .h(px(RESIZE_BAND * 2.0))
                                         .cursor_row_resize()
-                                        .hover(|this| this.bg(border)),
+                                        .hover(|this| this.bg(primary.opacity(0.35))),
                                 )
                             })
                             // The border goes on the edge that faces the output.

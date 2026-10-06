@@ -1077,6 +1077,13 @@ fn stat_row(
             div()
                 .flex_1()
                 .min_w_0()
+                .rounded(px(4.))
+                // The Progress track is the fill colour at 20% alpha, which in
+                // the light theme puts a pale tint on a white panel — the
+                // yellow swap bar measured 1.8:1 against its own track. A
+                // neutral floor under the widget gives the track something to
+                // sit on and the fill something to differ from, in both modes.
+                .bg(theme.foreground.opacity(0.15))
                 .child(
                     Progress::new(id)
                         .value(percent * 100.0)
@@ -1169,7 +1176,12 @@ fn sparkline(history: &[f32], theme: &Theme) -> impl IntoElement {
         .items_end()
         .rounded(theme.radius)
         .overflow_hidden()
-        .bg(theme.muted)
+        // The plot area's floor. `muted` was tried and is a trap: in the light
+        // theme muted (#f5f5f5) over the sidebar's #fafafa measures 1.04:1 —
+        // the graph simply was not there. A slice of the foreground at low
+        // alpha holds ~1.5:1 in both modes, which reads as a surface rather
+        // than as nothing.
+        .bg(theme.foreground.opacity(0.18))
         .children(history.iter().map(|value| {
             let value = value.clamp(0.0, 1.0);
             div()
@@ -1215,7 +1227,13 @@ fn disk_row(disk: &DiskUsage, theme: &Theme) -> impl IntoElement {
                 .min_w_0()
                 .relative()
                 .rounded(px(2.))
-                .bg(theme.muted)
+                // Same reasoning as the sparkline's floor: `muted` measured
+                // 1.04:1 against the sidebar in the light theme. The hairline
+                // keeps the bar's extent legible even where the fill is a
+                // low-contrast colour (the yellow three-quarter mark).
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.foreground.opacity(0.18))
                 .h(px(8.))
                 .overflow_hidden()
                 .child(

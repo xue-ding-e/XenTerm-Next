@@ -176,29 +176,38 @@ impl Shell {
                 let collapsed = sidebar.read(cx).is_collapsed();
                 sidebar.update(cx, |sidebar, cx| sidebar.set_collapsed(!collapsed, cx));
             }
-            CommandId::ThemeDark => {
-                gpui_kit::component::Theme::change(
-                    gpui_kit::component::ThemeMode::Dark,
-                    Some(window),
-                    cx,
-                );
-                window.refresh();
-                cx.notify();
-            }
-            CommandId::ThemeLight => {
-                gpui_kit::component::Theme::change(
-                    gpui_kit::component::ThemeMode::Light,
-                    Some(window),
-                    cx,
-                );
-                window.refresh();
-                cx.notify();
-            }
-            CommandId::ThemeSystem => {
-                gpui_kit::component::Theme::sync_system_appearance(Some(window), cx);
-                window.refresh();
-                cx.notify();
-            }
+            CommandId::ThemeDark => self.apply_theme_pref("dark", window, cx),
+            CommandId::ThemeLight => self.apply_theme_pref("light", window, cx),
+            CommandId::ThemeSystem => self.apply_theme_pref("system", window, cx),
         }
+    }
+
+    /// Apply a theme from the palette and *persist* it.
+    ///
+    /// The settings page's dropdown writes the preference and applies the mode;
+    /// these commands are the same decision from the other door, and a palette
+    /// change that reverted on restart (and left the dropdown showing the old
+    /// value) was two answers to one question.
+    fn apply_theme_pref(&mut self, pref: &str, window: &mut Window, cx: &mut Context<Self>) {
+        {
+            let mut store = self.state.store.borrow_mut();
+            store.set_theme_pref(pref.to_string());
+            let _ = store.save();
+        }
+        match pref {
+            "dark" => gpui_kit::component::Theme::change(
+                gpui_kit::component::ThemeMode::Dark,
+                Some(window),
+                cx,
+            ),
+            "light" => gpui_kit::component::Theme::change(
+                gpui_kit::component::ThemeMode::Light,
+                Some(window),
+                cx,
+            ),
+            _ => gpui_kit::component::Theme::sync_system_appearance(Some(window), cx),
+        }
+        window.refresh();
+        cx.notify();
     }
 }

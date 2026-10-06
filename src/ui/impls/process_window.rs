@@ -684,7 +684,11 @@ fn proc_row(
                         .w(px(PID_WIDTH))
                         .flex_shrink_0()
                         .truncate()
-                        .text_color(theme.chart_2)
+                        // Foreground, not chart_2: the PID is drawn on top of
+                        // the load bar, whose tint is chart_2 itself — blue on
+                        // blue measured 2.9:1 in the light theme, 2.8:1 over a
+                        // busy (yellow) bar in the dark one.
+                        .text_color(theme.foreground)
                         .cursor_pointer()
                         .hover(|this| this.text_color(theme.primary))
                         .on_click({

@@ -449,8 +449,12 @@ impl Render for TabStripView {
                                     2 => div()
                                         .size_2()
                                         .rounded_full()
+                                        // Full opacity: at 0.6 the grey dot on a
+                                        // selected chip measured 2.7:1 in the
+                                        // light theme — "this session is dead"
+                                        // was faintest exactly when the user
+                                        // was looking at the tab.
                                         .bg(muted_fg)
-                                        .opacity(0.6)
                                         .into_any_element(),
                                     _ => div()
                                         .size_2()

@@ -427,7 +427,7 @@ pub(crate) struct Shell {
     /// Held here rather than by any one page, because a connect needs all of it —
     /// handles, buffers, gates, statuses, the SFTP channels and the store — and a
     /// page only draws one screen.
-    state: SessionState,
+    pub(crate) state: SessionState,
     /// Which modal dialog is open over the window, if any.
     ///
     /// Everything that used to be a full-window overlay is a page now; what is
@@ -1288,6 +1288,8 @@ impl Shell {
         // the margin is computed from the nominal height instead.
         let margin_top =
             ((f32::from(window.bounds().size.height) - (440. + 104.)) / 2.0).max(24.0);
+        let hint_border = cx.theme().border;
+        let hint_text = cx.theme().muted_foreground;
         window.open_dialog(cx, move |dialog, _window, _cx| {
             dialog
                 .title(crate::i18n::t("快速连接", "Quick connect"))
@@ -1320,9 +1322,13 @@ impl Shell {
                                 .px_3()
                                 .py_1p5()
                                 .border_t_1()
-                                .border_color(gpui_kit::rgb(0x00000014))
+                                // Theme tokens, not literals: the hardcoded
+                                // black hairline measured 1.01:1 against the
+                                // dark popover — invisible exactly where the
+                                // palette is most used.
+                                .border_color(hint_border)
                                 .text_xs()
-                                .text_color(gpui_kit::rgb(0x8a8a8a))
+                                .text_color(hint_text)
                                 .child(SharedString::from(crate::i18n::t(
                                     "↑↓ 选择 · Enter 连接 · Esc 关闭",
                                     "↑↓ select · Enter connect · Esc dismiss",

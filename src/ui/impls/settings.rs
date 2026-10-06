@@ -104,7 +104,6 @@ enum SettingsPageId {
     TermInput,
     TermHighlight,
     Connections,
-    Pasting,
     Files,
     Sync,
     /// The former 权限 and MCP 服务器 pages, merged: one feature's switches,
@@ -128,16 +127,14 @@ const NAV_SECTIONS: &[(&str, &str, &[SettingsPageId])] = &[
             SettingsPageId::TermHighlight,
         ],
     ),
-    (
-        "连接",
-        "Connections",
-        &[SettingsPageId::Connections, SettingsPageId::Pasting],
-    ),
 ];
 
 /// The direct entries after the sections, in display order. 界面 sits above
 /// the sections as the landing subject and is rendered on its own.
 const NAV_DIRECT: &[(SettingsPageId, &str, &str, IconName)] = &[
+    // Single-page subject, kept direct like 界面 and 文件: a fold header over
+    // one row is navigation noise.
+    (SettingsPageId::Connections, "连接", "Connections", IconName::Plug),
     (SettingsPageId::McpPermissions, "MCP 与权限", "MCP & permissions", IconName::ShieldCheck),
     (SettingsPageId::Files, "文件", "Files", IconName::FolderOpen),
     (SettingsPageId::Sync, "同步", "Sync", IconName::RefreshCw),
@@ -313,7 +310,10 @@ impl Render for SettingsView {
                 } else {
                     muted.opacity(0.75)
                 })
-                .hover(|row| row.text_color(muted))
+                .hover(|row| {
+                    row.text_color(sidebar_fg)
+                        .bg(gpui_kit::hsla(0.0, 0.0, 0.5, 0.08))
+                })
                 .child(super::chevron::folding_chevron(
                     &format!("settings-{name}"),
                     folded,
@@ -389,22 +389,6 @@ impl Render for SettingsView {
                             IconName::Highlighter,
                             cx,
                         ),
-                        SettingsPageId::Connections => entry(
-                            this,
-                            SettingsPageId::Connections,
-                            "连接",
-                            "Connections",
-                            IconName::Plug,
-                            cx,
-                        ),
-                        SettingsPageId::Pasting => entry(
-                            this,
-                            SettingsPageId::Pasting,
-                            "粘贴",
-                            "Pasting",
-                            IconName::ClipboardPaste,
-                            cx,
-                        ),
                         // Sections only ever name their own children; the
                         // direct subjects never appear in NAV_SECTIONS.
                         _ => div().into_any_element(),
@@ -473,10 +457,13 @@ impl Render for SettingsView {
                 SettingPage::new(crate::i18n::t("输出高亮", "Highlight")).group(self.highlight_group(window, cx))
             }
             SettingsPageId::Connections => {
-                SettingPage::new(crate::i18n::t("连接", "Connections")).group(self.connections_group(window, cx))
-            }
-            SettingsPageId::Pasting => {
-                SettingPage::new(crate::i18n::t("粘贴", "Pasting")).group(self.paste_group(window, cx))
+                // The paste-a-list importer lives here, not on its own page:
+                // it imports connections, and it used to sit under a "粘贴"
+                // heading where nobody looking to add connections would find
+                // it — and nobody looking for paste *settings* wanted it.
+                SettingPage::new(crate::i18n::t("连接", "Connections"))
+                    .group(self.connections_group(window, cx))
+                    .group(self.paste_group(window, cx))
             }
             SettingsPageId::Files => {
                 SettingPage::new(crate::i18n::t("文件", "Files")).group(self.download_group(window, cx))
@@ -630,7 +617,7 @@ impl SettingsView {
                     panel_font,
                 )
                 .description(crate::i18n::t(
-                    "侧栏与其他面板的字号,百分比。",
+                    "侧栏与其他面板的字号,百分比(80–160)。",
                     "The sidebar and other panels' font size, as a percentage.",
                 )),
             )
@@ -1290,6 +1277,24 @@ impl SettingsView {
             )
         };
 
+        // Read per frame by the shell, so a change is visible without
+        // reopening anything; the dock's top edge is draggable too, and both
+        // doors write the same setting.
+        let store_for_panel_height = store.clone();
+        let panel_height = {
+            let current = f64::from(store.borrow().quick_panel_height());
+            SettingField::number_input(
+                Default::default(),
+                move |_| current,
+                move |value, _| {
+                    persist(
+                        &store_for_panel_height,
+                        |s| s.set_quick_panel_height(value as f32),
+                        "the panel strip's height",
+                    )
+                },
+            )
+        };
         let download_group = SettingGroup::new()
             .title(crate::i18n::t("下载", "Downloads"))
             .item(
@@ -1311,6 +1316,40 @@ impl SettingsView {
                     "开启后忽略上面的目录,每次下载都打开选择框。",
                     "With this on the directory above is ignored and every download opens a \
                      picker.",
+                )),
+            )
+            .item(
+                SettingItem::new(
+                    crate::i18n::t("启动时隐藏文件面板", "Hide file panel on startup"),
+                    {
+                        let store = store.clone();
+                        let current = store.borrow().collapse_sftp_default();
+                        SettingField::switch(
+                            move |_| current,
+                            move |value, _| {
+                                persist(
+                                    &store,
+                                    |s| s.set_collapse_sftp_default(value),
+                                    "the file panel startup visibility",
+                                )
+                            },
+                        )
+                    },
+                )
+                .description(crate::i18n::t(
+                    "新窗口默认隐藏文件面板；可从终端标签栏的文件夹按钮重新显示。",
+                    "New windows start with the file panel hidden. Reopen it with the folder button in the terminal tab bar.",
+                )),
+            )
+
+            .item(
+                SettingItem::new(
+                    crate::i18n::t("面板区域高度", "Panel strip height"),
+                    panel_height,
+                )
+                .description(crate::i18n::t(
+                    "终端下方文件面板的高度,单位像素(120–600);也可直接拖拽面板的上边缘调整。",
+                    "The height of the file panel under the terminal, in pixels (120-600);                      dragging the panel's top edge works too.",
                 )),
             );
         download_group
@@ -1553,23 +1592,6 @@ impl SettingsView {
         };
 
         // The panel strip under the terminal: a size the settings own, because the window
-        // has no drag handle for it yet — the shell reads it every frame, so a change here
-        // is visible without reopening the window.
-        let store_for_panel_height = store.clone();
-        let panel_height = {
-            let current = f64::from(store.borrow().quick_panel_height());
-            SettingField::number_input(
-                Default::default(),
-                move |_| current,
-                move |value, _| {
-                    persist(
-                        &store_for_panel_height,
-                        |s| s.set_quick_panel_height(value as f32),
-                        "the panel strip's height",
-                    )
-                },
-            )
-        };
 
         let input_group = SettingGroup::new()
             .title(crate::i18n::t("输入", "Input"))
@@ -1593,40 +1615,8 @@ impl SettingsView {
                     "启用 Ctrl+Alt+V、Shift+Insert 与中键粘贴。",
                     "Enables Ctrl+Alt+V, Shift+Insert and middle-click paste.",
                 )),
-            )
-            .item(
-                SettingItem::new(
-                    crate::i18n::t("启动时隐藏文件面板", "Hide file panel on startup"),
-                    {
-                        let store = store.clone();
-                        let current = store.borrow().collapse_sftp_default();
-                        SettingField::switch(
-                            move |_| current,
-                            move |value, _| {
-                                persist(
-                                    &store,
-                                    |s| s.set_collapse_sftp_default(value),
-                                    "the file panel startup visibility",
-                                )
-                            },
-                        )
-                    },
-                )
-                .description(crate::i18n::t(
-                    "新窗口默认隐藏文件面板；可从终端标签栏的文件夹按钮重新显示。",
-                    "New windows start with the file panel hidden. Reopen it with the folder button in the terminal tab bar.",
-                )),
-            )
-            .item(
-                SettingItem::new(
-                    crate::i18n::t("面板区域高度", "Panel strip height"),
-                    panel_height,
-                )
-                .description(crate::i18n::t(
-                    "终端下方文件/命令面板的高度,单位像素。",
-                    "The height of the files/commands panel under the terminal, in pixels.",
-                )),
             );
+
         input_group
     }
 
@@ -2145,7 +2135,6 @@ mod tests {
             SettingsPageId::TermInput,
             SettingsPageId::TermHighlight,
             SettingsPageId::Connections,
-            SettingsPageId::Pasting,
             SettingsPageId::Files,
             SettingsPageId::Sync,
             SettingsPageId::McpPermissions,

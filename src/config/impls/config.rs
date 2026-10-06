@@ -1430,12 +1430,17 @@ impl ConfigStore {
         if height <= 0.0 {
             default_quick_panel_height()
         } else {
-            height
+            // Legacy configs may hold an unclamped value from before the
+            // setter had bounds.
+            height.clamp(120.0, 600.0)
         }
     }
 
     pub fn set_quick_panel_height(&mut self, height: f32) {
-        self.cache.quick_panel_height = height;
+        // The same bounds the drag gesture clamps to. The settings field had
+        // no floor: a 0 saved here mounted a dock with no rows at all, and a
+        // 9999 ate the terminal.
+        self.cache.quick_panel_height = height.clamp(120.0, 600.0);
     }
 
     pub fn quick_panel_dock(&self) -> String {
