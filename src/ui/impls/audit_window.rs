@@ -20,8 +20,8 @@ use gpui_kit::{
     },
     div,
     prelude::*,
-    px, size, AnyElement, Context, Entity, FontWeight, IntoElement, Render, SharedString, Task,
-    WeakEntity, Window,
+    px, size, uniform_list, AnyElement, Context, Entity, FontWeight, IntoElement,
+    ListSizingBehavior, Render, SharedString, Task, UniformListScrollHandle, WeakEntity, Window,
 };
 
 use crate::automation::approval::{queue_dir, AuditRecord};
@@ -35,6 +35,8 @@ const POLL_INTERVAL: Duration = Duration::from_secs(5);
 pub(crate) struct AuditLogView {
     /// The records as of the last read, newest decision first.
     records: Vec<AuditRecord>,
+    /// The scroll position of the virtualized journal list.
+    list_scroll: UniformListScrollHandle,
     _poll: Task<()>,
 }
 
@@ -56,6 +58,7 @@ impl AuditLogView {
         });
         Self {
             records,
+            list_scroll: UniformListScrollHandle::new(),
             _poll: poll,
         }
     }
@@ -81,9 +84,13 @@ impl AuditLogView {
         let _ = std::process::Command::new(opener).arg(&dir).spawn();
     }
 
-    fn row(&self, record: &AuditRecord, cx: &Context<Self>) -> AnyElement {
-        let theme = cx.theme();
-        let approved = record.outcome == "approved";
+}
+
+/// One journal row, without the view's `Context`: the virtualized list builds the
+/// visible rows from inside a `&mut App` closure. The row is read-only — no
+/// handlers — so nothing else changes hands.
+fn audit_row(record: &AuditRecord, theme: &gpui_kit::component::Theme) -> AnyElement {
+    let approved = record.outcome == "approved";
         let by: SharedString = match record.by.as_str() {
             "manual" => crate::i18n::t("人工", "Manual").into(),
             "auto-timeout" => crate::i18n::t("超时自动", "Timeout").into(),
@@ -157,7 +164,6 @@ impl AuditLogView {
                     .child(by),
             )
             .into_any_element()
-    }
 }
 
 /// Read every day file in the journal, newest decision first. A line that
@@ -240,12 +246,29 @@ impl Render for AuditLogView {
                     .child(crate::i18n::t("还没有审批记录。", "No approval records yet.")),
             );
         } else {
-            let rows: Vec<AnyElement> = self
-                .records
-                .iter()
-                .map(|record| self.row(record, cx))
-                .collect();
-            body = body.children(rows);
+            // Virtual: the journal is "potentially hundreds of rows across many
+            // days" by its own doc, and every one of them is the same height.
+            let view = cx.entity();
+            let scroll = self.list_scroll.clone();
+            let rows: AnyElement = uniform_list(
+                "audit-rows-list",
+                self.records.len(),
+                move |range, _window, cx| {
+                    let audit_view = view.read(cx);
+                    let theme = cx.theme();
+                    range
+                        .clone()
+                        .filter_map(|index| {
+                            let record = audit_view.records.get(index)?;
+                            Some(audit_row(record, theme))
+                        })
+                        .collect()
+                },
+            )
+            .with_sizing_behavior(ListSizingBehavior::Infer)
+            .track_scroll(&scroll)
+            .into_any_element();
+            body = body.child(rows);
         }
 
         v_flex()
@@ -291,7 +314,7 @@ impl Render for AuditLogView {
                     .id(SharedString::from("audit-rows"))
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
+                    .overflow_hidden()
                     .px_2()
                     .child(body),
             )

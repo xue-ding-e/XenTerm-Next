@@ -24,7 +24,7 @@ use super::shell::Shell;
 /// width is *derived* from the window's — the canvas's own report cannot be
 /// trusted (see `TerminalPage`) — and a derived width needs every fixed column
 /// written down.
-pub(crate) const RAIL_WIDTH: f32 = 56.0;
+use super::tokens::RAIL_WIDTH;
 
 /// The rail itself.
 pub(crate) fn render_nav_rail(active: PageId, cx: &mut Context<Shell>) -> impl IntoElement {

@@ -182,6 +182,11 @@ pub struct ConfigFile {
     /// Force regular terminal text to render with a bold face (#262).
     #[serde(default)]
     pub terminal_bold: bool,
+    /// Inset the terminal grid from its pane's edge by a few pixels, so output
+    /// does not sit flush against the frame. On by default; missing/legacy
+    /// config keeps it on.
+    #[serde(default = "default_true")]
+    pub terminal_padding: bool,
     /// Terminal insertion cursor shape: block (default), bar, or underline (#275).
     #[serde(default)]
     pub terminal_cursor_style: String,

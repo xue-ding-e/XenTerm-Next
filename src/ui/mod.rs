@@ -11,6 +11,8 @@
 //! the top of the next frame, never inside the render that received it — and
 //! reports to the shell only what crosses the page's border.
 
+#[path = "impls/actions.rs"]
+mod actions;
 #[path = "impls/auth_dialogs.rs"]
 mod auth_dialogs;
 #[path = "impls/audit_window.rs"]
@@ -20,6 +22,10 @@ mod audit_window;
 mod chevron;
 #[path = "impls/dialogs.rs"]
 mod dialogs;
+#[path = "impls/command_palette.rs"]
+mod command_palette;
+#[path = "impls/palette_shell.rs"]
+mod palette_shell;
 #[path = "impls/event_sink.rs"]
 mod event_sink;
 #[path = "impls/file_viewer.rs"]
@@ -64,6 +70,10 @@ mod shell;
 mod sidebar;
 #[path = "impls/system_info_window.rs"]
 mod system_info_window;
+#[path = "impls/tab_strip.rs"]
+mod tab_strip;
+#[path = "impls/tokens.rs"]
+mod tokens;
 #[path = "impls/terminal.rs"]
 mod terminal;
 #[path = "impls/transfers.rs"]
@@ -81,6 +91,12 @@ mod dialog_parity_tests;
 mod ui_animation_probes;
 
 pub(crate) use audit_window::AuditWindowHandle;
+// The keyboard surface: every action and every chord, and the one `bind_keys`.
+pub(crate) use actions::{
+    CloseTab, CommandPalette, CopySelection, CyclePane, Find, NextTab, Paste,
+    PasteAlternate, PrevTab, QuickConnect,
+    Reconnect, SplitDown, SplitRight, ZoomIn, ZoomOut, ZoomReset,
+};
 pub(crate) use shell::run;
 // What a detached window — the process monitor, the system-information window — has to be
 // able to do for the shell to open it, focus it and point it at a tab.
@@ -97,6 +113,9 @@ pub(crate) use terminal::{terminal_grid, CellMetrics, GridSnapshot};
 pub(crate) use view::{TerminalSettings, TerminalView};
 // The session list, which the shell lays out beside the terminal.
 pub(crate) use session_editor::{EditorOutcome, SessionEditor};
+// The tab strip, a child view of the terminal page: cached between page-state
+// changes so a terminal frame never rebuilds it.
+pub(crate) use tab_strip::TabStripView;
 pub(crate) use session_list::{SessionListAction, SessionListEvent, SessionListView};
 // The plugin manager: what is installed, what each may do, and the switches that were
 // previously only reachable from `xenterm cli grant`.

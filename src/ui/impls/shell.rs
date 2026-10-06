@@ -95,6 +95,8 @@ pub(crate) fn run() -> Result<()> {
             gpui_kit::component::set_locale(if crate::i18n::is_en() { "en" } else { "zh-CN" });
             gpui_kit::init(cx);
             super::dialogs::init(cx);
+            // The keymap, in one place: every chord the window answers to.
+            super::actions::init(cx);
             // The taskbar's "新建窗口" task, for *this* entry point: the GPUI window is
             // started with `gpui`, so that is what the task has to pass. Registered
             // before the first window shows, so the entry is there when the taskbar icon
@@ -431,7 +433,7 @@ pub(crate) struct Shell {
     /// Everything that used to be a full-window overlay is a page now; what is
     /// left here is what is genuinely modal — a form being filled in, a file
     /// being read, a thing the user is mid-way through.
-    overlay: Overlay,
+    pub(crate) overlay: Overlay,
     /// A persistent warning independent of transient connection/status notices.
     /// Refreshed after foreground actions and by the existing background poll.
     persistence_warning: PersistenceWarning,
@@ -465,7 +467,7 @@ pub(crate) struct Shell {
 /// One at a time, because they are all modal-ish: a form half filled in with another
 /// behind it would invite a click on the wrong one.
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Overlay {
+pub(crate) enum Overlay {
     None,
     /// A remote file, open in the built-in viewer or editor.
     File(Entity<super::file_viewer::FileViewerView>),
@@ -488,6 +490,9 @@ enum Overlay {
     /// a searchable list over every saved session and built-in shell, whose
     /// confirm connects in place.
     QuickConnect(Entity<SessionListView>),
+    /// The command palette, opened from Ctrl+Shift+P: a searchable list over
+    /// the window's own commands, whose confirm runs one.
+    Commands(Entity<super::command_palette::CommandPalette>),
 }
 
 /// Join a directory and a name into the remote path the SFTP layer takes.
@@ -646,6 +651,7 @@ impl Render for Shell {
         self.drain_transfers(cx);
         self.drain_quick_manager(window, cx);
         self.drain_quick_connect(window, cx);
+        self.drain_commands(window, cx);
         self.drain_tunnels(cx);
         self.drain_opened_file(window, cx);
         self.drain_editor(window, cx);
@@ -943,51 +949,64 @@ impl Shell {
             .flex_1()
             .w_full()
             .min_h_0()
-            // Ctrl+Tab and Ctrl+Shift+Tab cycle the tabs, and Enter reconnects a
-            // dead session — both handled here, on the root, because they are the
-            // window's shortcuts rather than any one page's: the terminal has not
-            // consumed them, and a dead session reconnects whichever page has focus.
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                let keystroke = &event.keystroke;
-                // The quick-connect palette over everything else; a dialog's
-                // own keys are the dialog's, hence the overlay guard.
-                if keystroke.modifiers.control
-                    && !keystroke.modifiers.alt
-                    && keystroke.key.as_str() == "k"
-                    && matches!(this.overlay, Overlay::None)
-                {
-                    this.open_quick_connect(window, cx);
+            // The root names the window's key context, so the keymap's window-scope
+            // bindings (`Shell && …`) resolve here, and the actions land on handlers
+            // instead of on keystroke strings: see `impls/actions.rs`, which is the
+            // one place a chord is written down.
+            .key_context("Shell")
+            .on_action(cx.listener(|this, _: &crate::ui::CommandPalette, window, cx| {
+                if !matches!(this.overlay, Overlay::None) {
                     return;
                 }
-                if keystroke.key.as_str() == "enter"
-                    && !keystroke.modifiers.control
-                    && !keystroke.modifiers.alt
-                    && matches!(this.overlay, Overlay::None)
-                {
-                    if let Some(id) = this.pages.terminal.read(cx).active_tab_id() {
-                        // Read from the status map rather than from the view: state 2 is
-                        // what a session that has ended leaves behind, and it is the
-                        // signal this window has already been seen to act on.
-                        let ended = this
-                            .state
-                            .statuses
-                            .lock()
-                            .map(|map| {
-                                map.get(&id).map(|status| status.state == 2).unwrap_or(false)
-                            })
-                            .unwrap_or(false);
-                        if ended {
-                            this.connect(&id, &id, cx);
-                            return;
-                        }
+                this.open_command_palette(window, cx);
+            }))
+            .on_action(cx.listener(
+                |this, _: &crate::ui::QuickConnect, window, cx| {
+                    // The dialog context's NoAction already keeps Ctrl+K out of the
+                    // modal layer; this guard covers the overlays that render without
+                    // that context (the session editor, the file viewer).
+                    if !matches!(this.overlay, Overlay::None) {
+                        return;
                     }
-                }
-                if keystroke.key.as_str() == "tab" && keystroke.modifiers.control {
-                    let shift = keystroke.modifiers.shift;
-                    this.pages
-                        .terminal
-                        .update(cx, |page, cx| page.cycle_tab(shift, cx));
-                }
+                    this.open_quick_connect(window, cx);
+                },
+            ))
+            .on_action(cx.listener(
+                |this, _: &crate::ui::Reconnect, _window, cx| {
+                    this.reconnect_ended_session(cx);
+                },
+            ))
+            .on_action(cx.listener(|this, _: &crate::ui::NextTab, _, cx| {
+                this.pages
+                    .terminal
+                    .update(cx, |page, cx| page.cycle_tab(false, cx));
+            }))
+            .on_action(cx.listener(|this, _: &crate::ui::PrevTab, _, cx| {
+                this.pages
+                    .terminal
+                    .update(cx, |page, cx| page.cycle_tab(true, cx));
+            }))
+            .on_action(cx.listener(|this, _: &crate::ui::CloseTab, _, cx| {
+                this.pages.terminal.update(cx, |page, cx| {
+                    if let Some(id) = page.active_tab_id() {
+                        page.close_tab(&id, cx);
+                    }
+                });
+            }))
+            .on_action(cx.listener(|this, _: &crate::ui::SplitRight, _, cx| {
+                this.pages
+                    .terminal
+                    .update(cx, |page, cx| page.split_active_tab(false, cx));
+            }))
+            .on_action(cx.listener(|this, _: &crate::ui::SplitDown, _, cx| {
+                this.pages
+                    .terminal
+                    .update(cx, |page, cx| page.split_active_tab(true, cx));
+            }))
+            .on_action(cx.listener(|this, _: &crate::ui::CyclePane, _, cx| {
+                this.pages
+                    .terminal
+                    .update(cx, |page, cx| page.cycle_pane(cx));
             }))
             .child(nav)
             .child(
@@ -1016,6 +1035,12 @@ impl Shell {
             .status
             .as_ref()
             .filter(|note| note.sticky || note.at.elapsed() < STATUS_TTL);
+        // No note, no bar: an empty strip above nothing read as a rendering
+        // bug. The row only exists while there is a fact to put in it, which
+        // also keeps the workspace one line taller the rest of the time.
+        let Some(note) = note else {
+            return div();
+        };
         let mut bar = h_flex()
             .w_full()
             .min_w_0()
@@ -1026,7 +1051,7 @@ impl Shell {
             .border_color(border)
             .text_xs()
             .text_color(muted_fg);
-        if let Some(note) = note {
+        {
             let text = SharedString::from(note.text.clone());
             if note.fading {
                 bar = bar.child(
@@ -1194,7 +1219,31 @@ impl Shell {
     /// screen. Confirming connects in place and brings the terminal page
     /// forward — the hot path for opening another session, without a detour
     /// through the connections page.
-    fn open_quick_connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// The Reconnect action's handler: bring back the active session if it ended.
+    ///
+    /// Read from the status map rather than from the view: state 2 is what a session
+    /// that has ended leaves behind, and it is the signal this window has already been
+    /// seen to act on. The overlay guard repeats the keymap's `!Dialog` intent, because
+    /// not every overlay is rendered with the dialog context.
+    pub(crate) fn reconnect_ended_session(&mut self, cx: &mut Context<Self>) {
+        if !matches!(self.overlay, Overlay::None) {
+            return;
+        }
+        let Some(id) = self.pages.terminal.read(cx).active_tab_id() else {
+            return;
+        };
+        let ended = self
+            .state
+            .statuses
+            .lock()
+            .map(|map| map.get(&id).map(|status| status.state == 2).unwrap_or(false))
+            .unwrap_or(false);
+        if ended {
+            self.connect(&id, &id, cx);
+        }
+    }
+
+    pub(crate) fn open_quick_connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let store = self.state.store.clone();
         let active = self.pages.terminal.read(cx).active_tab_id();
         // Compact: rows only. The header chrome this view normally draws is
@@ -1287,6 +1336,9 @@ impl Shell {
         list_for_focus.update(cx, |view, cx| view.focus_search(window, cx));
         cx.notify();
     }
+
+    /// The commands the palette offers, in the order they are shown. Each name
+    /// is the verb a menu would carry; the dispatch lives in `run_command`.
 
     /// Carry the palette's confirm out — connect in place, terminal page
     /// forward, dialog down — or take the palette down if it went away without
@@ -1623,7 +1675,7 @@ impl Shell {
 
     /// Open the approval-audit viewer: a dedicated, read-only window over
     /// the journal. The raw day files stay reachable from its toolbar.
-    fn open_audit_viewer(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn open_audit_viewer(&mut self, cx: &mut Context<Self>) {
         self.audit_window.show(cx);
     }
 
@@ -2329,7 +2381,7 @@ impl Shell {
     /// `session` is `None` for a new one. The editor owns the draft, so it is a new
     /// entity each time: reusing one would leave a half-filled form from a cancelled
     /// edit behind the next open.
-    fn open_editor(
+    pub(crate) fn open_editor(
         &mut self,
         session: Option<crate::config::Session>,
         window: &mut Window,
@@ -2473,7 +2525,7 @@ impl Shell {
     /// A separate window rather than a panel: the table is something you keep beside
     /// the terminal, and a panel would take width from the terminal every time you
     /// looked at what was using the CPU.
-    fn open_process_window(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn open_process_window(&mut self, cx: &mut Context<Self>) {
         let state = self.state.clone();
         let tab = self.pages.terminal.read(cx).active_tab_id();
         let host = self.active_host(cx);
@@ -2492,7 +2544,7 @@ impl Shell {
     }
 
     /// Open the system-information window, or bring the open one forward.
-    fn open_system_info_window(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn open_system_info_window(&mut self, cx: &mut Context<Self>) {
         let state = self.state.clone();
         let tab = self.pages.terminal.read(cx).active_tab_id();
         let host = self.active_host(cx);
@@ -2565,7 +2617,7 @@ impl Shell {
     /// app's own, or an OpenSSH config — the file is sniffed by content, not
     /// by extension, because ssh configs usually have none. The count and the
     /// failures go on the status line, as with every other import.
-    fn import_connections(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn import_connections(&mut self, cx: &mut Context<Self>) {
         // The picker is async: a blocking native dialog on the UI thread
         // re-enters the frame that opened it, and gpui's app cell refuses the
         // re-entrant borrow — the crash this replaced.

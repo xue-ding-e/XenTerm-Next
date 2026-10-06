@@ -33,8 +33,8 @@ use gpui_kit::{
     },
     div,
     prelude::*,
-    px, Animation, AnimationExt as _, AnyElement, Context, FontWeight, IntoElement, Render,
-    SharedString, Task, Window,
+    px, uniform_list, Animation, AnimationExt as _, AnyElement, Context, Entity, FontWeight,
+    IntoElement, ListSizingBehavior, Render, SharedString, Task, UniformListScrollHandle, Window,
 };
 
 // The full Lucide catalog rather than the component library's curated subset: the two
@@ -70,6 +70,8 @@ pub(crate) struct TransferListView {
     active: bool,
     /// The last action an interaction produced, drained by the shell.
     pending: Option<TransferAction>,
+    /// The scroll position of the virtualized transfer list.
+    list_scroll: UniformListScrollHandle,
     /// Every transfer id this view has already drawn. A row entrance plays
     /// only for ids outside this set, so re-renders and reopenings don't
     /// replay the fade for rows the user has already seen.
@@ -108,6 +110,7 @@ impl TransferListView {
             rows,
             active,
             pending: None,
+            list_scroll: UniformListScrollHandle::new(),
             seen: std::collections::HashSet::new(),
             _poll: poll,
         }
@@ -133,13 +136,18 @@ impl TransferListView {
         self.active
     }
 
-    /// One row: the name, what it is doing, and how far along it is. `entrance`
-    /// is true only for a row the view has not shown before, and is what gates
-    /// the fade-in.
-    fn row(&self, transfer: &Transfer, entrance: bool, cx: &Context<Self>) -> AnyElement {
-        let theme = cx.theme();
-        let phase = transfer.phase;
-        let percent = transfer.percent();
+}
+
+/// One transfer row, carrying an `Entity` handle instead of a listener — the
+/// virtualized list builds rows without a `Context` in reach.
+fn transfer_row(
+    view: &Entity<TransferListView>,
+    transfer: &Transfer,
+    entrance: bool,
+    theme: &gpui_kit::component::Theme,
+) -> AnyElement {
+    let phase = transfer.phase;
+    let percent = transfer.percent();
         // The bar's colour carries the outcome, so a list of twenty finished transfers
         // is read by scanning for the one that is red.
         let colour = match phase {
@@ -227,9 +235,15 @@ impl TransferListView {
                                 .ghost()
                                 .small()
                                 .tooltip(crate::i18n::t("取消传输", "Cancel transfer"))
-                                .on_click(cx.listener(move |this, _, _, _| {
-                                    this.pending = Some(TransferAction::Cancel(cancel_id.clone()));
-                                })),
+                                .on_click({
+                                    let view = view.clone();
+                                    move |_, _, cx| {
+                                        let _ = view.update(cx, |this, _| {
+                                            this.pending =
+                                                Some(TransferAction::Cancel(cancel_id.clone()));
+                                        });
+                                    }
+                                }),
                         )
                     }),
             );
@@ -246,7 +260,6 @@ impl TransferListView {
         } else {
             row.into_any_element()
         }
-    }
 }
 
 impl Render for TransferListView {
@@ -281,16 +294,30 @@ impl Render for TransferListView {
                 .id("transfer-rows")
                 .w_full()
                 .max_h(px(200.))
-                .overflow_y_scroll()
-                .children(
+                .overflow_hidden()
+                .child({
                     // Newest first: the store appends, so the display order is its
-                    // reverse.
-                    self.rows
-                        .iter()
-                        .rev()
-                        .map(|transfer| self.row(transfer, fresh.contains(&transfer.id), cx))
-                        .collect::<Vec<_>>(),
-                )
+                    // reverse. The virtual list mounts only the visible slice, and
+                    // every row is the same one-line height.
+                    let view = cx.entity();
+                    let scroll = self.list_scroll.clone();
+                    let count = self.rows.len();
+                    uniform_list("transfer-rows-list", count, move |range, _window, cx| {
+                        let transfer_view = view.read(cx);
+                        let theme = cx.theme();
+                        range
+                            .clone()
+                            .filter_map(|index| {
+                                let transfer = transfer_view.rows.get(count - 1 - index)?;
+                                let entrance = fresh.contains(&transfer.id);
+                                Some(transfer_row(&view, transfer, entrance, theme))
+                            })
+                            .collect()
+                    })
+                    .with_sizing_behavior(ListSizingBehavior::Infer)
+                    .track_scroll(&scroll)
+                    .into_any_element()
+                })
                 .into_any_element()
         };
 

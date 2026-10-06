@@ -36,6 +36,9 @@ pub(crate) fn render_layout(
     width: f32,
     height: f32,
     border: gpui_kit::Hsla,
+    // The focused pane's ring. The old mark was a 2px border in the theme's
+    // *border* colour — a hairline grey a user could not find on a busy screen.
+    accent: gpui_kit::Hsla,
     contents: Vec<AnyElement>,
     focus: std::rc::Rc<std::cell::RefCell<Option<u64>>>,
     // A press on the area, and where the pointer is while one is held; the release clears
@@ -93,8 +96,8 @@ pub(crate) fn render_layout(
         if rect.focused && panes.len() > 1 {
             element = element
                 .debug_selector(|| FOCUSED_PANE_SELECTOR.to_string())
-                .border_l_2()
-                .border_color(border);
+                .border_1()
+                .border_color(accent);
         }
         children.push(element.into_any_element());
     }
@@ -216,6 +219,7 @@ mod tests {
                 self.width,
                 self.height,
                 gpui_kit::hsla(0.0, 0.0, 0.5, 1.0),
+                gpui_kit::hsla(0.58, 0.8, 0.6, 1.0),
                 contents,
                 // Fresh slots per frame, which is what the shell hands over too; the tests
                 // are about where the panes are drawn, not about what a click or a drag does

@@ -19,3 +19,4 @@
 # Test fixtures create ephemeral keys/profiles at runtime, never in source.
 __pycache__/
 *.pyc
+target-gnu/

@@ -66,13 +66,7 @@ use crate::resource::{
     TabStatuses, NET_HISTORY_LEN,
 };
 
-/// The column's width when collapsed: enough for one icon button and a hairline.
-const COLLAPSED_WIDTH: f32 = 36.0;
-/// Bounds on the configured width. Below the minimum the CPU/Memory/Swap rows stop
-/// fitting their three columns, and above the maximum the panel starts taking columns
-/// from the terminal it is describing.
-const MIN_WIDTH: f32 = 180.0;
-const MAX_WIDTH: f32 = 420.0;
+use super::tokens::{SIDEBAR_COLLAPSED_WIDTH as COLLAPSED_WIDTH, SIDEBAR_MAX_WIDTH as MAX_WIDTH, SIDEBAR_MIN_WIDTH as MIN_WIDTH};
 /// The height of one throughput graph.
 const GRAPH_HEIGHT: f32 = 44.0;
 /// How long folding the column out or in takes. Short enough to read as one
@@ -114,6 +108,13 @@ struct Resources {
     top_down: SharedString,
     /// Already auto-scaled to 0..1; see [`crate::resource::normalized_history`].
     top_history: Vec<f32>,
+    /// Whether the top graph belongs to a remote session at all. A local tab draws
+    /// one graph — this machine's — rather than the same machine twice.
+    top_is_remote: bool,
+    /// A remote session is the subject but no sample is flowing (still connecting,
+    /// or the session dropped): the top graph shows an honest placeholder instead
+    /// of whatever numbers would fill the space.
+    top_waiting: bool,
     show_selector: bool,
     ifaces: Vec<SharedString>,
     selected: SharedString,
@@ -142,6 +143,8 @@ impl Resources {
             top_up: SharedString::default(),
             top_down: SharedString::default(),
             top_history: vec![0.0; NET_HISTORY_LEN],
+            top_is_remote: false,
+            top_waiting: false,
             show_selector: false,
             ifaces: Vec::new(),
             selected: SharedString::default(),
@@ -334,6 +337,22 @@ impl SidebarView {
         self.shown_width
     }
 
+    /// Set the column's width: the drag's write path, and the settings page's.
+    ///
+    /// Clamped to the same bounds the constructor reads, persisted to the store
+    /// the panel was handed, and notified so the page's observer re-lays the
+    /// workspace out. The save itself is the caller's — a drag calls this on
+    /// every move and saves once, on release.
+    pub(crate) fn set_width(&mut self, width: f32, cx: &mut Context<Self>) {
+        let clamped = width.clamp(MIN_WIDTH, MAX_WIDTH);
+        if (self.shown_width - clamped).abs() < 0.5 {
+            return;
+        }
+        self.store.borrow_mut().set_sidebar_width(clamped);
+        self.shown_width = clamped;
+        cx.notify();
+    }
+
     /// The width the panel's *content* is laid out at this frame: the target
     /// width, never the animated one. The shell puts the panel in a clipping
     /// container of the animated width, so the column slides over a
@@ -401,15 +420,6 @@ impl SidebarView {
             view.swap = snapshot.swap_percent;
             view.mem_detail = format_mem(snapshot.mem_used_mib, snapshot.mem_total_mib).into();
             view.swap_detail = format_mem(snapshot.swap_used_mib, snapshot.swap_total_mib).into();
-        };
-        // The top graph on this machine, which is what a tab with no remote sample has.
-        let show_local_top = |view: &mut Resources| {
-            view.top_up = bot_up.clone().into();
-            view.top_down = bot_down.clone().into();
-            view.top_history = local_history.clone();
-            view.show_selector = false;
-            view.selected = SharedString::default();
-            view.ifaces = Vec::new();
             view.disks = local_disks.clone();
         };
 
@@ -421,13 +431,13 @@ impl SidebarView {
         match status {
             // A local shell tab: the connection state in the header is real, but the
             // resources under it are this machine's — their own status carries no CPU or
-            // memory at all, because there is no monitor channel behind it.
+            // memory at all, because there is no monitor channel behind it. One graph
+            // draws it: the top graph would be this machine twice.
             Some(status) if status.is_local => {
                 view.conn_state = conn_state(status.state);
                 view.conn_text = connection_text(&status);
                 view.conn_host = connection_host(&status.host).into();
                 show_local(&mut view);
-                show_local_top(&mut view);
             }
             // A live remote session: the server's numbers, and the server's NIC on top.
             Some(status) if status.state == 1 => {
@@ -437,6 +447,7 @@ impl SidebarView {
                 view.proc_available = true;
                 view.system_info_available = true;
                 view.title = crate::i18n::t("服务器资源", "Server resources").into();
+                view.top_is_remote = true;
                 view.cpu = status.cpu;
                 view.mem = fraction(status.mem_used_kib, status.mem_total_kib);
                 view.swap = fraction(status.swap_used_kib, status.swap_total_kib);
@@ -458,19 +469,20 @@ impl SidebarView {
                 view.disks = crate::resource::disk_usage(&status.disks);
             }
             // Dropped or still connecting: the heading stays the server's — that is what
-            // the panel is about — with no sample under it, and this machine's graph
-            // underneath, because that half was never the server's.
+            // the panel is about — and the top graph holds a placeholder rather than
+            // this machine's numbers, which would read as the server's. This machine's
+            // own graph stays underneath, because that half was never the server's.
             Some(status) => {
                 view.conn_state = conn_state(status.state);
                 view.conn_text = connection_text(&status);
                 view.conn_host = connection_host(&status.host).into();
                 view.title = crate::i18n::t("服务器资源", "Server resources").into();
-                show_local_top(&mut view);
+                view.top_is_remote = true;
+                view.top_waiting = true;
             }
             // Nothing open: this machine, honestly labelled.
             None => {
                 show_local(&mut view);
-                show_local_top(&mut view);
             }
         }
 
@@ -499,7 +511,7 @@ impl SidebarView {
     }
 
     /// Fold the panel away, or bring it back, and remember which.
-    fn set_collapsed(&mut self, collapsed: bool, cx: &mut Context<Self>) {
+    pub(crate) fn set_collapsed(&mut self, collapsed: bool, cx: &mut Context<Self>) {
         if self.collapsed == collapsed {
             return;
         }
@@ -765,6 +777,11 @@ impl SidebarView {
     }
 
     /// The two throughput graphs: the active session's NIC above, this machine below.
+    ///
+    /// The session's graph is drawn only when a remote session is the subject — a local
+    /// tab gets one graph, not this machine twice — and while the session's sample has
+    /// yet to flow (connecting, or dropped) the space says so instead of inventing
+    /// numbers.
     fn networks(&self, cx: &Context<Self>) -> AnyElement {
         let shown = self.shown.clone();
         let theme = cx.theme();
@@ -773,13 +790,32 @@ impl SidebarView {
         v_flex()
             .w_full()
             .gap_2()
-            .child(net_graph(
-                shown.top_up,
-                shown.top_down,
-                &shown.top_history,
-                selector,
-                theme,
-            ))
+            .when(shown.top_is_remote, |this| {
+                if shown.top_waiting {
+                    this.child(
+                        div()
+                            .w_full()
+                            .h(px(GRAPH_HEIGHT))
+                            .rounded_sm()
+                            .border_1()
+                            .border_color(theme.border)
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child(crate::i18n::t("暂无远程数据", "No remote data yet")),
+                    )
+                } else {
+                    this.child(net_graph(
+                        shown.top_up,
+                        shown.top_down,
+                        &shown.top_history,
+                        selector,
+                        theme,
+                    ))
+                }
+            })
             .child(
                 v_flex()
                     .w_full()
@@ -976,7 +1012,11 @@ impl Render for SidebarView {
                     .w_full()
                     .flex_1()
                     .min_h_0()
-                    .gap_2()
+                    // One step tighter than a page: this column lives beside the
+                    // work all day, and its four sections are furniture, not an
+                    // article. Half a Tailwind step less per gap is the difference
+                    // between a monitor and a poster.
+                    .gap_1p5()
                     .p_2()
                     .child(header)
                     .child(divider(theme))
@@ -1037,25 +1077,26 @@ fn stat_row(
             div()
                 .flex_1()
                 .min_w_0()
-                .relative()
                 .child(
                     Progress::new(id)
                         .value(percent * 100.0)
                         .color(color)
-                        .h(px(14.))
+                        .h(px(8.))
                         .w_full(),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .left(px(6.))
-                        .top_0()
-                        .h_full()
-                        .flex()
-                        .items_center()
-                        .text_xs()
-                        .child(SharedString::from(format!("{:.0}%", percent * 100.0))),
                 ),
+        )
+        // The number reads from its own column rather than from inside the fill:
+        // on a near-empty bar a label drawn inside it sat on blank track, and the
+        // three rows' figures disagreed about where to look.
+        .child(
+            div()
+                .w(px(34.))
+                .flex_shrink_0()
+                .flex()
+                .justify_end()
+                .text_xs()
+                .text_color(theme.muted_foreground)
+                .child(SharedString::from(format!("{:.0}%", percent * 100.0))),
         )
         .child(
             // And wide enough for a used/total figure at its longest: `4.7G/31.6G`. The
@@ -1151,44 +1192,48 @@ fn disk_row(disk: &DiskUsage, theme: &Theme) -> impl IntoElement {
     } else {
         theme.chart_2
     };
-    div()
+    // One anatomy for every measured row — label, bar, figures — which is what a
+    // scanner's eye needs. The old row painted the fill across the row's whole
+    // background, where a bar behind text reads as a selected row.
+    h_flex()
         .w_full()
         .h(px(20.))
         .flex_shrink_0()
-        .relative()
-        .rounded(px(2.))
-        .overflow_hidden()
+        .gap(px(6.))
+        .items_center()
         .child(
             div()
-                .absolute()
-                .left_0()
-                .top_0()
-                .h_full()
-                .w(relative(disk.percent.clamp(0.0, 1.0)))
-                .bg(fill.opacity(0.22)),
+                .w(px(46.))
+                .flex_shrink_0()
+                .text_xs()
+                .truncate()
+                .child(SharedString::from(disk.path.clone())),
         )
         .child(
-            h_flex()
-                .w_full()
-                .h_full()
-                .gap_2()
-                .px_1()
-                .items_center()
+            div()
+                .flex_1()
+                .min_w_0()
+                .relative()
+                .rounded(px(2.))
+                .bg(theme.muted)
+                .h(px(8.))
+                .overflow_hidden()
                 .child(
                     div()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .text_xs()
-                        .child(SharedString::from(disk.path.clone())),
-                )
-                .child(
-                    div()
-                        .flex_shrink_0()
-                        .text_xs()
-                        .text_color(theme.muted_foreground)
-                        .child(SharedString::from(disk.detail.clone())),
+                        .absolute()
+                        .left_0()
+                        .top_0()
+                        .h_full()
+                        .w(relative(disk.percent.clamp(0.0, 1.0)))
+                        .bg(fill),
                 ),
+        )
+        .child(
+            div()
+                .flex_shrink_0()
+                .text_xs()
+                .text_color(theme.muted_foreground)
+                .child(SharedString::from(disk.detail.clone())),
         )
 }
 

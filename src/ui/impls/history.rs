@@ -26,8 +26,8 @@ use gpui_kit::{
     },
     div,
     prelude::*,
-    px, AnyElement, Context, Entity, FontWeight, IntoElement, Render, SharedString, Subscription,
-    Window,
+    px, uniform_list, AnyElement, Context, Entity, FontWeight, IntoElement, ListSizingBehavior,
+    Render, SharedString, Subscription, UniformListScrollHandle, Window,
 };
 
 // The full Lucide catalog rather than the component library's curated subset.
@@ -52,6 +52,8 @@ pub(crate) struct HistoryView {
     store: Rc<RefCell<ConfigStore>>,
     filter: Entity<InputState>,
     pending: Option<HistoryAction>,
+    /// The scroll position of the virtualized history list.
+    list_scroll: UniformListScrollHandle,
     /// Kept alive: a dropped subscription is a filter box that types and does not filter.
     _filter_subscription: Subscription,
 }
@@ -81,6 +83,7 @@ impl HistoryView {
             store,
             filter,
             pending: None,
+            list_scroll: UniformListScrollHandle::new(),
             _filter_subscription: filter_subscription,
         }
     }
@@ -104,47 +107,61 @@ impl HistoryView {
     pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) {
         cx.notify();
     }
+}
 
-    /// One row: the command, and the way to forget it.
-    fn row(&self, row: &history::HistoryRow, cx: &Context<Self>) -> AnyElement {
-        let theme = cx.theme();
-        let command = row.command.clone();
-        let index = row.index;
-        h_flex()
-            .id(SharedString::from(format!("history-row-{index}")))
-            .w_full()
-            .gap_2()
-            .px_2()
-            .py_1()
-            .items_center()
-            .rounded_sm()
-            .hover(|this| this.bg(theme.muted))
-            .cursor_pointer()
-            .on_click(cx.listener(move |this, _, _, _| {
-                this.pending = Some(HistoryAction::Recall(command.clone()));
-            }))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_xs()
-                    .font_family(theme.mono_font_family.clone())
-                    .child(SharedString::from(row.command.clone())),
-            )
-            .child(
-                Button::new(SharedString::from(format!("history-delete-{index}")))
-                    .icon(Icon::new(IconName::X))
-                    .ghost()
-                    .small()
-                    .tooltip(crate::i18n::t("删除这一条", "Forget this one"))
-                    .accessibility_label(crate::i18n::t("删除这一条", "Forget this one"))
-                    .on_click(cx.listener(move |this, _, _, _| {
-                        this.pending = Some(HistoryAction::Delete(index));
-                    })),
-            )
-            .into_any_element()
-    }
+/// One history row, carrying an `Entity` handle instead of a listener.
+fn history_row(
+    view: &Entity<HistoryView>,
+    row: &history::HistoryRow,
+    theme: &gpui_kit::component::Theme,
+) -> AnyElement {
+    let command = row.command.clone();
+    let index = row.index;
+    h_flex()
+        .id(SharedString::from(format!("history-row-{index}")))
+        .w_full()
+        .gap_2()
+        .px_2()
+        .py_1()
+        .items_center()
+        .rounded_sm()
+        .hover(|this| this.bg(theme.muted))
+        .cursor_pointer()
+        .on_click({
+            let view = view.clone();
+            let command = command.clone();
+            move |_, _, cx| {
+                let _ = view.update(cx, |this, _| {
+                    this.pending = Some(HistoryAction::Recall(command.clone()));
+                });
+            }
+        })
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_xs()
+                .font_family(theme.mono_font_family.clone())
+                .child(SharedString::from(row.command.clone())),
+        )
+        .child(
+            Button::new(SharedString::from(format!("history-delete-{index}")))
+                .icon(Icon::new(IconName::X))
+                .ghost()
+                .small()
+                .tooltip(crate::i18n::t("删除这一条", "Forget this one"))
+                .accessibility_label(crate::i18n::t("删除这一条", "Forget this one"))
+                .on_click({
+                    let view = view.clone();
+                    move |_, _, cx| {
+                        let _ = view.update(cx, |this, _| {
+                            this.pending = Some(HistoryAction::Delete(index));
+                        });
+                    }
+                }),
+        )
+        .into_any_element()
 }
 
 impl Render for HistoryView {
@@ -175,12 +192,37 @@ impl Render for HistoryView {
                 )
                 .into_any_element()
         } else {
+            // Virtual: a session that has been busy for months has a long tail of
+            // commands, and every row is the same one-line height.
+            let view = cx.entity();
+            let scroll = self.list_scroll.clone();
+            let rows_len = rows.len();
+            let rows: AnyElement = uniform_list(
+                "history-rows-list",
+                rows_len,
+                move |range, _window, cx| {
+                    let history_view = view.read(cx);
+                    let theme = cx.theme();
+                    let store = history_view.store.borrow();
+                    let visible = history::filtered(store.command_history(), &query);
+                    range
+                        .clone()
+                        .filter_map(|index| {
+                            let row = visible.get(index)?;
+                            Some(history_row(&view, row, theme))
+                        })
+                        .collect()
+                },
+            )
+            .with_sizing_behavior(ListSizingBehavior::Infer)
+            .track_scroll(&scroll)
+            .into_any_element();
             v_flex()
                 .id("history-rows")
                 .w_full()
                 .max_h(px(220.))
-                .overflow_y_scroll()
-                .children(rows.iter().map(|row| self.row(row, cx)).collect::<Vec<_>>())
+                .overflow_hidden()
+                .child(rows)
                 .into_any_element()
         };
 

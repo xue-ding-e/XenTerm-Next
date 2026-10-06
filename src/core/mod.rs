@@ -36,6 +36,8 @@ mod event_sink;
 
 #[path = "struct/tab.rs"]
 mod tab;
+#[path = "struct/tab_id.rs"]
+mod tab_id;
 
 #[path = "struct/session_row.rs"]
 mod session_row;
@@ -85,6 +87,7 @@ pub use sftp::{parent_path, SftpColumn};
 pub use sftp::SftpFile;
 pub use sftp_listing::SftpListing;
 pub use tab::{TabKind, TabMeta};
+pub(crate) use tab_id::TabId;
 // Named by the transfer manager, which colours a row by what happened to it;
 // `Transfer` reports the same fact through its own methods.
 pub use transfer::Transfer;

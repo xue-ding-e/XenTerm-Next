@@ -1004,6 +1004,14 @@ fn triggers_element(
         .into_any_element()
 }
 
+// The render is one long method by choice: of its ~500 lines, most are the
+// form's field declarations, each two to five lines of `SettingField` wiring
+// that names a draft accessor and a store setter. Extracting them into a
+// builder would move 25 values through a tuple (or a struct that exists only
+// to carry them between two methods called once each) — a second naming of
+// everything for no reading gain. The reusable pieces (`Self::text`,
+// `saved_secret_field`, `forwards_element`, `triggers_element`) already are
+// methods; what remains is the form's own inventory.
 impl Render for SessionEditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.reset_previews {

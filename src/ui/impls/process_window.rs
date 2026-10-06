@@ -39,8 +39,8 @@ use gpui_kit::{
     },
     div,
     prelude::*,
-    px, relative, AnyElement, Context, Entity, IntoElement, Render, SharedString, Subscription,
-    Task, WeakEntity, Window,
+    px, relative, uniform_list, AnyElement, Context, Entity, IntoElement, ListSizingBehavior,
+    Render, SharedString, Subscription, Task, UniformListScrollHandle, WeakEntity, Window,
 };
 
 use crate::config::Secret;
@@ -106,6 +106,8 @@ pub(crate) struct ProcessWindowView {
     /// own Cancel button is `Root`'s notification and nobody else's. See
     /// [`super::follow_root`].
     _root_subscription: Option<Subscription>,
+    /// The scroll position of the virtualized process table.
+    list_scroll: UniformListScrollHandle,
 }
 
 impl ProcessWindowView {
@@ -147,6 +149,7 @@ impl ProcessWindowView {
             busy: false,
             _poll: poll,
             _root_subscription: None,
+            list_scroll: UniformListScrollHandle::new(),
         };
         view.rows = view.sample();
         view
@@ -461,109 +464,6 @@ impl ProcessWindowView {
             )
             .into_any_element()
     }
-
-    /// One process row: the load bar behind, the five columns in front.
-    fn row(&self, row: &ProcRow, cx: &Context<Self>) -> AnyElement {
-        let theme = cx.theme();
-        // The bar's colour says how hard the process is working, and the columns in
-        // front of it are what it is working on. Drawn behind rather than beside so the
-        // table keeps five columns at any width.
-        let bar = if row.cpu_frac > 0.5 {
-            theme.warning.opacity(0.28)
-        } else {
-            theme.chart_2.opacity(0.20)
-        };
-        let pid = row.pid.clone();
-        let menu_row = row.clone();
-        let hook = self.pending.clone();
-        // Kept so the menu's handler can mark this view dirty: the handler only gets an
-        // `App`, and a request that nothing repaints for is a request that waits for an
-        // unrelated frame — which may never come.
-        let weak: WeakEntity<Self> = cx.entity().downgrade();
-        let row_id = SharedString::from(format!("proc-{}-{}", row.tab_id, row.pid));
-        let pid_id = SharedString::from(format!("pid-{}-{}", row.tab_id, row.pid));
-
-        div()
-            .w_full()
-            .h(px(20.))
-            .flex_shrink_0()
-            .relative()
-            .rounded(px(2.))
-            .overflow_hidden()
-            .child(
-                div()
-                    .absolute()
-                    .left_0()
-                    .top_0()
-                    .h_full()
-                    .w(relative(row.cpu_frac.clamp(0.0, 1.0)))
-                    .bg(bar),
-            )
-            .child(
-                h_flex()
-                    .id(row_id)
-                    .w_full()
-                    .h_full()
-                    .gap(px(6.))
-                    .px_2()
-                    .items_center()
-                    .text_xs()
-                    .child(
-                        div()
-                            // An id, because an element with a click handler needs one to
-                            // be hit-testable at all — without it the PID looks clickable
-                            // and is not.
-                            .id(pid_id)
-                            .w(px(PID_WIDTH))
-                            .flex_shrink_0()
-                            .truncate()
-                            .text_color(theme.chart_2)
-                            .cursor_pointer()
-                            .hover(|this| this.text_color(theme.primary))
-                            .on_click(
-                                cx.listener(move |this, _, _, cx| this.copy_pid(pid.clone(), cx)),
-                            )
-                            .child(SharedString::from(row.pid.clone())),
-                    )
-                    .child(cell_text(USER_WIDTH, Align::Start, &row.user, theme))
-                    .child(cell_text(CPU_WIDTH, Align::End, &row.cpu, theme))
-                    .child(cell_text(MEM_WIDTH, Align::End, &row.mem, theme))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_color(theme.muted_foreground)
-                            .child(SharedString::from(row.command.clone())),
-                    )
-                    // The context menu hangs off the row's own content, so it opens where
-                    // the pointer is rather than at the row's top-left corner.
-                    .context_menu(move |menu, _, _| {
-                        let hook = hook.clone();
-                        let weak = weak.clone();
-                        let selected = menu_row.clone();
-                        menu.item(
-                            PopupMenuItem::new(crate::i18n::t("结束进程", "Terminate process"))
-                                .on_click(move |_, _, cx| {
-                                    // Recorded, not acted on: this handler gets an `App`,
-                                    // and opening the confirmation needs a window. The
-                                    // notify is what makes the next frame the one that
-                                    // opens it.
-                                    if let Some(view) = weak.upgrade() {
-                                        view.update(cx, |view, cx| {
-                                            *hook.borrow_mut() = Some(selected.clone());
-                                            *view.refusal.borrow_mut() = None;
-                                            cx.notify();
-                                        });
-                                    } else {
-                                        *hook.borrow_mut() = Some(selected.clone());
-                                    }
-                                }),
-                        )
-                    }),
-            )
-            .into_any_element()
-    }
 }
 
 impl Render for ProcessWindowView {
@@ -585,7 +485,36 @@ impl Render for ProcessWindowView {
         let success = theme.success;
         let muted = theme.muted_foreground;
         let header = self.header(cx);
-        let rows: Vec<AnyElement> = self.rows.iter().map(|row| self.row(row, cx)).collect();
+        // The rows are virtual: only the visible window of the table is mounted, so a
+        // host with four-digit PIDs worth of processes costs one screenful of elements.
+        // Rows are one 20px line each — uniform by construction, plus a 1px foot that
+        // stands in for the gap the old `.gap()` gave the scroll container.
+        let view = cx.entity();
+        let scroll = self.list_scroll.clone();
+        let rows: AnyElement = uniform_list(
+            "process-rows-list",
+            self.rows.len(),
+            move |range, _window, cx| {
+                let proc_view = view.read(cx);
+                let theme = cx.theme();
+                let pending = proc_view.pending.clone();
+                range
+                    .clone()
+                    .filter_map(|index| {
+                        let row = proc_view.rows.get(index)?;
+                        Some(
+                            div()
+                                .w_full()
+                                .pb(px(1.))
+                                .child(proc_row(row, pending.clone(), &view, theme)),
+                        )
+                    })
+                    .collect()
+            },
+        )
+        .with_sizing_behavior(ListSizingBehavior::Infer)
+        .track_scroll(&scroll)
+        .into_any_element();
         let status = self.status.clone();
         let empty = self.rows.is_empty();
         // The dialog this window's confirmation opens lives in `Root`'s queue, and
@@ -626,8 +555,7 @@ impl Render for ProcessWindowView {
                             .w_full()
                             .flex_1()
                             .min_h_0()
-                            .overflow_y_scroll()
-                            .gap(px(1.))
+                            .overflow_hidden()
                             .when(empty, |this| {
                                 this.child(
                                     div()
@@ -636,7 +564,7 @@ impl Render for ProcessWindowView {
                                         .child(crate::i18n::t("暂无进程", "No processes")),
                                 )
                             })
-                            .children(rows),
+                            .when(!empty, |this| this.child(rows)),
                     ),
             )
             .children(dialog_layer)
@@ -688,6 +616,124 @@ fn cell_text(
             theme.muted_foreground
         })
         .child(SharedString::from(text.to_string()))
+        .into_any_element()
+}
+
+/// One process row, built without the view's `Context`.
+///
+/// The table is a `uniform_list`, which builds the visible rows from inside a
+/// `&mut App` closure — there is no `Context` there to hand a listener to, so the
+/// handlers carry an `Entity` handle instead, and the theme comes in as the
+/// reference the closure already read. Same ids, same menu, same actions as the
+/// listener-built row this replaced.
+fn proc_row(
+    row: &ProcRow,
+    pending: Rc<RefCell<Option<ProcRow>>>,
+    view: &Entity<ProcessWindowView>,
+    theme: &gpui_kit::component::Theme,
+) -> AnyElement {
+    // The bar's colour says how hard the process is working, and the columns in
+    // front of it are what it is working on. Drawn behind rather than beside so the
+    // table keeps five columns at any width.
+    let bar = if row.cpu_frac > 0.5 {
+        theme.warning.opacity(0.28)
+    } else {
+        theme.chart_2.opacity(0.20)
+    };
+    let pid = row.pid.clone();
+    let menu_row = row.clone();
+    let hook = pending;
+    // Kept so the menu's handler can mark this view dirty: the handler only gets an
+    // `App`, and a request that nothing repaints for is a request that waits for an
+    // unrelated frame — which may never come.
+    let weak: WeakEntity<ProcessWindowView> = view.downgrade();
+    let row_id = SharedString::from(format!("proc-{}-{}", row.tab_id, row.pid));
+    let pid_id = SharedString::from(format!("pid-{}-{}", row.tab_id, row.pid));
+
+    div()
+        .w_full()
+        .h(px(20.))
+        .flex_shrink_0()
+        .relative()
+        .rounded(px(2.))
+        .overflow_hidden()
+        .child(
+            div()
+                .absolute()
+                .left_0()
+                .top_0()
+                .h_full()
+                .w(relative(row.cpu_frac.clamp(0.0, 1.0)))
+                .bg(bar),
+        )
+        .child(
+            h_flex()
+                .id(row_id)
+                .w_full()
+                .h_full()
+                .gap(px(6.))
+                .px_2()
+                .items_center()
+                .text_xs()
+                .child(
+                    div()
+                        // An id, because an element with a click handler needs one to
+                        // be hit-testable at all — without it the PID looks clickable
+                        // and is not.
+                        .id(pid_id)
+                        .w(px(PID_WIDTH))
+                        .flex_shrink_0()
+                        .truncate()
+                        .text_color(theme.chart_2)
+                        .cursor_pointer()
+                        .hover(|this| this.text_color(theme.primary))
+                        .on_click({
+                            let view = view.clone();
+                            move |_, _, cx| {
+                                let _ = view.update(cx, |view, cx| {
+                                    view.copy_pid(pid.clone(), cx)
+                                });
+                            }
+                        })
+                        .child(SharedString::from(row.pid.clone())),
+                )
+                .child(cell_text(USER_WIDTH, Align::Start, &row.user, theme))
+                .child(cell_text(CPU_WIDTH, Align::End, &row.cpu, theme))
+                .child(cell_text(MEM_WIDTH, Align::End, &row.mem, theme))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(theme.muted_foreground)
+                        .child(SharedString::from(row.command.clone())),
+                )
+                // The context menu hangs off the row's own content, so it opens where
+                // the pointer is rather than at the row's top-left corner.
+                .context_menu(move |menu, _, _| {
+                    let hook = hook.clone();
+                    let weak = weak.clone();
+                    let selected = menu_row.clone();
+                    menu.item(
+                        PopupMenuItem::new(crate::i18n::t("结束进程", "Terminate process"))
+                            .on_click(move |_, _, cx| {
+                                // Recorded, not acted on: this handler gets an `App`,
+                                // and opening the confirmation needs a window. The
+                                // notify is what makes the next frame the one that
+                                // opens it.
+                                if let Some(view) = weak.upgrade() {
+                                    view.update(cx, |view, cx| {
+                                        *hook.borrow_mut() = Some(selected.clone());
+                                        *view.refusal.borrow_mut() = None;
+                                        cx.notify();
+                                    });
+                                } else {
+                                    *hook.borrow_mut() = Some(selected.clone());
+                                }
+                            }),
+                    )
+                }),
+        )
         .into_any_element()
 }
 

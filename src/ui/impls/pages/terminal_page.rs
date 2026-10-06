@@ -21,6 +21,7 @@ use gpui_kit::component::{
     popover::Popover,
     v_flex,
     ActiveTheme as _,
+    Disableable as _,
     Sizable as _,
 };
 use gpui_kit::{div, prelude::*, px, rgb, rgba, Animation, AnimationExt as _, Context, Entity, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, SharedString, Subscription, Window};
@@ -36,10 +37,10 @@ use super::super::{panes, DockEdge, HistoryAction, HistoryView, QuickAction,
     TerminalView, TransferListView};
 
 /// One open tab: its id, its title, and the view drawing it.
-struct Tab {
-    id: String,
+pub(crate) struct Tab {
+    pub(crate) id: crate::core::TabId,
     /// The title, from `core::TabMeta` so a rename works the same way here as there.
-    meta: crate::core::TabMeta,
+    pub(crate) meta: crate::core::TabMeta,
     view: Entity<TerminalView>,
 }
 
@@ -50,7 +51,7 @@ struct Tab {
 /// carries it out at the top of the next frame — the same arrangement every panel in
 /// this shell uses, and the reason a click cannot re-enter the render it arrived in.
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum TabAction {
+pub(crate) enum TabAction {
     /// Rename the tab, in place.
     Rename(String),
     /// Open the same session again, as a second tab.
@@ -64,6 +65,8 @@ enum TabAction {
     MoveRight(String),
     /// Put the next tab beside this one, in a pane of its own.
     Split(String),
+    /// Put the next tab below this one, in a pane of its own.
+    SplitDown(String),
 }
 
 /// What this page asks the shell to do. The page owns its tabs, its panes and
@@ -188,8 +191,8 @@ pub(crate) struct TerminalPage {
     window_width: Rc<Cell<f32>>,
     action: Rc<RefCell<Option<TerminalAction>>>,
     /// The open tabs, in strip order, and which one is showing.
-    tabs: Vec<Tab>,
-    active_tab: Option<String>,
+    pub(crate) tabs: Vec<Tab>,
+    pub(crate) active_tab: Option<String>,
     /// The pane tree: which tabs share the terminal area and how it is divided.
     panes: crate::layout::Layout,
     /// The pane a click asked for, drained at the start of the next frame.
@@ -205,7 +208,7 @@ pub(crate) struct TerminalPage {
     /// The splitter being resized, as (id, axis start, axis length, vertical).
     pane_grab: Option<(u64, f32, f32, bool)>,
     /// The tab being renamed, and the field doing it.
-    renaming: Option<(String, Entity<InputState>)>,
+    pub(crate) renaming: Option<(String, Entity<InputState>)>,
     _rename_subscription: Option<Subscription>,
     /// What a tab's menu asked for, drained at the top of the frame.
     tab_action: Rc<RefCell<Option<TabAction>>>,
@@ -217,7 +220,7 @@ pub(crate) struct TerminalPage {
     sftp: Entity<SftpPanelView>,
     /// Hiding the dock only releases its layout space; the SFTP session and
     /// transfers keep running and the same listing is restored on reopen.
-    sftp_collapsed: bool,
+    pub(crate) sftp_collapsed: bool,
     /// The transfer list, drawn as a popover off the tab strip's transfer button.
     transfers: Entity<TransferListView>,
     /// The quick-command dock, as a popover off the command line.
@@ -244,7 +247,21 @@ pub(crate) struct TerminalPage {
     _sidebar_subscription: Subscription,
     /// The tab being dragged along the strip, and the pointer x it started at.
     /// A drag under a few pixels is a click, not a drag.
-    tab_drag: Option<(String, f32)>,
+    /// The strip, as a child view: cached between page-state changes, so a
+    /// terminal frame never rebuilds it. See `tab_strip.rs`.
+    tab_strip: Entity<super::super::TabStripView>,
+    /// The sidebar column's left and right edge in window coordinates, recorded
+    /// by its canvas each frame. A six-pixel drag band cannot receive a press in
+    /// this window — the pane splitter measured that — so the gesture lives on
+    /// the workspace container and hit-tests against this edge instead.
+    sidebar_edge: Rc<Cell<(f32, f32)>>,
+    /// The bottom dock's top edge, for the dock's own drag, by the same doctrine.
+    dock_edge: Rc<Cell<f32>>,
+    /// The sidebar drag, while it is one: where it started and how wide the
+    /// column was.
+    sidebar_drag: Option<(f32, f32)>,
+    /// The dock drag: where it started and how tall the dock was.
+    dock_drag: Option<(f32, f32)>,
     /// Every chip's window-coords x range, recorded by its own canvas each
     /// frame — the same derive-don't-measure pattern the pane area uses. Read
     /// during a drag to decide which chip the pointer is over.
@@ -304,10 +321,33 @@ impl TerminalPage {
             },
         );
 
+        let sidebar_edge = Rc::new(Cell::new((0.0, 0.0)));
+        let dock_edge = Rc::new(Cell::new(0.0));
+        // The queues the strip shares with this page, so its menus and clicks can
+        // fill what this page's drains read without either holding the other.
+        let action = Rc::new(RefCell::new(None));
+        let tab_action = Rc::new(RefCell::new(None));
+        let chip_bounds = Rc::new(std::cell::RefCell::new(Vec::new()));
+        // The strip is a child view of this page: it reads this page through the
+        // accessors and redraws when this page is notified, never when a terminal
+        // frame is — that is the whole point of it being its own entity.
+        // `cx` here is this page's own construction context, so `page_handle` is
+        // the page the strip observes.
+        let page_handle = cx.entity();
+        let tab_strip = cx.new(|strip_cx| {
+            super::super::TabStripView::new(
+                &page_handle,
+                action.clone(),
+                tab_action.clone(),
+                chip_bounds.clone(),
+                strip_cx,
+            )
+        });
+
         Self {
             state,
             window_width,
-            action: Rc::new(RefCell::new(None)),
+            action,
             tabs: Vec::new(),
             active_tab: None,
             panes: crate::layout::Layout::new(Vec::new(), String::new()),
@@ -319,7 +359,12 @@ impl TerminalPage {
             pane_grab: None,
             renaming: None,
             _rename_subscription: None,
-            tab_action: Rc::new(RefCell::new(None)),
+            tab_action,
+            tab_strip,
+            sidebar_edge,
+            dock_edge,
+            sidebar_drag: None,
+            dock_drag: None,
             sftp,
             sftp_collapsed,
             transfers,
@@ -331,8 +376,7 @@ impl TerminalPage {
             sidebar,
             sidebar_width,
             _sidebar_subscription,
-            tab_drag: None,
-            chip_bounds: Rc::new(std::cell::RefCell::new(Vec::new())),
+            chip_bounds,
         }
     }
 
@@ -345,7 +389,39 @@ impl TerminalPage {
         self.action.borrow_mut().take()
     }
 
+    /// Ask the shell for something, from code that is not this page's own
+    /// tree — the command palette runs through here for the actions whose
+    /// natural home is a page-owned queue.
+    pub(crate) fn request(&mut self, action: TerminalAction, cx: &mut Context<Self>) {
+        *self.action.borrow_mut() = Some(action);
+        cx.notify();
+    }
+
     /// The active tab's id, for the drains that act on "the session showing".
+    /// The session phase a chip's dot shows: 0 dialling, 1 live, 2 ended.
+    pub(crate) fn tab_state(&self, id: &str) -> u8 {
+        self.state
+            .statuses
+            .lock()
+            .ok()
+            .and_then(|map| map.get(id).map(|status| status.state))
+            .unwrap_or(0)
+    }
+
+    /// Whether duplicating this tab names a session a second connection can open.
+    pub(crate) fn tab_duplicable(&self, id: &str) -> bool {
+        let store = self.state.store.borrow();
+        store.get(id).is_some()
+            || crate::app::session_models::builtin_local_sessions(store.wsl_profiles())
+                .iter()
+                .any(|builtin| builtin.id == id)
+    }
+
+    /// The rename in progress, as (tab id, its field), for the chip that shows it.
+    pub(crate) fn renaming(&self) -> Option<(String, Entity<InputState>)> {
+        self.renaming.clone()
+    }
+
     pub(crate) fn active_tab_id(&self) -> Option<String> {
         self.active_tab.clone()
     }
@@ -363,15 +439,37 @@ impl TerminalPage {
         }
     }
 
+    /// Whether the active tab can drive the file dock at all.
+    ///
+    /// Only a session with an SFTP channel registers a handle, so a local shell, a
+    /// serial line or a telnet tab has no directory to show — and a dock rendered for
+    /// one is an empty frame ("目录为空" over a blank tree column) that reads as
+    /// broken rather than as absent. The dock is only mounted when this is true.
+    pub(crate) fn sftp_available(&self) -> bool {
+        self.active_tab
+            .as_ref()
+            .is_some_and(|id| match self.state.sftp_handles.lock() {
+                Ok(map) => map.contains_key(id),
+                Err(_) => false,
+            })
+    }
+
     /// The transfer list, whose actions the shell drains alongside the transfers
     /// page's list.
     pub(crate) fn transfers(&self) -> &Entity<TransferListView> {
         &self.transfers
     }
 
+    /// The resource panel, for the command palette's show/hide — the page lays
+    /// the column out at the width the panel reports, so the fold is the
+    /// panel's own state to change.
+    pub(crate) fn sidebar_entity(&self) -> &Entity<SidebarView> {
+        &self.sidebar
+    }
+
     /// Whether a tab with this id is open.
     pub(crate) fn has_tab(&self, id: &str) -> bool {
-        self.tabs.iter().any(|tab| tab.id == id)
+        self.tabs.iter().any(|tab| tab.id.as_str() == id)
     }
 
     /// The title of `tab_id`'s tab — the session name, or the user's rename.
@@ -379,7 +477,7 @@ impl TerminalPage {
         let id = tab_id?;
         self.tabs
             .iter()
-            .find(|tab| tab.id == id)
+            .find(|tab| tab.id.as_str() == id)
             .map(|tab| tab.meta.title().to_string())
     }
 
@@ -389,7 +487,7 @@ impl TerminalPage {
         self.tabs
             .iter()
             .filter(|tab| Some(tab.id.as_str()) != self.active_tab.as_deref())
-            .map(|tab| (tab.id.clone(), tab.meta.title().to_string()))
+            .map(|tab| (tab.id.as_str().to_string(), tab.meta.title().to_string()))
             .collect()
     }
 
@@ -446,8 +544,8 @@ impl TerminalPage {
     /// Reuse rather than always-open, so clicking the same session twice focuses it
     /// instead of stacking identical tabs.
     pub(crate) fn activate_or_open(&mut self, session_id: &str, cx: &mut Context<Self>) {
-        if let Some(existing) = self.tabs.iter().find(|tab| tab.id == session_id) {
-            let id = existing.id.clone();
+        if let Some(existing) = self.tabs.iter().find(|tab| tab.id.as_str() == session_id) {
+            let id = existing.id.as_str().to_string();
             self.set_active_tab(Some(id), cx);
             return;
         }
@@ -463,46 +561,11 @@ impl TerminalPage {
     // Drag to reorder the strip.
     // ------------------------------------------------------------------
 
-    fn begin_tab_drag(&mut self, id: String, x: f32) {
-        self.tab_drag = Some((id, x));
-    }
 
-    fn end_tab_drag(&mut self) {
-        self.tab_drag = None;
-    }
 
     /// Reorder the strip live while a chip is dragged: when the pointer
     /// crosses onto another chip, the dragged tab takes that chip's place.
     /// A movement under four pixels is a click settling, not a drag.
-    fn drag_tab_to(&mut self, x: f32, cx: &mut Context<Self>) {
-        let Some((id, start_x)) = self.tab_drag.clone() else {
-            return;
-        };
-        if (x - start_x).abs() < 4.0 {
-            return;
-        }
-        let target = {
-            let bounds = self.chip_bounds.borrow();
-            bounds
-                .iter()
-                .find(|(_, bx, w)| x >= *bx && x <= bx + w)
-                .map(|(bid, _, _)| bid.clone())
-        };
-        let Some(target) = target else {
-            return;
-        };
-        if target == id {
-            return;
-        }
-        if let (Some(from), Some(to)) = (
-            self.tabs.iter().position(|tab| tab.id == id),
-            self.tabs.iter().position(|tab| tab.id == target),
-        ) {
-            let tab = self.tabs.remove(from);
-            self.tabs.insert(to, tab);
-            cx.notify();
-        }
-    }
 
     /// Re-read the active tab's listing into the dock.
     pub(crate) fn refresh_dock(&mut self, cx: &mut Context<Self>) {
@@ -513,7 +576,7 @@ impl TerminalPage {
     /// Make `id` the tab showing: the dock and the resource sidebar follow it,
     /// and the shell is told so it can point the detached windows and the
     /// session list's highlight at it.
-    fn set_active_tab(&mut self, id: Option<String>, cx: &mut Context<Self>) {
+    pub(crate) fn set_active_tab(&mut self, id: Option<String>, cx: &mut Context<Self>) {
         self.active_tab = id.clone();
         // The pane tree has its own notion of "which tab this leaf shows"; the
         // strip's active tab and the leaf's must agree or clicking a chip
@@ -603,7 +666,7 @@ impl TerminalPage {
             .tabs
             .iter()
             .filter(|tab| tab.view.update(cx, |view, _| view.take_reconnect_request()))
-            .map(|tab| tab.id.clone())
+            .map(|tab| tab.id.as_str().to_string())
             .collect();
         for id in wanting {
             *self.action.borrow_mut() = Some(TerminalAction::Connect {
@@ -617,7 +680,7 @@ impl TerminalPage {
             };
             match action {
                 TabAction::Rename(id) => {
-                    let Some(tab) = self.tabs.iter().find(|tab| tab.id == id) else {
+                    let Some(tab) = self.tabs.iter().find(|tab| tab.id.as_str() == id) else {
                         continue;
                     };
                     let current = tab.meta.title().to_string();
@@ -661,13 +724,14 @@ impl TerminalPage {
                 TabAction::Close(id) => self.close_tab(&id, cx),
                 TabAction::MoveLeft(id) => self.move_tab(&id, -1, cx),
                 TabAction::MoveRight(id) => self.move_tab(&id, 1, cx),
-                TabAction::Split(id) => self.split_pane(&id, cx),
+                TabAction::Split(id) => self.split_pane(&id, false, cx),
+                TabAction::SplitDown(id) => self.split_pane(&id, true, cx),
                 TabAction::CloseOthers(id) => {
                     let others: Vec<String> = self
                         .tabs
                         .iter()
-                        .filter(|tab| tab.id != id)
-                        .map(|tab| tab.id.clone())
+                        .filter(|tab| tab.id.as_str() != id)
+                        .map(|tab| tab.id.as_str().to_string())
                         .collect();
                     for other in others {
                         self.close_tab(&other, cx);
@@ -784,7 +848,7 @@ impl TerminalPage {
         };
         self._rename_subscription = None;
         let typed = input.read(cx).value().trim().to_string();
-        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
+        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id.as_str() == id) {
             // An empty field lifts the rename rather than naming the tab nothing: the
             // title falls back to what the session is called, which is what clearing a
             // rename means.
@@ -795,7 +859,7 @@ impl TerminalPage {
 
     /// Close a tab and end its session.
     pub(crate) fn close_tab(&mut self, tab_id: &str, cx: &mut Context<Self>) {
-        let Some(index) = self.tabs.iter().position(|tab| tab.id == tab_id) else {
+        let Some(index) = self.tabs.iter().position(|tab| tab.id.as_str() == tab_id) else {
             return;
         };
         // The view is dropped with this binding, which is what stops the pump: the
@@ -822,7 +886,7 @@ impl TerminalPage {
                 .tabs
                 .get(index.saturating_sub(1))
                 .or_else(|| self.tabs.first())
-                .map(|tab| tab.id.clone());
+                .map(|tab| tab.id.as_str().to_string());
             // Through `set_active_tab`, not a bare assignment: the active tab is
             // read by the dock, the resource sidebar and the shell's followers,
             // and this is the one path that re-points every one of them — the
@@ -885,7 +949,7 @@ impl TerminalPage {
     /// edge is not an error: a tab already first asked to move left stays first, because
     /// the alternative — wrapping to the end — is a way to lose a tab among twenty.
     fn move_tab(&mut self, id: &str, step: isize, cx: &mut Context<Self>) {
-        let Some(index) = self.tabs.iter().position(|tab| tab.id == id) else {
+        let Some(index) = self.tabs.iter().position(|tab| tab.id.as_str() == id) else {
             return;
         };
         let Some(target) = index.checked_add_signed(step) else {
@@ -904,23 +968,23 @@ impl TerminalPage {
     /// which is the case where there is no other tab to move and a split would be a pane
     /// holding the same session twice. Doing nothing is the right answer there: a second
     /// view of one session is two cursors on one shell, which is not what splitting is for.
-    fn split_pane(&mut self, id: &str, cx: &mut Context<Self>) {
+    fn split_pane(&mut self, id: &str, vertical: bool, cx: &mut Context<Self>) {
         let Some(other) = self
             .tabs
             .iter()
-            .find(|tab| tab.id != id)
-            .map(|tab| tab.id.clone())
+            .find(|tab| tab.id.as_str() != id)
+            .map(|tab| tab.id.as_str().to_string())
         else {
             return;
         };
+        let dir = if vertical {
+            crate::layout::Dir::Vertical
+        } else {
+            crate::layout::Dir::Horizontal
+        };
         if self
             .panes
-            .split(
-                self.panes.focused,
-                crate::layout::Dir::Horizontal,
-                &other,
-                false,
-            )
+            .split(self.panes.focused, dir, &other, false)
             .is_none()
         {
             return;
@@ -928,6 +992,37 @@ impl TerminalPage {
         // The active tab follows the move, because the pane the user was looking at is
         // the one that just changed shape.
         self.set_active_tab(Some(other), cx);
+    }
+
+    /// The keyboard split: put the next tab in a pane beside — or below — the one
+    /// the user is looking at. Run now rather than queued, because an action
+    /// handler is already event-phase code; the menu keeps its queue and lands
+    /// in [`Self::split_pane`].
+    pub(crate) fn split_active_tab(&mut self, vertical: bool, cx: &mut Context<Self>) {
+        let Some(id) = self.active_tab.clone() else {
+            return;
+        };
+        self.split_pane(&id, vertical, cx);
+    }
+
+    /// The keyboard's walk around the split panes, in layout order.
+    ///
+    /// The focused pane is what the splitter ring draws and what clicking a pane
+    /// sets; this is the same slot the click fills, moved by a chord instead of
+    /// by the mouse. With one pane there is nothing to move around.
+    pub(crate) fn cycle_pane(&mut self, cx: &mut Context<Self>) {
+        let (_, _, w, h) = self.pane_area.get();
+        let panes = self.panes.flatten(0.0, 0.0, self.pane_width.get(), h).0;
+        if panes.len() < 2 {
+            return;
+        }
+        let current = panes.iter().position(|rect| rect.focused);
+        let next = match current {
+            Some(index) => (index + 1) % panes.len(),
+            None => 0,
+        };
+        *self.pane_focus.borrow_mut() = Some(panes[next].id);
+        cx.notify();
     }
 
     /// Select the next tab, or the previous one for a reverse cycle.
@@ -938,14 +1033,14 @@ impl TerminalPage {
         let current = self
             .active_tab
             .as_ref()
-            .and_then(|id| self.tabs.iter().position(|tab| &tab.id == id));
+            .and_then(|id| self.tabs.iter().position(|tab| tab.id.as_str() == id));
         let Some(index) = next_tab_index(self.tabs.len(), current, reverse) else {
             return;
         };
         let Some(tab) = self.tabs.get(index) else {
             return;
         };
-        self.set_active_tab(Some(tab.id.clone()), cx);
+        self.set_active_tab(Some(tab.id.as_str().to_string()), cx);
     }
 
     /// Open a tab for `tab_id`, with its own channel and its own view.
@@ -965,6 +1060,10 @@ impl TerminalPage {
         let sink = state.sink_for(ui);
 
         let tab_id = tab_id.to_string();
+        // The page handle, captured before the view's own construction context
+        // shadows `cx`: a state transition inside the view notifies this page, so
+        // the cached strip hears about the dot it has to repaint.
+        let page = cx.entity().downgrade();
         let view = cx.new(|cx| {
             TerminalView::new(
                 tab_id.clone(),
@@ -977,6 +1076,7 @@ impl TerminalPage {
                 state.tunnels.clone(),
                 state.opened_file.clone(),
                 messages,
+                Some(page),
                 cx,
             )
         });
@@ -994,7 +1094,7 @@ impl TerminalPage {
         });
 
         Tab {
-            id: tab_id,
+            id: crate::core::TabId::new(tab_id),
             meta: crate::core::TabMeta::new(crate::core::TabKind::Terminal, title.to_string()),
             view,
         }
@@ -1015,6 +1115,7 @@ impl TerminalPage {
     /// a full-sized panel instead of squeezing its rows frame by frame.
     fn render_sidebar_column(&self, border: gpui_kit::Hsla, cx: &Context<Self>) -> gpui_kit::Div {
         let content_width = self.sidebar.read(cx).content_width();
+        let sidebar_edge = self.sidebar_edge.clone();
         div()
             .w(px(self.sidebar_width))
             .h_full()
@@ -1022,11 +1123,42 @@ impl TerminalPage {
             .border_r_1()
             .border_color(border)
             .overflow_hidden()
+            .relative()
+            // The column's own edges, recorded for the next frame's drag
+            // hit-test: a band cannot receive a press in this window, so the
+            // workspace container answers for it against this measurement —
+            // the same arrangement the pane splitter settled on.
+            .child(
+                gpui_kit::canvas(
+                    move |bounds, _, _| {
+                        sidebar_edge.set((
+                            f32::from(bounds.origin.x),
+                            f32::from(bounds.origin.x) + f32::from(bounds.size.width),
+                        ));
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .inset_0(),
+            )
             .child(
                 div()
                     .w(px(content_width))
                     .h_full()
                     .child(self.sidebar.clone()),
+            )
+            .child(
+                // The grab band, drawn rather than wired: it shows where the
+                // edge is draggable and what the cursor means there, while the
+                // press itself is answered by the workspace container.
+                div()
+                    .absolute()
+                    .right_0()
+                    .top_0()
+                    .bottom_0()
+                    .w(px(RESIZE_BAND * 2.0))
+                    .cursor_col_resize()
+                    .hover(|this| this.bg(border)),
             )
     }
 
@@ -1114,9 +1246,10 @@ impl TerminalPage {
     }
 
     fn render_workspace(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        // Built before the tree, for the borrow reason the shell's render records:
-        // each needs `&mut cx` and the tree builder holds an immutable borrow after.
-        let tab_strip = self.render_tab_strip(cx);
+        // The strip is a child entity now: this hands the element a reference
+        // rather than building the tree, which is what keeps a terminal frame
+        // from paying for the strip. See `tab_strip.rs`.
+        let tab_strip = self.tab_strip.clone();
         let border = cx.theme().border;
 
         // No session open: the landing view — quick connect and the local
@@ -1153,10 +1286,14 @@ impl TerminalPage {
         // from the canvas instead, the area reported the *window's* width, and a
         // split then computed its panes against a width nobody was drawn at.
         let sftp_right = self.state.store.borrow().sftp_panel_on_the_right();
+        // The dock is the user's to collapse, and only a session with an SFTP
+        // channel has anything to put in it: a local shell tab mounts no dock at
+        // all rather than an empty frame.
+        let dock_shown = !self.sftp_collapsed && self.sftp_available();
         let pane_w = (self.window_width.get()
-            - super::super::nav::RAIL_WIDTH
+            - super::super::tokens::RAIL_WIDTH
             - sidebar_width
-            - file_panel_width(sftp_right, self.sftp_collapsed))
+            - file_panel_width(sftp_right, !dock_shown))
         .max(0.0);
         self.pane_width.set(pane_w);
         let (_, _, _, pane_h) = self.pane_area.get();
@@ -1173,7 +1310,7 @@ impl TerminalPage {
             .map(|rect| {
                 self.tabs
                     .iter()
-                    .find(|tab| tab.id == rect.active)
+                    .find(|tab| tab.id.as_str() == rect.active)
                     .map(|tab| tab.view.clone().into_any_element())
                     .unwrap_or_else(|| div().size_full().into_any_element())
             })
@@ -1181,7 +1318,7 @@ impl TerminalPage {
         let has_panes = self
             .active_tab
             .as_ref()
-            .is_some_and(|id| self.tabs.iter().any(|tab| &tab.id == id));
+            .is_some_and(|id| self.tabs.iter().any(|tab| tab.id.as_str() == id));
         let border = cx.theme().border;
         // The terminal's own background, from the same palette the grid paints
         // with. The pane area and the command bar take it too: the terminal is
@@ -1195,10 +1332,80 @@ impl TerminalPage {
         let pane_press = self.pane_press.clone();
         let pane_pointer = self.pane_pointer.clone();
 
+        // The resize drags live here, on the container, because a five-pixel
+        // band never receives a press in this window — the pane splitter
+        // measured that — while the container receives the press, the moves
+        // and the release. The bands the sidebar and the dock draw say where
+        // to grab; the hit-test below says what a grab does.
         h_flex()
             .size_full()
             .min_h_0()
             .overflow_hidden()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event: &MouseDownEvent, _, _| {
+                    let (x, y) = (
+                        f32::from(event.position.x),
+                        f32::from(event.position.y),
+                    );
+                    // The sidebar's right edge, only while the column is shown —
+                    // a folded column is the fold animation's to move, not the
+                    // drag's.
+                    let (left, right) = this.sidebar_edge.get();
+                    if right > left
+                        && this.sidebar_width > 40.0
+                        && x >= right - RESIZE_BAND
+                        && x <= right + RESIZE_BAND
+                    {
+                        this.sidebar_drag = Some((x, this.sidebar_width));
+                        return;
+                    }
+                    // The bottom dock's top edge, only while it docks below.
+                    let top = this.dock_edge.get();
+                    let dock_below = !this
+                        .state
+                        .store
+                        .borrow()
+                        .sftp_panel_on_the_right()
+                        && !this.sftp_collapsed
+                        && this.sftp_available();
+                    if dock_below && top > 0.0 && y >= top - RESIZE_BAND && y <= top + RESIZE_BAND
+                    {
+                        this.dock_drag = Some((y, this.strip_height()));
+                    }
+                }),
+            )
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                if let Some((start_x, start_width)) = this.sidebar_drag {
+                    let width = start_width + (f32::from(event.position.x) - start_x);
+                    this.sidebar.update(cx, |sidebar, cx| sidebar.set_width(width, cx));
+                }
+                if let Some((start_y, start_height)) = this.dock_drag {
+                    let height = start_height - (f32::from(event.position.y) - start_y);
+                    let clamped = height.clamp(DOCK_MIN_HEIGHT, DOCK_MAX_HEIGHT);
+                    let mut store = this.state.store.borrow_mut();
+                    if (store.quick_panel_height() - clamped).abs() > 0.5 {
+                        store.set_quick_panel_height(clamped);
+                        cx.notify();
+                    }
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                    if this.sidebar_drag.take().is_some() {
+                        // The moves wrote the width into the store's cache; the
+                        // release is what pays for the write to disk.
+                        let _ = this.state.store.borrow_mut().save();
+                        cx.notify();
+                    }
+                    if this.dock_drag.take().is_some() {
+                        let _ = this.state.store.borrow_mut().save();
+                        cx.notify();
+                    }
+                }),
+            )
+
             .child(sidebar_column)
             .child(
                 v_flex()
@@ -1289,6 +1496,7 @@ impl TerminalPage {
                                             pane_w,
                                             pane_h,
                                             border,
+                                            cx.theme().accent,
                                             pane_contents,
                                             pane_focus,
                                             pane_press,
@@ -1304,7 +1512,9 @@ impl TerminalPage {
                             // that row exactly as tall as the bar.
                             .child(command_bar),
                     )
-                    .when(!self.sftp_collapsed, |this| this.child(
+                    .when(dock_shown, |this| {
+                        let dock_edge = self.dock_edge.clone();
+                        this.child(
                         // A strip off the bottom, or a column at the right: the same
                         // panel, and the same children inside it either way.
                         div()
@@ -1318,6 +1528,35 @@ impl TerminalPage {
                             .flex_shrink_0()
                             .flex()
                             .flex_col()
+                            .relative()
+                            // The bottom dock's height is the user's to drag: record
+                            // the top edge for the container's hit-test, and draw the
+                            // band that says so. A right-docked column is resized by
+                            // nothing yet — its width is the strip's own constant.
+                            .when(!sftp_right, |this| {
+                                this.child(
+                                    gpui_kit::canvas(
+                                        move |bounds, _, _| {
+                                            dock_edge.set(f32::from(bounds.origin.y));
+                                        },
+                                        |_, _, _, _| {},
+                                    )
+                                    .absolute()
+                                    .inset_0(),
+                                )
+                            })
+                            .when(!sftp_right, |this| {
+                                this.child(
+                                    div()
+                                        .absolute()
+                                        .left_0()
+                                        .right_0()
+                                        .top_0()
+                                        .h(px(RESIZE_BAND * 2.0))
+                                        .cursor_row_resize()
+                                        .hover(|this| this.bg(border)),
+                                )
+                            })
                             // The border goes on the edge that faces the output.
                             .when(sftp_right, |this| this.border_l_1())
                             .when(!sftp_right, |this| this.border_t_1())
@@ -1326,7 +1565,8 @@ impl TerminalPage {
                             // off the command line now, so there is nothing left to switch
                             // between and no tab row to spend a line on.
                             .child(sftp),
-                    )),
+                        )
+                    }),
                 ),
             )
     }
@@ -1334,400 +1574,6 @@ impl TerminalPage {
     /// The tab strip: one chip per session, with the transfers toggle and the
     /// tunnel dialog at its right end — session-scoped doors, kept off the
     /// command line and off the navigation rail, which is for pages.
-    fn render_tab_strip(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let active = self.active_tab.clone();
-        let border = cx.theme().border;
-        let primary = cx.theme().primary;
-        let muted = cx.theme().muted;
-        let muted_fg = cx.theme().muted_foreground;
-        let success = cx.theme().success;
-        let warning = cx.theme().warning;
-        // The dot is the tab's real session state, not a decoration: `TabStatus::state`
-        // is what the session writes when it connects and when it ends, so a tab whose
-        // shell has died stops looking alive. Reading it here rather than keeping a copy
-        // is the one-owner rule this shell keeps everywhere: read the store, do not copy it.
-        // The raw phase — 0 dialling, 1 live, 2 ended — rather than a live flag, because
-        // a dialling tab and a dead one are different facts the strip has to tell apart:
-        // the first pulses, the second greys out.
-        let states: Vec<(String, String, u8)> = self
-            .tabs
-            .iter()
-            .map(|tab| {
-                let state = self
-                    .state
-                    .statuses
-                    .lock()
-                    .ok()
-                    .and_then(|map| map.get(&tab.id).map(|status| status.state))
-                    .unwrap_or(0);
-                (tab.id.clone(), tab.meta.title().to_string(), state)
-            })
-            .collect();
-
-        // Stale entries for chips that closed last frame must not answer a
-        // drag: cleared here, re-recorded by each chip's canvas at paint.
-        self.chip_bounds.borrow_mut().clear();
-        let chip_bounds = self.chip_bounds.clone();
-
-        h_flex()
-            .w_full()
-            .min_w_0()
-            .flex_shrink_0()
-            .gap_1()
-            .px_2()
-            .py_1()
-            .border_b_1()
-            .border_color(border)
-            .child(
-                // The quick-connect door: one click — or Ctrl+K from anywhere —
-                // puts a searchable list of every saved session and built-in
-                // shell over the work, and a confirm connects in place. The
-                // hot path for "open another session" should not run through
-                // the connections page.
-                Button::new("quick-connect")
-                    .icon(IconName::Plus)
-                    .ghost()
-                    .small()
-                    .tooltip(crate::i18n::t("快速连接（Ctrl+K）", "Quick connect (Ctrl+K)"))
-                    .accessibility_label(crate::i18n::t("快速连接", "Quick connect"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        *this.action.borrow_mut() = Some(TerminalAction::OpenQuickConnect);
-                        cx.notify();
-                    })),
-            )
-            .child(
-                // h_flex, not a plain div: a bare div lays its children out in
-                // a column, which stacked the tab chips on top of each other.
-                h_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .gap_1()
-                    .overflow_hidden()
-                    // Drag to reorder: press a chip, move it past a neighbour,
-                    // and the strip reorders live. The pointer handlers live on
-                    // the strip rather than the chip so a drag keeps running
-                    // after the pointer crosses onto another chip.
-                    .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
-                        this.drag_tab_to(f32::from(event.position.x), cx);
-                    }))
-                    .on_mouse_up(MouseButton::Left, cx.listener(|this, _: &MouseUpEvent, _, _| {
-                        this.end_tab_drag();
-                    }))
-                    .children(states.into_iter().map(|(id, title, state)| {
-                        let selected = active.as_deref() == Some(id.as_str());
-                        let click_id = id.clone();
-                        let close_id = id.clone();
-                        // The rename field belongs to this chip while a rename is in progress:
-                        // the title becomes an input in the same place the title was.
-                        let renaming = self
-                            .renaming
-                            .as_ref()
-                            .filter(|(tab, _)| tab == &id)
-                            .map(|(_, input)| input.clone());
-                        let pending = self.tab_action.clone();
-                        let for_rename = pending.clone();
-                        let for_duplicate = pending.clone();
-                        let for_close = pending.clone();
-                        let for_close_others = pending.clone();
-                        let for_move_left = pending.clone();
-                        let for_move_right = pending.clone();
-                        let for_split = pending.clone();
-                        let rename_id = id.clone();
-                        let duplicate_id = id.clone();
-                        let menu_close_id = id.clone();
-                        let others_id = id.clone();
-                        let dot_id = id.clone();
-                        // Duplicating is only meaningful for a tab that names a session: a second
-                        // tab of a session is a second connection, and there is nothing to connect
-                        // when the id is not one the store or the built-in shells know.
-                        let duplicable = {
-                            let store = self.state.store.borrow();
-                            store.get(&id).is_some()
-                                || crate::app::session_models::builtin_local_sessions(
-                                    store.wsl_profiles(),
-                                )
-                                .iter()
-                                .any(|builtin| builtin.id == id)
-                        };
-                        let id_for_drag = id.clone();
-                        let id_for_bounds = id.clone();
-                        let id_for_compare = id.clone();
-                        let id_for_close = id.clone();
-                        let dragging = self
-                            .tab_drag
-                            .as_ref()
-                            .map(|(dragged, _)| dragged == &id)
-                            .unwrap_or(false);
-                        h_flex()
-                            .id(SharedString::from(format!("tab-{id}")))
-                            .relative()
-                            .gap_2()
-                            .px_3()
-                            .py_1()
-                            .rounded_md()
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |this, event: &MouseDownEvent, _, _| {
-                                    this.begin_tab_drag(
-                                        id_for_drag.clone(),
-                                        f32::from(event.position.x),
-                                    );
-                                }),
-                            )
-                            .when(selected, |this| this.bg(primary.opacity(0.15)))
-                            .when(!selected, |this| this.hover(|this| this.bg(muted)))
-                            .when(dragging, |this| {
-                                this.border_1()
-                                    .border_color(primary)
-                                    .opacity(0.55)
-                                    .bg(primary.opacity(0.08))
-                            })
-                            .cursor_pointer()
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.set_active_tab(Some(click_id.clone()), cx);
-                            }))
-                            .context_menu(move |menu, _, _| {
-                                let rename = for_rename.clone();
-                                let duplicate = for_duplicate.clone();
-                                let close = for_close.clone();
-                                let others = for_close_others.clone();
-                                let left = for_move_left.clone();
-                                let right = for_move_right.clone();
-                                let rename_id = rename_id.clone();
-                                let duplicate_id = duplicate_id.clone();
-                                let close_id = menu_close_id.clone();
-                                let others_id = others_id.clone();
-                                let left_id = menu_close_id.clone();
-                                let right_id = others_id.clone();
-                                let split = for_split.clone();
-                                let split_id = right_id.clone();
-                                let mut menu = menu.item(
-                                    PopupMenuItem::new(crate::i18n::t("重命名标签", "Rename tab"))
-                                        .on_click(move |_, _, _| {
-                                            *rename.borrow_mut() =
-                                                Some(TabAction::Rename(rename_id.clone()));
-                                        }),
-                                );
-                                if duplicable {
-                                    menu = menu.item(
-                                        PopupMenuItem::new(crate::i18n::t(
-                                            "复制标签",
-                                            "Duplicate tab",
-                                        ))
-                                        .on_click(move |_, _, _| {
-                                            *duplicate.borrow_mut() =
-                                                Some(TabAction::Duplicate(duplicate_id.clone()));
-                                        }),
-                                    );
-                                }
-                                menu.separator()
-                                    .item(
-                                        // Moving a tab is a menu entry rather than a drag. A drag
-                                        // between chips is a gesture this shell cannot make
-                                        // reliable — the pointer leaves the chip it started on,
-                                        // and GPUI delivers moves to whatever is under it — and
-                                        // the outcome the user wants is a position, which two
-                                        // entries give exactly.
-                                        PopupMenuItem::new(crate::i18n::t("左移", "Move left"))
-                                            .on_click(move |_, _, _| {
-                                                *left.borrow_mut() =
-                                                    Some(TabAction::MoveLeft(left_id.clone()));
-                                            }),
-                                    )
-                                    .item(
-                                        PopupMenuItem::new(crate::i18n::t("右移", "Move right"))
-                                            .on_click(move |_, _, _| {
-                                                *right.borrow_mut() =
-                                                    Some(TabAction::MoveRight(right_id.clone()));
-                                            }),
-                                    )
-                                    .separator()
-                                    .item(
-                                        // Splitting moves the *next* tab into a new pane beside this
-                                        // one, which is what a split does with a tab id: a split is an
-                                        // arrangement of tabs you already have, not a second connection
-                                        // made for the occasion. With one tab open there is nothing to
-                                        // move, so the entry is inert.
-                                        PopupMenuItem::new(crate::i18n::t("分屏", "Split"))
-                                            .on_click(move |_, _, _| {
-                                                *split.borrow_mut() =
-                                                    Some(TabAction::Split(split_id.clone()));
-                                            }),
-                                    )
-                                    .separator()
-                                    .item(
-                                        PopupMenuItem::new(crate::i18n::t(
-                                            "关闭其他标签",
-                                            "Close others",
-                                        ))
-                                        .on_click(move |_, _, _| {
-                                            *others.borrow_mut() =
-                                                Some(TabAction::CloseOthers(others_id.clone()));
-                                        }),
-                                    )
-                                    .item(
-                                        PopupMenuItem::new(crate::i18n::t("关闭标签", "Close tab"))
-                                            .on_click(move |_, _, _| {
-                                                *close.borrow_mut() =
-                                                    Some(TabAction::Close(close_id.clone()));
-                                            }),
-                                    )
-                            })
-                            // The chip's own bounds, recorded for the drag: which
-                            // chip the pointer is over is answered from here, not
-                            // from hit-testing a moving element.
-                            .child(
-                                gpui_kit::canvas(
-                                    {
-                                        let chip_bounds = chip_bounds.clone();
-                                        move |bounds, _, _| {
-                                            let mut bounds_map =
-                                                chip_bounds.borrow_mut();
-                                            let entry = (
-                                                id_for_bounds.clone(),
-                                                f32::from(bounds.origin.x),
-                                                f32::from(bounds.size.width),
-                                            );
-                                            if let Some(slot) =
-                                                bounds_map.iter_mut().find(|(bid, _, _)| *bid == id)
-                                            {
-                                                *slot = entry;
-                                            } else {
-                                                bounds_map.push(entry);
-                                            }
-                                        }
-                                    },
-                                    |_, _, _, _| {},
-                                )
-                                .absolute()
-                                .inset_0(),
-                            )
-                            .child(
-                                // Three phases, three looks: a live session uses the
-                                // theme's success colour (the accent means "this tab is
-                                // selected", a different fact already carried by the
-                                // chip's background), a dialling one pulses so a slow
-                                // connect reads as progress rather than a hang, and an
-                                // ended one greys out instead of glowing green.
-                                match state {
-                                    1 => div()
-                                        .size_2()
-                                        .rounded_full()
-                                        .bg(success)
-                                        .into_any_element(),
-                                    2 => div()
-                                        .size_2()
-                                        .rounded_full()
-                                        .bg(muted_fg)
-                                        .opacity(0.6)
-                                        .into_any_element(),
-                                    _ => div()
-                                        .size_2()
-                                        .rounded_full()
-                                        .bg(warning)
-                                        .with_animation(
-                                            SharedString::from(format!("tab-dot-{dot_id}")),
-                                            Animation::new(Duration::from_millis(1200)).repeat(),
-                                            |dot, delta| {
-                                                // One sine cycle per lap: eases in and out of
-                                                // bright, and never blinks hard off.
-                                                let pulse =
-                                                    0.5 - 0.5 * (std::f32::consts::TAU * delta).cos();
-                                                dot.opacity(0.35 + 0.65 * pulse)
-                                            },
-                                        )
-                                        .into_any_element(),
-                                },
-                            )
-                            .when_some(renaming, |this, input| {
-                                this.child(
-                                    div()
-                                        .w(px(160.))
-                                        .child(Input::new(&input)),
-                                )
-                            })
-                            .when(
-                                self.renaming
-                                    .as_ref()
-                                    .map(|(tab, _)| tab != &id_for_compare)
-                                    .unwrap_or(true),
-                                |this| this.child(div().text_sm().child(SharedString::from(title))),
-                            )
-                            .child(
-                                // An icon, not the "×" character: a glyph's weight depends on
-                                // whichever font wins the fallback chain, so it lands at the
-                                // wrong size against a real icon set and cannot be themed.
-                                Button::new(SharedString::from(format!("close-{id_for_close}")))
-                                    .icon(IconName::X)
-                                    .ghost()
-                                    .tooltip(crate::i18n::t("关闭", "Close"))
-                                    .accessibility_label(crate::i18n::t("关闭标签", "Close tab"))
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.close_tab(&close_id, cx);
-                                    })),
-                            )
-                    })),
-            )
-            // The occasional actions, as one compact icon row at the strip's right end —
-            // the original keeps them there too. They belong to the *session*, not to
-            // the line being typed, and a command line that carried them would spend
-            // the width the command needs.
-            .child(
-                Button::new("toggle-sftp-panel")
-                    .debug_selector(|| "toggle-sftp-panel".to_string())
-                    .icon(IconName::FolderOpen)
-                    .ghost()
-                    .tooltip(if self.sftp_collapsed {
-                        crate::i18n::t("显示文件面板", "Show file panel")
-                    } else {
-                        crate::i18n::t("隐藏文件面板", "Hide file panel")
-                    })
-                    .accessibility_label(if self.sftp_collapsed {
-                        crate::i18n::t("显示文件面板", "Show file panel")
-                    } else {
-                        crate::i18n::t("隐藏文件面板", "Hide file panel")
-                    })
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.set_sftp_collapsed(!this.sftp_collapsed, cx);
-                    })),
-            )
-            .child(
-                // The transfer records' door, and its indicator: a label while anything
-                // is still running, because a transfer you cannot see is the one you
-                // forget you started. The list opens as a bubble off this button, the
-                // same way the command bar's quick commands and history do.
-                Popover::new("transfer-records")
-                    .trigger(
-                        Button::new("toggle-transfers")
-                            .icon(IconName::ArrowDownUp)
-                            .ghost()
-                            .tooltip(crate::i18n::t("传输记录", "Transfer records"))
-                            .accessibility_label(crate::i18n::t("传输记录", "Transfer records"))
-                            .when(self.transfers.read(cx).has_active(), |this| {
-                                this.label(crate::i18n::t("传输中", "Transferring"))
-                            }),
-                    )
-                    .content({
-                        let transfers = self.transfers.clone();
-                        move |_, _, _| div().w_full().child(transfers.clone())
-                    }),
-            )
-            .child(
-                // The tunnel dialog's door: the forwards this session is running. It
-                // sits with the transfers rather than in the command bar, because it
-                // is about the session's connections and not about the line being
-                // typed.
-                Button::new("open-tunnels")
-                    .icon(IconName::Cable)
-                    .ghost()
-                    .tooltip(crate::i18n::t("端口转发", "Port forwarding"))
-                    .accessibility_label(crate::i18n::t("端口转发", "Port forwarding"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        *this.action.borrow_mut() = Some(TerminalAction::OpenTunnels);
-                        cx.notify();
-                    })),
-            )
-    }
 
     /// The command line: type a line, send it to the active session.
     ///
@@ -1886,10 +1732,8 @@ impl Render for TerminalPage {
     }
 }
 
-/// How wide the file panel is when it is docked to the right edge. The original uses
-/// 160 for a side dock, but this panel draws a name column, a size column and a
-/// timestamp, so it needs the room the bottom strip had.
-const STRIP_WIDTH: f32 = 420.0;
+use super::super::tokens::DOCK_STRIP_WIDTH as STRIP_WIDTH;
+use super::super::tokens::{DOCK_MAX_HEIGHT, DOCK_MIN_HEIGHT, RESIZE_BAND};
 
 fn file_panel_width(right: bool, collapsed: bool) -> f32 {
     if right && !collapsed {
@@ -1974,6 +1818,16 @@ mod dock_tests {
                 join: runtime.spawn(async {}),
             },
         );
+        // The dock is only mounted for a session that can drive it, so the fixture
+        // registers an SFTP channel too — a real remote tab always has one.
+        let (sftp_commands, _sftp_receiver) = tokio::sync::mpsc::unbounded_channel();
+        state.sftp_handles.lock().unwrap().insert(
+            "fixture".into(),
+            crate::sftp::SftpHandle {
+                commands: sftp_commands,
+                join: runtime.spawn(async {}),
+            },
+        );
         (state, receiver)
     }
 
@@ -1983,6 +1837,44 @@ mod dock_tests {
         assert_eq!(file_panel_width(true, true), 0.0);
         assert_eq!(file_panel_width(false, false), 0.0);
         assert_eq!(file_panel_width(false, true), 0.0);
+    }
+
+    /// The dock's new contract: a session without an SFTP channel — a local shell,
+    /// a serial line — mounts no dock at all, because a dock over a blank tree and a
+    /// "目录为空" line reads as broken rather than as absent.
+    #[gpui_kit::gpui::test]
+    fn a_session_without_an_sftp_channel_mounts_no_dock(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let (state, _receiver) = fixture_state(false, false);
+        let (view, cx) = cx.add_window_view(move |window, cx| {
+            let width = Rc::new(Cell::new(f32::from(window.viewport_size().width)));
+            let mut page = TerminalPage::new(state, width, window, cx);
+            // A tab with a session handle but deliberately no SFTP handle: the
+            // shape a local shell's tab has.
+            let tab = TerminalPage::open_tab(
+                &page.state,
+                "local",
+                "Local",
+                page.appearance.clone(),
+                cx,
+            );
+            PENDING_SINKS.with(|sinks| sinks.borrow_mut().remove("local"));
+            page.tabs.push(tab);
+            page.active_tab = Some("local".into());
+            page.panes = crate::layout::Layout::new(vec!["local".into()], "local".into());
+            page
+        });
+        for _ in 0..3 {
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            });
+        }
+        assert!(
+            cx.debug_bounds("file-panel-dock").is_none(),
+            "a session with no SFTP channel shows no file dock"
+        );
+        assert!(!view.read_with(cx, |page, _| page.sftp_available()));
     }
 
     #[gpui_kit::gpui::test]

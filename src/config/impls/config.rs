@@ -1180,6 +1180,16 @@ impl ConfigStore {
         self.cache.terminal_line_spacing = value.clamp(0.8, 1.5);
     }
 
+    /// Whether the terminal grid is inset from its pane's edge. Missing or
+    /// legacy config means on: a flush grid is the old look, not the default.
+    pub fn terminal_padding(&self) -> bool {
+        self.cache.terminal_padding
+    }
+
+    pub fn set_terminal_padding(&mut self, value: bool) {
+        self.cache.terminal_padding = value;
+    }
+
     pub fn paste_confirm_enabled(&self) -> bool {
         !self.cache.paste_confirm_disabled
     }

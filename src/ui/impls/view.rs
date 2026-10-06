@@ -69,6 +69,9 @@ pub(crate) struct TerminalSettings {
     pub(crate) family: SharedString,
     pub(crate) font_size: u32,
     pub(crate) bold: bool,
+    /// Inset the grid from the pane's edge, so output does not sit flush
+    /// against the frame.
+    pub(crate) padding: bool,
     pub(crate) line_spacing: f32,
     pub(crate) cursor_style: CursorStyle,
     /// The cursor's colour, already parsed, or the theme's when unset.
@@ -113,6 +116,7 @@ impl TerminalSettings {
             family,
             font_size: store.font_size(),
             bold: store.terminal_bold(),
+            padding: store.terminal_padding(),
             line_spacing: store.terminal_line_spacing(),
             cursor_style: CursorStyle::from_setting(store.terminal_cursor_style()),
             cursor_color: crate::config::hex_to_rgb(store.terminal_cursor_color())
@@ -163,6 +167,11 @@ pub(crate) struct TerminalView {
     /// connects into. `None` under the tab id means no session is open, and input is
     /// dropped rather than queued somewhere nobody will read.
     handles: Rc<std::cell::RefCell<HashMap<String, SessionHandle>>>,
+    /// The page this tab belongs to, for the one notification the strip cannot
+    /// get anywhere else: a session-state transition (dialling, live, ended) is
+    /// written into a plain shared map no dependency tracker can see, and the
+    /// tab strip that draws the dot is cached between page notifications.
+    page: Option<gpui_kit::WeakEntity<super::pages::terminal_page::TerminalPage>>,
     /// Keeps the message pump alive for as long as the view is.
     _pump: Task<()>,
     /// The last size sent to the session, so a resize goes out only when it changes.
@@ -252,6 +261,8 @@ pub(crate) struct TerminalView {
     /// when it opens a tab and pushes changes to every tab, so a terminal never has to
     /// know where a preference is stored — and a view drawn by a test has no store.
     bold: bool,
+    /// Inset the grid from the pane's edge (the padding setting).
+    padding: bool,
     line_spacing: f32,
     /// The insertion cursor's shape and colour.
     cursor_style: CursorStyle,
@@ -280,6 +291,7 @@ impl TerminalView {
         tunnels: super::session_state::TabTunnels,
         opened_file: Arc<Mutex<Option<super::session_state::OpenedFile>>>,
         messages: tokio::sync::mpsc::UnboundedReceiver<UiMessage>,
+        page: Option<gpui_kit::WeakEntity<super::pages::terminal_page::TerminalPage>>,
         cx: &mut Context<Self>,
     ) -> Self {
         let (cols, rows) = (80u16, 24u16);
@@ -322,8 +334,11 @@ impl TerminalView {
 
         let family = appearance.family.clone();
         let font_size = px(appearance.font_size as f32);
+        let padding = appearance.padding;
         Self {
+            page,
             tab_id,
+            padding,
             buffer,
             snapshot: GridSnapshot::default(),
             metrics: None,
@@ -710,43 +725,20 @@ impl TerminalView {
         let ctrl = keystroke.modifiers.control;
         let alt = keystroke.modifiers.alt;
         let shift = keystroke.modifiers.shift;
-        // Enter, when this view happens to be the focused one. The shell also catches it at
-        // the window, which is where the original catches it and the only place that works
-        // whichever widget has focus.
+        // Enter, when this view happens to be the focused one. The shell also catches
+        // it at the window, which is where the original catches it and the only place
+        // that works whichever widget has focus — so this branch stops the event here:
+        // one ended session must not be reconnected twice by two layers that both
+        // saw the same key.
         if keystroke.key == "enter" && !ctrl && !alt && self.request_reconnect_if_ended(cx) {
+            cx.stop_propagation();
             return;
         }
-        // The clipboard shortcuts, which are the platform's own and cannot be left to
-        // the encoder: Ctrl+C and Ctrl+V are SIGINT and a literal 0x16 to a shell, so
-        // sending them through would interrupt the program instead of copying.
-        //
-        // The set is the original's: Ctrl+Shift+C copies (plain Ctrl+C stays SIGINT,
-        // which is the one shortcut a terminal must not take away), Ctrl+V and
-        // Ctrl+Shift+V paste, and Shift+Insert pastes because that is the X11 habit.
-        if ctrl && shift && keystroke.key == "c" {
-            self.copy_selection(cx);
-            return;
-        }
-        if ctrl && keystroke.key == "v" {
-            self.paste_from_clipboard(window, cx);
-            return;
-        }
-        // The shortcuts beyond the platform's own, which the settings can turn off: each
-        // is a habit from another terminal, and each is also a surprise in a program that
-        // wants the mouse or the key for itself.
-        if self.paste_shortcuts
-            && ((ctrl && alt && keystroke.key == "v") || (shift && keystroke.key == "insert"))
-        {
-            self.paste_from_clipboard(window, cx);
-            return;
-        }
-        // Ctrl+F opens the find bar. What is typed goes into the bar's own input rather
-        // than being read from here: a terminal has no text to search by keystroke.
-        if ctrl && keystroke.key == "f" {
-            self.find_open = true;
-            self.animate_find_to(FIND_BAR_HEIGHT, cx);
-            return;
-        }
+        // Copy, paste, find and zoom moved to actions bound in the `Terminal`
+        // context (`impls/actions.rs`); the keymap consumes those chords before
+        // this handler runs, so they are no longer matched here. Ctrl+C stays
+        // unmatched on purpose — it is SIGINT — and Escape/Backspace above are
+        // state-gated, which a static binding cannot be.
         // Escape closes the bar and clears the query, so the highlights go with it. A
         // search that outlived its bar would leave rectangles on screen with nothing to
         // explain them.
@@ -778,23 +770,6 @@ impl TerminalView {
                 _ => return,
             }
         }
-        // Font zoom. The size is a property of this view, because one view is one
-        // session and zooming a session should not resize the others — which is what
-        // the original's per-tab Ctrl+= means. Ctrl+Shift+… zooms every session there;
-        // that needs the shell to reach every tab and is not this view's to do.
-        if ctrl {
-            let step = match keystroke.key.as_str() {
-                "=" | "+" | "add" => Some(1),
-                "-" | "minus" | "subtract" => Some(-1),
-                "0" => Some(0),
-                _ => None,
-            };
-            if let Some(step) = step {
-                self.zoom_font(step, cx);
-                return;
-            }
-        }
-
         // Paging keys scroll the scrollback, but only on the normal screen. A
         // full-screen program — `less`, `vim`, `tmux` — puts the terminal on the
         // alternate screen and expects these keys itself, so there they fall through to
@@ -893,6 +868,20 @@ impl TerminalView {
     /// because a permanent "connected" would be a line that never changes and therefore
     /// never informs.
     fn status_line(&self) -> Option<SharedString> {
+        // An ended session names the way back: the red line in the scrollback is
+        // output, and output scrolls; the status line is furniture, and it is
+        // where an affordance belongs.
+        if self.conn_state == 2 {
+            let base = self
+                .status
+                .clone()
+                .unwrap_or_else(|| crate::i18n::t("已断开", "Disconnected").to_string());
+            return Some(SharedString::from(format!(
+                "{} · {}",
+                base,
+                crate::i18n::t("Enter 重连", "Enter to reconnect")
+            )));
+        }
         if let Some(status) = &self.status {
             return Some(SharedString::from(status.clone()));
         }
@@ -1051,6 +1040,36 @@ impl TerminalView {
     /// item through `EntityInputHandler::paste` on some paths and as a keystroke on
     /// others, and both have to end in the same encoder. Ctrl+V and Ctrl+Shift+V are
     /// bound here; the trait method covers the rest.
+    /// The opt-in paste pair: Ctrl+Alt+V and Shift+Insert. When the setting is
+    /// off, the chord means what it always meant to the program on the other end
+    /// of the PTY, so the bytes it would have sent are sent instead — the same
+    /// fall-through the pre-action handler had.
+    fn paste_alternate(
+        &mut self,
+        action: &crate::ui::PasteAlternate,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.paste_shortcuts {
+            self.paste_from_clipboard(window, cx);
+            return;
+        }
+        let bytes = if action.insert {
+            terminal::key_to_pty_bytes("insert", false, false, false)
+        } else {
+            terminal::key_to_pty_bytes("v", true, true, false)
+        };
+        self.send_bytes(&bytes);
+        cx.notify();
+    }
+
+    /// Open the find bar. What is typed goes into the bar's own input rather than
+    /// being read from here: a terminal has no text to search by keystroke.
+    fn open_find(&mut self, cx: &mut Context<Self>) {
+        self.find_open = true;
+        self.animate_find_to(FIND_BAR_HEIGHT, cx);
+    }
+
     fn paste_from_clipboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(item) = cx.read_from_clipboard() else {
             return;
@@ -1465,6 +1484,32 @@ impl Render for TerminalView {
             .role(Role::Terminal)
             .aria_label("Terminal")
             .key_context("Terminal")
+            // The bound chords arrive here as actions — `impls/actions.rs` is where
+            // their keystrokes live — and everything the keymap cannot express
+            // (state-gated Escape, alt-screen paging) still reaches `send_key`.
+            .on_action(cx.listener(|this, _: &crate::ui::CopySelection, _, cx| {
+                this.copy_selection(cx);
+            }))
+            .on_action(cx.listener(|this, _: &crate::ui::Paste, window, cx| {
+                this.paste_from_clipboard(window, cx);
+            }))
+            .on_action(cx.listener(
+                |this, action: &crate::ui::PasteAlternate, window, cx| {
+                    this.paste_alternate(action, window, cx);
+                },
+            ))
+            .on_action(cx.listener(|this, _: &crate::ui::Find, _, cx| {
+                this.open_find(cx);
+            }))
+            .on_action(cx.listener(|this, _: &crate::ui::ZoomIn, _, cx| {
+                this.zoom_font(1, cx);
+            }))
+            .on_action(cx.listener(|this, _: &crate::ui::ZoomOut, _, cx| {
+                this.zoom_font(-1, cx);
+            }))
+            .on_action(cx.listener(|this, _: &crate::ui::ZoomReset, _, cx| {
+                this.zoom_font(0, cx);
+            }))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 this.send_key(event, window, cx);
                 // Notified rather than waiting for the PTY to echo: a keystroke that
@@ -1591,7 +1636,23 @@ impl Render for TerminalView {
                         ),
                 )
             })
-            .child(div().flex_1().relative().child(terminal_grid(
+            // The grid, inset a few pixels from the pane's edge when the setting
+            // asks: output that starts flush at the corner reads as clipped. The
+            // inset is the box the grid fills, so every geometry that flows from
+            // the painted bounds — the click-to-cell conversion, the selection
+            // and match rectangles, the scrollbar — inherits the same origin and
+            // stays in step for free. The box is the positioned element itself
+            // rather than a padded wrapper, because padding does not offset an
+            // absolutely positioned child, and a wrapper that only holds one is
+            // a box of zero height.
+            .child(div().flex_1().relative().child(
+                div()
+                    .absolute()
+                    .when(self.padding, |this| {
+                        this.top(px(6.)).left(px(10.)).right(px(4.)).bottom(px(4.))
+                    })
+                    .when(!self.padding, |this| this.inset_0())
+                    .child(terminal_grid(
                 self.snapshot.clone(),
                 metrics,
                 style,
@@ -1616,7 +1677,8 @@ impl Render for TerminalView {
                         window.request_animation_frame();
                     }
                 },
-            )))
+            )),
+            ))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {
@@ -1736,6 +1798,7 @@ async fn pump_messages(
                     apply_event(
                         &opened_file,
                         view,
+                        cx,
                         &buffer,
                         &sftp_listings,
                         &sftp_trees,
@@ -1767,6 +1830,7 @@ fn apply_event(
     opened_file: &Arc<Mutex<Option<super::session_state::OpenedFile>>>,
 
     view: &mut TerminalView,
+    cx: &mut gpui_kit::Context<TerminalView>,
     buffer: &Arc<Mutex<TermBuffer>>,
     sftp_listings: &crate::core::SftpListings,
     sftp_trees: &super::session_state::TabTrees,
@@ -1816,6 +1880,14 @@ fn apply_event(
                     status.state = 1;
                 }
             }
+            // The tab strip's dot lives on the page, which is cached between its
+            // own notifications: a transition is a rare event, and telling the
+            // page is what repaints the chip.
+            if let Some(page) = view.page.as_ref() {
+                if let Some(page) = page.upgrade() {
+                    let _ = page.update(cx, |_, cx| cx.notify());
+                }
+            }
             view.conn_state = 1;
             view.status = Some(crate::i18n::t("已连接", "Connected").to_string())
         }
@@ -1826,6 +1898,12 @@ fn apply_event(
             if let Ok(mut statuses) = statuses.lock() {
                 if let Some(status) = statuses.get_mut(tab_id) {
                     status.state = 2;
+                }
+            }
+            // As above: the strip's greyed dot waits on the page being told.
+            if let Some(page) = view.page.as_ref() {
+                if let Some(page) = page.upgrade() {
+                    let _ = page.update(cx, |_, cx| cx.notify());
                 }
             }
             // Release the heavy scrollback first: a disconnected tab is kept for
@@ -2207,6 +2285,7 @@ mod tests {
             family: SharedString::from("test"),
             font_size: 13,
             bold: true,
+            padding: false,
             line_spacing: 1.0,
             cursor_style: CursorStyle::Block,
             cursor_color: None,
