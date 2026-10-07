@@ -3,6 +3,7 @@
 
 use super::*;
 use gpui_kit::gpui::{TestAppContext, VisualTestContext};
+use gpui_kit::test::TestWindowExt as _;
 use std::sync::{Arc, Mutex};
 
 fn fixture(cx: &mut TestAppContext) -> (Entity<Shell>, &mut VisualTestContext) {
@@ -120,4 +121,89 @@ fn command_palette_action_focuses_filter_and_executes_enter(cx: &mut TestAppCont
         assert_eq!(shell.overlay, Overlay::None);
         assert_eq!(shell.pages.active, PageId::Settings);
     });
+}
+
+#[gpui_kit::gpui::test]
+fn command_palette_wheel_reaches_and_executes_the_last_unfiltered_command(cx: &mut TestAppContext) {
+    let (shell, cx) = fixture(cx);
+    shell.update(cx, |shell, _| {
+        shell.state.store.borrow_mut().set_theme_pref("dark".into())
+    });
+    open_palette(&shell, cx);
+    // Let the real dialog entrance animation settle before pointer hit tests.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut previous = None;
+    let mut stable = 0;
+    loop {
+        draw(cx);
+        let bounds = cx.update(|window, _| window.within("dialog").find(0usize).bounds());
+        if previous == Some(bounds) {
+            stable += 1;
+        } else {
+            stable = 0;
+        }
+        if stable == 3 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "palette animation did not settle"
+        );
+        previous = Some(bounds);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let card = cx.update(|window, _| window.within("dialog").find(0usize).bounds());
+    let last = cx
+        .debug_bounds("command-palette-row-ThemeSystem")
+        .expect("last command is laid out");
+    assert!(
+        last.bottom() > card.bottom(),
+        "fixture must contain more commands than fit"
+    );
+    cx.simulate_event(gpui_kit::ScrollWheelEvent {
+        position: gpui_kit::point(card.center().x, card.bottom() - px(40.)),
+        delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-1200.))),
+        modifiers: Default::default(),
+        touch_phase: gpui_kit::TouchPhase::Moved,
+    });
+    draw(cx);
+    let last = cx.debug_bounds("command-palette-row-ThemeSystem").unwrap();
+    assert!(
+        last.top() >= card.top() && last.bottom() <= card.bottom(),
+        "wheel must reveal the last command: {last:?} outside {card:?}"
+    );
+    // Narrowing a scrolled list must bring its sole match back into view;
+    // clearing the filter must restore a reachable first row.
+    cx.simulate_input(crate::i18n::t("主题：跟随系统", "Theme: follow system"));
+    draw(cx);
+    let filtered = cx.debug_bounds("command-palette-row-ThemeSystem").unwrap();
+    assert!(
+        filtered.top() >= card.top()
+            && filtered.top() < last.top()
+            && filtered.bottom() <= card.bottom()
+    );
+    cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+        "cmd-a backspace"
+    } else {
+        "ctrl-a backspace"
+    });
+    draw(cx);
+    let first = cx.debug_bounds("command-palette-row-QuickConnect").unwrap();
+    assert!(first.top() >= card.top() && first.bottom() <= card.bottom());
+    cx.simulate_event(gpui_kit::ScrollWheelEvent {
+        position: gpui_kit::point(card.center().x, card.bottom() - px(40.)),
+        delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-1200.))),
+        modifiers: Default::default(),
+        touch_phase: gpui_kit::TouchPhase::Moved,
+    });
+    draw(cx);
+    let last = cx.debug_bounds("command-palette-row-ThemeSystem").unwrap();
+    assert!(last.top() >= card.top() && last.bottom() <= card.bottom());
+    cx.simulate_click(last.center(), gpui_kit::Modifiers::default());
+    draw(cx);
+    shell.read_with(cx, |shell, _| {
+        assert_eq!(shell.overlay, Overlay::None);
+        assert_eq!(shell.state.store.borrow().theme_pref(), "system");
+    });
+    assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
 }

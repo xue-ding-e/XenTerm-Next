@@ -140,6 +140,7 @@ impl Render for CommandPalette {
                 let picked = self.picked.clone();
                 h_flex()
                     .id(SharedString::from(format!("cmd-{}", id as u8)))
+                    .debug_selector(move || format!("command-palette-row-{id:?}"))
                     .w_full()
                     .gap_2()
                     .px_3()
@@ -159,14 +160,16 @@ impl Render for CommandPalette {
             .collect();
 
         v_flex()
-            .w_full()
+            .size_full()
+            .min_h_0()
             .child(Input::new(&self.filter))
             .child(
                 div()
+                    .id("command-palette-list")
                     .w_full()
                     .flex_1()
                     .min_h_0()
-                    .overflow_hidden()
+                    .overflow_y_scroll()
                     .when(rows.is_empty(), |this| {
                         this.child(
                             div()
