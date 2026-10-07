@@ -39,12 +39,10 @@
 //! wants), and `copy-selected-to-target` (the batch toolbar's 复制到其他会话 dropdown, which
 //! carries every ticked row and appears only when something is ticked).
 //!
-//! Most of the closed ones are row-menu entries, which is why the tests here cannot cover them:
-//! a `PopupMenuItem` is rendered by the toolkit's own popup layer, so `debug_bounds` cannot find
-//! it and a click cannot reach it. The same is true of everything still on the list. That
-//! limitation is worth knowing before writing a test that fails for it — and it is why the
-//! viewer, once it had behaviour of its own, got its own module and its own tests instead of
-//! another entry here.
+//! Row-menu entries live in the toolkit's popup layer rather than under the row's debug
+//! selectors. Event tests open that native menu and activate its entries by keyboard;
+//! they do not assume `debug_bounds` can find every popup item. The viewer has its own
+//! module and tests for the behavior after a row's action reaches it.
 
 use gpui_kit::{
     component::{
@@ -947,6 +945,28 @@ impl Render for SftpPanelView {
     }
 }
 
+/// The default action shared by the name cell and its Open menu entry.
+/// Only a confirmed directory navigates; other entries use the existing
+/// read-only viewer, which owns file-size and unsupported-content handling.
+fn file_row_action(file: &SftpFile) -> PanelAction {
+    if file.is_dir {
+        PanelAction::Navigate(file.full_path.clone())
+    } else {
+        PanelAction::View(file.full_path.clone())
+    }
+}
+
+/// Selection replaces the type icon temporarily, without losing file type.
+fn file_row_icon(file: &SftpFile) -> IconName {
+    if file.selected {
+        IconName::CircleCheck
+    } else if file.is_dir {
+        IconName::Folder
+    } else {
+        IconName::File
+    }
+}
+
 /// One file row, built without the view's `Context`: the virtualized list renders
 /// rows from inside a `&mut App` closure, so the click handlers carry an `Entity`
 /// handle rather than a listener. Same actions, same element ids and debug
@@ -963,19 +983,12 @@ fn file_row(
     } else {
         file.name.clone()
     };
-    let selected = file.selected;
     let row_for_toggle = index;
 
-    // The name is the navigation and the tick box is the selection, and they are
-    // deliberately two targets: a click that both ticked and navigated would make
-    // selecting a directory impossible, and a click that only ticked would make the
-    // panel feel dead.
-    let path_for_open = file.full_path.clone();
-    let tick_icon = if selected {
-        IconName::CircleCheck
-    } else {
-        IconName::Folder
-    };
+    // Opening and selection stay separate: ticking a file must not preview it,
+    // and opening a directory must not change the batch-selection set.
+    let open_action = file_row_action(file);
+    let tick_icon = file_row_icon(file);
 
     h_flex()
         .w_full()
@@ -1020,22 +1033,26 @@ fn file_row(
                 .when(file.is_dir, |this| this.font_weight(FontWeight::MEDIUM))
                 .child(div().truncate().child(SharedString::from(name)))
                 .on_click({
-                    let navigate = path_for_open.clone();
+                    let action = open_action.clone();
                     let panel = panel.clone();
-                    move |_, _, cx| {
-                        let _ = panel.update(cx, |this, _| {
-                            this.pending = Some(PanelAction::Navigate(navigate.clone()));
+                    move |event, _, cx| {
+                        // One click activates. The second half of a double-click
+                        // must not queue another preview or directory request.
+                        if event.click_count() > 1 {
+                            return;
+                        }
+                        let _ = panel.update(cx, |this, cx| {
+                            this.pending = Some(action.clone());
+                            cx.notify();
                         });
                     }
                 })
-                // Opening in the desktop's own editor is a menu entry rather than a
-                // second click target: the name is navigation, and a row that opened
-                // a file on one click and entered a directory on another would make
-                // both feel unpredictable. A directory gets the menu too, with only
-                // the entry that means something for it.
+                // The name and Open use the same safe default: directories
+                // navigate and files preview read-only. Editing or opening an
+                // external application remains an explicit menu choice.
                 .context_menu({
                     let open_path = file.full_path.clone();
-                    let enter_path = file.full_path.clone();
+                    let enter_action = open_action.clone();
                     let is_dir = file.is_dir;
                     let panel = panel.downgrade();
                     let other_tabs = targets;
@@ -1070,7 +1087,7 @@ fn file_row(
                         {
                             // Cloned inside the body: this closure runs once per frame,
                             // so it may not move what it captured.
-                            let target = enter_path.clone();
+                            let action = enter_action.clone();
                             let panel_for_enter = panel.clone();
                             let menu = menu.item(
                                 PopupMenuItem::new(crate::i18n::t("打开", "Open")).on_click(
@@ -1078,7 +1095,7 @@ fn file_row(
                                         if let Some(panel) = panel_for_enter.upgrade() {
                                             let _ = panel.update(cx, |panel, cx| {
                                                 panel.pending =
-                                                    Some(PanelAction::Navigate(target.clone()));
+                                                    Some(action.clone());
                                                 cx.notify();
                                             });
                                         }
@@ -1258,33 +1275,66 @@ mod tests {
     /// this machine is a local shell or a serial port, so the SFTP panel has always been
     /// empty in every check, and seven changes have gone into it unseen.
     ///
-    /// Clicking a row's name navigates to that entry's full path — the panel's part of the
-    /// bargain being only that it reports the right action, since the shell owns the
-    /// session that would carry it out.
+    /// Directories navigate; files use the existing read-only viewer. A
+    /// filename must never be sent to the directory-listing command.
     #[gpui_kit::gpui::test]
-    fn clicking_a_row_reports_a_navigation_to_that_entry(cx: &mut TestAppContext) {
+    fn clicking_rows_navigates_directories_and_previews_files(cx: &mut TestAppContext) {
         cx.update(gpui_kit::init);
         let (view, cx) = cx.add_window_view(panel_with_listing);
-        cx.update(|window, cx| {
-            window.draw(cx).clear(cx);
-        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
 
-        // The listing sorts itself, so the expectation comes from the listing rather than
-        // from the order the entries were handed in.
-        let expected = listing().files()[1].full_path.clone();
-        assert!(!expected.is_empty(), "row 1 has a path to navigate to");
+        for (index, file) in listing().files().iter().enumerate() {
+            let bounds = cx
+                .debug_bounds(leaked(format!("sftp-name-{index}")))
+                .expect("name cell");
+            cx.simulate_click(bounds.center(), Modifiers::default());
+            let action = view.update(cx, |panel, _| panel.take_action());
+            let expected = if file.is_dir {
+                PanelAction::Navigate(file.full_path.clone())
+            } else {
+                PanelAction::View(file.full_path.clone())
+            };
+            assert_eq!(action, Some(expected));
+            assert_eq!(
+                view.read_with(cx, |panel, _| panel.listing.selected_count()),
+                0
+            );
+        }
+    }
 
-        let bounds = cx
-            .debug_bounds(leaked(format!("sftp-name-{}", 1)))
-            .unwrap_or_else(|| panic!("row 1's name cell was not drawn"));
-        cx.simulate_click(bounds.center(), Modifiers::default());
-
-        let action = view.update(cx, |panel, _| panel.take_action());
-        assert_eq!(
-            action,
-            Some(PanelAction::Navigate(expected.clone())),
-            "the name of a row navigates to that row's path"
-        );
+    #[gpui_kit::gpui::test]
+    fn row_context_open_uses_directory_or_read_only_file_action(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let (view, cx) = cx.add_window_view(panel_with_listing);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        for (index, file) in listing().files().iter().enumerate() {
+            let bounds = cx
+                .debug_bounds(leaked(format!("sftp-name-{index}")))
+                .expect("name cell");
+            cx.simulate_mouse_move(bounds.center(), None, Modifiers::default());
+            cx.simulate_mouse_down(
+                bounds.center(),
+                gpui_kit::MouseButton::Right,
+                Modifiers::default(),
+            );
+            cx.simulate_mouse_up(
+                bounds.center(),
+                gpui_kit::MouseButton::Right,
+                Modifiers::default(),
+            );
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.run_until_parked();
+            // Popup-menu keyboard activation is the existing keyboard path.
+            cx.simulate_keystrokes("down enter");
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            let action = view.update(cx, |panel, _| panel.take_action());
+            let expected = if file.is_dir {
+                PanelAction::Navigate(file.full_path.clone())
+            } else {
+                PanelAction::View(file.full_path.clone())
+            };
+            assert_eq!(action, Some(expected));
+        }
     }
 
     /// And ticking a row reports the row that was ticked, by index — which is the contract
@@ -1433,5 +1483,131 @@ mod tests {
             );
         });
     }
-}
+    #[test]
+    fn row_icons_distinguish_types_and_keep_the_selection_check() {
+        let listing = listing();
+        for original in listing.files() {
+            let mut file = original.clone();
+            assert_eq!(
+                file_row_icon(&file),
+                if file.is_dir {
+                    IconName::Folder
+                } else {
+                    IconName::File
+                }
+            );
+            file.selected = true;
+            assert_eq!(file_row_icon(&file), IconName::CircleCheck);
+            file.selected = false;
+            assert_eq!(
+                file_row_icon(&file),
+                if file.is_dir {
+                    IconName::Folder
+                } else {
+                    IconName::File
+                }
+            );
+        }
+    }
 
+    #[test]
+    fn non_directory_entries_never_infer_navigation_from_a_name_or_mode() {
+        // SftpFile intentionally retains only is_dir plus permission bits,
+        // not a symlink/unknown-type tag. Non-directory projections keep the
+        // safe file fallback; the UI must not infer a type from rwx or a name.
+        for (name, mode) in [("link-to-folder", 0o777), ("unknown", 0), ("file/", 0o644)] {
+            let mut file = listing().files()[1].clone();
+            file.name = name.into();
+            file.full_path = format!("/var/{name}");
+            file.mode = mode;
+            assert!(!file.is_dir);
+            assert_eq!(
+                file_row_action(&file),
+                PanelAction::View(file.full_path.clone())
+            );
+            assert_eq!(file_row_icon(&file), IconName::File);
+        }
+    }
+
+    #[gpui_kit::gpui::test]
+    fn double_click_does_not_repeat_the_primary_action(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let (view, cx) = cx.add_window_view(panel_with_listing);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        for (index, file) in listing().files().iter().enumerate() {
+            let position = cx
+                .debug_bounds(leaked(format!("sftp-name-{index}")))
+                .unwrap()
+                .center();
+            cx.simulate_click(position, Modifiers::default());
+            assert_eq!(
+                view.update(cx, |panel, _| panel.take_action()),
+                Some(file_row_action(file))
+            );
+            cx.simulate_event(gpui_kit::MouseDownEvent {
+                position,
+                button: gpui_kit::MouseButton::Left,
+                modifiers: Modifiers::default(),
+                click_count: 2,
+                first_mouse: false,
+            });
+            cx.simulate_event(gpui_kit::MouseUpEvent {
+                position,
+                button: gpui_kit::MouseButton::Left,
+                modifiers: Modifiers::default(),
+                click_count: 2,
+            });
+            assert!(view.update(cx, |panel, _| panel.take_action()).is_none());
+            assert_eq!(
+                view.read_with(cx, |panel, _| panel.listing.selected_count()),
+                0
+            );
+        }
+    }
+
+    #[gpui_kit::gpui::test]
+    fn file_menu_retains_explicit_edit_external_and_copy_actions(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let (view, cx) = cx.add_window_view(panel_with_listing);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let path = listing().files()[1].full_path.clone();
+        for (steps, expected) in [
+            (2, PanelAction::OpenTemp(path.clone())),
+            (3, PanelAction::OpenDefault(path.clone())),
+            (4, PanelAction::View(path.clone())),
+            (5, PanelAction::Edit(path.clone())),
+            (6, PanelAction::CopyPath(path.clone())),
+        ] {
+            let position = cx.debug_bounds("sftp-name-1").unwrap().center();
+            cx.simulate_mouse_move(position, None, Modifiers::default());
+            cx.simulate_mouse_down(position, gpui_kit::MouseButton::Right, Modifiers::default());
+            cx.simulate_mouse_up(position, gpui_kit::MouseButton::Right, Modifiers::default());
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.run_until_parked();
+            cx.simulate_keystrokes(&format!("{}enter", "down ".repeat(steps)));
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            assert_eq!(
+                view.update(cx, |panel, _| panel.take_action()),
+                Some(expected)
+            );
+        }
+        view.update(cx, |panel, cx| {
+            panel.set_targets(vec![("another-tab".into(), "Another fixture".into())], cx)
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let position = cx.debug_bounds("sftp-name-1").unwrap().center();
+        cx.simulate_mouse_move(position, None, Modifiers::default());
+        cx.simulate_mouse_down(position, gpui_kit::MouseButton::Right, Modifiers::default());
+        cx.simulate_mouse_up(position, gpui_kit::MouseButton::Right, Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+        cx.simulate_keystrokes("down enter");
+        assert_eq!(
+            view.update(cx, |panel, _| panel.take_action()),
+            Some(PanelAction::CopyTo {
+                paths: vec![path],
+                target: "another-tab".into()
+            })
+        );
+    }
+}
