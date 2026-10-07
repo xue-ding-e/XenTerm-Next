@@ -182,7 +182,7 @@ impl SessionListDelegate {
     /// Fold or open a group. Runs in a section header's click handler, which
     /// only receives an `App`; the rebuild goes through the remembered list
     /// entity.
-    fn toggle_group(&self, group: &str, cx: &mut App) {
+    fn toggle_group(&self, group: &str, window: &mut Window, cx: &mut App) {
         {
             let mut store = self.store.borrow_mut();
             let collapsed = store
@@ -193,8 +193,7 @@ impl SessionListDelegate {
         }
         if let Some(list) = self.list.as_ref().and_then(|list| list.upgrade()) {
             list.update(cx, |state, cx| {
-                state.delegate_mut().rebuild_after_store_change();
-                cx.notify();
+                reload_list(state, window, cx);
             });
         }
     }
@@ -202,6 +201,9 @@ impl SessionListDelegate {
     /// The row at `ix`: `row` is relative to the section.
     fn row_at(&self, ix: IndexPath) -> Option<&SessionRow> {
         let span = self.sections.get(ix.section)?;
+        if ix.row >= span.len {
+            return None;
+        }
         self.rows.get(span.start + ix.row)
     }
 
@@ -215,9 +217,48 @@ impl SessionListDelegate {
     /// The one place the "row or heading" test is applied on the way out, so a heading
     /// can never be connected to even if a caller forgets to check.
     pub(crate) fn connectable_at(&self, ix: IndexPath) -> Option<String> {
+        let span = self.sections.get(ix.section)?;
+        if span.collapsed && self.query.is_empty() {
+            return None;
+        }
         let row = self.row_at(ix)?;
         is_connectable(row).then(|| row.id.clone())
     }
+
+    /// Resolve a stable session id after rows or group boundaries have moved.
+    fn index_for_session(&self, id: &str) -> Option<IndexPath> {
+        self.sections.iter().enumerate().find_map(|(section, span)| {
+            if span.collapsed && self.query.is_empty() {
+                return None;
+            }
+            self.rows[span.start..span.start + span.len]
+                .iter()
+                .position(|row| is_connectable(row) && row.id == id)
+                .map(|row| IndexPath::new(row).section(section))
+        })
+    }
+}
+
+/// Rebuild both projections in one list update, keeping selection attached to
+/// session identity rather than an index that may now name a different row.
+/// Neither setter scrolls or focuses, so an edit does not move the user's view.
+fn reload_list(
+    state: &mut ListState<SessionListDelegate>,
+    window: &mut Window,
+    cx: &mut Context<ListState<SessionListDelegate>>,
+) {
+    let selected = state
+        .selected_index()
+        .and_then(|ix| state.delegate().connectable_at(ix));
+    let right_clicked = state
+        .right_clicked_index()
+        .and_then(|ix| state.delegate().connectable_at(ix));
+    state.delegate_mut().rebuild_after_store_change();
+    let selected = selected.and_then(|id| state.delegate().index_for_session(&id));
+    let right_clicked = right_clicked.and_then(|id| state.delegate().index_for_session(&id));
+    state.set_selected_index(selected, window, cx);
+    state.set_right_clicked_index(right_clicked, window, cx);
+    cx.notify();
 }
 
 impl ListDelegate for SessionListDelegate {
@@ -267,8 +308,7 @@ impl ListDelegate for SessionListDelegate {
         _cx: &mut Context<ListState<Self>>,
     ) -> gpui_kit::Task<()> {
         self.query = query.to_string();
-        self.rows = rows_for(&self.store, query);
-        self.rebuild_sections();
+        self.rebuild_after_store_change();
         gpui_kit::Task::ready(())
     }
 
@@ -315,7 +355,7 @@ impl ListDelegate for SessionListDelegate {
                             .w_full()
                             .h_full()
                             .cursor_pointer()
-                            .on_click(move |_, _, cx| {
+                            .on_click(move |_, window, cx| {
                                 // The list wrapper treats every click as
                                 // Confirm (connect); without cutting the
                                 // event here, expanding a folded group also
@@ -327,8 +367,7 @@ impl ListDelegate for SessionListDelegate {
                                 }
                                 if let Some(list) = list.as_ref().and_then(|l| l.upgrade()) {
                                     list.update(cx, |state, cx| {
-                                        state.delegate_mut().rebuild_after_store_change();
-                                        cx.notify();
+                                        reload_list(state, window, cx);
                                     });
                                 }
                             })
@@ -634,7 +673,7 @@ impl ListDelegate for SessionListDelegate {
 
         let group_for_toggle = group.clone();
         let chevron_turn = self.chevron_turn.clone();
-        let toggle = move |_: &_, _: &mut Window, cx: &mut App| {
+        let toggle = move |_: &_, window: &mut Window, cx: &mut App| {
             if reserved || searching {
                 return;
             }
@@ -652,8 +691,7 @@ impl ListDelegate for SessionListDelegate {
             super::chevron::bump_turn(&chevron_turn, &group);
             if let Some(list) = list.as_ref().and_then(|list| list.upgrade()) {
                 list.update(cx, |state, cx| {
-                    state.delegate_mut().rebuild_after_store_change();
-                    cx.notify();
+                    reload_list(state, window, cx);
                 });
             }
         };
@@ -750,6 +788,9 @@ pub(crate) struct SessionListView {
     /// The list widget's own state: the delegate, the scroll position and the search
     /// box. Everything about the list that persists between frames lives here.
     list: Entity<ListState<SessionListDelegate>>,
+    /// External changes arrive without a Window. Reconcile at the next render,
+    /// where rows, sections and toolkit selection can be updated together.
+    reload_pending: bool,
 }
 
 impl SessionListView {
@@ -789,7 +830,10 @@ impl SessionListView {
         list.update(cx, |state, cx| {
             state.delegate_mut().set_list(cx.entity().downgrade());
         });
-        Self { list }
+        Self {
+            list,
+            reload_pending: false,
+        }
     }
 
     /// How many rows are showing, so the header can say whether a search is filtering.
@@ -805,12 +849,8 @@ impl SessionListView {
     /// since a rebuild that ignored the active search would quietly reveal rows the user
     /// had filtered away.
     pub(crate) fn reload(&mut self, cx: &mut Context<Self>) {
-        self.list.update(cx, |state, cx| {
-            let delegate = state.delegate_mut();
-            let query = delegate.query.clone();
-            delegate.rows = rows_for(&delegate.store, &query);
-            cx.notify();
-        });
+        self.reload_pending = true;
+        cx.notify();
     }
 
     /// Set when a session is opened. The row keeps its highlight after the session ends,
@@ -891,7 +931,10 @@ pub(crate) enum SessionListAction {
 }
 
 impl Render for SessionListView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if std::mem::take(&mut self.reload_pending) {
+            self.list.update(cx, |state, cx| reload_list(state, window, cx));
+        }
         let theme = cx.theme();
         let shown = self.len(cx);
         let muted = theme.muted_foreground;
@@ -1019,67 +1062,284 @@ impl Render for SessionListView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui_kit::gpui::TestAppContext;
+    use gpui_kit::gpui::{Focusable as _, ScrollStrategy, TestAppContext, VisualTestContext};
 
-    /// The list draws a row for every session the store holds.
-    ///
-    /// The projection from the store to the rows is `core`'s and is tested there; what this
-    /// covers is the next step, which nothing covered before: that the view actually renders
-    /// what the projection produced, and that each row's target is in the tree under the id
-    /// the shell's click and context menu hang off.
-    ///
-    /// The store is loaded and never written, so the machine's configuration is untouched.
+    fn session(id: &str, name: &str, group: &str) -> crate::config::Session {
+        let mut session = crate::config::Session::new_empty();
+        session.id = id.into();
+        session.name = name.into();
+        session.host = "127.0.0.1".into();
+        session.group = group.into();
+        session
+    }
+
+    /// No configuration load, database write, keyring or real credentials.
+    fn store(sessions: Vec<crate::config::Session>) -> Rc<std::cell::RefCell<ConfigStore>> {
+        let cache = crate::config::ConfigFile {
+            sessions,
+            ..Default::default()
+        };
+        Rc::new(std::cell::RefCell::new(ConfigStore {
+            path: Default::default(),
+            backup_dir: None,
+            key: [0; 32],
+            keyring_enabled: false,
+            saved_state: std::sync::Mutex::new(crate::config::SavedState::of_cache(&cache)).into(),
+            cache,
+        }))
+    }
+
+    fn open(
+        cx: &mut TestAppContext,
+        store: Rc<std::cell::RefCell<ConfigStore>>,
+        compact: bool,
+    ) -> (Entity<SessionListView>, &mut VisualTestContext) {
+        cx.update(gpui_kit::init);
+        let (view, cx) = cx.add_window_view(move |window, cx| {
+            SessionListView::new_inner(store, None, compact, window, cx)
+        });
+        draw(cx);
+        (view, cx)
+    }
+
+    fn draw(cx: &mut VisualTestContext) {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+    }
+
+    fn reload(view: &Entity<SessionListView>, cx: &mut VisualTestContext) {
+        cx.update(|_, cx| view.update(cx, |view, cx| view.reload(cx)));
+        draw(cx);
+    }
+
+    fn list(
+        view: &Entity<SessionListView>,
+        cx: &mut VisualTestContext,
+    ) -> Entity<ListState<SessionListDelegate>> {
+        cx.update(|_, cx| view.read(cx).list.clone())
+    }
+
+    fn index(
+        list: &Entity<ListState<SessionListDelegate>>,
+        id: &str,
+        cx: &mut VisualTestContext,
+    ) -> IndexPath {
+        cx.update(|_, cx| {
+            list.read(cx)
+                .delegate()
+                .index_for_session(id)
+                .expect("visible fixture session")
+        })
+    }
+
+    fn assert_projection(
+        list: &Entity<ListState<SessionListDelegate>>,
+        cx: &mut VisualTestContext,
+    ) {
+        cx.update(|_, cx| {
+            let delegate = list.read(cx).delegate();
+            let expected = rows_for(&delegate.store, &delegate.query);
+            assert_eq!(delegate.rows.len(), expected.len());
+            assert_eq!(
+                delegate.sections.iter().map(|span| span.len).sum::<usize>(),
+                expected.len()
+            );
+            for (section, span) in delegate.sections.iter().enumerate() {
+                for row in 0..span.len {
+                    let actual = delegate
+                        .row_at(IndexPath::new(row).section(section))
+                        .unwrap();
+                    let expected = &expected[span.start + row];
+                    assert_eq!(
+                        (&actual.id, &actual.name, &actual.group),
+                        (&expected.id, &expected.name, &expected.group)
+                    );
+                }
+                assert!(
+                    delegate
+                        .row_at(IndexPath::new(span.len).section(section))
+                        .is_none(),
+                    "an invalid row must not spill into the next section"
+                );
+            }
+        });
+    }
+
+    /// The list draws every saved session in this small, deterministic fixture.
+    /// Larger lists deliberately virtualize off-screen rows (covered below).
     #[gpui_kit::gpui::test]
     fn every_saved_session_gets_a_row(cx: &mut TestAppContext) {
-        cx.update(gpui_kit::init);
-        let store = Rc::new(std::cell::RefCell::new(
-            crate::config::ConfigStore::load().expect("the configuration this machine has"),
-        ));
-        // Folded groups draw a one-line hint instead of their sessions, so
-        // the test expands everything first: what it asserts is that session
-        // rows are drawn, not which fold state the machine happens to have
-        // saved.
-        {
-            let mut owned = store.borrow_mut();
-            let mut groups = owned.groups().to_vec();
-            // The ungrouped section is a real, foldable heading even though
-            // "default" is not an entry of `groups()`.
-            groups.push("default".to_string());
-            // Built-in shells live in a separate, initially folded system group.
-            groups.push("system".to_string());
-            for group in groups {
-                owned.set_session_group_collapsed(&group, false);
-            }
-        }
-        let expected: Vec<String> = rows_for(&store, "")
-            .iter()
-            .filter(|row| !row.id.is_empty())
-            .map(|row| row.id.clone())
-            .collect();
-        assert!(
-            !expected.is_empty(),
-            "this machine's configuration has sessions to draw"
-        );
+        let store = store(vec![
+            session("first", "First", ""),
+            session("second", "Second", "ops"),
+        ]);
+        let (_, cx) = open(cx, store, false);
+        assert!(cx.debug_bounds("row-menu-first").is_some());
+        assert!(cx.debug_bounds("row-menu-second").is_some());
+    }
 
-        let (view, cx) = cx.add_window_view({
-            let store = store.clone();
-            move |window, cx| SessionListView::new(store, None, window, cx)
+    #[gpui_kit::gpui::test]
+    fn reload_adds_rows_to_existing_and_new_sections_without_search(cx: &mut TestAppContext) {
+        let store = store(vec![session("first", "First", "")]);
+        let (view, cx) = open(cx, store.clone(), false);
+        store.borrow_mut().upsert(session("second", "Second", ""));
+        reload(&view, cx);
+        assert!(
+            cx.debug_bounds("row-menu-second").is_some(),
+            "saving into an existing section must render immediately"
+        );
+        store.borrow_mut().upsert(session("third", "Third", "ops"));
+        reload(&view, cx);
+        assert!(
+            cx.debug_bounds("row-menu-third").is_some(),
+            "saving into a new section must render immediately"
+        );
+        assert_projection(&list(&view, cx), cx);
+    }
+
+    #[gpui_kit::gpui::test]
+    fn reload_delete_rename_and_regroup_preserve_session_identity_and_focus(
+        cx: &mut TestAppContext,
+    ) {
+        let store = store(vec![
+            session("first", "First", "a"),
+            session("second", "Second", "a"),
+            session("third", "Third", "z"),
+        ]);
+        let (view, cx) = open(cx, store.clone(), false);
+        let list = list(&view, cx);
+        let selected = index(&list, "second", cx);
+        let focus = cx.update(|window, cx| {
+            view.update(cx, |view, cx| view.set_active(Some("second".into()), cx));
+            list.update(cx, |state, cx| {
+                state.set_selected_index(Some(selected), window, cx);
+                state.set_right_clicked_index(Some(selected), window, cx);
+                state.focus(window, cx);
+                state.focus_handle(cx)
+            })
         });
+        // Removing the first section row shifts the selected row's numeric index.
+        store.borrow_mut().remove("first");
+        reload(&view, cx);
+        assert_eq!(
+            cx.update(|_, cx| list.read(cx).selected_index()),
+            Some(index(&list, "second", cx))
+        );
+        store.borrow_mut().upsert(session("second", "Renamed", "z"));
+        store.borrow_mut().rename_group("z", "renamed-group".into());
+        reload(&view, cx);
+        assert_projection(&list, cx);
         cx.update(|window, cx| {
-            window.draw(cx).clear(cx);
+            let state = list.read(cx);
+            let selected = state.delegate().index_for_session("second");
+            assert_eq!(state.selected_index(), selected);
+            assert_eq!(state.right_clicked_index(), selected);
+            assert_eq!(state.delegate().active.as_deref(), Some("second"));
+            assert!(focus.is_focused(window));
         });
+        // Deleting the selected session must not transfer Enter to its neighbour.
+        store.borrow_mut().remove("second");
+        reload(&view, cx);
+        assert_projection(&list, cx);
+        cx.update(|_, cx| {
+            assert!(list.read(cx).selected_index().is_none());
+            assert!(list.read(cx).right_clicked_index().is_none());
+        });
+    }
 
-        let mut missing = Vec::new();
-        for id in &expected {
-            let selector = Box::leak(format!("row-menu-{id}").into_boxed_str());
-            if cx.debug_bounds(selector).is_none() {
-                missing.push(id.clone());
-            }
-        }
-        assert!(
-            missing.is_empty(),
-            "rows the store has and the list did not draw: {missing:?}"
+    #[gpui_kit::gpui::test]
+    fn reload_keeps_filter_and_collapsed_group_state(cx: &mut TestAppContext) {
+        let store = store(vec![
+            session("keep", "Keep", "ops"),
+            session("hidden", "Hidden", "ops"),
+        ]);
+        store.borrow_mut().set_session_group_collapsed("ops", true);
+        let (view, cx) = open(cx, store.clone(), true);
+        let list = list(&view, cx);
+        cx.update(|window, cx| list.update(cx, |state, cx| state.set_query("keep", window, cx)));
+        cx.run_until_parked();
+        draw(cx);
+        let selected = index(&list, "keep", cx);
+        cx.update(|window, cx| {
+            list.update(cx, |state, cx| {
+                state.set_selected_index(Some(selected), window, cx)
+            })
+        });
+        store
+            .borrow_mut()
+            .upsert(session("added", "Keep added", "ops"));
+        reload(&view, cx);
+        assert!(cx.debug_bounds("row-menu-added").is_some());
+        assert!(cx.debug_bounds("row-menu-hidden").is_none());
+        assert_projection(&list, cx);
+        assert_eq!(
+            cx.update(|_, cx| list.read(cx).delegate().query.clone()),
+            "keep"
         );
-        let _ = view;
+        // Rename out of the active query, then restore the folded unfiltered view.
+        store
+            .borrow_mut()
+            .upsert(session("keep", "No match", "ops"));
+        reload(&view, cx);
+        assert!(cx.update(|_, cx| list.read(cx).selected_index()).is_none());
+        cx.update(|window, cx| list.update(cx, |state, cx| state.set_query("", window, cx)));
+        cx.run_until_parked();
+        draw(cx);
+        cx.update(|_, cx| {
+            let delegate = list.read(cx).delegate();
+            let section = delegate
+                .sections
+                .iter()
+                .position(|span| span.group == "ops")
+                .unwrap();
+            assert!(delegate.sections[section].collapsed);
+            assert_eq!(delegate.items_count(section, cx), 1);
+            assert!(delegate
+                .connectable_at(IndexPath::new(0).section(section))
+                .is_none());
+        });
+    }
+
+    #[gpui_kit::gpui::test]
+    fn reload_updates_virtualized_tail_without_resetting_scroll(cx: &mut TestAppContext) {
+        let sessions = (0..100)
+            .map(|n| session(&format!("item-{n}"), &format!("Item {n}"), "ops"))
+            .collect();
+        let store = store(sessions);
+        let (view, cx) = open(cx, store.clone(), false);
+        let list = list(&view, cx);
+        assert!(
+            cx.debug_bounds("row-menu-item-99").is_none(),
+            "fixture tail must start outside the viewport"
+        );
+        let tail = index(&list, "item-99", cx);
+        cx.update(|window, cx| {
+            list.update(cx, |state, cx| {
+                state.scroll_to_item(tail, ScrollStrategy::Top, window, cx)
+            })
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("row-menu-item-99").is_some());
+        let offset = cx.update(|_, cx| list.read(cx).scroll_handle().base_handle().offset());
+        store
+            .borrow_mut()
+            .upsert(session("added-tail", "Added tail", "ops"));
+        reload(&view, cx);
+        assert_projection(&list, cx);
+        assert_eq!(
+            cx.update(|_, cx| list.read(cx).scroll_handle().base_handle().offset()),
+            offset
+        );
+        let tail = index(&list, "added-tail", cx);
+        cx.update(|window, cx| {
+            list.update(cx, |state, cx| {
+                state.scroll_to_item(tail, ScrollStrategy::Top, window, cx)
+            })
+        });
+        draw(cx);
+        assert!(
+            cx.debug_bounds("row-menu-added-tail").is_some(),
+            "new tail must be addressable through the virtual list"
+        );
     }
 }
