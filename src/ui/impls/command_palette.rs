@@ -21,8 +21,6 @@ use gpui_kit::component::{
 };
 use gpui_kit::{div, prelude::*, px, AnyElement, Context, Entity, SharedString, Subscription, WeakEntity};
 
-use super::shell::Shell;
-
 /// One command: what it is called and what running it does. The palette holds
 /// them by value; the shell is what executes, so a row reports a pick rather
 /// than reaching into the window.
@@ -32,7 +30,7 @@ pub(crate) struct Command {
 }
 
 /// The commands the palette offers. Adding one is an entry here and an arm in
-/// [`Shell::run_command`] — the two live apart so the palette never needs the
+/// [`super::shell::Shell::run_command`] — the two live apart so the palette never needs the
 /// window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CommandId {
@@ -75,8 +73,8 @@ pub(crate) struct CommandPalette {
 }
 
 impl CommandPalette {
-    pub(crate) fn new(shell: &Entity<Shell>, window: &mut gpui_kit::Window, cx: &mut Context<Self>) -> Self {
-        let commands = Rc::new(shell.read(cx).commands());
+    pub(crate) fn new(commands: Vec<Command>, window: &mut gpui_kit::Window, cx: &mut Context<Self>) -> Self {
+        let commands = Rc::new(commands);
         let filter = cx.new(|cx| {
             InputState::new(window, cx).placeholder(crate::i18n::t("输入命令…", "Type a command…"))
         });

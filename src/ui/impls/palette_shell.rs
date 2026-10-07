@@ -52,11 +52,13 @@ impl Shell {
     /// Open the command palette: the same light dialog the quick-connect
     /// palette opens as, over whatever is on screen.
     pub(crate) fn open_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let shell = cx.entity();
+        // The action listener already holds Shell's update lease. Snapshot the
+        // commands through `self`; the child must not read that same entity.
+        let commands = self.commands();
         // `AppContext::new` — the trait is what carries entity construction, so
         // it is named in scope rather than resolved as an inherent method.
         use gpui_kit::AppContext as _;
-        let palette = cx.new(|cx| super::command_palette::CommandPalette::new(&shell, window, cx));
+        let palette = cx.new(|cx| super::command_palette::CommandPalette::new(commands, window, cx));
         self.overlay = Overlay::Commands(palette.clone());
         if window.has_active_dialog(cx) {
             window.close_dialog(cx);
