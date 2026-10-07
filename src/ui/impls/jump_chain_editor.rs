@@ -11,15 +11,63 @@ use gpui_kit::{
     component::{
         button::{Button, ButtonVariants, DropdownButton},
         h_flex,
-        menu::PopupMenuItem,
+        menu::{PopupMenu, PopupMenuItem},
         setting::{SettingField, SettingGroup, SettingItem, SettingPage},
+        tooltip::Tooltip,
         v_flex, ActiveTheme, Sizable as _,
     },
     div,
     prelude::*,
-    AnyElement, App, IntoElement, SharedString, WeakEntity,
+    px, AnyElement, AnyView, App, Axis, IntoElement, Pixels, SharedString, WeakEntity, Window,
 };
 use std::{cell::RefCell, rc::Rc};
+
+fn menu_width(window: &Window) -> Pixels {
+    (window.viewport_size().width - px(32.))
+        .min(px(560.))
+        .max(px(0.))
+}
+
+fn bounded_menu(menu: PopupMenu, window: &Window) -> PopupMenu {
+    let width = menu_width(window);
+    menu.min_w(width)
+        .max_w(width)
+        .max_h((window.viewport_size().height * 0.5).min(px(320.)))
+        // PopupMenu only applies max_h when scrolling is enabled.
+        .scrollable(true)
+}
+
+/// Keep the complete value available without letting the tooltip itself grow
+/// wider than the window. Long unbroken hostnames wrap at character boundaries.
+fn full_label_tooltip(label: String, window: &mut Window, cx: &mut App) -> AnyView {
+    let width = (window.viewport_size().width - px(64.))
+        .min(px(520.))
+        .max(px(0.));
+    Tooltip::element(move |_, _| div().w(width).whitespace_normal().child(label.clone()))
+        .build(window, cx)
+}
+
+fn candidate_item(id: &str, label: String, window: &Window) -> PopupMenuItem {
+    let width = (menu_width(window) - px(32.)).max(px(0.));
+    let selector = format!("jump-menu-label-{id}");
+    // A plain PopupMenuItem label is not clipped by the menu's max_w. Bound
+    // the text itself; keep the menu's own click and keyboard dispatch intact.
+    PopupMenuItem::element(move |_, _| {
+        let tooltip = label.clone();
+        let selector = selector.clone();
+        div()
+            .id(SharedString::from(selector.clone()))
+            .debug_selector(move || selector.clone())
+            .w(width)
+            .min_w_0()
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .text_ellipsis()
+            .aria_label(label.clone())
+            .hoverable_tooltip(move |window, cx| full_label_tooltip(tooltip.clone(), window, cx))
+            .child(label.clone())
+    })
+}
 
 fn route(draft: &SessionDraft, store: &ConfigStore) -> anyhow::Result<Vec<String>> {
     store
@@ -98,13 +146,32 @@ pub(super) fn page(
                 let e = editor.clone();
                 let choose =
                     DropdownButton::new(SharedString::from(format!("jump-select-{index}")))
+                        .w_full()
+                        .min_w_0()
                         .button(
                             Button::new(SharedString::from(format!("jump-select-trigger-{index}")))
-                                .label(label)
+                                .debug_selector(move || format!("jump-select-trigger-{index}"))
+                                .flex_1()
+                                .min_w_0()
+                                .accessibility_label(label.clone())
+                                .child({
+                                    let tooltip = label.clone();
+                                    div()
+                                        .id("label-value")
+                                        .w_full()
+                                        .min_w_0()
+                                        .overflow_hidden()
+                                        .whitespace_nowrap()
+                                        .text_ellipsis()
+                                        .hoverable_tooltip(move |window, cx| {
+                                            full_label_tooltip(tooltip.clone(), window, cx)
+                                        })
+                                        .child(label)
+                                })
                                 .outline(),
                         )
-                        .dropdown_menu(move |menu, _, _| {
-                            let mut menu = menu;
+                        .dropdown_menu(move |menu, window, _| {
+                            let mut menu = bounded_menu(menu, window);
                             for (id, label) in &choices {
                                 if selected
                                     .iter()
@@ -117,23 +184,31 @@ pub(super) fn page(
                                 let d = d.clone();
                                 let s = s.clone();
                                 let e = e.clone();
-                                menu = menu.item(PopupMenuItem::new(label.clone()).on_click(
-                                    move |_, _, cx| {
-                                        edit_route(&d, &s, &e, cx, |ids| {
-                                            if let Some(slot) = ids.get_mut(index) {
-                                                *slot = id.clone();
-                                            }
-                                        });
-                                    },
-                                ));
+                                menu =
+                                    menu.item(candidate_item(&id, label.clone(), window).on_click(
+                                        move |_, _, cx| {
+                                            edit_route(&d, &s, &e, cx, |ids| {
+                                                if let Some(slot) = ids.get_mut(index) {
+                                                    *slot = id.clone();
+                                                }
+                                            });
+                                        },
+                                    ));
                             }
                             menu
                         });
                 let mut row = h_flex()
+                    .debug_selector(move || format!("jump-row-{index}"))
                     .w_full()
+                    .min_w_0()
                     .gap_2()
                     .items_center()
-                    .child(div().text_sm().child(format!("{}", index + 1)))
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .text_sm()
+                            .child(format!("{}", index + 1)),
+                    )
                     .child(div().flex_1().min_w_0().child(choose));
                 for (suffix, icon, label, offset, disabled) in [
                     (
@@ -160,6 +235,7 @@ pub(super) fn page(
                             .icon(icon)
                             .ghost()
                             .small()
+                            .flex_shrink_0()
                             .disabled(disabled)
                             .tooltip(label)
                             .accessibility_label(label)
@@ -183,6 +259,7 @@ pub(super) fn page(
                         .icon(IconName::Trash)
                         .ghost()
                         .small()
+                        .flex_shrink_0()
                         .tooltip(crate::i18n::t("移除此跳板", "Remove this hop"))
                         .accessibility_label(crate::i18n::t("移除此跳板", "Remove this hop"))
                         .on_click(move |_, _, cx| {
@@ -210,14 +287,14 @@ pub(super) fn page(
                         .outline()
                         .disabled(!valid || ids.len() >= 16 || choices.is_empty()),
                 )
-                .dropdown_menu(move |menu, _, _| {
-                    let mut menu = menu;
+                .dropdown_menu(move |menu, window, _| {
+                    let mut menu = bounded_menu(menu, window);
                     for (id, label) in &choices {
                         let id = id.clone();
                         let d = d.clone();
                         let s = s.clone();
                         let e = e.clone();
-                        menu = menu.item(PopupMenuItem::new(label.clone()).on_click(
+                        menu = menu.item(candidate_item(&id, label.clone(), window).on_click(
                             move |_, _, cx| {
                                 edit_route(&d, &s, &e, cx, |ids| {
                                     if ids.len() < 16 && !ids.contains(&id) {
@@ -264,13 +341,18 @@ pub(super) fn page(
                 "Connection order: outermost first, target's nearest bastion last. Each hop uses its own password or key. Move rows up or down to reorder.")))
             .when_some(current.err(), |list, error| list.child(div().text_sm().child(format!("{}: {error}", crate::i18n::t("链路无效，请清空重建或修复引用的会话", "Invalid route: repair the referenced session or clear and rebuild")))))
             .children(rows)
-            .child(h_flex().gap_2().child(add).child(clear))
+            .child(h_flex().flex_wrap().gap_2().child(div().debug_selector(|| "jump-add-control".into()).child(add)).child(clear))
             .into_any_element()
         },
     );
-    SettingPage::new(crate::i18n::t("多级跳板", "SSH bastions")).group(SettingGroup::new().item(
-        SettingItem::new(crate::i18n::t("连接链路", "Connection route"), field),
-    ))
+    SettingPage::new(crate::i18n::t("多级跳板", "SSH bastions")).group(
+        SettingGroup::new().item(
+            // A route is a full-width table. The horizontal settings layout leaves
+            // its field intrinsically sized, so a long label can push controls out.
+            SettingItem::new(crate::i18n::t("连接链路", "Connection route"), field)
+                .layout(Axis::Vertical),
+        ),
+    )
 }
 
 #[cfg(test)]
@@ -297,21 +379,30 @@ mod ui_tests {
     use super::*;
     use crate::config::{ConfigFile, SavedState, Session};
     use gpui_kit::{
-        component::setting::Settings, gpui::TestAppContext, Context, Entity, Render, Window,
+        component::{setting::Settings, Root},
+        gpui::{TestAppContext, VisualTestContext},
+        point, px,
+        test::TestWindowExt as _,
+        Context, Entity, Render, Window,
     };
 
     struct Probe {
         draft: Rc<RefCell<SessionDraft>>,
         store: Rc<RefCell<ConfigStore>>,
         editor: Entity<SessionEditor>,
+        width: Option<f32>,
     }
     impl Render for Probe {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            Settings::new("jump-route-probe").page(page(
-                self.draft.clone(),
-                self.store.clone(),
-                self.editor.downgrade(),
-            ))
+            div()
+                .debug_selector(|| "jump-editor-bounds".into())
+                .size_full()
+                .when_some(self.width, |this, width| this.w(px(width)).h(px(580.)))
+                .child(Settings::new("jump-route-probe").page(page(
+                    self.draft.clone(),
+                    self.store.clone(),
+                    self.editor.downgrade(),
+                )))
         }
     }
     fn session(id: &str, legacy: &str) -> Session {
@@ -321,6 +412,194 @@ mod ui_tests {
         value.host = format!("{id}.example");
         value.jump_session_id = legacy.into();
         value
+    }
+
+    fn long_route_fixture(
+        cx: &mut TestAppContext,
+        count: usize,
+        width: f32,
+    ) -> (Entity<Probe>, &mut VisualTestContext) {
+        let mut sessions: Vec<_> = (0..16)
+            .map(|index| {
+                let mut hop = session(&format!("hop-{index:02}"), "");
+                hop.name = format!(
+                    "跳板{index:02}｜合成测试-外层入口-Bastion-Gateway-{}",
+                    "LongName".repeat(10)
+                );
+                hop.host = format!(
+                    "hop-{index:02}.{}.documentation-only.invalid",
+                    "long-region-name.".repeat(8)
+                );
+                hop.user = "qa_fixture".into();
+                hop
+            })
+            .collect();
+        let mut target = session("target", "");
+        target.jump_session_ids = sessions
+            .iter()
+            .take(count)
+            .map(|hop| hop.id.clone())
+            .collect();
+        sessions.push(target.clone());
+        let draft = Rc::new(RefCell::new(SessionDraft::from_session(&target)));
+        let store = Rc::new(RefCell::new(ConfigStore {
+            path: std::env::temp_dir()
+                .join(format!("xenterm-jump-layout-{}.db", uuid::Uuid::new_v4())),
+            backup_dir: None,
+            cache: ConfigFile {
+                sessions,
+                ..Default::default()
+            },
+            key: [0; 32],
+            keyring_enabled: false,
+            saved_state: std::sync::Mutex::new(SavedState::default()).into(),
+        }));
+        let mut probe = None;
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                let editor = cx.new(|_| SessionEditor::edit(store.clone(), target));
+                Probe {
+                    draft,
+                    store,
+                    editor,
+                    width: Some(width),
+                }
+            });
+            probe = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        draw(cx);
+        (probe.unwrap(), cx)
+    }
+
+    fn draw(cx: &mut VisualTestContext) {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+    }
+
+    #[gpui_kit::gpui::test]
+    fn long_jump_routes_keep_all_controls_inside_the_editor(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        const CONTROLS: [[&str; 3]; 5] = [
+            ["jump-up-0", "jump-down-0", "jump-remove-0"],
+            ["jump-up-1", "jump-down-1", "jump-remove-1"],
+            ["jump-up-2", "jump-down-2", "jump-remove-2"],
+            ["jump-up-3", "jump-down-3", "jump-remove-3"],
+            ["jump-up-4", "jump-down-4", "jump-remove-4"],
+        ];
+        for width in [900., 640.] {
+            for count in [1, 2, 5] {
+                let (_, cx) = long_route_fixture(cx, count, width);
+                let editor = cx.debug_bounds("jump-editor-bounds").unwrap();
+                for controls in CONTROLS.iter().take(count) {
+                    for control in controls {
+                        let bounds = cx.debug_bounds(control).unwrap();
+                        assert!(bounds.size.width >= px(20.) && bounds.size.height >= px(20.));
+                        assert!(bounds.left() >= editor.left() && bounds.right() <= editor.right(),
+                            "{count} hops at {width}px: {control} is outside editor: {bounds:?} vs {editor:?}");
+                        assert!(bounds.top() >= editor.top() && bounds.bottom() <= editor.bottom());
+                    }
+                }
+            }
+        }
+    }
+
+    #[gpui_kit::gpui::test]
+    fn long_jump_menu_is_bounded_and_keyboard_can_select_the_last_candidate(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(gpui_kit::init);
+        let (view, cx) = long_route_fixture(cx, 0, 640.);
+        let add = cx.debug_bounds("jump-add-control").unwrap();
+        cx.simulate_click(
+            point(add.right() - px(12.), add.center().y),
+            gpui_kit::Modifiers::default(),
+        );
+        draw(cx);
+        let menu = cx.update(|window, _| window.find("popup-menu").bounds());
+        let viewport = cx.update(|window, _| window.viewport_size());
+        assert!(
+            menu.size.width <= px(562.) && menu.size.height <= px(322.),
+            "{menu:?}"
+        );
+        assert!(menu.left() >= px(0.) && menu.right() <= viewport.width);
+        assert!(menu.top() >= px(0.) && menu.bottom() <= viewport.height);
+        let label = cx.debug_bounds("jump-menu-label-hop-00").unwrap();
+        assert!(label.size.width <= px(528.) && label.right() <= menu.right());
+        // The popup retains native keyboard navigation and scroll-to-selection.
+        for _ in 0..16 {
+            cx.simulate_keystrokes("down");
+        }
+        draw(cx);
+        cx.simulate_keystrokes("enter");
+        view.update(cx, |probe, cx| {
+            assert_eq!(probe.draft.borrow().jump_session_ids, ["hop-15"]);
+            assert!(probe
+                .store
+                .borrow()
+                .get("target")
+                .unwrap()
+                .jump_session_ids
+                .is_empty());
+            cx.notify();
+        });
+        draw(cx);
+        assert!(cx.update(|window, _| window.try_find("popup-menu").is_none()));
+        let add = cx.debug_bounds("jump-add-control").unwrap();
+        cx.simulate_click(
+            point(add.right() - px(12.), add.center().y),
+            gpui_kit::Modifiers::default(),
+        );
+        draw(cx);
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(cx.update(|window, _| window.try_find("popup-menu").is_none()));
+        view.read_with(cx, |probe, _| {
+            assert_eq!(probe.draft.borrow().jump_session_ids, ["hop-15"])
+        });
+    }
+
+    #[gpui_kit::gpui::test]
+    fn long_jump_rows_keep_reorder_replace_and_remove_clicks_working(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let (view, cx) = long_route_fixture(cx, 5, 640.);
+        let down = cx.debug_bounds("jump-down-0").unwrap();
+        cx.simulate_click(down.center(), gpui_kit::Modifiers::default());
+        view.update(cx, |probe, cx| {
+            assert_eq!(
+                probe.draft.borrow().jump_session_ids,
+                ["hop-01", "hop-00", "hop-02", "hop-03", "hop-04"]
+            );
+            cx.notify();
+        });
+        draw(cx);
+        let trigger = cx.debug_bounds("jump-select-trigger-0").unwrap();
+        cx.simulate_click(
+            point(trigger.right() + px(16.), trigger.center().y),
+            gpui_kit::Modifiers::default(),
+        );
+        draw(cx);
+        let candidate = cx.debug_bounds("jump-menu-label-hop-05").unwrap();
+        cx.simulate_click(candidate.center(), gpui_kit::Modifiers::default());
+        view.update(cx, |probe, cx| {
+            assert_eq!(probe.draft.borrow().jump_session_ids[0], "hop-05");
+            cx.notify();
+        });
+        draw(cx);
+        let remove = cx.debug_bounds("jump-remove-4").unwrap();
+        cx.simulate_click(remove.center(), gpui_kit::Modifiers::default());
+        view.update(cx, |probe, cx| {
+            assert_eq!(
+                probe.draft.borrow().jump_session_ids,
+                ["hop-05", "hop-00", "hop-02", "hop-03"]
+            );
+            assert_eq!(
+                probe.store.borrow().get("target").unwrap().jump_session_ids,
+                ["hop-00", "hop-01", "hop-02", "hop-03", "hop-04"]
+            );
+            cx.notify();
+        });
+        draw(cx);
     }
 
     #[gpui_kit::gpui::test]
@@ -351,6 +630,7 @@ mod ui_tests {
                 draft,
                 store,
                 editor,
+                width: None,
             }
         });
         cx.update(|window, cx| {
