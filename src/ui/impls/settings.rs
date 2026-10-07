@@ -164,8 +164,87 @@ pub(crate) struct SettingsView {
     /// it empty keeps it, matching the session editor's credential rows.
     webdav_password_input: Option<Entity<InputState>>,
     _webdav_password_subscription: Option<Subscription>,
+    /// Raw edits outlive page switches. Normalization belongs at a commit
+    /// boundary, not after each character of a colour or URL.
+    text_drafts: std::collections::HashMap<TextSetting, TextDraft>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum TextSetting {
+    CursorColor,
+    WebdavUrl,
+    WebdavUsername,
+    WebdavPath,
+}
+
+struct TextDraft {
+    input: Entity<InputState>,
+    last_value: String,
+    dirty: bool,
+    error: Option<&'static str>,
+    _subscription: Subscription,
+}
+
+impl TextSetting {
+    fn read(self, store: &ConfigStore) -> String {
+        match self {
+            Self::CursorColor => store.terminal_cursor_color().to_string(),
+            Self::WebdavUrl => store.webdav_url().to_string(),
+            Self::WebdavUsername => store.webdav_username().to_string(),
+            Self::WebdavPath => store.webdav_remote_path().to_string(),
+        }
+    }
+
+    fn validate(self, value: &str) -> Result<(), &'static str> {
+        let value = value.trim();
+        match self {
+            Self::CursorColor if !value.is_empty() && crate::config::hex_to_rgb(value).is_none() => {
+                Err(crate::i18n::t(
+                    "请输入六位十六进制颜色（例如 #123456），或留空恢复默认。尚未保存。",
+                    "Enter six hexadecimal digits (for example #123456), or leave blank for the default. Not saved.",
+                ))
+            }
+            Self::WebdavUrl if !value.is_empty() => {
+                // Reuse the HTTP client's URL parser without calling/sending a
+                // request. Offline addresses and local servers remain valid.
+                let valid = !value.chars().any(char::is_control)
+                    && value.split_once("://").is_some_and(|(scheme, _)|
+                        scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https"))
+                    && ureq::get(value).request_url().is_ok();
+                if valid { Ok(()) } else {
+                    Err(crate::i18n::t(
+                        "请输入完整的 http:// 或 https:// 地址，或留空。尚未保存。",
+                        "Enter a complete http:// or https:// address, or leave blank. Not saved.",
+                    ))
+                }
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn apply(self, store: &mut ConfigStore, value: String) {
+        match self {
+            Self::CursorColor => {
+                if value.trim().is_empty() {
+                    // Empty is the existing configuration's default-colour
+                    // sentinel, as advertised by this field's description.
+                    store.cache.terminal_cursor_color.clear();
+                } else {
+                    store.set_terminal_cursor_color(&value);
+                }
+            }
+            _ => {
+                let (enabled, url, user, password, path, certs) = match self {
+                    Self::WebdavUrl => webdav_with_url(store, value),
+                    Self::WebdavUsername => webdav_with_username(store, value),
+                    Self::WebdavPath => webdav_with_remote_path(store, value),
+                    Self::CursorColor => unreachable!(),
+                };
+                store.set_webdav_settings(enabled, url, user, password, path, certs);
+            }
+        }
+    }
+}
 impl SettingsView {
     pub(crate) fn new(store: Rc<std::cell::RefCell<ConfigStore>>) -> Self {
         Self {
@@ -179,6 +258,7 @@ impl SettingsView {
             paste: None,
             webdav_password_input: None,
             _webdav_password_subscription: None,
+            text_drafts: std::collections::HashMap::new(),
         }
     }
 
@@ -186,13 +266,131 @@ impl SettingsView {
     pub(crate) fn take_action(&mut self) -> Option<SettingsAction> {
         self.pending.take()
     }
+
+    fn text_field(
+        &mut self,
+        kind: TextSetting,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> SettingField<SharedString> {
+        if !self.text_drafts.contains_key(&kind) {
+            let initial = kind.read(&self.store.borrow());
+            let input = cx.new(|cx| InputState::new(window, cx).default_value(initial.clone()));
+            let subscription = cx.subscribe_in(&input, window, move |view, input, event: &InputEvent, window, cx| {
+                match event {
+                    InputEvent::Change => {
+                        let draft = view.text_drafts.get_mut(&kind).expect("registered draft");
+                        let value = input.read(cx).value().to_string();
+                        // The toolkit can emit Change again after Enter with
+                        // unchanged text. Keep validation feedback until an
+                        // actual edit, and do not mark a successful save dirty.
+                        if value == draft.last_value { return; }
+                        draft.last_value = value;
+                        draft.dirty = true;
+                        draft.error = None;
+                        cx.notify();
+                    }
+                    InputEvent::PressEnter { .. } | InputEvent::Blur => {
+                        let dirty = view.text_drafts.get(&kind).is_some_and(|draft| draft.dirty);
+                        if !dirty { return; }
+                        let value = input.read(cx).value().to_string();
+                        let result = kind.validate(&value).and_then(|()| {
+                            let mut store = view.store.borrow_mut();
+                            let before = store.cache.clone();
+                            kind.apply(&mut store, value);
+                            if store.save().is_err() {
+                                store.cache = before;
+                                Err(crate::i18n::t(
+                                    "保存失败，输入已保留。请检查配置文件后按 Enter 重试。",
+                                    "Could not save. Your input is kept; check the profile and press Enter to retry.",
+                                ))
+                            } else { Ok(kind.read(&store)) }
+                        });
+                        let draft = view.text_drafts.get_mut(&kind).expect("registered draft");
+                        match result {
+                            Ok(saved) => {
+                                draft.dirty = false;
+                                draft.error = None;
+                                draft.last_value = saved.clone();
+                                input.update(cx, |input, cx| input.set_value(saved, window, cx));
+                            }
+                            Err(error) => draft.error = Some(error),
+                        }
+                        cx.notify();
+                    }
+                    _ => {}
+                }
+            });
+            self.text_drafts.insert(
+                kind,
+                TextDraft {
+                    input,
+                    last_value: initial,
+                    dirty: false,
+                    error: None,
+                    _subscription: subscription,
+                },
+            );
+        }
+        let draft = self.text_drafts.get_mut(&kind).expect("created above");
+        if !draft.dirty {
+            let saved = kind.read(&self.store.borrow());
+            if draft.input.read(cx).value().as_ref() != saved {
+                draft.last_value = saved.clone();
+                draft
+                    .input
+                    .update(cx, |input, cx| input.set_value(saved, window, cx));
+            }
+        }
+        let input = draft.input.clone();
+        let error = draft.error;
+        SettingField::element(
+            move |options: &gpui_kit::component::setting::RenderOptions,
+                  _: &mut Window,
+                  cx: &mut gpui_kit::App| {
+                v_flex()
+                    .id(SharedString::from(format!("settings-text-{kind:?}")))
+                    .gap_1()
+                    .map(|this| {
+                        if options.layout().is_horizontal() {
+                            this.w_64()
+                        } else {
+                            this.w_full()
+                        }
+                    })
+                    .child(
+                        Input::new(&input)
+                            .w_full()
+                            .disabled(options.is_disabled())
+                            .with_size(options.size()),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(if error.is_some() {
+                                cx.theme().danger
+                            } else {
+                                cx.theme().muted_foreground
+                            })
+                            .child(error.unwrap_or_else(|| {
+                                crate::i18n::t(
+                                    "按 Enter 或离开输入框保存。",
+                                    "Press Enter or leave the field to save.",
+                                )
+                            })),
+                    )
+                    .into_any_element()
+            },
+        )
+    }
 }
 
 /// Write one setting and persist it.
 ///
-/// Every setter goes through here, so "changed a setting" and "saved the file" cannot
+/// Immediate setters go through here, so "changed a setting" and "saved the file" cannot
 /// drift apart: a settings view where one control forgot to save would be a control
 /// that silently reverts on restart, which is the worst way for a preference to fail.
+/// Text drafts instead validate and report errors at their explicit commit boundary.
 ///
 /// A failure to save is logged rather than dialogued: the in-memory value is already
 /// correct and the next change will try again, and interrupting someone mid-adjustment
@@ -484,6 +682,10 @@ impl Render for SettingsView {
             .child(sidebar)
             .child(
                 div()
+                    // Every leaf is rendered as toolkit page 0. Separate its
+                    // keyed field state so an input cannot retain another
+                    // page's cached setter at the same group/row position.
+                    .id(SharedString::from(format!("settings-content-{:?}", self.selected)))
                     .flex_1()
                     .min_w_0()
                     .h_full()
@@ -1136,25 +1338,9 @@ impl SettingsView {
             )
         };
 
-        let store_for_cursor_color = store.clone();
-        let cursor_color = {
-            let current = SharedString::from(store.borrow().terminal_cursor_color().to_string());
-            SettingField::input(
-                move |_| current.clone(),
-                move |value, _| {
-                    persist(
-                        &store_for_cursor_color,
-                        // The setter refuses an unparseable colour rather than storing one,
-                        // so a half-typed hex keeps the previous cursor rather than
-                        // making it invisible.
-                        |s| {
-                            s.set_terminal_cursor_color(value.as_ref());
-                        },
-                        "the terminal cursor colour",
-                    )
-                },
-            )
-        };
+        // The store refuses partial hex colours. Keep that safety boundary,
+        // but retain incomplete text until the user commits the field.
+        let cursor_color = self.text_field(TextSetting::CursorColor, window, cx);
 
         let font_group = SettingGroup::new()
             .title(crate::i18n::t("字体", "Font"))
@@ -1781,33 +1967,10 @@ impl SettingsView {
         // The WebDAV settings: six fields that write the whole configuration at once,
         // because the store's setter takes all of it — half-written is a state nobody
         // meant to save, such as an enabled sync with the previous password.
-        let webdav_string =
-            |pick: fn(&ConfigStore) -> String,
-             make: fn(&ConfigStore, String) -> (bool, String, String, String, String, bool),
-             store: &Rc<std::cell::RefCell<ConfigStore>>| {
-                let read_store = store.clone();
-                let write_store = store.clone();
-                SettingField::input(
-                    move |_| SharedString::from(pick(&read_store.borrow())),
-                    move |value, _| {
-                        persist(
-                            &write_store,
-                            |s| {
-                                let (enabled, url, user, password, path, certs) =
-                                    make(s, value.to_string());
-                                s.set_webdav_settings(enabled, url, user, password, path, certs)
-                            },
-                            "a WebDAV setting",
-                        )
-                    },
-                )
-            };
-        let webdav_url = webdav_string(|s| s.webdav_url().to_string(), webdav_with_url, &store);
-        let webdav_user = webdav_string(
-            |s| s.webdav_username().to_string(),
-            webdav_with_username,
-            &store,
-        );
+        // These setters trim/normalize their values. Doing that while typing
+        // destroys intermediate URL slashes and path/username edits.
+        let webdav_url = self.text_field(TextSetting::WebdavUrl, window, cx);
+        let webdav_user = self.text_field(TextSetting::WebdavUsername, window, cx);
         // The password is masked and write-only: the stored value never comes
         // back into the form (audit N-中5). Created lazily on the first render
         // of the sync section, because an input needs a window.
@@ -1881,11 +2044,7 @@ impl SettingsView {
                 },
             )
         };
-        let webdav_path = webdav_string(
-            |s| s.webdav_remote_path().to_string(),
-            webdav_with_remote_path,
-            &store,
-        );
+        let webdav_path = self.text_field(TextSetting::WebdavPath, window, cx);
         let webdav_enabled = {
             let read = store.clone();
             let write = store.clone();
@@ -2117,6 +2276,10 @@ fn webdav_with_remote_path(store: &ConfigStore, value: String) -> WebDavSettings
         store.webdav_accept_invalid_certs(),
     )
 }
+
+#[cfg(test)]
+#[path = "settings_input_tests.rs"]
+mod input_tests;
 
 #[cfg(test)]
 mod tests {
