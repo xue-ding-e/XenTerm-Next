@@ -1243,7 +1243,9 @@ impl Shell {
             .map(|map| map.get(&id).map(|status| status.state == 2).unwrap_or(false))
             .unwrap_or(false);
         if ended {
-            self.connect(&id, &id, cx);
+            self.pages.terminal.update(cx, |page, cx| {
+                page.reconnect_tab(&id, cx);
+            });
         }
     }
 

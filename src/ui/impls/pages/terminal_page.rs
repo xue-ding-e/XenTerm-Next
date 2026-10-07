@@ -39,6 +39,12 @@ use super::super::{panes, DockEdge, HistoryAction, HistoryView, QuickAction,
 /// One open tab: its id, its title, and the view drawing it.
 pub(crate) struct Tab {
     pub(crate) id: crate::core::TabId,
+    /// The saved profile or built-in shell this tab was opened from. A
+    /// duplicate has a different tab id but keeps this source identity.
+    session_id: String,
+    /// The original event destination, retained for in-place reconnects so
+    /// output keeps reaching the same view and scrollback buffer.
+    sink: std::sync::Arc<dyn crate::core::EventSink>,
     /// The title, from `core::TabMeta` so a rename works the same way here as there.
     pub(crate) meta: crate::core::TabMeta,
     view: Entity<TerminalView>,
@@ -410,11 +416,7 @@ impl TerminalPage {
 
     /// Whether duplicating this tab names a session a second connection can open.
     pub(crate) fn tab_duplicable(&self, id: &str) -> bool {
-        let store = self.state.store.borrow();
-        store.get(id).is_some()
-            || crate::app::session_models::builtin_local_sessions(store.wsl_profiles())
-                .iter()
-                .any(|builtin| builtin.id == id)
+        self.session_for_tab(id).is_some()
     }
 
     /// The rename in progress, as (tab id, its field), for the chip that shows it.
@@ -524,7 +526,7 @@ impl TerminalPage {
         };
 
         let title = session.name.clone();
-        let tab = Self::open_tab(&self.state, tab_id, &title, self.appearance.clone(), cx);
+        let tab = Self::open_tab(&self.state, tab_id, session_id, &title, self.appearance.clone(), cx);
 
         // Whether the session is asked for remote resource samples follows the panel
         // that draws them: folded away means nobody is looking, and a live session
@@ -550,6 +552,41 @@ impl TerminalPage {
             return;
         }
         self.open_session_tab(session_id, session_id, cx);
+    }
+
+    /// Resolve an existing tab's source without treating a duplicate's tab
+    /// id as a profile id. Deleted profiles deliberately cannot reconnect.
+    fn session_for_tab(&self, tab_id: &str) -> Option<crate::config::Session> {
+        let tab = self.tabs.iter().find(|tab| tab.id.as_str() == tab_id)?;
+        let store = self.state.store.borrow();
+        store.get(&tab.session_id).cloned().or_else(|| {
+            crate::app::session_models::builtin_local_sessions(store.wsl_profiles())
+                .into_iter()
+                .find(|session| session.id == tab.session_id)
+        })
+    }
+
+    /// Restart a stopped transport in the existing tab. Opening/focusing a
+    /// profile is a different operation: it must not swallow a reconnect or
+    /// append another tab with the same id. The new worker follows the normal
+    /// authentication and host-key checks; no previous prompt answer is reused.
+    pub(crate) fn reconnect_tab(&mut self, tab_id: &str, cx: &mut Context<Self>) -> bool {
+        let live = self.state.handles.borrow().get(tab_id).is_some_and(|handle| {
+            !handle.commands.is_closed() && !handle.join.is_finished()
+        });
+        if live {
+            return false;
+        }
+        let Some(session) = self.session_for_tab(tab_id) else {
+            return false;
+        };
+        let Some(tab) = self.tabs.iter().find(|tab| tab.id.as_str() == tab_id) else {
+            return false;
+        };
+        let monitoring = !self.sidebar.read(cx).is_collapsed();
+        self.state.connect(tab_id, session, tab.sink.clone(), monitoring);
+        cx.notify();
+        true
     }
 
     /// Refresh the quick-command dock's rows after the manager saved.
@@ -660,8 +697,8 @@ impl TerminalPage {
     fn drain_tab_actions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // A tab whose session ended can ask to be reconnected — Enter on it is the request —
         // and this is where that is honoured. The view can tell that a session is gone but
-        // cannot start one; the shell can. The tab id is the session id, so this is the same
-        // call the session list makes when a row is clicked.
+        // cannot start one; the page owns its source profile and event sink.
+        // Reconnect in place rather than reusing the list's focus-or-open action.
         let wanting: Vec<String> = self
             .tabs
             .iter()
@@ -669,10 +706,7 @@ impl TerminalPage {
             .map(|tab| tab.id.as_str().to_string())
             .collect();
         for id in wanting {
-            *self.action.borrow_mut() = Some(TerminalAction::Connect {
-                tab_id: id.clone(),
-                session_id: id,
-            });
+            self.reconnect_tab(&id, cx);
         }
         loop {
             let Some(action) = self.tab_action.borrow_mut().take() else {
@@ -716,10 +750,12 @@ impl TerminalPage {
                 // id, because everything keyed by tab id is per connection. The connect
                 // itself is the shell's — it decides whether the session is monitored.
                 TabAction::Duplicate(id) => {
-                    *self.action.borrow_mut() = Some(TerminalAction::Connect {
-                        tab_id: uuid::Uuid::new_v4().to_string(),
-                        session_id: id,
-                    });
+                    if let Some(session) = self.session_for_tab(&id) {
+                        *self.action.borrow_mut() = Some(TerminalAction::Connect {
+                            tab_id: uuid::Uuid::new_v4().to_string(),
+                            session_id: session.id,
+                        });
+                    }
                 }
                 TabAction::Close(id) => self.close_tab(&id, cx),
                 TabAction::MoveLeft(id) => self.move_tab(&id, -1, cx),
@@ -1052,6 +1088,7 @@ impl TerminalPage {
     fn open_tab(
         state: &crate::ui::SessionState,
         tab_id: &str,
+        session_id: &str,
         title: &str,
         appearance: TerminalSettings,
         cx: &mut Context<Self>,
@@ -1090,11 +1127,13 @@ impl TerminalPage {
 
         // The sink is stashed until the connect, which is what pairs it with a tab.
         PENDING_SINKS.with(|sinks| {
-            sinks.borrow_mut().insert(tab_id.clone(), sink);
+            sinks.borrow_mut().insert(tab_id.clone(), sink.clone());
         });
 
         Tab {
             id: crate::core::TabId::new(tab_id),
+            session_id: session_id.to_string(),
+            sink,
             meta: crate::core::TabMeta::new(crate::core::TabKind::Terminal, title.to_string()),
             view,
         }
@@ -1855,6 +1894,7 @@ mod dock_tests {
             let tab = TerminalPage::open_tab(
                 &page.state,
                 "local",
+                "local",
                 "Local",
                 page.appearance.clone(),
                 cx,
@@ -1902,6 +1942,7 @@ mod dock_tests {
                 // saved credentials or connection worker.
                 let tab = TerminalPage::open_tab(
                     &page.state,
+                    "fixture",
                     "fixture",
                     "Fixture",
                     page.appearance.clone(),
@@ -2011,5 +2052,318 @@ mod dock_tests {
                 assert_eq!(page.active_tab.as_deref(), Some("fixture"));
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod reconnect_tests {
+    use super::*;
+    use gpui_kit::gpui::{Focusable as _, TestAppContext, VisualTestContext};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    /// Native transport threads cannot wake GPUI's deterministic test
+    /// scheduler. Keep real UI input and transport startup, but collect
+    /// outbound events without crossing into that scheduler from a pump.
+    #[derive(Default)]
+    struct TestSink;
+
+    impl crate::core::EventSink for TestSink {
+        fn deliver(&self, _: &str, _: Vec<crate::session::protocol::SessionEvent>) {}
+
+        fn request_render(&self, _: &str) -> Option<crate::terminal::RenderTicket> {
+            None
+        }
+    }
+
+    fn saved_session(port: u16) -> crate::config::Session {
+        let mut session = crate::config::Session::new_empty();
+        session.id = "saved-profile".into();
+        session.name = "Saved SSH fixture".into();
+        session.host = "127.0.0.1".into();
+        session.port = port;
+        session.user = "synthetic-test-user".into();
+        session
+    }
+
+    /// Real views and session state, with an in-memory profile and no secrets.
+    fn open_fixture<'a>(
+        cx: &'a mut TestAppContext,
+        sessions: Vec<crate::config::Session>,
+        tabs: Vec<(&'static str, &'static str)>,
+        active: &'static str,
+    ) -> (
+        crate::ui::SessionState,
+        Entity<TerminalPage>,
+        &'a mut VisualTestContext,
+    ) {
+        cx.update(gpui_kit::init);
+        cx.update(crate::ui::actions::init);
+        let mut cache = crate::config::ConfigFile::default();
+        cache.sessions = sessions;
+        let mut store = crate::config::ConfigStore {
+            path: Default::default(),
+            backup_dir: None,
+            cache,
+            key: [0; 32],
+            keyring_enabled: false,
+            saved_state: Mutex::new(crate::config::SavedState::default()).into(),
+        };
+        store.set_sidebar_collapsed(true);
+        let state = crate::ui::SessionState::new(
+            Arc::new(tokio::runtime::Runtime::new().unwrap()),
+            Arc::new(Mutex::new(std::collections::HashMap::new())),
+            Rc::new(RefCell::new(store)),
+        );
+        let page_state = state.clone();
+        let (view, cx) = cx.add_window_view(move |window, cx| {
+            let mut page = TerminalPage::new(page_state, Rc::new(Cell::new(1280.)), window, cx);
+            let ids: Vec<String> = tabs.iter().map(|(id, _)| (*id).into()).collect();
+            for (id, session_id) in tabs {
+                let mut tab = TerminalPage::open_tab(
+                    &page.state,
+                    id,
+                    session_id,
+                    "Retained title",
+                    page.appearance.clone(),
+                    cx,
+                );
+                PENDING_SINKS.with(|sinks| sinks.borrow_mut().remove(id));
+                tab.sink = Arc::new(TestSink);
+                page.tabs.push(tab);
+                page.state.statuses.lock().unwrap().insert(
+                    id.into(),
+                    crate::resource::TabStatus {
+                        session_id: session_id.into(),
+                        state: 2,
+                        ..Default::default()
+                    },
+                );
+            }
+            page.active_tab = Some(active.into());
+            page.panes = crate::layout::Layout::new(ids, active.into());
+            page
+        });
+        draw(cx);
+        cx.update(|window, cx| {
+            let page = view.read(cx);
+            let tab = page
+                .tabs
+                .iter()
+                .find(|tab| tab.id.as_str() == active)
+                .unwrap();
+            tab.view.read(cx).focus_handle(cx).focus(window, cx);
+        });
+        (state, view, cx)
+    }
+
+    fn draw(cx: &mut VisualTestContext) {
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        cx.run_until_parked();
+    }
+
+    fn accept_reconnect(listener: &TcpListener, cx: &mut VisualTestContext) -> TcpStream {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            match listener.accept() {
+                Ok((peer, _)) => return peer,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(error) => panic!("loopback fixture accept: {error}"),
+            }
+            assert!(
+                Instant::now() < deadline,
+                "Enter must start a new transport, not merely focus an existing tab"
+            );
+            draw(cx);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn check_enter_reconnect(cx: &mut TestAppContext, duplicate: bool) {
+        // Use an explicit loopback CONNECT proxy to isolate ALL_PROXY without
+        // mutating process-global environment. It accepts TCP but never answers
+        // CONNECT or forwards traffic: no SSH keys, credentials or shell run.
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let mut session = saved_session(listener.local_addr().unwrap().port());
+        session.proxy = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let (tabs, active) = if duplicate {
+            (
+                vec![
+                    ("saved-profile", "saved-profile"),
+                    ("duplicate-tab", "saved-profile"),
+                ],
+                "duplicate-tab",
+            )
+        } else {
+            (vec![("saved-profile", "saved-profile")], "saved-profile")
+        };
+        let (state, view, cx) = open_fixture(cx, vec![session], tabs, active);
+        let (identities, buffer) = cx.update(|_, cx| {
+            let page = view.read(cx);
+            let identities = page
+                .tabs
+                .iter()
+                .map(|tab| (tab.id.clone(), tab.view.entity_id()))
+                .collect::<Vec<_>>();
+            let buffer = page
+                .tabs
+                .iter()
+                .find(|tab| tab.id.as_str() == active)
+                .unwrap()
+                .view
+                .read(cx)
+                .buffer()
+                .clone();
+            buffer
+                .lock()
+                .unwrap()
+                .ingest(b"history survives reconnect\r\n");
+            (identities, buffer)
+        });
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        let peer = accept_reconnect(&listener, cx);
+        cx.update(|_, cx| {
+            let page = view.read(cx);
+            assert_eq!(
+                page.tabs
+                    .iter()
+                    .map(|tab| (tab.id.clone(), tab.view.entity_id()))
+                    .collect::<Vec<_>>(),
+                identities
+            );
+            assert_eq!(page.active_tab.as_deref(), Some(active));
+            let tab = page
+                .tabs
+                .iter()
+                .find(|tab| tab.id.as_str() == active)
+                .unwrap();
+            assert_eq!(tab.meta.title(), "Retained title");
+            assert!(Arc::ptr_eq(tab.view.read(cx).buffer(), &buffer));
+            assert!(buffer
+                .lock()
+                .unwrap()
+                .parser
+                .screen()
+                .contents()
+                .contains("history survives reconnect"));
+            assert_eq!(
+                state
+                    .statuses
+                    .lock()
+                    .unwrap()
+                    .get(active)
+                    .unwrap()
+                    .session_id,
+                "saved-profile"
+            );
+            assert_eq!(state.handles.borrow().len(), 1);
+            assert!(state.handles.borrow().contains_key(active));
+            let route = state.tab_routes.lock().unwrap().get(active).unwrap().clone();
+            assert!(Arc::ptr_eq(&route.lock().unwrap().sink, &tab.sink));
+        });
+        // A second Enter while the transport is live/negotiating is terminal
+        // input, and must not start a second worker or reconnect another tab.
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        assert!(!cx.update(|_, cx| view.update(cx, |page, cx| page.reconnect_tab(active, cx))));
+        drop(peer);
+    }
+
+    #[gpui_kit::gpui::test]
+    fn enter_reconnects_a_saved_session_in_the_same_tab_and_buffer(cx: &mut TestAppContext) {
+        check_enter_reconnect(cx, false);
+    }
+
+    #[gpui_kit::gpui::test]
+    fn enter_reconnects_only_the_selected_duplicate_using_its_source_profile(
+        cx: &mut TestAppContext,
+    ) {
+        check_enter_reconnect(cx, true);
+    }
+
+    #[gpui_kit::gpui::test]
+    fn deleted_profiles_do_not_reconnect_or_fall_back_to_a_tab_id(cx: &mut TestAppContext) {
+        let (state, view, cx) = open_fixture(
+            cx,
+            vec![saved_session(22)],
+            vec![("duplicate-tab", "saved-profile")],
+            "duplicate-tab",
+        );
+        state.store.borrow_mut().remove("saved-profile");
+        // A different profile deliberately has the same string as this tab.
+        // Source identity must never silently switch to that profile.
+        let mut unrelated = saved_session(22);
+        unrelated.id = "duplicate-tab".into();
+        state.store.borrow_mut().upsert(unrelated);
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        cx.update(|_, cx| {
+            let page = view.read(cx);
+            assert!(page.session_for_tab("duplicate-tab").is_none());
+            assert!(!page.tab_duplicable("duplicate-tab"));
+            assert_eq!(page.tabs.len(), 1);
+            assert!(state.handles.borrow().is_empty());
+        });
+    }
+
+    #[gpui_kit::gpui::test]
+    fn duplicate_of_a_duplicate_keeps_the_original_session_identity(cx: &mut TestAppContext) {
+        let (_, view, cx) = open_fixture(
+            cx,
+            vec![saved_session(22)],
+            vec![("duplicate-tab", "saved-profile")],
+            "duplicate-tab",
+        );
+        let action = cx.update(|window, cx| {
+            view.update(cx, |page, cx| {
+                assert!(page.tab_duplicable("duplicate-tab"));
+                *page.tab_action.borrow_mut() = Some(TabAction::Duplicate("duplicate-tab".into()));
+                page.drain_tab_actions(window, cx);
+                page.take_action()
+            })
+        });
+        let Some(TerminalAction::Connect { tab_id, session_id }) = action else {
+            panic!("duplicating must request a new connection");
+        };
+        assert_eq!(session_id, "saved-profile");
+        assert_ne!(tab_id, "saved-profile");
+        assert_ne!(tab_id, "duplicate-tab");
+    }
+
+    #[gpui_kit::gpui::test]
+    fn builtin_shell_sources_resolve_without_saved_profiles(cx: &mut TestAppContext) {
+        let (_, view, cx) =
+            open_fixture(cx, vec![], vec![("builtin-copy", "unused")], "builtin-copy");
+        cx.update(|_, cx| {
+            view.update(cx, |page, _| {
+                let builtin = crate::app::session_models::builtin_local_sessions(
+                    page.state.store.borrow().wsl_profiles(),
+                )
+                .into_iter()
+                .next()
+                .expect("platform local shell");
+                page.tabs[0].session_id = builtin.id.clone();
+                let resolved = page
+                    .session_for_tab("builtin-copy")
+                    .expect("built-in source");
+                assert_eq!(resolved.id, builtin.id);
+                assert_eq!(resolved.kind, crate::config::SessionKind::Local);
+                assert!(page.tab_duplicable("builtin-copy"));
+                assert!(
+                    page.state.handles.borrow().is_empty(),
+                    "resolving must not launch a local shell"
+                );
+            })
+        });
     }
 }
