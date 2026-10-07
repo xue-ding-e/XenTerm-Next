@@ -35,7 +35,7 @@ pub struct TriggerDraft {
 /// type. A second frontend could not reuse those rules at all, let alone build a
 /// form to feed them.
 ///
-/// Every field is a `String` (or `bool`/`i32`) rather than a parsed type, because a form
+/// Every field is a `String` (or `bool`) rather than a parsed type, because a form
 /// holds what was typed and not what it means: an empty host, a port mid-keystroke and a
 /// name the user has not chosen yet are all legitimate states of an editor, and
 /// [`SessionDraft::to_session`] is the one place that decides what they mean.
@@ -47,7 +47,7 @@ pub struct SessionDraft {
     /// `"ssh"`, `"serial"` or `"telnet"`; parsed leniently, like every other field.
     pub kind: String,
     pub host: String,
-    pub port: i32,
+    pub port: String,
     pub user: String,
     /// `"password"` or `"key"`.
     pub auth: String,
@@ -65,9 +65,9 @@ pub struct SessionDraft {
     /// The folder this session belongs to; empty is the default group.
     pub group: String,
     pub serial_port: String,
-    pub baud_rate: i32,
-    pub data_bits: i32,
-    pub stop_bits: i32,
+    pub baud_rate: String,
+    pub data_bits: String,
+    pub stop_bits: String,
     pub parity: String,
     pub flow_control: String,
     pub encoding: String,
@@ -85,17 +85,61 @@ pub struct SessionDraft {
     pub triggers: Vec<TriggerDraft>,
 }
 
+/// A local form error, without any user input or credential in its diagnostic.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionDraftError {
+    Host,
+    Port,
+    SerialDevice,
+    BaudRate,
+    DataBits,
+    StopBits,
+    Parity,
+    FlowControl,
+}
+
+/// Parse only whole decimal digits, without truncation, wrapping or floating point.
+fn decimal<T: std::str::FromStr>(value: &str) -> Option<T> {
+    let value = value.trim();
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    value.parse().ok()
+}
+
+/// Check address syntax only. DNS and device availability belong to Connect, not Save.
+fn valid_host(host: &str) -> bool {
+    let host = host.trim();
+    if host.is_empty()
+        || host.chars().any(|ch| ch.is_whitespace() || ch.is_control())
+        || host.contains(['/', '\\', '@', '[', ']', '?', '#'])
+    {
+        return false;
+    }
+    if host.contains(':') {
+        // Scoped IPv6 addresses are accepted by the system resolver on supported OSes.
+        let address = match host.split_once('%') {
+            Some((address, scope)) if !scope.is_empty() && !scope.contains('%') => address,
+            Some(_) => return false,
+            None => host,
+        };
+        return address.parse::<std::net::Ipv6Addr>().is_ok();
+    }
+    // Keep local aliases, underscores, IDNs and trailing-dot names usable without DNS.
+    !host.contains('%')
+}
+
 impl SessionDraft {
     /// A draft for a brand-new SSH session, with the defaults the original form opens
     /// on.
     pub fn new_ssh() -> Self {
         Self {
             kind: SessionKind::Ssh.as_str().to_string(),
-            port: 22,
+            port: "22".to_string(),
             auth: AuthMethod::Password.as_str().to_string(),
-            baud_rate: 115_200,
-            data_bits: 8,
-            stop_bits: 1,
+            baud_rate: "115200".to_string(),
+            data_bits: "8".to_string(),
+            stop_bits: "1".to_string(),
             parity: "none".to_string(),
             flow_control: "none".to_string(),
             encoding: "utf-8".to_string(),
@@ -115,7 +159,7 @@ impl SessionDraft {
             name: session.name.clone(),
             kind: session.kind.as_str().to_string(),
             host: session.host.clone(),
-            port: session.port as i32,
+            port: session.port.to_string(),
             user: session.user.clone(),
             auth: session.auth.as_str().to_string(),
             password: String::new(),
@@ -126,9 +170,9 @@ impl SessionDraft {
             proxy: session.proxy.clone(),
             group: session.group.clone(),
             serial_port: session.serial_port.clone(),
-            baud_rate: session.baud_rate as i32,
-            data_bits: session.data_bits as i32,
-            stop_bits: session.stop_bits as i32,
+            baud_rate: session.baud_rate.to_string(),
+            data_bits: session.data_bits.to_string(),
+            stop_bits: session.stop_bits.to_string(),
             parity: session.parity.clone(),
             flow_control: session.flow_control.clone(),
             encoding: session.encoding.clone(),
@@ -160,6 +204,48 @@ impl SessionDraft {
                 })
                 .collect(),
         }
+    }
+
+    /// Validate only fields used by this transport, without opening a connection.
+    /// Names are optional (auto-generated below); SSH credentials can be requested
+    /// when connecting. A blank network port explicitly selects the protocol default.
+    pub fn validate(&self) -> Result<(), SessionDraftError> {
+        match SessionKind::from_str(&self.kind) {
+            SessionKind::Ssh | SessionKind::Telnet => {
+                if !valid_host(&self.host) {
+                    return Err(SessionDraftError::Host);
+                }
+                if !self.port.trim().is_empty()
+                    && !decimal::<u16>(&self.port).is_some_and(|port| port > 0)
+                {
+                    return Err(SessionDraftError::Port);
+                }
+            }
+            SessionKind::Serial => {
+                if self.serial_port.trim().is_empty()
+                    || self.serial_port.chars().any(char::is_control)
+                {
+                    return Err(SessionDraftError::SerialDevice);
+                }
+                if !decimal::<u32>(&self.baud_rate).is_some_and(|baud| baud > 0) {
+                    return Err(SessionDraftError::BaudRate);
+                }
+                if !decimal::<u8>(&self.data_bits).is_some_and(|bits| (5..=8).contains(&bits)) {
+                    return Err(SessionDraftError::DataBits);
+                }
+                if !matches!(decimal::<u8>(&self.stop_bits), Some(1 | 2)) {
+                    return Err(SessionDraftError::StopBits);
+                }
+                if !matches!(self.parity.as_str(), "none" | "odd" | "even") {
+                    return Err(SessionDraftError::Parity);
+                }
+                if !matches!(self.flow_control.as_str(), "none" | "hardware" | "software") {
+                    return Err(SessionDraftError::FlowControl);
+                }
+            }
+            SessionKind::Local => {}
+        }
+        Ok(())
     }
 
     /// The port forwards as the config type, dropping rows with no bind port.
@@ -197,7 +283,9 @@ impl SessionDraft {
             .collect()
     }
 
-    /// The session this draft describes.
+    /// The session this draft describes. Call [`Self::validate`] before persisting.
+    /// Incomplete drafts may still be converted for previews; invalid numbers use
+    /// defaults there, never a lossy numeric cast.
     ///
     /// `existing` is the saved session being edited, and it supplies the two secrets
     /// when their fields were left blank — the one thing a form cannot show, so the one
@@ -232,25 +320,25 @@ impl SessionDraft {
         };
         let kind = SessionKind::from_str(&self.kind);
         let auto_name = match kind {
-            SessionKind::Serial => format!("{} @{}", self.serial_port, self.baud_rate),
-            _ if self.user.trim().is_empty() => self.host.clone(),
-            _ => format!("{}@{}", self.user, self.host),
+            SessionKind::Serial => {
+                format!("{} @{}", self.serial_port.trim(), self.baud_rate.trim())
+            }
+            _ if self.user.trim().is_empty() => self.host.trim().to_string(),
+            _ => format!("{}@{}", self.user.trim(), self.host.trim()),
         };
         let default_port = if kind == SessionKind::Telnet { 23 } else { 22 };
 
         Session {
             id: self.id.clone(),
-            name: if self.name.is_empty() {
+            name: if self.name.trim().is_empty() {
                 auto_name
             } else {
                 self.name.clone()
             },
-            host: self.host.clone(),
-            port: if self.port <= 0 {
-                default_port
-            } else {
-                self.port as u16
-            },
+            host: self.host.trim().to_string(),
+            port: decimal::<u16>(&self.port)
+                .filter(|port| *port > 0)
+                .unwrap_or(default_port),
             user: self.user.clone(),
             auth: AuthMethod::from_str(&self.auth),
             password,
@@ -267,22 +355,16 @@ impl SessionDraft {
             local_working_dir: existing
                 .map(|session| session.local_working_dir.clone())
                 .unwrap_or_default(),
-            serial_port: self.serial_port.clone(),
-            baud_rate: if self.baud_rate <= 0 {
-                115_200
-            } else {
-                self.baud_rate as u32
-            },
-            data_bits: if self.data_bits <= 0 {
-                8
-            } else {
-                self.data_bits as u8
-            },
-            stop_bits: if self.stop_bits <= 0 {
-                1
-            } else {
-                self.stop_bits as u8
-            },
+            serial_port: self.serial_port.trim().to_string(),
+            baud_rate: decimal::<u32>(&self.baud_rate)
+                .filter(|baud| *baud > 0)
+                .unwrap_or(115_200),
+            data_bits: decimal::<u8>(&self.data_bits)
+                .filter(|bits| (5..=8).contains(bits))
+                .unwrap_or(8),
+            stop_bits: decimal::<u8>(&self.stop_bits)
+                .filter(|bits| matches!(bits, 1 | 2))
+                .unwrap_or(1),
             parity: self.parity.clone(),
             flow_control: self.flow_control.clone(),
             encoding: self.encoding.clone(),
@@ -300,6 +382,162 @@ impl SessionDraft {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn network_validation_requires_only_a_local_address_and_valid_port() {
+        let mut draft = SessionDraft::new_ssh();
+        for kind in ["ssh", "telnet"] {
+            draft.kind = kind.into();
+            for host in [
+                "",
+                "   ",
+                "bad host",
+                "bad\nhost",
+                "ssh://example.com",
+                "user@host",
+                "host:22",
+                "2001::invalid",
+            ] {
+                draft.host = host.into();
+                assert_eq!(
+                    draft.validate(),
+                    Err(SessionDraftError::Host),
+                    "{kind}: {host:?}"
+                );
+            }
+            // These targets need not resolve, be reachable, or have any credentials.
+            for host in [
+                "offline.invalid",
+                "localhost",
+                "ssh-alias",
+                "my_host",
+                "主机.example",
+                "example.com.",
+                "127.0.0.1",
+                "::1",
+                "2001:db8::1",
+                "fe80::1%eth0",
+            ] {
+                draft.host = host.into();
+                assert_eq!(draft.validate(), Ok(()), "{kind}: {host}");
+            }
+            for port in [
+                "0",
+                "-1",
+                "65536",
+                "65537",
+                "2147483648",
+                "9999999999999999999999",
+                "22.5",
+                "1e2",
+                "NaN",
+                "abc",
+            ] {
+                draft.port = port.into();
+                let before = draft.clone();
+                assert_eq!(
+                    draft.validate(),
+                    Err(SessionDraftError::Port),
+                    "{kind}: {port}"
+                );
+                assert_eq!(draft, before, "validation never alters the user's input");
+            }
+            for (port, expected) in [("1", 1), ("65535", 65535), (" 2222 ", 2222)] {
+                draft.port = port.into();
+                assert_eq!(draft.validate(), Ok(()));
+                assert_eq!(draft.to_session(None).port, expected);
+            }
+            draft.port.clear();
+            assert_eq!(draft.validate(), Ok(()));
+            assert_eq!(
+                draft.to_session(None).port,
+                if kind == "telnet" { 23 } else { 22 }
+            );
+        }
+    }
+
+    #[test]
+    fn optional_name_and_credentials_survive_offline_validation() {
+        let mut draft = SessionDraft::new_ssh();
+        draft.host = " offline.invalid ".into();
+        draft.name = "   ".into();
+        assert_eq!(draft.validate(), Ok(()));
+        let session = draft.to_session(None);
+        assert_eq!(session.host, "offline.invalid");
+        assert_eq!(session.name, "offline.invalid");
+        assert!(session.user.is_empty());
+        assert!(session.password.is_empty());
+        assert_eq!(SessionDraft::from_session(&session).validate(), Ok(()));
+    }
+
+    #[test]
+    fn serial_validation_checks_framing_without_requiring_a_device_to_exist() {
+        let mut draft = SessionDraft::new_ssh();
+        draft.kind = "serial".into();
+        draft.port = "invalid but hidden".into();
+        assert_eq!(draft.validate(), Err(SessionDraftError::SerialDevice));
+        draft.serial_port = "/dev/xenterm-fixture-not-present".into();
+        assert_eq!(draft.validate(), Ok(()));
+        for baud in ["", "0", "-1", "9600.5", "4294967296", "abc"] {
+            draft.baud_rate = baud.into();
+            assert_eq!(draft.validate(), Err(SessionDraftError::BaudRate), "{baud}");
+        }
+        // The model stores u32; editing a large valid value must not narrow to i32.
+        draft.baud_rate = u32::MAX.to_string();
+        assert_eq!(draft.validate(), Ok(()));
+        let session = draft.to_session(None);
+        assert_eq!(session.baud_rate, u32::MAX);
+        assert_eq!(
+            SessionDraft::from_session(&session).baud_rate,
+            u32::MAX.to_string()
+        );
+        for bits in ["0", "4", "9", "261", "8.5", ""] {
+            draft.data_bits = bits.into();
+            assert_eq!(draft.validate(), Err(SessionDraftError::DataBits), "{bits}");
+        }
+        for bits in ["5", "6", "7", "8"] {
+            draft.data_bits = bits.into();
+            assert_eq!(draft.validate(), Ok(()));
+        }
+        for bits in ["0", "3", "257", "1.5", ""] {
+            draft.stop_bits = bits.into();
+            assert_eq!(draft.validate(), Err(SessionDraftError::StopBits), "{bits}");
+        }
+        draft.stop_bits = "2".into();
+        assert_eq!(draft.validate(), Ok(()));
+        draft.parity = "invalid".into();
+        assert_eq!(draft.validate(), Err(SessionDraftError::Parity));
+        draft.parity = "even".into();
+        draft.flow_control = "invalid".into();
+        assert_eq!(draft.validate(), Err(SessionDraftError::FlowControl));
+        draft.flow_control = "hardware".into();
+        assert_eq!(draft.validate(), Ok(()));
+    }
+
+    #[test]
+    fn unrelated_hidden_fields_do_not_block_other_transports() {
+        let mut draft = SessionDraft::new_ssh();
+        draft.host = "offline.invalid".into();
+        draft.baud_rate = "invalid".into();
+        draft.data_bits = "invalid".into();
+        draft.stop_bits = "invalid".into();
+        assert_eq!(draft.validate(), Ok(()));
+        draft.kind = "telnet".into();
+        assert_eq!(draft.validate(), Ok(()));
+        draft.kind = "local".into();
+        draft.host.clear();
+        draft.port = "invalid".into();
+        assert_eq!(draft.validate(), Ok(()));
+    }
+
+    #[test]
+    fn incomplete_preview_numbers_never_wrap_or_truncate() {
+        let mut draft = SessionDraft::new_ssh();
+        for port in ["65536", "65537", "-1", "22.5", "abc"] {
+            draft.port = port.into();
+            assert_eq!(draft.to_session(None).port, 22, "{port}");
+        }
+    }
 
     /// A blank secret field means "keep what is saved", which is the whole reason the
     /// form does not echo a password back: an edit that touched nothing must not erase
@@ -354,7 +592,7 @@ mod tests {
     #[test]
     fn a_blank_port_defaults_per_kind() {
         let mut draft = SessionDraft::new_ssh();
-        draft.port = 0;
+        draft.port.clear();
         assert_eq!(draft.to_session(None).port, 22);
 
         draft.kind = "telnet".to_string();

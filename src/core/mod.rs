@@ -78,7 +78,7 @@ mod sftp_listing;
 // (`BaseZoom`, `SftpSortDir`, `TransferPhase`) stay unexported until one is.
 pub use event_sink::EventSink;
 pub use font_zoom::FontZoom;
-pub use session_draft::{PortForwardDraft, SessionDraft, TriggerDraft};
+pub use session_draft::{PortForwardDraft, SessionDraft, SessionDraftError, TriggerDraft};
 pub use session_row::SessionRow;
 pub use sftp::{parent_path, SftpColumn};
 // Named by the SFTP panel, which draws one row per file. Listed explicitly rather
