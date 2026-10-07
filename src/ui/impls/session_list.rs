@@ -565,6 +565,11 @@ impl ListDelegate for SessionListDelegate {
         // corrupt them, so their rows carry no menu at all.
         let row_content = div()
             .id(SharedString::from(format!("row-menu-{menu_id}")))
+            .w_full()
+            // Own the row padding too, so its blank edges are part of the menu target.
+            .px_3()
+            .py_1()
+            .child(body)
             // The id names the element for the hit test and the debug selector
             // makes it findable by a test. Two different things, and the file
             // panel has now taught me that six times.
@@ -637,7 +642,8 @@ impl ListDelegate for SessionListDelegate {
         Some(
             ListItem::new(SharedString::from(format!("session-{id}")))
                 .selected(is_active)
-                .child(div().flex().flex_col().child(row_content).child(body)),
+                .p_0()
+                .child(row_content),
         )
     }
 
@@ -1341,5 +1347,115 @@ mod tests {
             cx.debug_bounds("row-menu-added-tail").is_some(),
             "new tail must be addressable through the virtual list"
         );
+    }
+}
+
+#[cfg(test)]
+mod context_menu_tests {
+    use super::*;
+    use gpui_kit::gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext};
+    use gpui_kit::{point, px};
+
+    fn draw(cx: &mut VisualTestContext) {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+    }
+
+    /// A synthetic in-memory fixture, independent of the user's saved profile.
+    fn check_row_menu(cx: &mut TestAppContext, compact: bool) {
+        cx.update(gpui_kit::init);
+        let mut session = crate::config::Session::new_empty();
+        session.id = "menu-fixture".into();
+        session.name = "Menu fixture".into();
+        session.host = "127.0.0.1".into();
+        let mut other = session.clone();
+        other.id = "other-fixture".into();
+        other.name = "Other fixture".into();
+        let cache = crate::config::ConfigFile {
+            sessions: vec![other, session],
+            ..Default::default()
+        };
+        let store = Rc::new(std::cell::RefCell::new(ConfigStore {
+            path: Default::default(),
+            backup_dir: None,
+            key: [0; 32],
+            keyring_enabled: false,
+            saved_state: std::sync::Mutex::new(crate::config::SavedState::of_cache(&cache)).into(),
+            cache,
+        }));
+        let (view, cx) = cx.add_window_view(move |window, cx| {
+            SessionListView::new_inner(store, None, compact, window, cx)
+        });
+        draw(cx);
+        cx.update(|window, cx| view.update(cx, |view, cx| view.focus_search(window, cx)));
+        // Keep A selected while right-clicking B, so action routing cannot
+        // accidentally use keyboard selection instead of the clicked row.
+        let list = cx.update(|_, cx| view.read(cx).list.clone());
+        let selected = cx.update(|window, cx| {
+            list.update(cx, |state, cx| {
+                let section = state
+                    .delegate()
+                    .sections
+                    .iter()
+                    .position(|span| span.group == "default")
+                    .unwrap();
+                let selected = IndexPath::new(0).section(section);
+                state.set_selected_index(Some(selected), window, cx);
+                selected
+            })
+        });
+        draw(cx);
+        let bounds = cx.debug_bounds("row-menu-menu-fixture").expect("saved row");
+        assert!(bounds.size.width > px(100.));
+        assert!(
+            bounds.size.height > px(10.),
+            "a context-menu target must contain the visible row"
+        );
+        // The text/icon area and the blank top/right padding must all work.
+        for (position, keys, expected) in [
+            (
+                bounds.center(),
+                "down enter",
+                SessionListAction::Edit("menu-fixture".into()),
+            ),
+            (
+                point(bounds.right() - px(1.), bounds.bottom() - px(1.)),
+                "down down enter",
+                SessionListAction::Duplicate("menu-fixture".into()),
+            ),
+            (
+                point(bounds.left() + px(1.), bounds.top() + px(1.)),
+                "down down down enter",
+                SessionListAction::Delete("menu-fixture".into()),
+            ),
+        ] {
+            cx.simulate_mouse_move(position, None, Modifiers::default());
+            cx.simulate_mouse_down(position, MouseButton::Right, Modifiers::default());
+            cx.simulate_mouse_up(position, MouseButton::Right, Modifiers::default());
+            draw(cx);
+            assert!(
+                cx.update(|_, cx| view.update(cx, |view, cx| view.take_action(cx)))
+                    .is_none(),
+                "opening the menu alone must not execute an action"
+            );
+            cx.simulate_keystrokes(keys);
+            draw(cx);
+            let action = cx.update(|_, cx| view.update(cx, |view, cx| view.take_action(cx)));
+            assert_eq!(action, Some(expected));
+            assert_eq!(
+                cx.update(|_, cx| list.read(cx).selected_index()),
+                Some(selected)
+            );
+        }
+    }
+
+    #[gpui_kit::gpui::test]
+    fn full_session_row_context_menu_covers_content_and_padding(cx: &mut TestAppContext) {
+        check_row_menu(cx, false);
+    }
+
+    #[gpui_kit::gpui::test]
+    fn compact_session_row_context_menu_covers_content_and_padding(cx: &mut TestAppContext) {
+        check_row_menu(cx, true);
     }
 }
