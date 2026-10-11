@@ -30,6 +30,12 @@ use super::{
     SettingsAction, SftpPanelView, SystemInfoWindowView, TransferAction, TunnelsView, WINDOW_ID,
 };
 
+/// Apply the loaded desktop profile before any window or toolkit widget is created.
+fn initialize_ui_language(store: &crate::config::ConfigStore) {
+    crate::i18n::set_language(store.language());
+    gpui_kit::component::set_locale(if crate::i18n::is_en() { "en" } else { "zh-CN" });
+}
+
 /// Open the XenTerm window and run the platform event loop until it closes.
 ///
 /// The loop ends by itself once the last window is gone: `QuitMode::Default`
@@ -92,7 +98,7 @@ pub(crate) fn run() -> Result<()> {
             // language is one line rather than a string per widget.
             // `rust_i18n` matches on the whole tag and falls back to its default locale, which
             // is English: passing this app's own `"zh"` left every toolkit string English.
-            gpui_kit::component::set_locale(if crate::i18n::is_en() { "en" } else { "zh-CN" });
+            initialize_ui_language(&store.borrow());
             gpui_kit::init(cx);
             super::dialogs::init(cx);
             // The keymap, in one place: every chord the window answers to.
@@ -3147,3 +3153,5 @@ impl<T: TabFollower> Detached<T> {
 mod shell_close_focus_tests;
 #[path = "sftp_delete_tests.rs"]
 mod sftp_delete_tests;
+#[path = "startup_language_tests.rs"]
+mod startup_language_tests;
