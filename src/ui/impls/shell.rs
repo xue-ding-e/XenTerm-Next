@@ -516,6 +516,8 @@ mod overlay_geometry_tests;
 mod sftp_copy_path_tests;
 #[path = "group_dialog_tests.rs"]
 mod group_dialog_tests;
+#[path = "quick_popover_tests.rs"]
+mod quick_popover_tests;
 
 #[cfg(test)]
 #[path = "command_palette_tests.rs"]

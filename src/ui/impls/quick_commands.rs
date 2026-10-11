@@ -25,12 +25,14 @@ use std::rc::Rc;
 use gpui_kit::{
     component::{
         button::{Button, ButtonVariants},
-        h_flex, v_flex, ActiveTheme as _, Icon, Sizable as _,
+        h_flex,
+        popover::PopoverState,
+        v_flex, ActiveTheme as _, Icon, Sizable as _,
     },
     div,
     prelude::*,
     px, Animation, AnimationExt as _, AnyElement, Context, FontWeight, IntoElement, Render,
-    SharedString, Window,
+    SharedString, WeakEntity, Window,
 };
 
 // The full Lucide catalog rather than the component library's curated subset: the icons
@@ -98,6 +100,9 @@ pub(crate) struct QuickCommandsView {
     chrome: bool,
     /// The last thing the user asked for, drained by the shell.
     pending: Option<QuickAction>,
+    /// The popup currently hosting this view. Weak because its content owns
+    /// this view, and retaining the popup here would create a cycle.
+    popover: Option<WeakEntity<PopoverState>>,
     /// How many times each group has turned, which is what makes its chevron
     /// swing rather than swap.
     chevron_turn: super::chevron::TurnCounter,
@@ -120,9 +125,22 @@ impl QuickCommandsView {
             edge,
             chrome,
             pending: None,
+            popover: None,
             chevron_turn: super::chevron::new_turn_counter(),
             flash: None,
             flash_epoch: 0,
+        }
+    }
+
+    pub(crate) fn bind_popover(&mut self, popover: WeakEntity<PopoverState>) {
+        self.popover = Some(popover);
+    }
+
+    /// Close only the originating popup, before another overlay is opened.
+    fn dismiss_popover(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(popover) = self.popover.take().and_then(|host| host.upgrade()) {
+            popover.update(cx, |popover, cx| popover.dismiss(window, cx));
+            window.refresh();
         }
     }
 
@@ -179,8 +197,10 @@ impl QuickCommandsView {
                     .font_weight(FontWeight::BOLD)
                     .child(crate::i18n::t("快速命令", "Quick commands")),
             )
-            .child(close.on_click(cx.listener(|this, _, _, _| {
+            .child(close.on_click(cx.listener(|this, _, window, cx| {
+                this.dismiss_popover(window, cx);
                 this.pending = Some(QuickAction::Close);
+                cx.notify();
             })))
             .into_any_element()
     }
@@ -380,8 +400,10 @@ impl Render for QuickCommandsView {
                             .label(crate::i18n::t("管理快速命令", "Manage commands"))
                             .ghost()
                             .w_full()
-                            .on_click(cx.listener(|this, _, _, _| {
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.dismiss_popover(window, cx);
                                 this.pending = Some(QuickAction::Manage);
+                                cx.notify();
                             })),
                     ),
             )

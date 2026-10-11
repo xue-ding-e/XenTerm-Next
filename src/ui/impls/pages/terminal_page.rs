@@ -811,10 +811,8 @@ impl TerminalPage {
                     *self.action.borrow_mut() = Some(TerminalAction::OpenQuickManager);
                 }
                 QuickAction::Close => {
-                    // Nothing to close: the dock is a popover, and a popover closes by
-                    // clicking outside it. The action is still reported — and ignored —
-                    // rather than removed, because the dock's own header is what offers
-                    // it and the header is hidden when the shell hosts it.
+                    // The view already dismissed its own popup synchronously.
+                    // There is no window-level dialog to close for this action.
                 }
                 // The view already folded it; nothing to carry out. Kept in the enum so
                 // the fold is reported the same way every other interaction is, which is
@@ -1721,7 +1719,9 @@ impl TerminalPage {
                     )
                     .content({
                         let quick = self.quick.clone();
-                        move |_, _, _| {
+                        move |_, _, cx| {
+                            let popover = cx.entity().downgrade();
+                            quick.update(cx, |quick, _| quick.bind_popover(popover));
                             div()
                                 .w(px(300.))
                                 .h(px(360.))
