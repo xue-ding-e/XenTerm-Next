@@ -518,6 +518,10 @@ mod overlay_geometry_tests;
 mod command_palette_tests;
 
 #[cfg(test)]
+#[path = "file_dialog_tests.rs"]
+mod file_dialog_tests;
+
+#[cfg(test)]
 mod join_remote_tests {
     use super::join_remote;
 
@@ -2147,10 +2151,15 @@ impl Shell {
             });
             match action {
                 Some(super::file_viewer::FileViewerAction::Close) => {
-                    self.open_file = None;
-                    self.overlay = Overlay::None;
-                    window.close_dialog(cx);
-                    cx.notify();
+                    let viewer_id = viewer.entity_id();
+                    let owns_dialog = matches!(
+                        &self.overlay,
+                        Overlay::File(current) if current.entity_id() == viewer_id
+                    );
+                    self.release_file_viewer(viewer_id, cx);
+                    if owns_dialog {
+                        window.close_dialog(cx);
+                    }
                 }
                 // Written the way every other file write is: the session owns the channel,
                 // and the shell knows which tab the file belongs to.
@@ -2201,15 +2210,49 @@ impl Shell {
         });
         self.open_file = Some(viewer.clone());
         self.overlay = Overlay::File(viewer.clone());
-        Self::overlay_dialog(
+        let viewer_id = viewer.entity_id();
+        let shell = cx.entity().downgrade();
+        Self::overlay_dialog_with_close(
             viewer,
             crate::i18n::t("文件", "File").into(),
             760.,
             560.,
             window,
             cx,
+            move |_, cx| {
+                let shell = shell.clone();
+                // A dialog may also close while Shell is replacing its view.
+                // Release its entity after that update lease, and only if the
+                // dismissed viewer still owns the corresponding state.
+                cx.defer(move |cx| {
+                    let _ = shell.update(cx, |shell, cx| {
+                        shell.release_file_viewer(viewer_id, cx);
+                    });
+                });
+            },
         );
         cx.notify();
+    }
+
+    /// Retire only the viewer that requested dismissal, never a newer overlay.
+    fn release_file_viewer(&mut self, viewer_id: gpui_kit::EntityId, cx: &mut Context<Self>) {
+        let owns_file = self
+            .open_file
+            .as_ref()
+            .is_some_and(|viewer| viewer.entity_id() == viewer_id);
+        let owns_overlay = matches!(
+            &self.overlay,
+            Overlay::File(viewer) if viewer.entity_id() == viewer_id
+        );
+        if owns_file {
+            self.open_file = None;
+        }
+        if owns_overlay {
+            self.overlay = Overlay::None;
+        }
+        if owns_file || owns_overlay {
+            cx.notify();
+        }
     }
 
     /// Close the editor if it has finished, and refresh the tree when it saved.
