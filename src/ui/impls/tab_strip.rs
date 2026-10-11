@@ -287,15 +287,14 @@ impl Render for TabStripView {
                             .cursor_pointer()
                             .on_click({
                                 let page = self.page.clone();
-                                move |_, _, cx| {
+                                move |_, window, cx| {
                                     if let Some(page) = page.upgrade() {
-                                        let _ =
-                                            page.update(cx, |page, cx| {
-                                                page.set_active_tab(
-                                                    Some(click_id.clone()),
-                                                    cx,
-                                                );
-                                            });
+                                        let _ = page.update(cx, |page, cx| {
+                                            if page.has_tab(&click_id) {
+                                                page.set_active_tab(Some(click_id.clone()), cx);
+                                                page.focus_active_tab(window, cx);
+                                            }
+                                        });
                                     }
                                 }
                             })
@@ -499,10 +498,13 @@ impl Render for TabStripView {
                                     .accessibility_label(crate::i18n::t("关闭标签", "Close tab"))
                                     .on_click({
                                         let page = self.page.clone();
-                                        move |_, _, cx| {
+                                        move |_, window, cx| {
+                                            // The chip's click selects its tab. A close
+                                            // must not bubble and reselect the removed id.
+                                            cx.stop_propagation();
                                             if let Some(page) = page.upgrade() {
                                                 let _ = page.update(cx, |page, cx| {
-                                                    page.close_tab(&close_id, cx);
+                                                    page.close_tab_and_focus(&close_id, window, cx);
                                                 });
                                             }
                                         }

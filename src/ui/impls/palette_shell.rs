@@ -151,9 +151,14 @@ impl Shell {
                     .update(cx, |page, cx| page.split_active_tab(true, cx));
             }
             CommandId::CloseTab => {
+                let terminal_visible = self.pages.active == PageId::Terminal;
                 self.pages.terminal.update(cx, |page, cx| {
                     if let Some(id) = page.active_tab_id() {
-                        page.close_tab(&id, cx);
+                        if terminal_visible {
+                            page.close_tab_and_focus(&id, window, cx);
+                        } else {
+                            page.close_tab(&id, cx);
+                        }
                     }
                 });
             }

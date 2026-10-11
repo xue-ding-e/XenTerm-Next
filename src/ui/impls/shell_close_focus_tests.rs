@@ -6,6 +6,16 @@ use gpui_kit::gpui::{TestAppContext, VisualTestContext};
 use std::sync::{Arc, Mutex};
 
 fn fixture(cx: &mut TestAppContext) -> (Entity<Shell>, &mut VisualTestContext) {
+    let (shell, cx) = fixture_without_forced_focus(cx);
+    // The nav rail has real keyboard focus targets under the Shell key context.
+    // Focus one without invoking a click that could open another dialog.
+    cx.update(|window, cx| window.focus_next(cx));
+    draw(cx);
+    (shell, cx)
+}
+
+/// The actual empty-window construction path, without a test-only focus assignment.
+fn fixture_without_forced_focus(cx: &mut TestAppContext) -> (Entity<Shell>, &mut VisualTestContext) {
     cx.update(|cx| {
         gpui_kit::init(cx);
         crate::ui::actions::init(cx);
@@ -59,10 +69,6 @@ fn fixture(cx: &mut TestAppContext) -> (Entity<Shell>, &mut VisualTestContext) {
         shell = Some(view.clone());
         Root::new(view, window, cx)
     });
-    draw(cx);
-    // The nav rail has real keyboard focus targets under the Shell key context.
-    // Focus one without invoking a click that could open another dialog.
-    cx.update(|window, cx| window.focus_next(cx));
     draw(cx);
     (shell.unwrap(), cx)
 }
@@ -160,3 +166,297 @@ fn raw_input(
     }
     input
 }
+
+// These fixtures use the same Root, Shell, keymap and tab buttons as the app.
+// Invalid jump resolution stops before transport creation; only a synthetic
+// command receiver observes what the focused TerminalView actually sends.
+fn add_entry_profile(shell: &Entity<Shell>, id: &str, cx: &mut VisualTestContext) {
+    shell.update(cx, |shell, _| {
+        let mut profile = crate::config::Session::new_empty();
+        profile.id = id.into();
+        profile.name = id.into();
+        profile.host = "127.0.0.1".into();
+        profile.port = 0;
+        profile.jump_session_ids = vec!["missing-fixture-hop".into()];
+        shell.state.store.borrow_mut().upsert(profile);
+        shell.state.store.borrow_mut().set_sidebar_collapsed(true);
+    });
+}
+
+fn entry_inbox(
+    shell: &Entity<Shell>,
+    id: &str,
+    runtime: &tokio::runtime::Runtime,
+    cx: &mut VisualTestContext,
+) -> tokio::sync::mpsc::UnboundedReceiver<SessionCommand> {
+    let (commands, receiver) = tokio::sync::mpsc::unbounded_channel();
+    shell.update(cx, |shell, _| {
+        assert!(!shell.state.handles.borrow().contains_key(id));
+        shell.state.handles.borrow_mut().insert(
+            id.into(),
+            crate::session::protocol::SessionHandle {
+                tab_id: id.into(),
+                commands,
+                join: runtime.spawn(std::future::pending::<()>()),
+            },
+        );
+    });
+    receiver
+}
+
+fn open_entry_tab(shell: &Entity<Shell>, id: &str, cx: &mut VisualTestContext) {
+    add_entry_profile(shell, id, cx);
+    shell.update(cx, |shell, cx| {
+        shell
+            .pages
+            .terminal
+            .update(cx, |page, cx| page.open_session_tab(id, id, cx));
+    });
+    draw(cx);
+}
+
+fn click_entry_element(id: &str, cx: &mut VisualTestContext) {
+    use gpui_kit::test::TestWindowExt as _;
+    let bounds = cx.update(|window, _| window.find(SharedString::from(id.to_owned())).bounds());
+    cx.simulate_click(bounds.center(), Default::default());
+    draw(cx);
+}
+
+fn assert_entry_input(
+    inbox: &mut tokio::sync::mpsc::UnboundedReceiver<SessionCommand>,
+    cx: &mut VisualTestContext,
+) {
+    // No focus assignment or terminal-body click after the navigation action.
+    cx.simulate_input("echo entry-focus");
+    assert_eq!(raw_input(inbox), b"echo entry-focus");
+}
+
+#[gpui_kit::gpui::test]
+fn entry_quick_connect_return_focuses_new_terminal_without_mouse(cx: &mut TestAppContext) {
+    let (shell, cx) = fixture(cx);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    add_entry_profile(&shell, "entry-new-terminal", cx);
+    cx.simulate_keystrokes("ctrl-k");
+    draw(cx);
+    cx.simulate_input("entry-new-terminal");
+    draw(cx);
+    cx.simulate_keystrokes("enter");
+    draw(cx);
+    shell.read_with(cx, |shell, cx| {
+        assert_eq!(shell.overlay, Overlay::None);
+        assert_eq!(shell.pages.active, PageId::Terminal);
+        assert_eq!(
+            shell.pages.terminal.read(cx).active_tab_id().as_deref(),
+            Some("entry-new-terminal")
+        );
+    });
+    assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+    let mut inbox = entry_inbox(&shell, "entry-new-terminal", &runtime, cx);
+    draw(cx);
+    assert_entry_input(&mut inbox, cx);
+}
+
+#[gpui_kit::gpui::test]
+fn entry_quick_connect_return_reuses_and_focuses_existing_terminal(cx: &mut TestAppContext) {
+    let (shell, cx) = fixture(cx);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    open_entry_tab(&shell, "entry-existing-terminal", cx);
+    let mut inbox = entry_inbox(&shell, "entry-existing-terminal", &runtime, cx);
+    cx.update(|window, cx| window.focus_next(cx));
+    cx.simulate_keystrokes("ctrl-k");
+    draw(cx);
+    cx.simulate_input("entry-existing-terminal");
+    draw(cx);
+    cx.simulate_keystrokes("enter");
+    draw(cx);
+    shell.read_with(cx, |shell, cx| {
+        assert_eq!(shell.pages.terminal.read(cx).tabs.len(), 1);
+        assert!(!shell.state.handles.borrow()["entry-existing-terminal"]
+            .join
+            .is_finished());
+    });
+    assert_entry_input(&mut inbox, cx);
+}
+
+#[gpui_kit::gpui::test]
+fn entry_tab_chip_click_focuses_selected_terminal_without_body_click(cx: &mut TestAppContext) {
+    let (shell, cx) = fixture(cx);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    open_entry_tab(&shell, "entry-left", cx);
+    let mut left = entry_inbox(&shell, "entry-left", &runtime, cx);
+    open_entry_tab(&shell, "entry-right", cx);
+    let mut right = entry_inbox(&shell, "entry-right", &runtime, cx);
+    // Plain divs are not recorded by the toolkit observer. The observed X
+    // button anchors a point in this same chip's title, outside the button.
+    use gpui_kit::test::TestWindowExt as _;
+    let close = cx.update(|window, _| window.find("close-entry-left").bounds());
+    cx.simulate_click(
+        gpui_kit::point(close.left() - px(20.), close.center().y),
+        Default::default(),
+    );
+    draw(cx);
+    assert_entry_input(&mut left, cx);
+    assert!(raw_input(&mut right).is_empty());
+}
+
+#[gpui_kit::gpui::test]
+fn entry_tab_x_does_not_reactivate_closed_tab_and_focuses_survivor(cx: &mut TestAppContext) {
+    let (shell, cx) = fixture(cx);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    open_entry_tab(&shell, "entry-left", cx);
+    let mut left = entry_inbox(&shell, "entry-left", &runtime, cx);
+    open_entry_tab(&shell, "entry-right", cx);
+    let mut right = entry_inbox(&shell, "entry-right", &runtime, cx);
+    click_entry_element("close-entry-right", cx);
+    shell.read_with(cx, |shell, cx| {
+        let page = shell.pages.terminal.read(cx);
+        assert!(!page.has_tab("entry-right"));
+        assert_eq!(page.active_tab_id().as_deref(), Some("entry-left"));
+        assert!(!shell.state.handles.borrow().contains_key("entry-right"));
+    });
+    assert_entry_input(&mut left, cx);
+    assert!(raw_input(&mut right).is_empty());
+}
+
+#[gpui_kit::gpui::test]
+fn entry_palette_close_tab_return_focuses_survivor(cx: &mut TestAppContext) {
+    let (shell, cx) = fixture(cx);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    open_entry_tab(&shell, "entry-left", cx);
+    let mut left = entry_inbox(&shell, "entry-left", &runtime, cx);
+    open_entry_tab(&shell, "entry-right", cx);
+    let mut right = entry_inbox(&shell, "entry-right", &runtime, cx);
+    cx.update(|window, cx| window.focus_next(cx));
+    cx.simulate_keystrokes("ctrl-shift-p");
+    draw(cx);
+    cx.simulate_input(crate::i18n::t("关闭标签", "Close tab"));
+    cx.simulate_keystrokes("enter");
+    draw(cx);
+    shell.read_with(cx, |shell, cx| {
+        assert_eq!(shell.overlay, Overlay::None);
+        assert_eq!(
+            shell.pages.terminal.read(cx).active_tab_id().as_deref(),
+            Some("entry-left")
+        );
+    });
+    assert_entry_input(&mut left, cx);
+    assert!(raw_input(&mut right).is_empty());
+}
+
+#[gpui_kit::gpui::test]
+fn entry_quick_connect_cancel_keeps_previous_page_and_focus(cx: &mut TestAppContext) {
+    let (shell, cx) = fixture(cx);
+    open_entry_tab(&shell, "entry-cancel", cx);
+    cx.update(|window, cx| {
+        shell.update(cx, |shell, cx| {
+            shell.open_page(PageId::Settings, window, cx)
+        });
+    });
+    draw(cx);
+    cx.update(|window, cx| window.focus_next(cx));
+    let before = cx.update(|window, cx| window.focused(cx).unwrap());
+    cx.simulate_keystrokes("ctrl-k");
+    draw(cx);
+    assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+    cx.simulate_input("entry-cancel");
+    draw(cx);
+    cx.simulate_keystrokes("escape");
+    draw(cx);
+    // Escape uses the toolkit's animated focus restoration.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while !cx.update(|window, _| before.is_focused(window)) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "cancel did not restore previous focus"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        draw(cx);
+    }
+    shell.read_with(cx, |shell, _| {
+        assert_eq!(shell.pages.active, PageId::Settings);
+        assert_eq!(shell.overlay, Overlay::None);
+    });
+}
+
+#[gpui_kit::gpui::test]
+fn entry_pending_connect_preserves_another_page_focus(cx: &mut TestAppContext) {
+    let (shell, cx) = fixture(cx);
+    add_entry_profile(&shell, "entry-background", cx);
+    cx.update(|window, cx| {
+        shell.update(cx, |shell, cx| {
+            shell.open_page(PageId::Settings, window, cx)
+        });
+    });
+    draw(cx);
+    let before = cx.update(|window, cx| window.focused(cx).unwrap());
+    shell.update(cx, |shell, cx| {
+        shell.pages.terminal.update(cx, |page, cx| {
+            page.request(
+                TerminalAction::Connect {
+                    tab_id: "entry-background".into(),
+                    session_id: "entry-background".into(),
+                },
+                cx,
+            );
+        });
+    });
+    for _ in 0..3 {
+        draw(cx);
+    }
+    assert!(cx.update(|window, _| before.is_focused(window)));
+    shell.read_with(cx, |shell, cx| {
+        assert_eq!(shell.pages.active, PageId::Settings);
+        assert!(shell.pages.terminal.read(cx).has_tab("entry-background"));
+    });
+}
+
+#[gpui_kit::gpui::test]
+fn entry_pending_connect_does_not_take_modal_focus(cx: &mut TestAppContext) {
+    let (shell, cx) = fixture(cx);
+    add_entry_profile(&shell, "entry-under-dialog", cx);
+    cx.update(|window, cx| {
+        window.open_dialog(cx, |dialog, _, _| dialog.title("Keep this dialog focused"));
+        shell.update(cx, |shell, cx| {
+            shell.pages.terminal.update(cx, |page, cx| {
+                page.request(
+                    TerminalAction::Connect {
+                        tab_id: "entry-under-dialog".into(),
+                        session_id: "entry-under-dialog".into(),
+                    },
+                    cx,
+                );
+            });
+        });
+    });
+    let before = cx.update(|window, cx| window.focused(cx).unwrap());
+    for _ in 0..3 {
+        draw(cx);
+    }
+    assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+    assert!(cx.update(|window, _| before.is_focused(window)));
+}
+
+#[gpui_kit::gpui::test]
+fn entry_closing_inactive_x_preserves_active_terminal(cx: &mut TestAppContext) {
+    let (shell, cx) = fixture(cx);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    open_entry_tab(&shell, "entry-left", cx);
+    let mut left = entry_inbox(&shell, "entry-left", &runtime, cx);
+    open_entry_tab(&shell, "entry-right", cx);
+    let mut right = entry_inbox(&shell, "entry-right", &runtime, cx);
+    let area = cx.debug_bounds("terminal-pane-area").unwrap();
+    cx.simulate_click(area.center(), Default::default());
+    draw(cx);
+    click_entry_element("close-entry-left", cx);
+    shell.read_with(cx, |shell, cx| {
+        assert_eq!(
+            shell.pages.terminal.read(cx).active_tab_id().as_deref(),
+            Some("entry-right")
+        );
+    });
+    assert_entry_input(&mut right, cx);
+    assert!(raw_input(&mut left).is_empty());
+}
+
+#[path = "startup_shortcut_tests.rs"]
+mod startup_shortcut_tests;

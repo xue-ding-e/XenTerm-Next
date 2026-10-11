@@ -434,6 +434,10 @@ impl Render for SettingsView {
             let is_active = this.selected == selected;
             h_flex()
                 .id(SharedString::from(format!("settings-nav-{selected:?}")))
+                // Observe the real navigation hit area for pointer-event tests.
+                .when(cfg!(test), |row| {
+                    row.debug_selector(move || format!("settings-nav-{selected:?}"))
+                })
                 .h_7()
                 .w_full()
                 .flex_shrink_0()
