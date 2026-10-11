@@ -454,7 +454,7 @@ xenterm/
 
 ## 开发
 
-贡献前请阅读[社区贡献指南](CONTRIBUTING.md)，了解 PR 组织、冲突处理、审核就绪和 API 版本核验要求。
+贡献前请阅读[社区贡献指南](CONTRIBUTING.zh-CN.md)（[English](CONTRIBUTING.md)），了解 PR 组织、冲突处理、审核就绪和 API 版本核验要求。
 
 - **界面只有 GPUI。** 没有需要额外构建的特性开关，也没有第二个要同步维护的前端。
   直接运行 `xenterm` 和迁移期遗留的 `xenterm gpui` 参数打开的是同一个外壳。

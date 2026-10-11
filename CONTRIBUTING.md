@@ -1,88 +1,207 @@
-# XenTerm 社区贡献指南
+<p align="center">
+  <b>English</b> · <a href="CONTRIBUTING.zh-CN.md">简体中文</a>
+</p>
 
-欢迎反馈问题、提出建议和提交代码。本指南整理维护者已说明的协作要求，并提供提交前的验证建议；新增的沟通约定和检查建议随本贡献指南提案提交维护者审阅，不代表已经生效的全社区决议。具体 PR 如收到维护者的新要求，请以最新要求为准。
+# XenTerm Community Contribution Guide
 
-本指南补充现有 [中文 README](README.zh.md)、[应用测试说明](tests/app/README.md) 和各功能文档，不替代或删除它们。
+Welcome bug reports, feature suggestions and code contributions. This guide
+consolidates the collaboration requirements already stated by the maintainers and
+offers pre-submission verification suggestions; the newly added communication
+conventions and check recommendations are submitted with this contribution-guide
+proposal for maintainer review and do not represent a community-wide resolution that
+is already in force. If a maintainer sets new requirements on a specific PR, those
+latest requirements prevail.
 
-## 维护者已明确的协作要求
+This guide supplements the existing [Chinese README](README.zh.md), the
+[app test instructions](tests/app/README.md) and the per-feature documents; it
+neither replaces nor removes them.
 
-### 优先稳定性与交互质量
+## Communication language
 
-当前维护重点是修复问题、改善 UI 与交互反馈，推进首个稳定版；建议新增功能先讨论范围和方案，不以大量功能提案挤占稳定性修复。修复方案仍需说明取舍并接受审核；“问题确实存在”不代表任何实现都自动获准合并。
+- **Chinese first.** Issue and PR titles, descriptions and follow-up discussion are
+  primarily in Chinese, so that most community members can take part.
+- Non-native Chinese speakers are welcome to write in English; maintainers will reply
+  in Chinese where possible and add clarifications as needed.
+- Keep code identifiers, commands, raw error output and necessary English quotations
+  in their original form.
 
-### 保持 PR 可以合并
+## Maintainer-established collaboration requirements
 
-存在合并冲突的 PR 无法合并。提交审核前，请同步目标分支、解决冲突，并重新检查受影响的代码和测试。审核期间目标分支继续变化时，也请及时处理新冲突。
+### Stability and interaction quality first
 
-重点是冲突解决后的结果正确、差异清晰、可以合并。本指南不把个人的 rebase-only 习惯作为社区规则，也不额外规定必须使用 rebase 或 merge。
+The current maintenance focus is fixing problems, improving UI and interaction
+feedback, and driving toward the first stable release; new features should start
+with a scope and design discussion, and a flood of feature proposals must not crowd
+out stability fixes. Fix proposals still need to explain their trade-offs and pass
+review — "the problem is real" does not mean any implementation is automatically
+approved for merge.
 
-### 合并高频、相似的修改
+### Keep PRs mergeable
 
-高频提交的相似修改请集中在一个 PR 中，避免把同一轮修复拆成大量细碎 PR。相关 bug 修复可以统一提交，并逐项说明问题、改动和验证结果。
+PRs with merge conflicts cannot be merged. Before requesting review, sync the target
+branch, resolve conflicts, and re-check the affected code and tests. While the
+target branch keeps moving during review, please handle new conflicts promptly.
 
-建议按共同问题、模块或可一起验证的主题组织：同一功能的后续修正优先补到已有 PR；互不相关的新功能、重构和修复不必为减少 PR 数量而强行拼在一起。需要拆分时说明边界和依赖关系，便于独立审核。
+What matters is that the post-resolution result is correct, the diff is clear, and
+the PR is mergeable. This guide does not promote anyone's personal rebase-only habit
+into a community rule, and it does not mandate rebase or merge.
 
-### 完成后由提交者从 Draft 转为 Ready
+### Batch frequent, similar changes
 
-维护者已更换 PR 审核机器人，旧机器人的流程不再作为操作依据。工作完成后，提交者需要自行将 PR 从 **Draft** 转为 **Ready for review**，才能触发当前审核机器人。
+Please consolidate frequently repeated, similar changes into one PR instead of
+splitting the same round of fixes into many tiny PRs. Related bug fixes can be
+submitted together, itemizing the problem, the change and the verification result
+for each.
 
-仍在实现、处理冲突或补充验证时，请保持 Draft；准备好后主动完成转换，不要只留言“已完成”后等待维护者代为操作。转换后检查 PR 中的实际审核反馈，并逐条回应。旧机器人的触发失败、旧评论或旧检查结果不能证明当前机器人已完成审核，更不能等同于本次改动已通过；应核对当前机器人实际反馈所对应的提交。若未出现预期反馈，请报告 PR 当前状态和已执行的步骤，再向维护者询问；不要猜测机器人名称、触发口令、权限或重复切换状态来尝试触发。
+Organize by shared problem, module or a verifiable theme: follow-up fixes for the
+same feature should go into the existing PR first; unrelated new features,
+refactors and fixes should not be force-combined just to reduce the PR count. When
+a split is needed, state the boundaries and dependencies so each part can be
+reviewed independently.
 
-### 核对当前依赖与 API
+### Convert Draft to Ready when done
 
-AI 辅助开发同样需要核对 API 版本：旧版本能用的接口，不一定适用于当前版本。提交者应审查生成的代码，并对最终结果负责。
+The maintainers have switched PR review bots; the old bot's workflow is no longer
+the operational basis. When the work is done, the submitter must convert the PR
+from **Draft** to **Ready for review** themselves to trigger the current review
+bot.
 
-请以目标分支当前的 `Cargo.toml`、`Cargo.lock`、实际启用的 feature 和对应版本源码或文档为依据，不要直接照搬旧分支、旧教程或模型记忆中的接口。
+Keep the PR as a Draft while it is still being implemented, while conflicts are
+being handled or while verification is being added; once ready, complete the
+conversion proactively instead of leaving a "done" comment and waiting for a
+maintainer to do it. After converting, check the actual review feedback on the PR
+and respond item by item. A failed trigger, stale comments or stale check results
+from the old bot do not prove the current bot has finished reviewing, let alone
+that this change passed; verify against the commits the current bot's feedback
+actually refers to. If the expected feedback does not appear, report the PR's
+current state and the steps you already took before asking the maintainers; do not
+guess bot names, trigger phrases or permissions, and do not repeatedly toggle the
+state trying to force a trigger.
 
-## 本指南建议采用的沟通约定
+### Verify current dependencies and APIs
 
-- Issue 和 PR 的标题、说明及后续沟通使用中文；代码标识符、命令、原始报错和必要的英文引文保留原文
-- 提交前搜索已有 Issue 和 PR；高度相似的问题优先补充已有讨论，并关联相应链接
-- 问题反馈写明 XenTerm 版本或提交、操作系统、安装或构建方式、复现步骤、预期结果和实际结果
-- PR 写清解决的问题、方案及原因、影响范围、相关 Issue 和验证结果；合并多个相关修复时逐项列出。对 bug 修复，建议说明已定位的根因和关键调用链；尚未确定的部分明确标注为推测
-- 日志、截图和示例先移除密码、私钥、访问令牌、真实会话凭据及其他敏感信息
+AI-assisted development still requires checking API versions: an interface that
+worked on an old version does not necessarily apply to the current one. Submitters
+must review generated code and are responsible for the final result.
 
-## 建议的实现与验证实践
+Base your work on the target branch's current `Cargo.toml`, `Cargo.lock`, the
+actually enabled features, and the corresponding version's source code or
+documentation; do not copy interfaces straight from old branches, old tutorials or
+model memory.
 
-以下是提高可审核性和减少回归的建议，不应被表述为维护者已额外规定的全量测试门禁。按改动范围选择检查，并如实记录未完成部分。
+## Communication conventions
 
-### 依赖、锁文件与 feature
+- Search existing issues and PRs before submitting; highly similar issues should
+  extend the existing discussion and link to it
+- Bug reports state the XenTerm version or commit, the operating system, the
+  install or build method, reproduction steps, expected results and actual results
+- PRs state the problem solved, the solution and why, the scope of impact, related
+  issues and verification results; when combining multiple related fixes, list them
+  item by item. For bug fixes, state the identified root cause and the key call
+  chain; clearly mark undetermined parts as speculation
+- Remove passwords, private keys, access tokens, real session credentials and other
+  sensitive information from logs, screenshots and examples first
 
-1. 开发前核对目标分支最新依赖配置；对齐后再判断是调用方式不正确，还是确实需要升级依赖。
-2. 使用匹配锁定版本的 API 文档或源码，特别注意方法签名、trait 导入、条件编译、事件生命周期和平台差异。不要为沿用旧接口随意降级依赖。
-3. 普通功能修复尽量保持锁文件稳定。确需调整依赖时，在 PR 中解释原因、影响和相关的 `Cargo.toml` / `Cargo.lock` 变化，避免夹带无关升级。
-4. 优先使用 `--locked` 验证。若失败原因是清单与锁文件不一致，应检查并修正有意的依赖变更；不要直接去掉 `--locked`，把重新解析后的成功当作原锁文件已经通过验证。
-5. 区分桌面与无界面构建。当前 feature 定义见 [Cargo.toml](Cargo.toml)：默认构建包含桌面功能，无界面路径使用 `--no-default-features --features headless`。无界面测试通过不能证明桌面 UI 或各平台 API 正确；也不要无意中把可选 GUI 依赖引入无界面路径。
+## Recommended implementation and verification practices
 
-### 按实际改动验证
+These are suggestions to improve reviewability and reduce regressions; they must
+not be presented as an all-encompassing test gate additionally mandated by the
+maintainers. Choose checks according to the scope of the change and honestly
+record what was not done.
 
-- Rust 或桌面代码：建议运行 `cargo check --locked`，并执行覆盖改动的测试；本机缺少系统开发库时应说明，不能把环境阻塞写成检查通过
-- 相关单元与集成测试：使用 `cargo test --locked` 或适当的测试过滤器；在说明中给出完整命令，确认预期测试确实执行，不能把过滤后运行了零个测试当作有效覆盖
-- 新增 `tests/app/` 下的测试：遵循现有模块接线方式，确认测试进入编译与执行路径，具体结构参见该目录的 README；仅创建测试文件并不一定会执行它
-- 无界面、CLI 或 MCP 路径：按影响范围运行 `cargo test --locked --no-default-features --features headless` 和相关场景检查；涉及部署、认证或协议时参考 [远程 MCP 文档](docs/REMOTE_MCP.md)
-- GUI 交互：补充实际操作步骤及结果，必要时提供截图或录屏；涉及焦点、鼠标、键盘、弹窗等问题时检查真实事件行为，覆盖重复操作、取消和遮挡后的恢复；样式修改同时观察浅色/深色及必要的缩放、窗口尺寸，不必重复与主题无关的全套功能测试。不能仅凭编译成功认定修复
-- 平台相关代码：在受影响的平台和目标工具链上验证；本机无法覆盖时明确列出平台缺口，并结合实际 CI 结果判断，不声称“全平台通过”
-- 纯文档修改：检查链接、路径、示例和表述是否与当前代码一致；无需把未运行的代码检查填成已通过
+### Dependencies, lockfiles and features
 
-现有开发约定继续适用，包括 GPUI 界面、中文和英文成对翻译、界面图标与文字的使用方式等，详见 [README 的开发章节](README.zh.md#开发)。不要把终端内容支持 emoji 误解为允许用 emoji 替代应用界面图标。
+1. Check the target branch's latest dependency configuration before developing;
+   align first, then judge whether it is an incorrect call or a genuinely needed
+   upgrade.
+2. Use API documentation or source code matching the locked versions; pay attention
+   to method signatures, trait imports, conditional compilation, event lifetimes
+   and platform differences. Do not casually downgrade a dependency just to keep an
+   old interface.
+3. Ordinary feature fixes should keep the lockfile stable. When a dependency change
+   is truly needed, explain the reason, impact and the related `Cargo.toml` /
+   `Cargo.lock` changes in the PR; do not smuggle in unrelated upgrades.
+4. Prefer verifying with `--locked`. If it fails because the manifest and lockfile
+   disagree, fix the intentional dependency change; do not simply drop `--locked`
+   and treat a re-resolved success as the original lockfile having passed.
+5. Distinguish desktop from headless builds. The current feature definitions are in
+   [Cargo.toml](Cargo.toml): the default build contains the desktop features;
+   headless paths use `--no-default-features --features headless`. Headless tests
+   passing does not prove the desktop UI or platform APIs are correct; do not
+   accidentally pull optional GUI dependencies into headless paths.
 
-### 提供可以核对的证据
+### Verify what you actually changed
 
-建议在 PR 中记录验证所用的提交、系统、工具链、feature、完整命令和结果。手工验证写明步骤、预期和实际行为；CI 结果附对应运行链接。适合自动回归的 bug，建议提供同一测试在旧实现失败、修复后通过的红绿证据，并补充应拒绝的输入仍然拒绝的负向用例。复现命令应能定位确切提交，写清构建依赖、配置与启动方式，尽量让审阅者一键或少量步骤复现。区分“已通过”“失败”“未运行”和“环境阻塞”，说明已知限制。
+- Rust or desktop code: run `cargo check --locked` and execute tests covering the
+  change; if your machine lacks system development libraries, say so — do not write
+  an environment blocker up as a passed check
+- Related unit and integration tests: use `cargo test --locked` or an appropriate
+  test filter; give the complete command in the description and confirm the
+  intended tests actually ran — a filtered run that executed zero tests is not
+  valid coverage
+- New tests under `tests/app/`: follow the existing module wiring and confirm the
+  test is on a compiled and executed path; see that directory's README. Creating a
+  test file alone does not necessarily execute it
+- Headless, CLI or MCP paths: run
+  `cargo test --locked --no-default-features --features headless` and the related
+  scenario checks according to the affected scope; for deployment, authentication
+  or protocol work refer to the [Remote MCP document](docs/REMOTE_MCP.md)
+- GUI interactions: supplement real operation steps and results, with screenshots
+  or recordings when necessary; for focus, mouse, keyboard or dialog issues check
+  real event behavior, covering recovery after repeated operations, cancellation
+  and occlusion; for style changes observe light/dark themes plus necessary zoom
+  and window sizes, without rerunning the full suite of unrelated features.
+  Compilation success alone does not prove a fix
+- Platform-specific code: verify on the affected platforms and target toolchains;
+  when your machine cannot cover them, list the platform gaps explicitly and judge
+  from actual CI results — never claim "passed on all platforms"
+- Documentation-only changes: check that links, paths, examples and wording match
+  the current code; no need to fill unused code checks in as passed
 
-AI 生成的测试输出、没有实际运行过的命令、旧提交的截图或其他分支的绿色检查，都不能作为本次改动已验证的证据。修复冲突或继续改代码后，重新运行受影响的检查，并更新说明。
+Existing development conventions continue to apply, including the GPUI interface,
+paired Chinese and English translations, and how UI icons and text are used — see
+the [README development section](README.zh.md#开发). Do not misread "the terminal
+content supports emoji" as permission to replace application UI icons with emoji.
 
-## 审核就绪与提交后自查
+### Provide verifiable evidence
 
-以下清单用于帮助提交者确认准备情况，不新增未经维护者确认的强制平台或测试要求。
+Record in the PR the commit, system, toolchain, features, full commands and results
+used for verification. For manual verification, write out the steps, the expected
+and the actual behavior; attach run links for CI results. For bugs suited to
+automated regression, provide red-green evidence — the same test failing on the old
+implementation and passing after the fix — plus negative cases showing inputs that
+must be rejected are still rejected. Reproduction commands should pin the exact
+commit and state build dependencies, configuration and launch steps, so a reviewer
+can reproduce with one click or a few steps. Distinguish "passed", "failed", "not
+run" and "blocked by environment", and state known limitations.
 
-- [ ] 改动已完成；相关修复按主题集中，未夹带无关功能
-- [ ] 已检查目标分支最新状态，解决合并冲突，并复核解决结果
-- [ ] 已核对当前依赖、锁文件、feature 和 API，说明必要的依赖变化
-- [ ] PR 已说明问题、方案、影响范围和关联讨论
-- [ ] 已按改动范围完成验证，并提供真实结果；未覆盖项目和环境阻塞已明确列出
-- [ ] 新增测试确实进入执行路径；已有文档、注释和功能约定得到保留或有理由地更新
-- [ ] 日志和截图中的敏感内容已移除
-- [ ] 提交者已自行执行 **Draft → Ready for review**，并检查当前审核机器人的反馈
+AI-generated test output, commands that were never actually run, screenshots of old
+commits, or green checks from other branches are not evidence that this change was
+verified. After resolving conflicts or continuing to change code, re-run the
+affected checks and update the description.
 
-Ready 表示已准备好供审核，不代表已经批准合并。请继续回应审核意见，更新变更说明和验证结果；最终是否合并由维护者决定。
+## Review readiness and post-submission self-check
+
+The following checklist helps submitters confirm their preparation; it adds no
+mandatory platform or testing requirements that have not been confirmed by the
+maintainers.
+
+- [ ] Changes are complete; related fixes are grouped by topic; no unrelated
+      features smuggled in
+- [ ] The target branch's latest state was checked, merge conflicts resolved, and
+      the resolution reviewed
+- [ ] Current dependencies, lockfile, features and APIs verified; necessary
+      dependency changes explained
+- [ ] The PR states the problem, the solution and rationale, the scope of impact
+      and related discussion
+- [ ] Verification was completed according to the scope of the change with real
+      results; uncovered items and environment blockers are clearly listed
+- [ ] New tests are actually on an executed path; existing documentation, comments
+      and feature conventions are preserved or updated with a reason
+- [ ] Sensitive content has been removed from logs and screenshots
+- [ ] The submitter performed **Draft → Ready for review** themselves and checked
+      the current review bot's feedback
+
+Ready means ready for review, not approved for merge. Keep responding to review
+comments and updating the change description and verification results; whether to
+merge is ultimately the maintainer's decision.
