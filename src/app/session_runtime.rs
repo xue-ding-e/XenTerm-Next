@@ -35,6 +35,9 @@ pub(super) fn should_start_sftp(session: &Session) -> bool {
 /// all four session kinds, their pump threads and the SFTP bootstrap, and a second
 /// frontend reusing it is what the `ConnectCtx` decoupling was for.
 pub(crate) fn start_session_in_tab(tab_id: &str, session: Session, ctx: &ConnectCtx) {
+    let monitor_generation = ctx.tab_statuses.lock().ok()
+        .and_then(|statuses| statuses.get(tab_id).map(|status| status.monitor_generation))
+        .unwrap_or(0);
     let has_sftp = should_start_sftp(&session);
     let (initial_cols, initial_rows) = *ctx.last_term_size.lock().unwrap();
     // Resolve the optional SSH jump host now (on the UI thread, where the store
@@ -46,7 +49,7 @@ pub(crate) fn start_session_in_tab(tab_id: &str, session: Session, ctx: &Connect
             if let Ok(route) = ctx.route.lock() {
                 route
                     .sink
-                    .deliver(tab_id, vec![SessionEvent::Closed(error.to_string())]);
+                    .deliver_for_generation(tab_id, monitor_generation, vec![SessionEvent::Closed(error.to_string())]);
             }
             return;
         }
@@ -181,7 +184,7 @@ pub(crate) fn start_session_in_tab(tab_id: &str, session: Session, ctx: &Connect
                     if let Some(h) = crate::app::term_buf(&rt.bufs, &tab_id_pump) {
                         h.lock().unwrap().release_scrollback();
                     }
-                    rt.sink.deliver(&tab_id_pump, vec![closed]);
+                    rt.sink.deliver_for_generation(&tab_id_pump, monitor_generation, vec![closed]);
                     break;
                 }
 
@@ -313,7 +316,7 @@ pub(crate) fn start_session_in_tab(tab_id: &str, session: Session, ctx: &Connect
                     continue;
                 }
 
-                rt.sink.deliver(&tab_id_pump, ui_only);
+                rt.sink.deliver_for_generation(&tab_id_pump, monitor_generation, ui_only);
             }
         });
     }
@@ -344,7 +347,7 @@ pub(crate) fn start_session_in_tab(tab_id: &str, session: Session, ctx: &Connect
                 let Ok(rt_s) = route_sftp.lock().map(|g| g.clone()) else {
                     continue;
                 };
-                rt_s.sink.deliver(&tab_id_sftp, ui_batch);
+                rt_s.sink.deliver_for_generation(&tab_id_sftp, monitor_generation, ui_batch);
             }
         });
     }
@@ -371,4 +374,5 @@ mod tests {
         session.kind = SessionKind::Telnet;
         assert!(!should_start_sftp(&session));
     }
+
 }

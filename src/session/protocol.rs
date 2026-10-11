@@ -18,6 +18,18 @@
 //! and from `crate::app::core` (the tab route), which is where the first session
 //! implementation kept them. Nothing here behaves differently for the move.
 
+/// Availability of the lightweight resource probe. No remote error text is stored.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ResourceMonitorState {
+    #[default]
+    Waiting,
+    Available,
+    Unavailable,
+    Stale,
+    Paused,
+    Unsupported,
+}
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -113,6 +125,8 @@ pub enum SessionEvent {
     /// Remote machine resource sample (from the monitor channel).
     /// Memory/swap are in KiB (as reported by /proc/meminfo).
     ResourceStats {
+        /// CPU needs two valid counter samples; a first baseline is not measured 0%.
+        cpu_sampled: bool,
         cpu_percent: f32,
         mem_used_kib: u64,
         mem_total_kib: u64,
@@ -130,6 +144,11 @@ pub enum SessionEvent {
         /// Detailed data is present only for the separately delayed one-shot
         /// system-information probe; lightweight resource samples leave it None.
         sys: Option<SystemDetails>,
+    },
+
+    /// Monitor lifecycle is independent of the interactive shell connection.
+    ResourceMonitorStatus {
+        state: ResourceMonitorState,
     },
 
     /// Effective user and top-process snapshot from the dedicated lightweight

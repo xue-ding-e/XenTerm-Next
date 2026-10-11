@@ -1808,6 +1808,9 @@ async fn run_session(
         .pending()
         .map(|kind| auxiliary_started_at + kind.delay());
     let mut resource_monitoring = true;
+    if session.disable_shell_integration {
+        send_monitor_state(&events, crate::session::protocol::ResourceMonitorState::Unsupported);
+    }
     let mut first_terminal_output = true;
     // Local (-L) and dynamic (-D) listen client-side; their tasks are aborted
     // on session exit.
@@ -1855,7 +1858,16 @@ async fn run_session(
                     let auxiliary_available = auxiliary_channel.is_some();
 
                     match kind {
-                        AuxiliaryChannelKind::Resources => mon_channel = auxiliary_channel,
+                        AuxiliaryChannelKind::Resources => {
+                            mon_channel = auxiliary_channel;
+                            send_monitor_state(&events, if !resource_monitoring {
+                                crate::session::protocol::ResourceMonitorState::Paused
+                            } else if auxiliary_available {
+                                crate::session::protocol::ResourceMonitorState::Waiting
+                            } else {
+                                crate::session::protocol::ResourceMonitorState::Unavailable
+                            });
+                        },
                         AuxiliaryChannelKind::Processes => proc_channel = auxiliary_channel,
                         AuxiliaryChannelKind::SystemInfo => sys_channel = auxiliary_channel,
                     }
@@ -1893,6 +1905,11 @@ async fn run_session(
                             continue;
                         }
                         resource_monitoring = enabled;
+                        send_monitor_state(&events, if enabled {
+                            crate::session::protocol::ResourceMonitorState::Waiting
+                        } else {
+                            crate::session::protocol::ResourceMonitorState::Paused
+                        });
                         if !enabled {
                             if let Some(monitor) = mon_channel.take() {
                                 let _ = monitor.close().await;
@@ -1918,6 +1935,9 @@ async fn run_session(
                                     }
                                 }
                                 Err(error) => tracing::warn!("process monitor resume failed: {error}"),
+                            }
+                            if mon_channel.is_none() {
+                                send_monitor_state(&events, crate::session::protocol::ResourceMonitorState::Unavailable);
                             }
                             prev_cpu = None;
                             prev_net.clear();
@@ -2236,6 +2256,8 @@ async fn run_session(
                                 &mut prev_net_at,
                             ) {
                                 let _ = events.send(stats);
+                            } else {
+                                send_monitor_state(&events, crate::session::protocol::ResourceMonitorState::Unavailable);
                             }
                         }
                         // Bound the leftover (incomplete) tail: a server that
@@ -2245,10 +2267,12 @@ async fn run_session(
                         const MON_BUF_CAP: usize = 1 << 20;
                         if mon_buf.len() > MON_BUF_CAP {
                             mon_buf.clear();
+                            send_monitor_state(&events, crate::session::protocol::ResourceMonitorState::Unavailable);
                         }
                     }
-                    Some(ChannelMsg::Close) | None => {
+                    Some(ChannelMsg::Close | ChannelMsg::ExitStatus { .. } | ChannelMsg::ExitSignal { .. }) | None => {
                         mon_channel = None;
+                        send_monitor_state(&events, crate::session::protocol::ResourceMonitorState::Unavailable);
                     }
                     _ => {}
                 }
@@ -2372,12 +2396,22 @@ fn parse_process_block(block: &str) -> (String, Vec<ProcInfo>) {
     (current_user, procs)
 }
 
+/// Emit a bounded lifecycle signal without exposing remote output or error text.
+fn send_monitor_state(
+    events: &tokio::sync::mpsc::UnboundedSender<SessionEvent>,
+    state: crate::session::protocol::ResourceMonitorState,
+) {
+    let _ = events.send(SessionEvent::ResourceMonitorStatus {
+        state,
+    });
+}
+
 /// Parse one monitor sample (a block of `/proc/stat` cpu line + `/proc/meminfo`
 /// fields) into a [`SessionEvent::ResourceStats`].
 ///
 /// CPU usage needs two consecutive `/proc/stat` snapshots; `prev` carries the
 /// previous (total, idle) jiffies across calls.  The first sample therefore
-/// reports 0% (no baseline yet).
+/// carries `cpu_sampled = false` (no baseline yet), rather than a measured 0%.
 fn parse_monitor_block(
     block: &str,
     prev: &mut Option<(u64, u64)>,
@@ -2388,7 +2422,7 @@ fn parse_monitor_block(
     let mut cpu_idle = 0u64;
     let mut have_cpu = false;
     let mut mem_total = 0u64;
-    let mut mem_avail = 0u64;
+    let mut mem_avail = None;
     let mut mem_buffers = 0u64;
     let mut mem_cached = 0u64;
     let mut swap_total = 0u64;
@@ -2480,8 +2514,9 @@ fn parse_monitor_block(
         if let Some(rest) = line.strip_prefix("cpu ") {
             let nums: Vec<u64> = rest
                 .split_whitespace()
-                .filter_map(|x| x.parse().ok())
-                .collect();
+                .map(str::parse::<u64>)
+                .collect::<Result<_, _>>()
+                .unwrap_or_default();
             // user nice system idle iowait irq softirq steal ...
             if nums.len() >= 4 {
                 // Saturating arithmetic: a server can send arbitrary jiffy
@@ -2494,7 +2529,7 @@ fn parse_monitor_block(
         } else if let Some(v) = line.strip_prefix("MemTotal:") {
             mem_total = parse_meminfo_kib(v);
         } else if let Some(v) = line.strip_prefix("MemAvailable:") {
-            mem_avail = parse_meminfo_kib(v);
+            mem_avail = v.split_whitespace().next().and_then(|value| value.parse::<u64>().ok());
         } else if let Some(v) = line.strip_prefix("Buffers:") {
             mem_buffers = parse_meminfo_kib(v);
         } else if let Some(v) = line.strip_prefix("Cached:") {
@@ -2509,6 +2544,15 @@ fn parse_monitor_block(
             }
         }
     }
+
+    // Validate memory before changing counter baselines: malformed blocks are not samples.
+    let valid_memory = mem_avail.filter(|available| mem_total > 0 && *available <= mem_total);
+    if valid_memory.is_none() && sys_kv.is_empty() {
+        return None;
+    }
+    // SYS_CMD also reports OS/CPU information. Keep those independent details
+    // when memory is unavailable, but never manufacture memory measurements.
+    let mem_avail = valid_memory.unwrap_or(0);
 
     // Convert raw byte counters into per-second rates using the previous sample.
     let now = std::time::Instant::now();
@@ -2534,12 +2578,14 @@ fn parse_monitor_block(
         net.sort_by(|a, b| b.1.saturating_add(b.2).cmp(&a.1.saturating_add(a.2)));
     }
 
+    let mut cpu_sampled = false;
     let cpu_percent = if have_cpu {
         let result = match *prev {
             Some((ptotal, pidle)) => {
                 let dt = cpu_total.saturating_sub(ptotal);
                 let di = cpu_idle.saturating_sub(pidle);
-                if dt > 0 {
+                if dt > 0 && cpu_total >= ptotal && cpu_idle >= pidle && di <= dt {
+                    cpu_sampled = true;
                     (1.0 - di as f32 / dt as f32).clamp(0.0, 1.0)
                 } else {
                     0.0
@@ -2550,16 +2596,12 @@ fn parse_monitor_block(
         *prev = Some((cpu_total, cpu_idle));
         result
     } else {
+        *prev = None;
         0.0
     };
 
-    // Need at least memory numbers to be a useful sample.
-    if mem_total == 0 {
-        return None;
-    }
-
     let sys = (!sys_kv.is_empty()).then(|| {
-        build_system_details(
+        let mut details = build_system_details(
             &sys_kv,
             &cpu_nums,
             mem_total,
@@ -2570,10 +2612,15 @@ fn parse_monitor_block(
             swap_free,
             &net_counters,
             &disks,
-        )
+        );
+        if valid_memory.is_none() {
+            details.memory.clear();
+        }
+        details
     });
 
     Some(SessionEvent::ResourceStats {
+        cpu_sampled,
         cpu_percent,
         mem_used_kib: mem_total.saturating_sub(mem_avail),
         mem_total_kib: mem_total,
@@ -3411,7 +3458,7 @@ mod monitor_hardening_tests {
         let mut prev = None;
         let mut prev_net = HashMap::new();
         let mut at = Instant::now();
-        // Must not panic; with no baseline the first sample reports 0% CPU.
+        // Must not panic; with no baseline the first sample has no measured CPU rate.
         assert!(parse_monitor_block(&block, &mut prev, &mut prev_net, &mut at).is_some());
     }
 
@@ -3478,6 +3525,211 @@ mod monitor_hardening_tests {
                     .any(|(_, value)| value == "Debian GNU/Linux 12"));
             }
             other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    // Minimal field rows preserved from three complete samples emitted by the
+    // shipped MON_CMD against this cloud computer's local Linux /proc files.
+    // This is real command/parser evidence, not an SSH transport integration test.
+    // Mount paths and other host-specific details are deliberately omitted.
+    const REAL_LOCAL_LINUX_RESOURCE_SAMPLES: [&str; 3] = [
+        concat!(
+            "cpu  4129601 28 388841 26118688 6920 0 107290 4306077 0 0\n",
+            "MemTotal:       10206504 kB\n",
+            "MemAvailable:    7960808 kB\n",
+            "Buffers:           90044 kB\n",
+            "Cached:          4928884 kB\n",
+            "SwapTotal:             0 kB\n",
+            "SwapFree:              0 kB\n",
+            "__DF__\n",
+        ),
+        concat!(
+            "cpu  4129826 28 388857 26120168 6920 0 107295 4306206 0 0\n",
+            "MemTotal:       10206504 kB\n",
+            "MemAvailable:    7971064 kB\n",
+            "Buffers:           90044 kB\n",
+            "Cached:          4928884 kB\n",
+            "SwapTotal:             0 kB\n",
+            "SwapFree:              0 kB\n",
+            "__DF__\n",
+        ),
+        concat!(
+            "cpu  4129996 28 388870 26121716 6920 0 107299 4306326 0 0\n",
+            "MemTotal:       10206504 kB\n",
+            "MemAvailable:    7969956 kB\n",
+            "Buffers:           90044 kB\n",
+            "Cached:          4928884 kB\n",
+            "SwapTotal:             0 kB\n",
+            "SwapFree:              0 kB\n",
+            "__DF__\n",
+        ),
+    ];
+
+    #[test]
+    fn real_local_linux_resource_probe_parses_three_samples() {
+        let mut prev = None;
+        let mut prev_net = HashMap::new();
+        let mut at = Instant::now();
+        let expected_used = [2_245_696, 2_235_440, 2_236_548];
+        // The first snapshot establishes a baseline, not measured CPU usage.
+        let expected_cpu = [None, Some(0.202156334_f32), Some(0.165498652_f32)];
+        let expected_counters = [
+            (35_057_445, 26_125_608),
+            (35_059_300, 26_127_088),
+            (35_061_155, 26_128_636),
+        ];
+        for (index, block) in REAL_LOCAL_LINUX_RESOURCE_SAMPLES.iter().enumerate() {
+            let event = parse_monitor_block(block, &mut prev, &mut prev_net, &mut at)
+                .expect("captured local Linux resource sample must parse");
+            match event {
+                super::SessionEvent::ResourceStats {
+                    cpu_percent,
+                    cpu_sampled,
+                    mem_used_kib,
+                    mem_total_kib,
+                    swap_used_kib,
+                    swap_total_kib,
+                    sys,
+                    ..
+                } => {
+                    assert_eq!(cpu_sampled, index > 0, "a first counter is a baseline, not measured zero");
+                    assert_eq!(mem_total_kib, 10_206_504, "sample {index}");
+                    assert_eq!(mem_used_kib, expected_used[index], "sample {index}");
+                    assert_eq!(swap_total_kib, 0, "the captured host has no swap");
+                    assert_eq!(swap_used_kib, 0, "zero swap is a real parsed value");
+                    assert!(sys.is_none(), "MON_CMD does not carry system details");
+                    if let Some(expected) = expected_cpu[index] {
+                        assert!(
+                            (cpu_percent - expected).abs() < 0.000001,
+                            "sample {index}: expected {expected}, got {cpu_percent}"
+                        );
+                    }
+                }
+                other => panic!("unexpected event: {other:?}"),
+            }
+            assert_eq!(prev, Some(expected_counters[index]), "sample {index}");
+        }
+    }
+
+    #[test]
+    fn resource_probe_preserves_measured_zero_after_idle_only_delta() {
+        // Construct a controlled all-idle delta from a captured CPU row. A
+        // measured 0% after two snapshots must not become missing/unavailable.
+        let baseline = REAL_LOCAL_LINUX_RESOURCE_SAMPLES[0]
+            .replace("MemAvailable:    7960808 kB", "MemAvailable:   10206504 kB");
+        let idle_sample = baseline.replace("26118688", "26118788");
+        let mut prev = None;
+        let mut prev_net = HashMap::new();
+        let mut at = Instant::now();
+        assert!(parse_monitor_block(&baseline, &mut prev, &mut prev_net, &mut at).is_some());
+        let event = parse_monitor_block(&idle_sample, &mut prev, &mut prev_net, &mut at)
+            .expect("zero CPU/RAM/swap usage is a valid sample");
+        match event {
+            super::SessionEvent::ResourceStats {
+                cpu_percent,
+                mem_used_kib,
+                mem_total_kib,
+                swap_used_kib,
+                swap_total_kib,
+                ..
+            } => {
+                assert_eq!(cpu_percent, 0.0);
+                assert_eq!(mem_used_kib, 0);
+                assert_eq!(mem_total_kib, 10_206_504);
+                assert_eq!(swap_used_kib, 0);
+                assert_eq!(swap_total_kib, 0);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resource_probe_rejects_missing_memory_availability() {
+        let block = "cpu 1 2 3 4\nMemTotal: 10206504 kB\n__DF__\n";
+        let mut prev = None;
+        let mut prev_net = HashMap::new();
+        let mut at = Instant::now();
+        assert!(
+            parse_monitor_block(block, &mut prev, &mut prev_net, &mut at).is_none(),
+            "missing MemAvailable must not fabricate 100% memory usage"
+        );
+    }
+
+    #[test]
+    fn resource_probe_rejects_malformed_memory_availability() {
+        let block =
+            "cpu 1 2 3 4\nMemTotal: 10206504 kB\nMemAvailable: invalid kB\n__DF__\n";
+        let mut prev = None;
+        let mut prev_net = HashMap::new();
+        let mut at = Instant::now();
+        assert!(
+            parse_monitor_block(block, &mut prev, &mut prev_net, &mut at).is_none(),
+            "malformed MemAvailable must not be treated as a real zero"
+        );
+    }
+
+    #[test]
+    fn resource_probe_rejects_missing_or_malformed_memory_total() {
+        for block in [
+            "",
+            "awk: cannot open /proc/meminfo\n__DF__\n",
+            "cpu 1 2 3 4\nMemAvailable: 500 kB\n",
+            "cpu 1 2 3 4\nMemTotal: invalid kB\nMemAvailable: 500 kB\n",
+            "cpu 1 2 3 4\nMemTotal: 0 kB\nMemAvailable: 0 kB\n",
+        ] {
+            let mut prev = None;
+            let mut prev_net = HashMap::new();
+            let mut at = Instant::now();
+            assert!(
+                parse_monitor_block(block, &mut prev, &mut prev_net, &mut at).is_none(),
+                "invalid resource sample must not become zero-valued stats: {block:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn resource_probe_missing_or_backward_cpu_is_not_measured_zero() {
+        let mut prev = Some((100, 80));
+        let mut net = HashMap::new();
+        let mut at = Instant::now();
+        for cpu in ["cpu 1 bad 2 3 4", "cpu 1 2 3 4", ""] {
+            let block = format!("{cpu}\nMemTotal: 1000 kB\nMemAvailable: 0 kB");
+            match parse_monitor_block(&block, &mut prev, &mut net, &mut at).unwrap() {
+                super::SessionEvent::ResourceStats { cpu_sampled, mem_used_kib, .. } => {
+                    assert!(!cpu_sampled);
+                    assert_eq!(mem_used_kib, 1000, "valid zero availability really is full RAM");
+                }
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn resource_probe_rejected_memory_does_not_advance_counter_baselines() {
+        let mut prev = Some((100, 80));
+        let mut net = HashMap::from([("eth0".to_string(), (7, 9))]);
+        let mut at = Instant::now();
+        let before_at = at;
+        assert!(parse_monitor_block("cpu 30 0 20 150\nMemTotal: 1000 kB", &mut prev, &mut net, &mut at).is_none());
+        assert_eq!(prev, Some((100, 80)));
+        assert_eq!(net["eth0"], (7, 9));
+        assert_eq!(at, before_at);
+    }
+
+    #[test]
+    fn resource_probe_missing_memory_does_not_hide_independent_system_details() {
+        let mut prev = None;
+        let mut net = HashMap::new();
+        let mut at = Instant::now();
+        let block = "MemTotal: 1000 kB\n__DF__\n__SYS__\nOS=Synthetic Linux\nCPU_MODEL=Synthetic CPU\n";
+        let event = parse_monitor_block(block, &mut prev, &mut net, &mut at).unwrap();
+        match event {
+            super::SessionEvent::ResourceStats { sys: Some(details), .. } => {
+                assert!(details.overview.iter().any(|(_, value)| value == "Synthetic Linux"));
+                assert!(details.cpu_info.iter().any(|(_, value)| value == "Synthetic CPU"));
+                assert!(details.memory.is_empty(), "missing available RAM must not invent 100% usage");
+            }
+            other => panic!("unexpected {other:?}"),
         }
     }
 

@@ -100,6 +100,9 @@ struct Resources {
     /// the same reason: `sys` is filled by a remote probe and nothing else.
     system_info_available: bool,
     cpu: f32,
+    cpu_available: bool,
+    resources_available: bool,
+    monitor_text: SharedString,
     mem: f32,
     swap: f32,
     mem_detail: SharedString,
@@ -136,10 +139,13 @@ impl Resources {
             proc_available: false,
             system_info_available: false,
             cpu: 0.0,
+            cpu_available: false,
+            resources_available: false,
+            monitor_text: crate::i18n::t("未采集", "Not sampled").into(),
             mem: 0.0,
             swap: 0.0,
-            mem_detail: SharedString::default(),
-            swap_detail: SharedString::default(),
+            mem_detail: "--".into(),
+            swap_detail: "--".into(),
             top_up: SharedString::default(),
             top_down: SharedString::default(),
             top_history: vec![0.0; NET_HISTORY_LEN],
@@ -415,6 +421,8 @@ impl SidebarView {
 
         let show_local = |view: &mut Resources| {
             view.title = crate::i18n::t("本机资源", "Local resources").into();
+            view.resources_available = snapshot.mem_total_mib > 0;
+            view.cpu_available = view.resources_available;
             view.cpu = snapshot.cpu_percent;
             view.mem = snapshot.mem_percent;
             view.swap = snapshot.swap_percent;
@@ -448,6 +456,22 @@ impl SidebarView {
                 view.system_info_available = true;
                 view.title = crate::i18n::t("服务器资源", "Server resources").into();
                 view.top_is_remote = true;
+                let monitor = status.resource_state_at(std::time::Instant::now());
+                use crate::session::protocol::ResourceMonitorState as State;
+                view.monitor_text = match monitor {
+                    State::Waiting => crate::i18n::t("未采集", "Waiting for sample"),
+                    State::Available => "",
+                    State::Unavailable => crate::i18n::t("采集不可用", "Monitoring unavailable"),
+                    State::Stale => crate::i18n::t("数据已过期", "Sample is stale"),
+                    State::Paused => crate::i18n::t("采集已暂停", "Monitoring paused"),
+                    State::Unsupported => crate::i18n::t("不支持采集", "Monitoring unsupported"),
+                }.into();
+                view.resources_available = monitor == State::Available && status.mem_total_kib > 0;
+                view.cpu_available = view.resources_available && status.cpu_sampled;
+                view.top_waiting = !view.resources_available || status.net.is_empty();
+                if !view.resources_available {
+                    return view;
+                }
                 view.cpu = status.cpu;
                 view.mem = fraction(status.mem_used_kib, status.mem_total_kib);
                 view.swap = fraction(status.swap_used_kib, status.swap_total_kib);
@@ -459,6 +483,9 @@ impl SidebarView {
                 view.top_up = format_bytes_per_sec(tx).into();
                 view.top_down = format_bytes_per_sec(rx).into();
                 view.top_history = crate::resource::normalized_history(&status.net_hist);
+                if view.top_waiting {
+                    view.monitor_text = crate::i18n::t("未采集", "Waiting for sample").into();
+                }
                 view.show_selector = !status.net.is_empty();
                 view.selected = name.into();
                 view.ifaces = status
@@ -749,6 +776,7 @@ impl SidebarView {
                 "sidebar-cpu",
                 SharedString::from("CPU"),
                 shown.cpu,
+                shown.cpu_available,
                 SharedString::default(),
                 // The theme's chart palette rather than `primary`: these three bars are a
                 // small data visualisation, and `primary` is the theme's *interactive*
@@ -761,6 +789,7 @@ impl SidebarView {
                 "sidebar-mem",
                 crate::i18n::t("内存", "Memory").into(),
                 shown.mem,
+                shown.resources_available,
                 shown.mem_detail,
                 theme.success,
                 theme,
@@ -769,6 +798,7 @@ impl SidebarView {
                 "sidebar-swap",
                 crate::i18n::t("交换", "Swap").into(),
                 shown.swap,
+                shown.resources_available,
                 shown.swap_detail,
                 theme.warning,
                 theme,
@@ -804,7 +834,7 @@ impl SidebarView {
                             .justify_center()
                             .text_xs()
                             .text_color(theme.muted_foreground)
-                            .child(crate::i18n::t("暂无远程数据", "No remote data yet")),
+                            .child(shown.monitor_text.clone()),
                     )
                 } else {
                     this.child(net_graph(
@@ -1053,6 +1083,7 @@ fn stat_row(
     id: &'static str,
     label: SharedString,
     percent: f32,
+    available: bool,
     detail: SharedString,
     color: Hsla,
     theme: &Theme,
@@ -1103,7 +1134,7 @@ fn stat_row(
                 .justify_end()
                 .text_xs()
                 .text_color(theme.muted_foreground)
-                .child(SharedString::from(format!("{:.0}%", percent * 100.0))),
+                .child(SharedString::from(if available { format!("{:.0}%", percent * 100.0) } else { "--".to_string() })),
         )
         .child(
             // And wide enough for a used/total figure at its longest: `4.7G/31.6G`. The
@@ -1325,3 +1356,7 @@ mod tests {
         assert_eq!(conn_state(status.state), 0, "grey while nothing is known");
     }
 }
+
+#[cfg(test)]
+#[path = "sidebar_resource_tests.rs"]
+mod resource_tests;

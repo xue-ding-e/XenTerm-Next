@@ -205,6 +205,18 @@ impl SessionState {
                     user: session.user.clone(),
                     session_id: session.id.clone(),
                     state: 0,
+                    monitor_generation: {
+                        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+                        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    },
+                    monitor_state: if session.kind != crate::config::SessionKind::Ssh || session.disable_shell_integration {
+                        crate::session::protocol::ResourceMonitorState::Unsupported
+                    } else if !monitoring {
+                        crate::session::protocol::ResourceMonitorState::Paused
+                    } else {
+                        crate::session::protocol::ResourceMonitorState::Waiting
+                    },
+                    monitor_started_at: Some(std::time::Instant::now()),
                     is_local: session.kind == crate::config::SessionKind::Local,
                     ..Default::default()
                 },
@@ -443,4 +455,42 @@ mod tests {
             "a sibling tab's status is not the closed tab's to take"
         );
     }
+    #[test]
+    fn resource_monitor_reconnect_gets_a_fresh_generation_and_empty_sample() {
+        use crate::session::protocol::ResourceMonitorState as State;
+        let runtime = Arc::new(tokio::runtime::Runtime::new().unwrap());
+        let state = state_with_seeded_tab(&runtime);
+        let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let sink = state.sink_for(sender);
+        let mut session = crate::config::Session::new_empty();
+        session.kind = crate::config::SessionKind::Ssh;
+        session.jump_session_ids = vec!["missing-resource-test-hop".into()];
+        // Invalid explicit route resolution prevents any transport/network start.
+        state.connect("tab-1", session.clone(), sink.clone(), true);
+        let first_generation = state.statuses.lock().unwrap()["tab-1"].monitor_generation;
+        {
+            let mut statuses = state.statuses.lock().unwrap();
+            let status = statuses.get_mut("tab-1").unwrap();
+            status.monitor_state = State::Available;
+            status.sampled_at = Some(std::time::Instant::now());
+            status.cpu_sampled = true;
+            status.mem_total_kib = 4096;
+        }
+        state.connect("tab-1", session.clone(), sink.clone(), true);
+        {
+            let statuses = state.statuses.lock().unwrap();
+            let status = &statuses["tab-1"];
+            assert_ne!(first_generation, status.monitor_generation);
+            assert_eq!(status.monitor_state, State::Waiting);
+            assert!(status.sampled_at.is_none());
+            assert!(!status.cpu_sampled);
+            assert_eq!(status.mem_total_kib, 0);
+        }
+        state.connect("tab-1", session.clone(), sink.clone(), false);
+        assert_eq!(state.statuses.lock().unwrap()["tab-1"].monitor_state, State::Paused);
+        session.disable_shell_integration = true;
+        state.connect("tab-1", session, sink, true);
+        assert_eq!(state.statuses.lock().unwrap()["tab-1"].monitor_state, State::Unsupported);
+    }
+
 }

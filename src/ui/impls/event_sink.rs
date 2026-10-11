@@ -29,6 +29,7 @@ pub(crate) enum UiMessage {
     /// Events to apply to one tab.
     Events {
         tab_id: String,
+        generation: Option<u64>,
         events: Vec<SessionEvent>,
     },
     /// A tab's screen needs repainting, and its gate is waiting to be settled.
@@ -77,8 +78,19 @@ impl EventSink for GpuiEventSink {
         // waiting producer, because that is where a ticket exists to wake.
         let _ = self.ui.send(UiMessage::Events {
             tab_id: tab_id.to_string(),
+            generation: None,
             events,
         });
+    }
+
+    fn deliver_for_generation(&self, tab_id: &str, generation: u64, events: Vec<SessionEvent>) {
+        if !events.is_empty() {
+            let _ = self.ui.send(UiMessage::Events {
+                tab_id: tab_id.to_string(),
+                generation: Some(generation),
+                events,
+            });
+        }
     }
 
     fn request_render(&self, tab_id: &str) -> Option<RenderTicket> {

@@ -1811,16 +1811,16 @@ async fn pump_messages(
                     gate.finish_flush(through, true);
                 }
             }),
-            UiMessage::Events { tab_id, events } => {
+            UiMessage::Events { tab_id, generation, events } => {
                 // A ready channel must not become one terminal snapshot per
                 // progress packet. Bound the local batch and preserve every
                 // event in order; a render request is a barrier, not an event
                 // that may be moved past a later batch.
-                let mut batches = vec![(tab_id, events)];
+                let mut batches = vec![(tab_id, generation, events)];
                 while processed < MAX_MESSAGES_PER_TURN {
                     match messages.try_recv() {
-                        Ok(UiMessage::Events { tab_id, events }) => {
-                            batches.push((tab_id, events));
+                        Ok(UiMessage::Events { tab_id, generation, events }) => {
+                            batches.push((tab_id, generation, events));
                             processed += 1;
                         }
                         Ok(render) => {
@@ -1832,7 +1832,15 @@ async fn pump_messages(
                 }
                 this.update(cx, |view, cx| {
                     let mut terminal_changed = false;
-                    for (tab_id, events) in batches {
+                    for (tab_id, generation, events) in batches {
+                        // Check on the UI thread, not just before enqueueing: an
+                        // older worker may finish while a replacement already runs.
+                        if let Some(generation) = generation {
+                            let current = statuses.lock().ok().and_then(|statuses| statuses.get(&tab_id).map(|status| status.monitor_generation));
+                            if current != Some(generation) {
+                                continue;
+                            }
+                        }
                         for event in events {
                             // Transfers have their own shared store and polled
                             // view. Their bytes do not change the terminal grid.
@@ -1934,6 +1942,9 @@ fn apply_event(
             if let Ok(mut statuses) = statuses.lock() {
                 if let Some(status) = statuses.get_mut(tab_id) {
                     status.state = 1;
+                    if status.monitor_state == crate::session::protocol::ResourceMonitorState::Waiting {
+                        status.monitor_started_at = Some(std::time::Instant::now());
+                    }
                 }
             }
             // The tab strip's dot lives on the page, which is cached between its
@@ -1954,6 +1965,9 @@ fn apply_event(
             if let Ok(mut statuses) = statuses.lock() {
                 if let Some(status) = statuses.get_mut(tab_id) {
                     status.state = 2;
+                    status.monitor_state = crate::session::protocol::ResourceMonitorState::Unavailable;
+                    status.sampled_at = None;
+                    status.cpu_sampled = false;
                 }
             }
             // As above: the strip's greyed dot waits on the page being told.
@@ -2135,6 +2149,7 @@ fn apply_event(
         // whether or not the panel is on screen, and a history that only advanced while
         // someone was looking would have holes in it.
         SessionEvent::ResourceStats {
+            cpu_sampled,
             cpu_percent,
             mem_used_kib,
             mem_total_kib,
@@ -2148,6 +2163,22 @@ fn apply_event(
         } => {
             if let Ok(mut statuses) = statuses.lock() {
                 if let Some(status) = statuses.get_mut(tab_id) {
+                    if status.state == 2 {
+                        return;
+                    }
+                    // The separate one-shot system probe is not a fresh streaming sample.
+                    // In particular its first CPU baseline must not overwrite a measured rate.
+                    if let Some(sys) = sys {
+                        status.sys = sys;
+                        return;
+                    }
+                    use crate::session::protocol::ResourceMonitorState as State;
+                    if matches!(status.monitor_state, State::Paused | State::Unsupported) || mem_total_kib == 0 {
+                        return;
+                    }
+                    status.monitor_state = State::Available;
+                    status.sampled_at = Some(std::time::Instant::now());
+                    status.cpu_sampled = cpu_sampled;
                     status.cpu = cpu_percent;
                     status.mem_used_kib = mem_used_kib;
                     status.mem_total_kib = mem_total_kib;
@@ -2155,9 +2186,6 @@ fn apply_event(
                     status.swap_total_kib = swap_total_kib;
                     status.net = net;
                     status.disks = disks;
-                    if let Some(sys) = sys {
-                        status.sys = sys;
-                    }
                     // A sample means the monitor channel is alive, which is a stronger
                     // statement than "the socket is up": it is what makes the tab's dot
                     // green even if the `Connected` event was missed.
@@ -2170,6 +2198,20 @@ fn apply_event(
                     // Append the selected interface's total rate to its own sparkline.
                     let (_, rx, tx) = crate::resource::selected_iface(status);
                     crate::resource::push_ring(&mut status.net_hist, (rx + tx) as f32);
+                }
+            }
+        }
+        SessionEvent::ResourceMonitorStatus { state } => {
+            if let Ok(mut statuses) = statuses.lock() {
+                if let Some(status) = statuses.get_mut(tab_id) {
+                    if status.state != 2 {
+                        status.monitor_state = state;
+                        if state == crate::session::protocol::ResourceMonitorState::Waiting {
+                            status.monitor_started_at = Some(std::time::Instant::now());
+                            status.sampled_at = None;
+                            status.cpu_sampled = false;
+                        }
+                    }
                 }
             }
         }
@@ -2827,3 +2869,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "view_resource_tests.rs"]
+mod resource_tests;

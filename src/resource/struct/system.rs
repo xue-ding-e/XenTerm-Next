@@ -131,6 +131,11 @@ pub(crate) struct TabStatus {
     /// True for built-in local shell tabs (system:*). Those should show the
     /// local machine's resource panel, not the (empty) remote stats fields.
     pub(crate) is_local: bool,
+    pub(crate) monitor_generation: u64,
+    pub(crate) monitor_state: crate::session::protocol::ResourceMonitorState,
+    pub(crate) monitor_started_at: Option<std::time::Instant>,
+    pub(crate) sampled_at: Option<std::time::Instant>,
+    pub(crate) cpu_sampled: bool,
     pub(crate) cpu: f32,
     pub(crate) mem_used_kib: u64,
     pub(crate) mem_total_kib: u64,
@@ -142,6 +147,20 @@ pub(crate) struct TabStatus {
     pub(crate) disks: Vec<(String, u64, u64)>,
     pub(crate) procs: Vec<ProcInfo>,
     pub(crate) sys: SystemDetails,
+}
+
+impl TabStatus {
+    /// Poll-based expiry also handles a silent probe that never produces its first sample.
+    /// The normal sampling period is two seconds; ten seconds allows startup and jitter.
+    pub(crate) fn resource_state_at(&self, now: std::time::Instant) -> crate::session::protocol::ResourceMonitorState {
+        use crate::session::protocol::ResourceMonitorState as State;
+        let expired = |at: Option<std::time::Instant>| at.is_some_and(|at| now.saturating_duration_since(at) >= std::time::Duration::from_secs(10));
+        match self.monitor_state {
+            State::Waiting if expired(self.monitor_started_at) => State::Unavailable,
+            State::Available if self.sampled_at.is_none() || expired(self.sampled_at) => State::Stale,
+            state => state,
+        }
+    }
 }
 
 pub(crate) type TabStatuses = Arc<Mutex<HashMap<String, TabStatus>>>;

@@ -37,6 +37,13 @@ pub trait EventSink: Send + Sync {
     /// a thread or a process boundary can do so without copying it.
     fn deliver(&self, tab_id: &str, events: Vec<SessionEvent>);
 
+    /// Deliver work from one connection attempt. Queued UI destinations must
+    /// retain this epoch until consumption so a late close/sample cannot replace
+    /// a reconnected tab. Non-queued sinks can use their normal delivery path.
+    fn deliver_for_generation(&self, tab_id: &str, _generation: u64, events: Vec<SessionEvent>) {
+        self.deliver(tab_id, events);
+    }
+
     /// Schedule a repaint of `tab_id`, returning a ticket the caller can block
     /// on to pace itself against the renderer.
     ///
