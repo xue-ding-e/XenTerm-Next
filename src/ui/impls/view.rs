@@ -48,6 +48,14 @@ const FIND_BAR_SLIDE: std::time::Duration = std::time::Duration::from_millis(160
 /// sidebar's own slide runs at.
 const FIND_BAR_TICK_MS: u64 = 16;
 
+/// The find bar lives on the terminal background, so it must use that palette
+/// even when the surrounding application is light. Keep the secondary text at
+/// readable contrast instead of inheriting the window's muted foreground.
+fn find_bar_colors(is_dark: bool) -> (Hsla, Hsla, Hsla) {
+    let foreground = rgba_to_hsla(terminal::terminal_foreground(is_dark));
+    (foreground, foreground.opacity(0.8), foreground.opacity(0.3))
+}
+
 /// The size the settings stepper owns, and what Ctrl+0 returns a session to.
 ///
 /// A constant here rather than read from the store because the view is built before the
@@ -1598,8 +1606,7 @@ impl Render for TerminalView {
                 // slot; with it, the grid sees one height change per tick instead of a
                 // jump that shoves the session.
                 let hits = self.snapshot.find_matches.len();
-                let border = cx.theme().border;
-                let muted = cx.theme().muted_foreground;
+                let (foreground, muted, border) = find_bar_colors(true);
                 let height = px(self.find_height);
                 this.child(
                     div()
@@ -1615,6 +1622,7 @@ impl Render for TerminalView {
                                 .py_1()
                                 .border_b_1()
                                 .border_color(border)
+                                .text_color(foreground)
                                 .text_sm()
                                 .child(
                                     gpui_kit::component::Icon::new(
@@ -2224,6 +2232,33 @@ impl PendingPrompt {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn find_bar_text_keeps_contrast_on_each_terminal_palette() {
+        fn luminance(rgb: [f64; 3]) -> f64 {
+            let linear = rgb.map(|v| {
+                let v = v / 255.0;
+                if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+            });
+            linear[0] * 0.2126 + linear[1] * 0.7152 + linear[2] * 0.0722
+        }
+        for is_dark in [true, false] {
+            let fg = terminal::terminal_foreground(is_dark);
+            let bg = terminal::terminal_background(is_dark);
+            let foreground = rgba_to_hsla(fg);
+            assert_eq!(find_bar_colors(is_dark),
+                (foreground, foreground.opacity(0.8), foreground.opacity(0.3)));
+            // The hit counter and search icon use the least opaque text color.
+            let background = [bg.r as f64, bg.g as f64, bg.b as f64];
+            let secondary = [fg.r as f64, fg.g as f64, fg.b as f64]
+                .into_iter().zip(background).map(|(fg, bg)| fg * 0.8 + bg * 0.2)
+                .collect::<Vec<_>>();
+            let a = luminance(background);
+            let b = luminance([secondary[0], secondary[1], secondary[2]]);
+            let contrast = (a.max(b) + 0.05) / (a.min(b) + 0.05);
+            assert!(contrast >= 4.5, "find text contrast is {contrast}, dark={is_dark}");
+        }
+    }
 
     /// What the PTY receives for a GPUI-named key.
     fn bytes_for(key: &str) -> Vec<u8> {
