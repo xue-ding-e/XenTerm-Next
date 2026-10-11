@@ -53,7 +53,6 @@ fn fixture(cx: &mut TestAppContext) -> (Entity<Shell>, &mut VisualTestContext) {
                 status_expiry: None,
                 quick_connect_pick: None,
                 _quick_connect_subscription: None,
-                _root_subscription: None,
             }
         });
         shell = Some(view.clone());

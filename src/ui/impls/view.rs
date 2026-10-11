@@ -18,7 +18,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use gpui_kit::{
-    component::{dialog::DialogButtonProps, h_flex, v_flex, ActiveTheme, Root, Sizable as _, Size,
+    component::{dialog::DialogButtonProps, h_flex, v_flex, ActiveTheme, WindowExt as _, Sizable as _, Size,
         spinner::Spinner},
     div,
     prelude::*,
@@ -966,79 +966,73 @@ impl TerminalView {
         let bytes = paste.bytes;
         let lines = paste.text.lines().count();
 
-        Root::update(window, cx, move |root, window, cx| {
-            root.open_dialog(
-                move |dialog, _window, cx| {
-                    let send = bytes.clone();
-                    let view = view.clone();
-                    dialog
-                        .title(crate::i18n::t("确认多行粘贴", "Confirm multi-line paste"))
-                        // Only the callbacks: a `Dialog` renders these, not its buttons,
-                        // so the visible ones are in the footer. See `super::dialogs`.
-                        .button_props(
-                            DialogButtonProps::default()
-                                .on_ok(move |_, _window, cx| {
-                                    let _ = view.update(cx, |view, cx| {
-                                        view.send_bytes(&send);
-                                        cx.notify();
-                                    });
-                                    true
-                                })
-                                // Cancelling sends nothing at all, which is the whole
-                                // point: a backdrop click must not accept a paste.
-                                .on_cancel(|_, _, _| true),
-                        )
+        window.open_dialog(cx, move |dialog, _window, cx| {
+            let send = bytes.clone();
+            let view = view.clone();
+            dialog
+                .title(crate::i18n::t("确认多行粘贴", "Confirm multi-line paste"))
+                // Only the callbacks: a `Dialog` renders these, not its buttons,
+                // so the visible ones are in the footer. See `super::dialogs`.
+                .button_props(
+                    DialogButtonProps::default()
+                        .on_ok(move |_, _window, cx| {
+                            let _ = view.update(cx, |view, cx| {
+                                view.send_bytes(&send);
+                                cx.notify();
+                            });
+                            true
+                        })
+                        // Cancelling sends nothing at all, which is the whole
+                        // point: a backdrop click must not accept a paste.
+                        .on_cancel(|_, _, _| true),
+                )
+                .child(
+                    v_flex()
+                        .gap_2()
+                        .max_w(px(720.))
+                        .child(div().text_sm().child(SharedString::from(format!(
+                            "{}{}",
+                            crate::i18n::t(
+                                "粘贴的内容包含换行,可能一次执行多条命令。",
+                                "The pasted text contains line breaks and may run \
+                                         several commands."
+                            ),
+                            if lines > 0 {
+                                format!(
+                                    " ({})",
+                                    match crate::i18n::t("行", "lines") {
+                                        "行" => format!("{lines} 行"),
+                                        other => format!("{lines} {other}"),
+                                    }
+                                )
+                            } else {
+                                String::new()
+                            },
+                        ))))
                         .child(
-                            v_flex()
-                                .gap_2()
-                                .max_w(px(720.))
-                                .child(div().text_sm().child(SharedString::from(format!(
-                                    "{}{}",
-                                    crate::i18n::t(
-                                        "粘贴的内容包含换行,可能一次执行多条命令。",
-                                        "The pasted text contains line breaks and may run \
-                                             several commands."
-                                    ),
-                                    if lines > 0 {
-                                        format!(
-                                            " ({})",
-                                            match crate::i18n::t("行", "lines") {
-                                                "行" => format!("{lines} 行"),
-                                                other => format!("{lines} {other}"),
-                                            }
-                                        )
-                                    } else {
-                                        String::new()
-                                    },
-                                ))))
-                                .child(
-                                    div()
-                                        .id("paste-preview")
-                                        .when(large, |this| this.h(px(360.)))
-                                        .when(!large, |this| this.max_h(px(200.)))
-                                        .w_full()
-                                        .overflow_y_scroll()
-                                        .p_2()
-                                        .rounded_md()
-                                        .border_1()
-                                        .border_color(cx.theme().border)
-                                        .bg(cx.theme().muted)
-                                        .font_family(cx.theme().mono_font_family.clone())
-                                        .text_xs()
-                                        .child(SharedString::from(shown.clone())),
-                                ),
-                        )
-                        // The action row: a plain `Dialog` draws no buttons of its own, so
-                        // without this the only way to answer is the keyboard.
-                        .footer(super::answer_footer(
-                            SharedString::from(crate::i18n::t("粘贴", "Paste")),
-                            false,
-                            SharedString::from(crate::i18n::t("取消", "Cancel")),
-                        ))
-                },
-                window,
-                cx,
-            );
+                            div()
+                                .id("paste-preview")
+                                .when(large, |this| this.h(px(360.)))
+                                .when(!large, |this| this.max_h(px(200.)))
+                                .w_full()
+                                .overflow_y_scroll()
+                                .p_2()
+                                .rounded_md()
+                                .border_1()
+                                .border_color(cx.theme().border)
+                                .bg(cx.theme().muted)
+                                .font_family(cx.theme().mono_font_family.clone())
+                                .text_xs()
+                                .child(SharedString::from(shown.clone())),
+                        ),
+                )
+                // The action row: a plain `Dialog` draws no buttons of its own, so
+                // without this the only way to answer is the keyboard.
+                .footer(super::answer_footer(
+                    SharedString::from(crate::i18n::t("粘贴", "Paste")),
+                    false,
+                    SharedString::from(crate::i18n::t("取消", "Cancel")),
+                ))
         });
     }
 

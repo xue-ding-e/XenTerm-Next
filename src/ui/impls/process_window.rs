@@ -35,12 +35,12 @@ use gpui_kit::{
         h_flex,
         input::{Input, InputState},
         menu::{ContextMenuExt, PopupMenuItem},
-        v_flex, ActiveTheme as _, Root,
+        v_flex, ActiveTheme as _, WindowExt as _,
     },
     div,
     prelude::*,
     px, relative, uniform_list, AnyElement, Context, Entity, IntoElement, ListSizingBehavior,
-    Render, SharedString, Subscription, Task, UniformListScrollHandle, WeakEntity, Window,
+    Render, SharedString, Task, UniformListScrollHandle, WeakEntity, Window,
 };
 
 use crate::config::Secret;
@@ -102,10 +102,6 @@ pub(crate) struct ProcessWindowView {
     busy: bool,
     /// The table's own poll, kept alive for the window's life.
     _poll: Task<()>,
-    /// Keeps this window repainting when the modal queue changes — a dialog closed by its
-    /// own Cancel button is `Root`'s notification and nobody else's. See
-    /// [`super::follow_root`].
-    _root_subscription: Option<Subscription>,
     /// The scroll position of the virtualized process table.
     list_scroll: UniformListScrollHandle,
 }
@@ -148,7 +144,6 @@ impl ProcessWindowView {
             pending: Rc::new(RefCell::new(None)),
             busy: false,
             _poll: poll,
-            _root_subscription: None,
             list_scroll: UniformListScrollHandle::new(),
         };
         view.rows = view.sample();
@@ -271,100 +266,91 @@ impl ProcessWindowView {
         let identity: SharedString = format!("PID {}  ·  {}", row.pid, row.user).into();
         let command: SharedString = row.command.clone().into();
 
-        Root::update(window, cx, move |root, window, cx| {
-            root.open_dialog(
-                move |dialog, _window, cx| {
-                    let weak = weak.clone();
-                    let hook_for_ok = hook.clone();
-                    let hook_for_cancel = hook.clone();
-                    let password_for_ok = password_for_ok.clone();
-                    let password_field = password_for_ok.clone();
-                    let row = row_for_ok.clone();
+        window.open_dialog(cx, move |dialog, _window, cx| {
+            let weak = weak.clone();
+            let hook_for_ok = hook.clone();
+            let hook_for_cancel = hook.clone();
+            let password_for_ok = password_for_ok.clone();
+            let password_field = password_for_ok.clone();
+            let row = row_for_ok.clone();
 
-                    let mut body = v_flex()
-                        .gap_2()
-                        .child(div().child(explanation.clone()))
-                        .child(
-                            div()
-                                .font_family(mono.clone())
-                                .text_sm()
-                                .child(identity.clone()),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .truncate()
-                                .child(command.clone()),
-                        );
-                    if let Some(field) = password_field.clone() {
-                        body = body.child(Input::new(&field));
-                    }
-                    // Why the last attempt did not go through, read from the cell the
-                    // refusal was written to — not from this view, because the dialog is
-                    // built during the view's own render and reading an entity that is
-                    // already being updated panics. The dialog is rebuilt every frame, so
-                    // this appears without reopening it.
-                    if let Some(refusal) = refusal.borrow().clone() {
-                        body = body
-                            .child(div().text_xs().text_color(cx.theme().danger).child(refusal));
-                    }
+            let mut body = v_flex()
+                .gap_2()
+                .child(div().child(explanation.clone()))
+                .child(
+                    div()
+                        .font_family(mono.clone())
+                        .text_sm()
+                        .child(identity.clone()),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .truncate()
+                        .child(command.clone()),
+                );
+            if let Some(field) = password_field.clone() {
+                body = body.child(Input::new(&field));
+            }
+            // Why the last attempt did not go through, read from the cell the
+            // refusal was written to — not from this view, because the dialog is
+            // built during the view's own render and reading an entity that is
+            // already being updated panics. The dialog is rebuilt every frame, so
+            // this appears without reopening it.
+            if let Some(refusal) = refusal.borrow().clone() {
+                body = body.child(div().text_xs().text_color(cx.theme().danger).child(refusal));
+            }
 
-                    dialog
-                        .title(title.clone())
-                        // Only the callbacks: the visible buttons are the footer below,
-                        // and the text/variant fields here are read by `AlertDialog`
-                        // alone.
-                        .button_props(
-                            DialogButtonProps::default()
-                                .on_ok(move |_, _window, cx| {
-                                    let typed = password_for_ok
-                                        .as_ref()
-                                        .map(|input| input.read(cx).value().to_string())
-                                        .unwrap_or_default();
-                                    if needs_root && typed.is_empty() {
-                                        // Left open, with the reason in it: a dialog that
-                                        // closed on an empty password would look like a
-                                        // kill that happened.
-                                        if let Some(view) = weak.upgrade() {
-                                            view.update(cx, |view, cx| {
-                                                view.refuse(crate::i18n::t(
-                                                    "请输入管理员(sudo)密码",
-                                                    "Enter the administrator (sudo) password",
-                                                ));
-                                                cx.notify();
-                                            });
-                                        }
-                                        return false;
-                                    }
-                                    // Taken before the kill, so a second confirmation
-                                    // cannot be opened over the first one's answer.
-                                    let _ = hook_for_ok.borrow_mut().take();
-                                    if let Some(view) = weak.upgrade() {
-                                        view.update(cx, |view, cx| {
-                                            view.terminate(row.clone(), typed, cx)
-                                        });
-                                    }
-                                    true
-                                })
-                                .on_cancel(move |_, _, _| {
-                                    let _ = hook_for_cancel.borrow_mut().take();
-                                    true
-                                }),
-                        )
-                        .child(body)
-                        // The buttons are the dialog's own `on_ok`/`on_cancel` in visible
-                        // form: see `super::dialogs` for why a `Dialog` needs a footer to
-                        // be answerable with the mouse at all.
-                        .footer(super::answer_footer(
-                            crate::i18n::t("结束进程", "Terminate").into(),
-                            true,
-                            crate::i18n::t("取消", "Cancel").into(),
-                        ))
-                },
-                window,
-                cx,
-            );
+            dialog
+                .title(title.clone())
+                // Only the callbacks: the visible buttons are the footer below,
+                // and the text/variant fields here are read by `AlertDialog`
+                // alone.
+                .button_props(
+                    DialogButtonProps::default()
+                        .on_ok(move |_, _window, cx| {
+                            let typed = password_for_ok
+                                .as_ref()
+                                .map(|input| input.read(cx).value().to_string())
+                                .unwrap_or_default();
+                            if needs_root && typed.is_empty() {
+                                // Left open, with the reason in it: a dialog that
+                                // closed on an empty password would look like a
+                                // kill that happened.
+                                if let Some(view) = weak.upgrade() {
+                                    view.update(cx, |view, cx| {
+                                        view.refuse(crate::i18n::t(
+                                            "请输入管理员(sudo)密码",
+                                            "Enter the administrator (sudo) password",
+                                        ));
+                                        cx.notify();
+                                    });
+                                }
+                                return false;
+                            }
+                            // Taken before the kill, so a second confirmation
+                            // cannot be opened over the first one's answer.
+                            let _ = hook_for_ok.borrow_mut().take();
+                            if let Some(view) = weak.upgrade() {
+                                view.update(cx, |view, cx| view.terminate(row.clone(), typed, cx));
+                            }
+                            true
+                        })
+                        .on_cancel(move |_, _, _| {
+                            let _ = hook_for_cancel.borrow_mut().take();
+                            true
+                        }),
+                )
+                .child(body)
+                // The buttons are the dialog's own `on_ok`/`on_cancel` in visible
+                // form: see `super::dialogs` for why a `Dialog` needs a footer to
+                // be answerable with the mouse at all.
+                .footer(super::answer_footer(
+                    crate::i18n::t("结束进程", "Terminate").into(),
+                    true,
+                    crate::i18n::t("取消", "Cancel").into(),
+                ))
         });
     }
 
@@ -517,12 +503,7 @@ impl Render for ProcessWindowView {
         .into_any_element();
         let status = self.status.clone();
         let empty = self.rows.is_empty();
-        // The dialog this window's confirmation opens lives in `Root`'s queue, and
-        // `Root` does not render that queue itself — the view inside it does.
-        if self._root_subscription.is_none() {
-            self._root_subscription = super::follow_root(window, cx);
-        }
-        let dialog_layer = Root::render_dialog_layer(window, cx);
+        // The enclosing Root hosts this window's confirmation dialog.
 
         v_flex()
             .size_full()
@@ -567,7 +548,6 @@ impl Render for ProcessWindowView {
                             .when(!empty, |this| this.child(rows)),
                     ),
             )
-            .children(dialog_layer)
             .into_any_element()
     }
 }

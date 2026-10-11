@@ -270,7 +270,6 @@ pub(crate) fn run() -> Result<()> {
                         status_expiry: None,
                         quick_connect_pick: None,
                         _quick_connect_subscription: None,
-                        _root_subscription: None,
                     };
                     // The approval poll owns no window and needs none: it only
                     // fills the queue, and render shows the dialogs.
@@ -461,11 +460,6 @@ pub(crate) struct Shell {
     /// The quick-connect palette's Confirm subscription, alive while the dialog
     /// is open. A dropped subscription is a list that renders and does nothing.
     _quick_connect_subscription: Option<Subscription>,
-    /// Keeps this window repainting when the modal queue changes.
-    ///
-    /// Taken on the first frame, when the window's root exists to be observed. See
-    /// [`super::follow_root`] for why the shell cannot mount the dialog layer without it.
-    _root_subscription: Option<Subscription>,
 }
 
 /// An overlay drawn over the whole window, as a dialog.
@@ -690,14 +684,7 @@ impl Render for Shell {
 
         let background = cx.theme().background;
 
-        // The dialog layer needs the extension trait in scope for `open_dialog` /
-        // `close_dialog`; the subscription is what makes this view repaint when the
-        // queue behind the layer changes.
-        if self._root_subscription.is_none() {
-            self._root_subscription = super::follow_root(window, cx);
-        }
-        let sheet_layer = gpui_kit::component::Root::render_sheet_layer(window, cx);
-        let dialog_layer = gpui_kit::component::Root::render_dialog_layer(window, cx);
+        // The enclosing Root hosts sheets and dialogs above this application body.
 
         let body_element = self.render_body(cx);
         let status_bar = self.render_status_bar(cx);
@@ -710,9 +697,6 @@ impl Render for Shell {
             .child(body_element)
             .children(self.persistence_warning.render(cx))
             .child(status_bar)
-            // Last, so a dialog covers the window.
-            .children(sheet_layer)
-            .children(dialog_layer)
     }
 }
 

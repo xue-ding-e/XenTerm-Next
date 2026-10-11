@@ -34,7 +34,7 @@ use gpui_kit::{
     component::{h_flex, v_flex, ActiveTheme as _},
     div,
     prelude::*,
-    px, AnyElement, Context, FontWeight, IntoElement, Render, SharedString, Subscription, Task,
+    px, AnyElement, Context, FontWeight, IntoElement, Render, SharedString, Task,
     Window,
 };
 
@@ -81,10 +81,6 @@ pub(crate) struct SystemInfoWindowView {
     reported: bool,
     /// The window's poll, kept alive for its life.
     _poll: Task<()>,
-    /// Keeps the window repainting when the modal queue changes — see
-    /// [`super::follow_root`]. Nothing here opens a dialog today; the subscription is
-    /// what stops that becoming a silent bug the day something does.
-    _root_subscription: Option<Subscription>,
 }
 
 impl SystemInfoWindowView {
@@ -117,7 +113,6 @@ impl SystemInfoWindowView {
             details: SystemDetails::default(),
             reported: false,
             _poll: poll,
-            _root_subscription: None,
         };
         let (fresh, reported) = view.sample();
         view.details = fresh;
@@ -296,13 +291,9 @@ impl SystemInfoWindowView {
 
 impl Render for SystemInfoWindowView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Built before the tree: the builder holds an immutable borrow of `cx` through
-        // `theme`, and the subscription needs it mutably.
+        // Root owns overlay presentation; this view renders only its resource cards.
         let theme = cx.theme();
         let background = theme.background;
-        if self._root_subscription.is_none() {
-            self._root_subscription = super::follow_root(window, cx);
-        }
         let cards = self.cards(cx);
 
         v_flex().size_full().bg(background).child(cards)

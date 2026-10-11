@@ -63,7 +63,6 @@ fn fixture_without_forced_focus(cx: &mut TestAppContext) -> (Entity<Shell>, &mut
                 status_expiry: None,
                 quick_connect_pick: None,
                 _quick_connect_subscription: None,
-                _root_subscription: None,
             }
         });
         shell = Some(view.clone());

@@ -1621,18 +1621,12 @@ mod tests {
         session
     }
 
-    struct EditorDialogHarness {
-        root_subscription: Option<gpui_kit::Subscription>,
-    }
+    struct EditorDialogHarness;
 
     impl Render for EditorDialogHarness {
-        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            if self.root_subscription.is_none() {
-                self.root_subscription = super::super::follow_root(window, cx);
-            }
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
             div()
                 .size_full()
-                .children(gpui_kit::component::Root::render_dialog_layer(window, cx))
         }
     }
 
@@ -1644,9 +1638,7 @@ mod tests {
         cx.update(gpui_kit::init);
         let fixture = StoreFixture::new();
         let (_, cx) = cx.add_window_view(|window, cx| {
-            let harness = cx.new(|_| EditorDialogHarness {
-                root_subscription: None,
-            });
+            let harness = cx.new(|_| EditorDialogHarness);
             Root::new(harness, window, cx)
         });
         for cancel_key in ["escape", "cmd-."] {

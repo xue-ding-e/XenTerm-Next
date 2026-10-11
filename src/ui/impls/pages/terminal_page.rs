@@ -2134,14 +2134,10 @@ mod close_focus_tests {
         page: Entity<TerminalPage>,
         foreign_input: Entity<InputState>,
         terminal_visible: bool,
-        _root_subscription: Option<Subscription>,
     }
 
     impl Render for Harness {
         fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            if self._root_subscription.is_none() {
-                self._root_subscription = crate::ui::follow_root(window, cx);
-            }
             div()
                 .size_full()
                 .flex()
@@ -2176,7 +2172,6 @@ mod close_focus_tests {
                     div().flex_1().child("Settings fixture").into_any_element()
                 })
                 .child(Input::new(&self.foreign_input))
-                .children(Root::render_dialog_layer(window, cx))
         }
     }
 
@@ -2252,7 +2247,6 @@ mod close_focus_tests {
                 page: page.clone(),
                 foreign_input: foreign_input.clone(),
                 terminal_visible,
-                _root_subscription: None,
             });
             *built_for_window.borrow_mut() = Some((page, foreign_input));
             Root::new(harness, window, cx)

@@ -14,7 +14,7 @@ use gpui_kit::{
     component::{
         dialog::DialogButtonProps,
         input::{Input, InputState},
-        v_flex, ActiveTheme as _, Root,
+        v_flex, ActiveTheme as _, WindowExt as _,
     },
     div,
     prelude::*,
@@ -76,50 +76,44 @@ fn present_host_key(window: &mut Window, cx: &mut App) {
     let title = prompt.title.clone();
     let message = prompt.message.clone();
     let confirm_label = prompt.confirm_label.clone();
-    Root::update(window, cx, move |root, window, cx| {
-        root.open_dialog(
-            move |dialog, _window, cx| {
-                dialog
-                    .title(SharedString::from(title.clone()))
-                    // Only the callbacks: a `Dialog` renders these, not its buttons, so
-                    // the visible ones are in the footer below. See `super::dialogs`.
-                    .button_props(
-                        DialogButtonProps::default()
-                            .on_ok(move |_, window, cx| {
-                                advance_host_key(window, cx, true);
-                                true
-                            })
-                            .on_cancel(move |_, window, cx| {
-                                advance_host_key(window, cx, false);
-                                true
-                            }),
-                    )
+    window.open_dialog(cx, move |dialog, _window, cx| {
+        dialog
+            .title(SharedString::from(title.clone()))
+            // Only the callbacks: a `Dialog` renders these, not its buttons, so
+            // the visible ones are in the footer below. See `super::dialogs`.
+            .button_props(
+                DialogButtonProps::default()
+                    .on_ok(move |_, window, cx| {
+                        advance_host_key(window, cx, true);
+                        true
+                    })
+                    .on_cancel(move |_, window, cx| {
+                        advance_host_key(window, cx, false);
+                        true
+                    }),
+            )
+            .child(
+                v_flex()
+                    .gap_2()
+                    .child(div().child(SharedString::from(message.clone())))
                     .child(
-                        v_flex()
-                            .gap_2()
-                            .child(div().child(SharedString::from(message.clone())))
-                            .child(
-                                div()
-                                    .p_2()
-                                    .rounded_md()
-                                    .bg(cx.theme().muted)
-                                    // A fingerprint is compared character by character
-                                    // against `ssh-keyscan`, so it wants the monospace
-                                    // family rather than the UI one.
-                                    .font_family(cx.theme().mono_font_family.clone())
-                                    .text_sm()
-                                    .child(SharedString::from(detail.clone())),
-                            ),
-                    )
-                    .footer(super::answer_footer(
-                        SharedString::from(confirm_label.clone()),
-                        prompt_changed,
-                        crate::i18n::t("取消", "Cancel").into(),
-                    ))
-            },
-            window,
-            cx,
-        );
+                        div()
+                            .p_2()
+                            .rounded_md()
+                            .bg(cx.theme().muted)
+                            // A fingerprint is compared character by character
+                            // against `ssh-keyscan`, so it wants the monospace
+                            // family rather than the UI one.
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .text_sm()
+                            .child(SharedString::from(detail.clone())),
+                    ),
+            )
+            .footer(super::answer_footer(
+                SharedString::from(confirm_label.clone()),
+                prompt_changed,
+                crate::i18n::t("取消", "Cancel").into(),
+            ))
     });
 }
 
@@ -184,61 +178,55 @@ fn present_credential(window: &mut Window, cx: &mut App) {
     let user_for_read = user_input.clone();
     let password_for_read = password_input.clone();
 
-    Root::update(window, cx, move |root, window, cx| {
-        let title = SharedString::from(crate::i18n::t("需要登录凭据", "Credentials required"));
-        let body = SharedString::from(format!(
-            "{} {host}",
-            crate::i18n::t("请输入以下主机的登录信息:", "Sign in to")
-        ));
-        let user_field = user_input.clone();
-        let password_field = password_input.clone();
-        root.open_dialog(
-            move |dialog, _window, _cx| {
-                // Cloned inside rather than moved: the build closure is `Fn`, so it may
-                // be called more than once and cannot take the entities with it.
-                let user_for_ok = user_for_read.clone();
-                let password_for_ok = password_for_read.clone();
-                dialog
-                    .title(title.clone())
-                    .button_props(
-                        DialogButtonProps::default()
-                            .on_ok(move |_, window, cx| {
-                                let user = user_for_ok.read(cx).value().to_string();
-                                // Read from the dialog's own state, which is why the
-                                // state lives in this closure rather than in a global: a
-                                // secret should be reachable by exactly the code about
-                                // to use it.
-                                let password = password_for_ok.read(cx).value().to_string();
-                                let reply: CredentialReply = (user, password, false);
-                                advance_credential(window, cx, Some(reply));
-                                true
-                            })
-                            .on_cancel(move |_, window, cx| {
-                                advance_credential(window, cx, None);
-                                true
-                            }),
-                    )
-                    .child(
-                        v_flex()
-                            .gap_2()
-                            .child(div().child(body.clone()))
-                            .when(need_user, |this| this.child(Input::new(&user_field)))
-                            .when(need_password, |this| {
-                                this.child(Input::new(&password_field))
-                            }),
-                    )
-                    // A `Dialog` renders its `button_props` callbacks and not its
-                    // buttons, so without this the prompt has no visible way to answer
-                    // it. See `super::dialogs`.
-                    .footer(super::answer_footer(
-                        crate::i18n::t("连接", "Connect").into(),
-                        false,
-                        crate::i18n::t("取消", "Cancel").into(),
-                    ))
-            },
-            window,
-            cx,
-        );
+    let title = SharedString::from(crate::i18n::t("需要登录凭据", "Credentials required"));
+    let body = SharedString::from(format!(
+        "{} {host}",
+        crate::i18n::t("请输入以下主机的登录信息:", "Sign in to")
+    ));
+    let user_field = user_input.clone();
+    let password_field = password_input.clone();
+    window.open_dialog(cx, move |dialog, _window, _cx| {
+        // Cloned inside rather than moved: the build closure is `Fn`, so it may
+        // be called more than once and cannot take the entities with it.
+        let user_for_ok = user_for_read.clone();
+        let password_for_ok = password_for_read.clone();
+        dialog
+            .title(title.clone())
+            .button_props(
+                DialogButtonProps::default()
+                    .on_ok(move |_, window, cx| {
+                        let user = user_for_ok.read(cx).value().to_string();
+                        // Read from the dialog's own state, which is why the
+                        // state lives in this closure rather than in a global: a
+                        // secret should be reachable by exactly the code about
+                        // to use it.
+                        let password = password_for_ok.read(cx).value().to_string();
+                        let reply: CredentialReply = (user, password, false);
+                        advance_credential(window, cx, Some(reply));
+                        true
+                    })
+                    .on_cancel(move |_, window, cx| {
+                        advance_credential(window, cx, None);
+                        true
+                    }),
+            )
+            .child(
+                v_flex()
+                    .gap_2()
+                    .child(div().child(body.clone()))
+                    .when(need_user, |this| this.child(Input::new(&user_field)))
+                    .when(need_password, |this| {
+                        this.child(Input::new(&password_field))
+                    }),
+            )
+            // A `Dialog` renders its `button_props` callbacks and not its
+            // buttons, so without this the prompt has no visible way to answer
+            // it. See `super::dialogs`.
+            .footer(super::answer_footer(
+                crate::i18n::t("连接", "Connect").into(),
+                false,
+                crate::i18n::t("取消", "Cancel").into(),
+            ))
     });
 }
 
@@ -288,45 +276,39 @@ fn present_mfa(window: &mut Window, cx: &mut App) {
     let prompt_text = prompt.prompt.clone();
     let answer_for_read = answer_input.clone();
 
-    Root::update(window, cx, move |root, window, cx| {
-        let title = SharedString::from(crate::i18n::t("需要验证码", "Verification required"));
-        let question = SharedString::from(format!("{host_text} — {prompt_text}"));
-        let field = answer_input.clone();
-        root.open_dialog(
-            move |dialog, _window, _cx| {
-                // Cloned inside because the build closure is `Fn` and may run again.
-                let answer_for_ok = answer_for_read.clone();
-                dialog
-                    .title(title.clone())
-                    .button_props(
-                        DialogButtonProps::default()
-                            .on_ok(move |_, window, cx| {
-                                let answer = answer_for_ok.read(cx).value().to_string();
-                                advance_mfa(window, cx, Some(answer));
-                                true
-                            })
-                            .on_cancel(move |_, window, cx| {
-                                advance_mfa(window, cx, None);
-                                true
-                            }),
-                    )
-                    .child(
-                        v_flex()
-                            .gap_2()
-                            .child(div().child(question.clone()))
-                            .child(Input::new(&field)),
-                    )
-                    // See `super::dialogs`: a `Dialog` shows its footer, not its
-                    // `button_props` buttons.
-                    .footer(super::answer_footer(
-                        crate::i18n::t("提交", "Submit").into(),
-                        false,
-                        crate::i18n::t("取消", "Cancel").into(),
-                    ))
-            },
-            window,
-            cx,
-        );
+    let title = SharedString::from(crate::i18n::t("需要验证码", "Verification required"));
+    let question = SharedString::from(format!("{host_text} — {prompt_text}"));
+    let field = answer_input.clone();
+    window.open_dialog(cx, move |dialog, _window, _cx| {
+        // Cloned inside because the build closure is `Fn` and may run again.
+        let answer_for_ok = answer_for_read.clone();
+        dialog
+            .title(title.clone())
+            .button_props(
+                DialogButtonProps::default()
+                    .on_ok(move |_, window, cx| {
+                        let answer = answer_for_ok.read(cx).value().to_string();
+                        advance_mfa(window, cx, Some(answer));
+                        true
+                    })
+                    .on_cancel(move |_, window, cx| {
+                        advance_mfa(window, cx, None);
+                        true
+                    }),
+            )
+            .child(
+                v_flex()
+                    .gap_2()
+                    .child(div().child(question.clone()))
+                    .child(Input::new(&field)),
+            )
+            // See `super::dialogs`: a `Dialog` shows its footer, not its
+            // `button_props` buttons.
+            .footer(super::answer_footer(
+                crate::i18n::t("提交", "Submit").into(),
+                false,
+                crate::i18n::t("取消", "Cancel").into(),
+            ))
     });
 }
 

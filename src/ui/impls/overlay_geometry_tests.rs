@@ -10,25 +10,18 @@ use std::{
     time::{Duration, Instant},
 };
 
-struct Host {
-    subscription: Option<Subscription>,
-}
+struct Host;
 
 impl Render for Host {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.subscription.is_none() {
-            self.subscription = crate::ui::follow_root(window, cx);
-        }
-        div()
-            .size_full()
-            .children(Root::render_dialog_layer(window, cx))
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div().size_full()
     }
 }
 
 fn host(cx: &mut TestAppContext, height: f32) -> &mut VisualTestContext {
     cx.update(gpui_kit::init);
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let host = cx.new(|_| Host { subscription: None });
+        let host = cx.new(|_| Host);
         Root::new(host, window, cx)
     });
     cx.simulate_resize(size(px(1100.), px(height)));

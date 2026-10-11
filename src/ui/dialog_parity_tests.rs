@@ -13,21 +13,15 @@ use gpui_kit::{
     gpui::{Focusable as _, Modifiers, MouseButton, TestAppContext, VisualTestContext},
     point,
     prelude::*,
-    px, Context, Entity, IntoElement, SharedString, Subscription, Window,
+    px, Context, Entity, IntoElement, SharedString, Window,
 };
 
-struct DialogHarness {
-    _root_subscription: Option<Subscription>,
-}
+struct DialogHarness;
 
 impl Render for DialogHarness {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self._root_subscription.is_none() {
-            self._root_subscription = super::follow_root(window, cx);
-        }
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .size_full()
-            .children(Root::render_dialog_layer(window, cx))
     }
 }
 
@@ -42,9 +36,7 @@ struct Fixture {
 fn open_dialog(cx: &mut TestAppContext) -> (Fixture, &mut VisualTestContext) {
     cx.update(gpui_kit::init);
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let view = cx.new(|_| DialogHarness {
-            _root_subscription: None,
-        });
+        let view = cx.new(|_| DialogHarness);
         Root::new(view, window, cx)
     });
     let fixture = cx.update(|window, cx| {

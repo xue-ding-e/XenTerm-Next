@@ -1,6 +1,6 @@
 //! The piece every modal in this shell needs, and why it is not optional.
 //!
-//! `Root::open_dialog` builds a `Dialog`, and a `Dialog` renders `button_props`'s
+//! `WindowExt::open_dialog` builds a `Dialog`, and a `Dialog` renders `button_props`'s
 //! *callbacks* but not its *buttons*: the button text, variant and `show_cancel` fields
 //! exist for `AlertDialog`, which draws them itself. A plain `Dialog` shows whatever
 //! `.footer(...)` it was given, and nothing at all if it was given none.
@@ -11,8 +11,9 @@
 //! are the worst case: a host-key confirmation parks the connection until it is
 //! answered, so "no buttons" reads as a connection that hangs.
 //!
-//! So every dialog built here ends with [`answer_footer`], and the view that mounts the
-//! layer calls [`follow_root`].
+//! So every dialog built here ends with [`answer_footer`]. GPUI Kit 0.7 Root
+//! hosts the overlay layers itself; application views neither mount those layers
+//! nor subscribe to Root just to repaint them.
 
 use gpui_kit::{
     component::{
@@ -20,11 +21,11 @@ use gpui_kit::{
         dialog::{DialogAction, DialogButtonProps, DialogClose, DialogFooter},
         h_flex,
         input::{Input, InputState},
-        v_flex, Root, Sizable as _, ActiveTheme as _,
+        v_flex, WindowExt as _, Sizable as _, ActiveTheme as _,
     },
     div,
     prelude::*,
-    px, App, Context, Entity, IntoElement, SharedString, Subscription, Window,
+    px, App, Context, Entity, IntoElement, SharedString, Window,
 };
 
 /// Extend the toolkit's dialog keys with the native macOS cancel shortcut.
@@ -43,23 +44,6 @@ pub(super) fn bind_macos_cancel(cx: &mut App) {
         gpui_kit::component::dialog::Cancel,
         Some("Dialog"),
     )]);
-}
-
-/// Keep `view` repainting whenever the window's [`Root`] changes.
-///
-/// `Root` owns the queue of open dialogs and sheets, and it draws none of them: the view
-/// that calls `Root::render_dialog_layer` is the one that puts them on screen. `Root`
-/// notifies *itself* when that queue changes, and a notification does not reach its
-/// children — so a view that mounts the layer without this renders whatever queue it saw
-/// the last time it happened to repaint. That fails quietly in both directions: a dialog
-/// opened from another view appears a frame late or not at all, and one closed by its own
-/// Cancel button stays on screen.
-pub(crate) fn follow_root<T: Render + 'static>(
-    window: &mut Window,
-    cx: &mut Context<T>,
-) -> Option<Subscription> {
-    let root = window.root::<Root>().flatten()?;
-    Some(cx.observe(&root, |_, _, cx| cx.notify()))
 }
 
 /// A dialog's action row: a cancel that closes it and a confirm that answers it.
@@ -116,35 +100,29 @@ pub(crate) fn prompt<T: Render + 'static>(
     // The handler is shared rather than moved: the dialog's builder is `Fn` and runs once
     // per frame, so a captured `impl Fn` cannot be moved out of it — only cloned.
     let on_ok = std::rc::Rc::new(on_ok);
-    Root::update(window, cx, move |root, window, cx| {
-        root.open_dialog(
-            move |dialog, _window, cx| {
-                dialog
-                    .title(title.clone())
-                    .button_props(
-                        DialogButtonProps::default()
-                            .on_ok({
-                                let field = input.clone();
-                                let on_ok = on_ok.clone();
-                                move |_, window, cx| {
-                                    let text = field.read(cx).value().to_string();
-                                    on_ok(text, window, cx)
-                                }
-                            })
-                            // Cancel answers the dialog and lets it close, like the button
-                            // in the footer: two paths, one answer.
-                            .on_cancel(|_, _, _| true),
-                    )
-                    .child(
-                        v_flex()
-                            .w_full()
-                            .child(div().w_full().child(Input::new(&input))),
-                    )
-                    .footer(answer_footer(confirm.clone(), false, cancel.into()))
-            },
-            window,
-            cx,
-        );
+    window.open_dialog(cx, move |dialog, _window, cx| {
+        dialog
+            .title(title.clone())
+            .button_props(
+                DialogButtonProps::default()
+                    .on_ok({
+                        let field = input.clone();
+                        let on_ok = on_ok.clone();
+                        move |_, window, cx| {
+                            let text = field.read(cx).value().to_string();
+                            on_ok(text, window, cx)
+                        }
+                    })
+                    // Cancel answers the dialog and lets it close, like the button
+                    // in the footer: two paths, one answer.
+                    .on_cancel(|_, _, _| true),
+            )
+            .child(
+                v_flex()
+                    .w_full()
+                    .child(div().w_full().child(Input::new(&input))),
+            )
+            .footer(answer_footer(confirm.clone(), false, cancel.into()))
     });
 }
 
@@ -226,136 +204,123 @@ pub(crate) fn approval_dialog<T: Render + 'static>(
     let on_approve = std::rc::Rc::new(on_approve);
     let on_deny = std::rc::Rc::new(on_deny);
     let title = crate::i18n::t("风险命令审批", "Risky command approval");
-    Root::update(window, cx, move |root, window, cx| {
-        root.open_dialog(
-            move |dialog, window, cx| {
-                // Centered: a fixed width for the horizontal arithmetic, and
-                // a top margin that puts the card's middle at the window's.
-                let viewport_h = f32::from(window.viewport_size().height);
-                let margin_top = (viewport_h * 0.26).max(60.0);
-                let reasons_list = reasons
-                    .iter()
-                    .map(|reason| {
-                        div()
-                            .child(SharedString::from(format!("• {reason}")))
-                            .into_any_element()
+    window.open_dialog(cx, move |dialog, window, cx| {
+        // Centered: a fixed width for the horizontal arithmetic, and
+        // a top margin that puts the card's middle at the window's.
+        let viewport_h = f32::from(window.viewport_size().height);
+        let margin_top = (viewport_h * 0.26).max(60.0);
+        let reasons_list = reasons
+            .iter()
+            .map(|reason| {
+                div()
+                    .child(SharedString::from(format!("• {reason}")))
+                    .into_any_element()
+            })
+            .collect::<Vec<_>>();
+        let seconds_left = crate::automation::approval::seconds_left(&request);
+        dialog
+            .title(title.clone())
+            .width(px(560.))
+            .margin_top(margin_top)
+            .button_props(
+                DialogButtonProps::default()
+                    .ok_text(crate::i18n::t("批准", "Approve"))
+                    .ok_variant(ButtonVariant::Danger)
+                    // The two callbacks' bools mean opposite things —
+                    // `on_ok`: true keeps the dialog open; `on_cancel`:
+                    // true closes it. Both answers here close it, so
+                    // ok returns false and cancel returns true.
+                    .on_ok({
+                        let on_approve = on_approve.clone();
+                        move |_, window, cx| {
+                            on_approve(window, cx);
+                            false
+                        }
                     })
-                    .collect::<Vec<_>>();
-                let seconds_left = crate::automation::approval::seconds_left(&request);
-                dialog
-                    .title(title.clone())
-                    .width(px(560.))
-                    .margin_top(margin_top)
-                    .button_props(
-                        DialogButtonProps::default()
-                            .ok_text(crate::i18n::t("批准", "Approve"))
-                            .ok_variant(ButtonVariant::Danger)
-                            // The two callbacks' bools mean opposite things —
-                            // `on_ok`: true keeps the dialog open; `on_cancel`:
-                            // true closes it. Both answers here close it, so
-                            // ok returns false and cancel returns true.
-                            .on_ok({
-                                let on_approve = on_approve.clone();
-                                move |_, window, cx| {
-                                    on_approve(window, cx);
-                                    false
-                                }
-                            })
-                            .on_cancel({
-                                let on_deny = on_deny.clone();
-                                move |_, window, cx| {
-                                    on_deny(window, cx);
-                                    true
-                                }
-                            }),
-                    )
-                    .child(
-                        v_flex()
-                            .gap_2p5()
-                            .child(
-                                h_flex()
-                                    .gap_2()
-                                    .child(
-                                        div()
-                                            .w(px(56.))
-                                            .flex_shrink_0()
-                                            .text_xs()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(crate::i18n::t("会话", "Session")),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .truncate()
-                                            .text_sm()
-                                            .child(request.session.clone()),
-                                    ),
-                            )
-                            .child(
-                                v_flex()
-                                    .gap_1()
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(crate::i18n::t("命令", "Command")),
-                                    )
-                                    .child(
-                                        div()
-                                            .w_full()
-                                            .min_w_0()
-                                            .rounded_sm()
-                                            .bg(cx.theme().muted)
-                                            .px_2()
-                                            .py_1p5()
-                                            .font_family(cx.theme().mono_font_family.clone())
-                                            .text_sm()
-                                            .child(request.command.clone()),
-                                    ),
-                            )
-                            .child(
-                                v_flex()
-                                    .gap_1()
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(crate::i18n::t(
-                                                "风险原因",
-                                                "Why this was flagged",
-                                            )),
-                                    )
-                                    .children(reasons_list),
-                            ),
-                    )
-                    .footer(answer_footer(
-                        crate::i18n::t("批准", "Approve").into(),
-                        true,
-                        SharedString::from(if seconds_left > 0 {
-                            format!(
-                                "{} ({}s)",
-                                crate::i18n::t("拒绝", "Deny"),
-                                seconds_left
-                            )
-                        } else {
-                            crate::i18n::t("拒绝", "Deny").to_string()
-                        }),
-                    ))
-                    .on_close({
-                        // The dialog's own close paths — the footer's deny
-                        // button, the ×, Escape — all mean the same thing:
-                        // no. `on_cancel` above carries the callback; this
-                        // hook only guarantees a close that bypasses it still
-                        // ends in a denial.
+                    .on_cancel({
                         let on_deny = on_deny.clone();
                         move |_, window, cx| {
                             on_deny(window, cx);
+                            true
                         }
-                    })
-            },
-            window,
-            cx,
-        );
+                    }),
+            )
+            .child(
+                v_flex()
+                    .gap_2p5()
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .w(px(56.))
+                                    .flex_shrink_0()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(crate::i18n::t("会话", "Session")),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_sm()
+                                    .child(request.session.clone()),
+                            ),
+                    )
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(crate::i18n::t("命令", "Command")),
+                            )
+                            .child(
+                                div()
+                                    .w_full()
+                                    .min_w_0()
+                                    .rounded_sm()
+                                    .bg(cx.theme().muted)
+                                    .px_2()
+                                    .py_1p5()
+                                    .font_family(cx.theme().mono_font_family.clone())
+                                    .text_sm()
+                                    .child(request.command.clone()),
+                            ),
+                    )
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(crate::i18n::t("风险原因", "Why this was flagged")),
+                            )
+                            .children(reasons_list),
+                    ),
+            )
+            .footer(answer_footer(
+                crate::i18n::t("批准", "Approve").into(),
+                true,
+                SharedString::from(if seconds_left > 0 {
+                    format!("{} ({}s)", crate::i18n::t("拒绝", "Deny"), seconds_left)
+                } else {
+                    crate::i18n::t("拒绝", "Deny").to_string()
+                }),
+            ))
+            .on_close({
+                // The dialog's own close paths — the footer's deny
+                // button, the ×, Escape — all mean the same thing:
+                // no. `on_cancel` above carries the callback; this
+                // hook only guarantees a close that bypasses it still
+                // ends in a denial.
+                let on_deny = on_deny.clone();
+                move |_, window, cx| {
+                    on_deny(window, cx);
+                }
+            })
     });
 }

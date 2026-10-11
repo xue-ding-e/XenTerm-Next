@@ -19,7 +19,7 @@ remote-mcp = ["dep:rmcp", "dep:axum", "dep:jsonwebtoken", "dep:tokio-util", "dep
 
 [dependencies]
 # The UI toolkit.
-gpui-kit = { version = "0.6.1", optional = true, features = ["test-support"] }
+gpui-kit = { version = "=0.7.1", optional = true, features = ["test-support"] }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
