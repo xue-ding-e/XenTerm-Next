@@ -512,6 +512,8 @@ fn join_remote(dir: &str, name: &str) -> String {
 #[cfg(test)]
 #[path = "overlay_geometry_tests.rs"]
 mod overlay_geometry_tests;
+#[path = "sftp_copy_path_tests.rs"]
+mod sftp_copy_path_tests;
 
 #[cfg(test)]
 #[path = "command_palette_tests.rs"]

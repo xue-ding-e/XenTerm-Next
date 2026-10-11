@@ -1060,6 +1060,23 @@ fn file_row(
                         // One entry per other open session: the original copies a file
                         // by naming the target tab, and a menu is where its targets belong.
                         let mut menu = menu;
+                        // Copying a path is the one row action a directory wants too.
+                        // Build it before the early return so both kinds share it.
+                        let copy_path_item =
+                            PopupMenuItem::new(crate::i18n::t("复制路径", "Copy path"))
+                                .on_click({
+                                    let panel = panel.clone();
+                                    let target = open_path.clone();
+                                    move |_, _, cx| {
+                                        if let Some(panel) = panel.upgrade() {
+                                            let _ = panel.update(cx, |panel, cx| {
+                                                panel.pending =
+                                                    Some(PanelAction::CopyPath(target.clone()));
+                                                cx.notify();
+                                            });
+                                        }
+                                    }
+                                });
                         for (id, label) in other_tabs.iter() {
                             let panel = panel.clone();
                             let target = id.clone();
@@ -1103,7 +1120,7 @@ fn file_row(
                                 ),
                             );
                             if is_dir {
-                                return menu;
+                                return menu.item(copy_path_item);
                             }
                             let target = open_path.clone();
                             let panel_for_open = panel.clone();
@@ -1147,8 +1164,6 @@ fn file_row(
                                 }),
                             )
                         }
-                        // Copying a path is the one row action a directory wants too, so it
-                        // comes before the early return above rather than after it.
                         .item(
                             PopupMenuItem::new(crate::i18n::t("查看", "View")).on_click({
                                 let panel = panel.clone();
@@ -1179,22 +1194,7 @@ fn file_row(
                                 }
                             }),
                         )
-                        .item(
-                            PopupMenuItem::new(crate::i18n::t("复制路径", "Copy path"))
-                                .on_click({
-                                    let panel = panel.clone();
-                                    let target = open_path.clone();
-                                    move |_, _, cx| {
-                                        if let Some(panel) = panel.upgrade() {
-                                            let _ = panel.update(cx, |panel, cx| {
-                                                panel.pending =
-                                                    Some(PanelAction::CopyPath(target.clone()));
-                                                cx.notify();
-                                            });
-                                        }
-                                    }
-                                }),
-                        )
+                        .item(copy_path_item)
                     }
                 }),
         )
