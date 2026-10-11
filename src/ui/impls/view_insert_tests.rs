@@ -1,25 +1,15 @@
 //! Registered terminal key bindings and real clipboard routing, with no shell.
 use super::*;
 use gpui_kit::component::{Root, WindowExt as _};
-use gpui_kit::Subscription;
 use gpui_kit::gpui::{Entity, TestAppContext, VisualTestContext};
 
-// In toolkit 0.6 the application content renders the Root-owned dialog layer.
-// Mirror that host so Escape reaches the real paste-review dialog in these tests.
 struct Harness {
     terminal: Entity<TerminalView>,
-    root_subscription: Option<Subscription>,
 }
 
 impl Render for Harness {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.root_subscription.is_none() {
-            self.root_subscription = crate::ui::follow_root(window, cx);
-        }
-        div()
-            .size_full()
-            .child(self.terminal.clone())
-            .children(Root::render_dialog_layer(window, cx))
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div().size_full().child(self.terminal.clone())
     }
 }
 
@@ -86,10 +76,7 @@ fn fixture(cx: &mut TestAppContext) -> (Fixture, &mut VisualTestContext) {
             )
         });
         view = Some(terminal.clone());
-        let host = cx.new(|_| Harness {
-            terminal,
-            root_subscription: None,
-        });
+        let host = cx.new(|_| Harness { terminal });
         Root::new(host, window, cx)
     });
     let view = view.unwrap();
