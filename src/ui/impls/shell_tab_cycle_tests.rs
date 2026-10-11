@@ -152,10 +152,22 @@ fn tab_cycle_does_not_steal_settings_or_modal_focus(cx: &mut TestAppContext) {
     draw(cx);
     assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
     let before = cx.update(|window, cx| window.focused(cx).unwrap());
+    let target_before = shell.read_with(cx, |shell, cx| {
+        shell.pages.terminal.read(cx).navigation_test_state()
+    });
     for key in ["ctrl-tab", "ctrl-shift-tab"] {
         cx.simulate_keystrokes(key);
         draw(cx);
         assert!(cx.update(|window, _| before.is_focused(window)));
         assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+        assert_eq!(
+            shell.read_with(cx, |shell, cx| shell
+                .pages
+                .terminal
+                .read(cx)
+                .navigation_test_state()),
+            target_before,
+            "modal navigation cannot change its underlying target"
+        );
     }
 }

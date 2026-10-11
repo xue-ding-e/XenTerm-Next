@@ -1097,12 +1097,17 @@ impl TerminalPage {
         self.split_pane(&id, vertical, cx);
     }
 
+    #[cfg(test)]
+    pub(crate) fn navigation_test_state(&self) -> (u64, Option<String>) {
+        (self.panes.focused, self.active_tab.clone())
+    }
+
     /// The keyboard's walk around the split panes, in layout order.
     ///
     /// The focused pane is what the splitter ring draws and what clicking a pane
     /// sets; this is the same slot the click fills, moved by a chord instead of
     /// by the mouse. With one pane there is nothing to move around.
-    pub(crate) fn cycle_pane(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn cycle_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (_, _, w, h) = self.pane_area.get();
         let panes = self.panes.flatten(0.0, 0.0, self.pane_width.get(), h).0;
         if panes.len() < 2 {
@@ -1114,6 +1119,10 @@ impl TerminalPage {
             None => 0,
         };
         *self.pane_focus.borrow_mut() = Some(panes[next].id);
+        // A keyboard navigation action must hand over input in the same turn,
+        // rather than leaving GPUI focus on the previously selected terminal.
+        self.drain_pane_focus(cx);
+        self.focus_active_tab(window, cx);
         cx.notify();
     }
 

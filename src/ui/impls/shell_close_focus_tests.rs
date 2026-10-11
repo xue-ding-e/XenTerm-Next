@@ -462,3 +462,6 @@ fn entry_closing_inactive_x_preserves_active_terminal(cx: &mut TestAppContext) {
 mod startup_shortcut_tests;
 #[path = "shell_tab_cycle_tests.rs"]
 mod tab_cycle_tests;
+
+#[path = "shell_pane_cycle_tests.rs"]
+mod pane_cycle_tests;

@@ -1045,10 +1045,12 @@ impl Shell {
                     .terminal
                     .update(cx, |page, cx| page.split_active_tab(true, cx));
             }))
-            .on_action(cx.listener(|this, _: &crate::ui::CyclePane, _, cx| {
-                this.pages
-                    .terminal
-                    .update(cx, |page, cx| page.cycle_pane(cx));
+            .on_action(cx.listener(|this, _: &crate::ui::CyclePane, window, cx| {
+                if this.pages.active == PageId::Terminal {
+                    this.pages
+                        .terminal
+                        .update(cx, |page, cx| page.cycle_pane(window, cx));
+                }
             }))
             .child(nav)
             .child(
