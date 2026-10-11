@@ -219,6 +219,7 @@ impl QuickCommandsView {
             // An id, because a row that can be clicked has to be a stateful element for
             // GPUI to route the click to it.
             .id(SharedString::from(format!("quick-group-{}", row.group)))
+            .debug_selector(|| format!("quick-group-{}", row.group))
             .w_full()
             .h(px(26.))
             .gap_1()

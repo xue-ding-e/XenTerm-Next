@@ -18,7 +18,7 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::Icon;
 use gpui_kit::{
     prelude::*, Animation, AnimationExt as _, AnyElement, Hsla, SharedString, Transformation,
-    percentage,
+    radians,
 };
 
 /// How long one toggle's swing takes. Fast enough to stay with the click,
@@ -55,7 +55,8 @@ pub(crate) fn folding_chevron(
 ) -> AnyElement {
     // Angles in degrees; a folded chevron is the open one turned a quarter
     // turn. Down-to-right is counterclockwise, hence the negative angle.
-    let target = if folded { -90.0 } else { 0.0 };
+    // Use signed radians: a percentage is constrained to a nonnegative turn.
+    let target: f32 = if folded { -90.0 } else { 0.0 };
     let icon = Icon::new(IconName::ChevronDown).size_3().text_color(color);
     match turn {
         Some(epoch) => {
@@ -69,13 +70,17 @@ pub(crate) fn folding_chevron(
                 Animation::new(SWING),
                 move |icon, delta| {
                     let angle = start + (target - start) * delta;
-                    icon.transform(Transformation::rotate(percentage(angle / 360.0)))
+                    icon.transform(Transformation::rotate(radians(angle.to_radians())))
                 },
             )
             .into_any_element()
         }
         None => icon
-            .transform(Transformation::rotate(percentage(target / 360.0)))
+            .transform(Transformation::rotate(radians(target.to_radians())))
             .into_any_element(),
     }
 }
+
+#[cfg(test)]
+#[path = "chevron_tests.rs"]
+mod tests;
