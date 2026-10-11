@@ -18,7 +18,7 @@ impl Drop for Snapshot {
 /// Opening a WAL database even with SQLITE_OPEN_READ_ONLY can create -wal and
 /// -shm files in its directory. Inspect a private temporary copy instead, so a
 /// rejected profile has no new sidecars or other file changes.
-fn read_database(path: &Path) -> Result<Option<ConfigFile>> {
+fn read_database(path: &Path, preview: bool) -> Result<Option<ConfigFile>> {
     let directory =
         std::env::temp_dir().join(format!("xenterm-profile-check-{}", uuid::Uuid::new_v4()));
     let mut builder = fs::DirBuilder::new();
@@ -75,10 +75,21 @@ fn read_database(path: &Path) -> Result<Option<ConfigFile>> {
         anyhow::anyhow!("explicit profile database could not be read; original files preserved")
     })?;
     let Some((settings, sessions, history)) = raw else {
-        let rows: i64 = conn
-            .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
-            .map_err(|_| anyhow::anyhow!("explicit profile database schema is incomplete"))?;
-        if rows != 0 {
+        // Ordinary startup keeps its existing admission probe, then load
+        // checks the complete fingerprint under its transaction. A preview
+        // must perform that check here because it never enters writable load.
+        let has_rows = if preview {
+            ConfigStore::disk_fingerprint(&conn)
+                .map_err(|_| anyhow::anyhow!("explicit profile database schema is incomplete"))?
+                .is_some()
+        } else {
+            conn.query_row("SELECT COUNT(*) FROM sessions", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .map_err(|_| anyhow::anyhow!("explicit profile database schema is incomplete"))?
+                != 0
+        };
+        if has_rows {
             bail!("explicit profile database settings are missing; original files preserved");
         }
         return Ok(None);
@@ -93,13 +104,22 @@ fn read_database(path: &Path) -> Result<Option<ConfigFile>> {
 
 impl ConfigStore {
     pub(super) fn preflight_explicit_profile(directory: &Path) -> Result<()> {
+        Self::inspect_explicit_profile(directory, false).map(|_| ())
+    }
+
+    /// Return the same disk-form snapshot whose credentials were checked, so
+    /// a preview never reopens the live database or consults the OS keyring.
+    pub(super) fn inspect_explicit_profile(
+        directory: &Path,
+        preview: bool,
+    ) -> Result<(Option<ConfigFile>, Option<[u8; 32]>)> {
         let db = directory.join("sessions.db");
         let json = directory.join("sessions.json");
         if super::profile_io::pending_journal(&db)? {
             bail!("profile has unfinished desktop credential recovery; reopen it in the original desktop application before selecting it as an explicit service profile");
         }
         let from_db = if db.exists() {
-            read_database(&db)?
+            read_database(&db, preview)?
         } else {
             None
         };
@@ -115,15 +135,20 @@ impl ConfigStore {
         } else {
             None
         };
-        let Some(config) = config else {
-            return Ok(());
-        };
+        // Keep ordinary admission unchanged for a key-only directory. Its
+        // normal key loader validates the file later; preview cannot call it.
+        if config.is_none() && !preview {
+            return Ok((None, None));
+        }
         let key_path = directory.join("secret.key");
         let key = if key_path.exists() {
             let raw = fs::read(key_path).map_err(|_| anyhow::anyhow!(INCOMPATIBLE))?;
             Some(<[u8; 32]>::try_from(raw.as_slice()).map_err(|_| anyhow::anyhow!(INCOMPATIBLE))?)
         } else {
             None
+        };
+        let Some(config) = config else {
+            return Ok((None, key));
         };
         let check = |value: &str, keyring_possible: bool| -> Result<()> {
             if keyring_possible && value == Self::KEYRING_MARKER {
@@ -155,6 +180,39 @@ impl ConfigStore {
                 bail!(INCOMPATIBLE);
             }
         }
-        Ok(())
+        Ok((Some(config), key))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preview_checks_key_only_profiles_without_changing_ordinary_admission() {
+        let directory = tempfile::tempdir().unwrap();
+        let key = directory.path().join("secret.key");
+        fs::write(&key, b"synthetic malformed key").unwrap();
+        assert!(ConfigStore::preflight_explicit_profile(directory.path()).is_ok());
+        assert!(ConfigStore::inspect_explicit_profile(directory.path(), true).is_err());
+        assert_eq!(fs::read(key).unwrap(), b"synthetic malformed key");
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn preview_checks_partial_schema_without_changing_ordinary_admission() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("sessions.db");
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection.execute_batch(ConfigStore::SCHEMA_SQL).unwrap();
+        connection
+            .execute("INSERT INTO meta(key,value) VALUES('schema_version','1')", [])
+            .unwrap();
+        drop(connection);
+        let before = fs::read(&path).unwrap();
+        assert!(ConfigStore::preflight_explicit_profile(directory.path()).is_ok());
+        assert!(ConfigStore::inspect_explicit_profile(directory.path(), true).is_err());
+        assert_eq!(fs::read(path).unwrap(), before);
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
     }
 }

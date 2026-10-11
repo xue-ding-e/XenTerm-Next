@@ -97,12 +97,36 @@ jobs:
         run: env -u ALL_PROXY -u all_proxy -u HTTP_PROXY -u http_proxy -u HTTPS_PROXY -u https_proxy cargo test --locked --no-default-features --features headless
       - run: cargo build --locked --no-default-features --features headless
       - run: python tests/config_import_e2e.py --exe target/debug/xenterm
+      - run: python tests/config_export_e2e.py --exe target/debug/xenterm
+      - run: python tests/cli_exec_e2e.py --exe target/debug/xenterm
+      - run: python tests/migration_modes_e2e.py --exe target/debug/xenterm
+      - run: python tests/migration_preview_e2e.py --exe target/debug/xenterm
       - run: python tests/ssh_jump_chain_e2e.py --exe target/debug/xenterm
+      - run: python tests/ssh_stack_e2e.py --exe target/debug/xenterm
       - run: python tests/ssh_jump_chain_e2e.py --exe target/debug/xenterm --stage-timeouts
       - run: python tests/stdio_mcp_e2e.py --exe target/debug/xenterm
       - run: python tests/remote_mcp_e2e.py --exe target/debug/xenterm --path /mcp
       - run: python tests/remote_mcp_e2e.py --exe target/debug/xenterm --nginx /usr/sbin/nginx --path /xenterm/mcp
       - run: python tests/remote_mcp_e2e.py --exe target/debug/xenterm --nginx /usr/sbin/nginx --path /xenterm/mcp --protocol-version 2025-11-25
+
+  windows-ssh:
+    name: Windows SSH command stack
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-ssh-stack
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install cryptography paramiko
+      - run: cargo test --locked --no-default-features --features headless command_stack_tests
+      - run: cargo build --locked --no-default-features --features headless
+      - run: python tests/ssh_stack_e2e.py --exe target/debug/xenterm.exe
+      - run: python tests/migration_modes_e2e.py --exe target/debug/xenterm.exe
+      - run: python tests/migration_preview_e2e.py --exe target/debug/xenterm.exe
 
   installer:
     name: Linux installer check

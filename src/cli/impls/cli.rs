@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Value};
+use std::path::Path;
 
 use super::structs::CliCommand;
 
@@ -49,22 +50,58 @@ pub(crate) fn run(args: &[String]) -> Result<()> {
                 .get(3)
                 .filter(|arg| !arg.starts_with("--"))
                 .ok_or_else(|| {
-                    anyhow!("usage: xenterm cli import <export.json> [--dry-run] [--json]")
+                    anyhow!("usage: xenterm cli import <export.json> [--dry-run] [--preserve-ids] [--json]")
                 })?;
             for arg in &args[4..] {
-                if !matches!(arg.as_str(), "--dry-run" | "--json") {
-                    return Err(anyhow!(
-                        "unknown import option (expected --dry-run or --json)"
-                    ));
+                if !matches!(arg.as_str(), "--dry-run" | "--preserve-ids" | "--json") {
+                    return Err(anyhow!("unknown import option"));
                 }
             }
-            runtime.block_on(call_cli(
-                "import_sessions",
-                &json!({
-                    "local_path": path,
-                    "dry_run": args.iter().any(|arg| arg == "--dry-run")
-                }),
-            ))?
+            let dry_run = args[4..].iter().any(|arg| arg == "--dry-run");
+            if args[4..].iter().any(|arg| arg == "--preserve-ids") {
+                require_independent_migration_profile(crate::config::has_explicit_data_dir())?;
+                let mut store = if dry_run {
+                    crate::config::ConfigStore::load_migration_preview()?
+                } else {
+                    crate::config::ConfigStore::load()?
+                };
+                let summary = store.import_from_preserving_ids(Path::new(path), dry_run)?;
+                let mut value = serde_json::to_value(summary)?;
+                value["dry_run"] = json!(dry_run);
+                value
+            } else {
+                runtime.block_on(call_cli(
+                    "import_sessions",
+                    &json!({
+                        "local_path": path, "dry_run": dry_run
+                    }),
+                ))?
+            }
+        }
+        CliCommand::SyncNative => {
+            require_independent_migration_profile(crate::config::has_explicit_data_dir())?;
+            let path = args
+                .get(3)
+                .filter(|arg| !arg.starts_with("--"))
+                .ok_or_else(|| {
+                    anyhow!("usage: xenterm cli sync-native <sessions.json> [--dry-run] [--json]")
+                })?;
+            if args[4..]
+                .iter()
+                .any(|arg| !matches!(arg.as_str(), "--json" | "--dry-run"))
+            {
+                return Err(anyhow!(
+                    "unknown sync-native option (expected --dry-run or --json)"
+                ));
+            }
+            let dry_run = args[4..].iter().any(|arg| arg == "--dry-run");
+            let mut store = if dry_run {
+                crate::config::ConfigStore::load_migration_preview()?
+            } else {
+                crate::config::ConfigStore::load()?
+            };
+            let (updated, added) = store.sync_native_snapshot_preview(Path::new(path), dry_run)?;
+            json!({ "updated": updated, "added": added, "dry_run": dry_run })
         }
         CliCommand::Sessions => {
             let group = option_value(args, "--group")?;
@@ -208,6 +245,13 @@ fn ensure_remote_success(value: &Value) -> Result<()> {
     Ok(())
 }
 
+/// Stable identifiers must stay within an independent local-key profile.
+fn require_independent_migration_profile(explicit: bool) -> Result<()> {
+    anyhow::ensure!(explicit,
+        "stable-ID and native snapshot migrations require a separate --data-dir profile with local credential storage; export from the original application and initialize that independent profile with a portable import");
+    Ok(())
+}
+
 fn option_value<'a>(args: &'a [String], option: &str) -> Result<Option<&'a str>> {
     let Some(index) = args.iter().position(|arg| arg == option) else {
         return Ok(None);
@@ -245,6 +289,21 @@ fn print_human(command: CliCommand, value: &Value) {
                 }
             }
         }
+        CliCommand::SyncNative => println!(
+            "{} {} sessions, {} {} sessions",
+            if value.get("dry_run").and_then(Value::as_bool) == Some(true) {
+                "Would update"
+            } else {
+                "Updated"
+            },
+            value.get("updated").and_then(Value::as_u64).unwrap_or(0),
+            if value.get("dry_run").and_then(Value::as_bool) == Some(true) {
+                "would add"
+            } else {
+                "added"
+            },
+            value.get("added").and_then(Value::as_u64).unwrap_or(0)
+        ),
         CliCommand::Sessions => {
             if let Some(sessions) = value.get("sessions").and_then(Value::as_array) {
                 for session in sessions {
@@ -310,9 +369,10 @@ fn print_help() {
     println!(
         "XenTerm CLI\n\n\
          Usage:\n\
-           xenterm cli export <new-file.json> --include-credentials [--json]\n\
-           xenterm cli import <export.json> [--dry-run] [--json]\n\
-           xenterm cli sessions [--group <name>] [--json]\n\
+           xenterm cli export <new-file.json> --include-credentials [--json]
+\n           xenterm cli import <export.json> [--dry-run] [--preserve-ids] [--json]
+\n           xenterm cli sync-native <sessions.json> [--dry-run] [--json]
+\n           xenterm cli sessions [--group <name>] [--json]\n\
            xenterm cli session <session-id> [--json]\n\
            xenterm cli exec <session-id> [--timeout <seconds>] [--json] -- <command>\n\
            xenterm cli files <session-id> [path] [--json]\n\
@@ -337,6 +397,19 @@ mod tests {
         ];
         assert_eq!(option_value(&args, "--group").unwrap(), Some("prod"));
         assert_eq!(option_value(&args, "--json").unwrap(), None);
+        assert_eq!(
+            CliCommand::parse(Some("sync-native")),
+            Some(CliCommand::SyncNative)
+        );
+    }
+
+    #[test]
+    fn migration_modes_require_explicit_independent_profiles() {
+        assert!(require_independent_migration_profile(true).is_ok());
+        assert!(require_independent_migration_profile(false)
+            .unwrap_err()
+            .to_string()
+            .contains("--data-dir"));
     }
 
     #[test]

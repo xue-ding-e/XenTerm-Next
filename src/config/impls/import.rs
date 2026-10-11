@@ -130,6 +130,57 @@ fn compatibility_warnings(value: &serde_json::Value) -> Result<Vec<ImportWarning
     Ok(warnings)
 }
 
+/// Both session-import modes validate portable references without opening them.
+pub(super) fn validate_session_fields(session: &Session, index: usize) -> Result<()> {
+    if !ConfigStore::is_safe_session_id(&session.id) {
+        bail!(
+            "import entry {} has an invalid or reserved session ID",
+            index + 1
+        );
+    }
+    match session.kind {
+        SessionKind::Ssh | SessionKind::Telnet => {
+            // A single final dot is a valid absolute DNS name. Keep
+            // the original spelling, while validating its DNS labels.
+            let host = session.host.strip_suffix('.').unwrap_or(&session.host);
+            if !super::super::validation::is_valid_hostname(host) || session.port == 0 {
+                bail!("import entry {} has an invalid host or port", index + 1);
+            }
+        }
+        SessionKind::Serial if session.serial_port.trim().is_empty() => {
+            bail!("import entry {} has an empty serial device", index + 1);
+        }
+        _ => {}
+    }
+    // Paths are portable references, not files to open while importing.
+    // They can legitimately refer to another OS or a not-yet-mounted key.
+    for path in [
+        &session.private_key_path,
+        &session.local_working_dir,
+        &session.serial_port,
+    ] {
+        if path.chars().any(char::is_control) {
+            bail!("import entry {} has an invalid path", index + 1);
+        }
+    }
+    if session.user.chars().any(char::is_control) {
+        bail!("import entry {} has an invalid user", index + 1);
+    }
+    Ok(())
+}
+
+/// Both supported portable marker names describe the same version-one schema.
+pub(super) fn validate_export_version(value: &serde_json::Value) -> Result<()> {
+    for format in ["meatshell_export", "xenterm_export"] {
+        if let Some(version) = value.get(format) {
+            if version.as_u64() != Some(1) {
+                bail!("unsupported portable export version; expected version 1");
+            }
+        }
+    }
+    Ok(())
+}
+
 #[derive(Deserialize)]
 struct ImportedSessions {
     // Deliberately required: an arbitrary settings object is not a session export.
@@ -148,7 +199,13 @@ fn identity(session: &Session, sessions: &[Session]) -> Result<SessionIdentity> 
         let object = value
             .as_object_mut()
             .expect("Session serializes as an object");
-        for key in ["id", "last_used", "jump_session_id", "jump_session_ids", "allow_secret_reveal"] {
+        for key in [
+            "id",
+            "last_used",
+            "jump_session_id",
+            "jump_session_ids",
+            "allow_secret_reveal",
+        ] {
             object.remove(key);
         }
         Ok(value)
@@ -160,7 +217,7 @@ fn identity(session: &Session, sessions: &[Session]) -> Result<SessionIdentity> 
     Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(&value)?)))
 }
 
-fn read_import(path: &Path) -> Result<String> {
+pub(super) fn read_import(path: &Path) -> Result<String> {
     let metadata = fs::metadata(path).context("failed to inspect import file")?;
     if !metadata.is_file() {
         bail!("import source must be a regular JSON file");
@@ -196,7 +253,37 @@ impl ConfigStore {
         self.import_json_preview(&read_import(path)?, dry_run)
     }
 
+    pub fn import_from_preserving_ids(
+        &mut self,
+        path: &Path,
+        dry_run: bool,
+    ) -> Result<ImportSummary> {
+        self.ensure_local_migration_profile()?;
+        self.import_json_with_ids(&read_import(path)?, dry_run, true)
+    }
+
+    /// ID-preserving migration must not modify the desktop's shared keyring
+    /// namespace. Check admission before source reads, including previews.
+    pub(super) fn ensure_local_migration_profile(&self) -> Result<()> {
+        if self.keyring_enabled {
+            bail!("migration requires an independent local-encryption profile; OS-keyring profiles are not supported");
+        }
+        Ok(())
+    }
+
     pub fn import_json_preview(&mut self, raw: &str, dry_run: bool) -> Result<ImportSummary> {
+        self.import_json_with_ids(raw, dry_run, false)
+    }
+
+    fn import_json_with_ids(
+        &mut self,
+        raw: &str,
+        dry_run: bool,
+        preserve_ids: bool,
+    ) -> Result<ImportSummary> {
+        if preserve_ids {
+            self.ensure_local_migration_profile()?;
+        }
         if raw.len() > MAX_IMPORT_BYTES {
             bail!("import file exceeds the 16 MiB limit");
         }
@@ -207,18 +294,16 @@ impl ConfigStore {
                 error.column()
             )
         })?;
-        let meatshell = value.get("meatshell_export").is_some() || value.get("sessions").is_some();
+        let meatshell = value.get("meatshell_export").is_some()
+            || value.get("xenterm_export").is_some()
+            || value.get("sessions").is_some();
         let warnings = if meatshell {
             compatibility_warnings(&value)?
         } else {
             Vec::new()
         };
         let mut sessions = if meatshell {
-            if let Some(version) = value.get("meatshell_export") {
-                if version.as_u64() != Some(1) {
-                    bail!("unsupported MeatShell export version; expected version 1");
-                }
-            }
+            validate_export_version(&value)?;
             serde_json::from_value::<ImportedSessions>(value)
                 .map_err(|_| anyhow::anyhow!("invalid MeatShell session fields in import file"))?
                 .sessions
@@ -245,34 +330,7 @@ impl ConfigStore {
                     index + 1
                 );
             }
-            match session.kind {
-                SessionKind::Ssh | SessionKind::Telnet => {
-                    // A single final dot is a valid absolute DNS name. Keep
-                    // the original spelling, while validating its DNS labels.
-                    let host = session.host.strip_suffix('.').unwrap_or(&session.host);
-                    if !super::super::validation::is_valid_hostname(host) || session.port == 0 {
-                        bail!("import entry {} has an invalid host or port", index + 1);
-                    }
-                }
-                SessionKind::Serial if session.serial_port.trim().is_empty() => {
-                    bail!("import entry {} has an empty serial device", index + 1);
-                }
-                _ => {}
-            }
-            // Paths are portable references, not files to open while importing.
-            // They can legitimately refer to another OS or a not-yet-mounted key.
-            for path in [
-                &session.private_key_path,
-                &session.local_working_dir,
-                &session.serial_port,
-            ] {
-                if path.chars().any(char::is_control) {
-                    bail!("import entry {} has an invalid path", index + 1);
-                }
-            }
-            if session.user.chars().any(char::is_control) {
-                bail!("import entry {} has an invalid user", index + 1);
-            }
+            validate_session_fields(session, index)?;
             if meatshell {
                 self.decode_import_secret(&mut session.password, index, "password")?;
                 self.decode_import_secret(&mut session.private_key_inline, index, "private key")?;
@@ -332,7 +390,23 @@ impl ConfigStore {
         for session in &sessions {
             let key = identity(session, &source_graph)
                 .map_err(|_| anyhow::anyhow!("import contains an invalid SSH jump chain"))?;
-            let id = if let Some(existing) = identities.get(&key) {
+            let id = if preserve_ids {
+                // Migration must retain references used by ACLs and external clients.
+                if let Some(existing) = self.cache.sessions.iter().find(|s| s.id == session.id) {
+                    let existing_key = identity(existing, &self.cache.sessions)
+                        .map_err(|_| anyhow::anyhow!("existing session ID has an invalid SSH jump chain; no sessions imported"))?;
+                    if existing_key != key {
+                        bail!("session ID conflicts with an existing configuration; no sessions imported");
+                    }
+                    summary.skipped += 1;
+                    keep.push(false);
+                } else {
+                    used_ids.insert(session.id.clone());
+                    summary.added += 1;
+                    keep.push(true);
+                }
+                session.id.clone()
+            } else if let Some(existing) = identities.get(&key) {
                 summary.skipped += 1;
                 keep.push(false);
                 existing.clone()
@@ -393,12 +467,18 @@ impl ConfigStore {
         Ok(summary)
     }
 
-    /// Append only the newly validated rows in a single SQLite transaction.
-    /// Existing rows, settings and keyring entries are never rewritten. Reject
+    /// Commit validated session changes in a single SQLite transaction. Normal
+    /// imports only append; native sync can also update explicitly matched IDs.
+    /// Unchanged rows, settings and keyring entries are never rewritten. Reject
     /// a stale cache under the database's write lock, before any new row exists.
-    /// Imported credentials use local encryption, so rollback also has no
-    /// non-transactional OS-keyring side effects.
-    fn commit_import(&mut self, candidate: ConfigFile) -> Result<()> {
+    /// Append imports always use local encryption, avoiding OS-keyring effects.
+    pub(super) fn commit_import(&mut self, candidate: ConfigFile) -> Result<()> {
+        self.commit_session_changes(candidate)
+    }
+
+    /// Native updates and append imports use local encryption. Migration
+    /// admission rejects desktop keyring profiles before this transaction.
+    pub(super) fn commit_session_changes(&mut self, candidate: ConfigFile) -> Result<()> {
         let _ordered = Self::save_lock().lock().unwrap_or_else(|p| p.into_inner());
         let mut saved = {
             let mut shared = self.saved_state.lock().unwrap_or_else(|p| p.into_inner());
@@ -407,7 +487,7 @@ impl ConfigStore {
             saved.attempted = shared.submitted;
             saved
         };
-        let result = self.commit_import_locked(&candidate, &saved);
+        let result = self.commit_session_changes_locked(&candidate, &mut saved);
         match result {
             Ok(fingerprint) => {
                 Self::finish_snapshot(&mut saved, &candidate, fingerprint);
@@ -424,10 +504,10 @@ impl ConfigStore {
         }
     }
 
-    fn commit_import_locked(
+    fn commit_session_changes_locked(
         &self,
         candidate: &ConfigFile,
-        saved: &SavedState,
+        saved: &mut SavedState,
     ) -> Result<Option<[u8; 32]>> {
         if saved.credentials_uncertain {
             return Err(super::SessionCredentialRollbackFailed.into());
@@ -442,10 +522,16 @@ impl ConfigStore {
         {
             bail!("save or discard pending configuration changes before importing");
         }
-        if saved.disk_fingerprint.is_none()
-            && !self.path.exists()
-            && candidate.sessions.len() == self.cache.sessions.len()
-        {
+        let next = SavedState::of_cache(candidate);
+        let changed: Vec<_> = candidate
+            .sessions
+            .iter()
+            .enumerate()
+            .filter(|(_, session)| {
+                next.sessions.get(&session.id) != saved.sessions.get(&session.id)
+            })
+            .collect();
+        if saved.disk_fingerprint.is_none() && !self.path.exists() && changed.is_empty() {
             return Ok(None);
         }
         if saved.disk_fingerprint.is_some() && !self.path.exists() {
@@ -463,18 +549,12 @@ impl ConfigStore {
             .map_err(|_| anyhow::anyhow!("failed to lock destination configuration"))?;
         io.recover(&tx, &self.key)?;
         Self::validate_snapshot(&tx, saved)?;
-        if saved.disk_fingerprint.is_some() && candidate.sessions.len() == self.cache.sessions.len()
-        {
+        if saved.disk_fingerprint.is_some() && changed.is_empty() {
             return Ok(saved.disk_fingerprint);
         }
         if saved.disk_fingerprint.is_some() {
-            for (ordinal, session) in candidate
-                .sessions
-                .iter()
-                .enumerate()
-                .skip(self.cache.sessions.len())
-            {
-                Self::upsert_session_row(&tx, ordinal, session, self.key, false)
+            for (_, session) in changed {
+                Self::upsert_session_row_preserving_order(&tx, session, self.key, false)
                     .map_err(|_| anyhow::anyhow!("failed to write imported session"))?;
             }
         } else {
@@ -513,7 +593,12 @@ impl ConfigStore {
         Ok(fingerprint)
     }
 
-    fn decode_import_secret(&self, secret: &mut Secret, index: usize, field: &str) -> Result<()> {
+    pub(super) fn decode_import_secret(
+        &self,
+        secret: &mut Secret,
+        index: usize,
+        field: &str,
+    ) -> Result<()> {
         let value = secret.as_str();
         let decoded = if value.starts_with(Self::EXPORT_PREFIX) {
             Some(Self::decrypt_export(value))

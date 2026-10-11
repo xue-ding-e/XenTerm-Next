@@ -59,7 +59,7 @@ impl StartMode {
 
 fn main() -> anyhow::Result<()> {
     let mut args: Vec<String> = std::env::args().collect();
-    config::configure_profile(&mut args)?;
+    let migration_preview = config::configure_profile(&mut args)?;
     let mode = StartMode::detect(&args);
     if matches!(mode, StartMode::Version) {
         println!("xenterm {}", env!("CARGO_PKG_VERSION"));
@@ -94,7 +94,7 @@ fn main() -> anyhow::Result<()> {
             "HTTP service requires an explicitly selected --data-dir or XENTERM_DATA_DIR profile"
         );
     }
-    init_tracing();
+    init_tracing(!migration_preview);
 
     match mode {
         StartMode::Mcp => mcp::run(&args),
@@ -110,7 +110,7 @@ fn main() -> anyhow::Result<()> {
 /// Set up tracing: stderr (honours RUST_LOG, default info) **plus** a capped
 /// `error.log` file at WARN and above so users can send diagnostics — e.g. a
 /// bastion disconnect reason — without setting RUST_LOG (#86).
-fn init_tracing() {
+fn init_tracing(file_logging: bool) {
     use tracing_subscriber::prelude::*;
     use tracing_subscriber::{fmt, EnvFilter};
 
@@ -140,7 +140,11 @@ fn init_tracing() {
 
     // One file, capped at 50 MiB, auto-overwriting when full (5 MiB was too
     // small to diagnose anything useful).
-    let file_layer = logging::path()
+    // Resolving the log path itself creates directories. Previews retain
+    // stderr diagnostics without touching the selected profile's log files.
+    let file_layer = file_logging
+        .then(logging::path)
+        .flatten()
         .and_then(|p| logging::CappedFile::open(p, 50 * 1024 * 1024).ok())
         .map(|cf| {
             fmt::layer()
