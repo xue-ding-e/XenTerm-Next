@@ -14,6 +14,7 @@
   <a href="https://github.com/ixbaicn/XenTerm/releases"><img src="https://img.shields.io/github/v/release/ixbaicn/XenTerm?style=flat-square&label=Release&color=00b8d4" alt="Release"></a>
   <a href="https://github.com/ixbaicn/XenTerm/commits/master"><img src="https://img.shields.io/github/last-commit/ixbaicn/XenTerm?style=flat-square&label=Last%20commit" alt="Last commit"></a>
   <a href="#license"><img src="https://img.shields.io/badge/License-MIT-blue?style=flat-square" alt="License: MIT"></a>
+  <a href="https://coderabbit.ai"><img src="https://img.shields.io/coderabbit/prs/github/ixbaicn/XenTerm?utm_source=oss&utm_medium=github&utm_campaign=ixbaicn%2FXenTerm&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews" alt="CodeRabbit Pull Request Reviews"></a>
 </p>
 
 <p align="center">
