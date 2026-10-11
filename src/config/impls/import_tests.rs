@@ -1298,6 +1298,36 @@ fn both_portable_markers_validate_version_without_global_settings_warnings() {
 }
 
 #[test]
+fn portable_markers_do_not_hide_or_inflate_ignored_global_settings() {
+    for preserve_ids in [false, true] {
+        for dry_run in [true, false] {
+            let mut store = temp_store();
+            let payload = serde_json::json!({
+                "meatshell_export": 1,
+                "xenterm_export": 1,
+                "sessions": [session("portable-marker-settings")],
+                "command_history": ["synthetic ignored command"],
+            });
+            let summary = store
+                .import_json_with_ids(&payload.to_string(), dry_run, preserve_ids)
+                .unwrap();
+            assert_eq!(summary.added, 1);
+            assert_eq!(summary.warnings.len(), 1);
+            assert_eq!(summary.warnings[0].code, "global_settings_ignored");
+            assert_eq!(summary.warnings[0].field, "settings");
+            assert_eq!(summary.warnings[0].entries, 1);
+            assert!(store.cache.command_history.is_empty());
+            if dry_run {
+                assert!(store.sessions().is_empty());
+                assert!(!store.path.exists());
+            } else {
+                assert_eq!(store.sessions().len(), 1);
+            }
+        }
+    }
+}
+
+#[test]
 fn preserve_ids_keeps_equal_aliases_and_local_reveal_consent_but_rejects_id_conflicts() {
     let mut store = temp_store();
     let mut local = session("preserved");
