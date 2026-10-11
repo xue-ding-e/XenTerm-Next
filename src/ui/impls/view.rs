@@ -37,6 +37,10 @@ use super::event_sink::UiMessage;
 use super::terminal::{rgba_to_hsla, CursorStyle, GridStyle};
 use super::{terminal_grid, CellMetrics, GridSnapshot};
 
+#[cfg(test)]
+#[path = "view_insert_tests.rs"]
+mod insert_tests;
+
 /// The find bar's resting height, in pixels: one text line and its padding.
 /// The slide's ceiling and the closed state's zero are the only two values the
 /// animation needs; the bar clips inside its wrapper, so this bounds rather
@@ -804,22 +808,7 @@ impl TerminalView {
             }
         }
 
-        let bytes = match gpui_key_name(&keystroke.key) {
-            // A named key, translated into the encoding the shared encoder speaks.
-            Some(named) => terminal::key_to_pty_bytes(named, ctrl, alt, false),
-            // Printable text, which is what `key_char` carries: it is the character
-            // the layout would have typed, so on a layout where the key is labelled
-            // differently it is still what the user meant. Ctrl+C and the rest go
-            // through the same call, which is where the control-byte mapping lives.
-            //
-            // Text also arrives through `EntityInputHandler`, and the two must not
-            // both send it: an ordinary letter here would be typed twice. Named keys
-            // are excluded from that path — the platform sends no character for
-            // Enter or an arrow — and `key_char` is `None` for them, so this arm
-            // fires only for control combinations, which the handler never sees.
-            None if ctrl => terminal::key_to_pty_bytes(&keystroke.key, ctrl, alt, false),
-            None => Vec::new(),
-        };
+        let bytes = gpui_key_bytes(&keystroke.key, ctrl, alt, shift);
         self.send_bytes(&bytes);
     }
 
@@ -1057,9 +1046,9 @@ impl TerminalView {
             return;
         }
         let bytes = if action.insert {
-            terminal::key_to_pty_bytes("insert", false, false, false)
+            gpui_key_bytes("insert", false, false, true)
         } else {
-            terminal::key_to_pty_bytes("v", true, true, false)
+            gpui_key_bytes("v", true, true, false)
         };
         self.send_bytes(&bytes);
         cx.notify();
@@ -1101,6 +1090,27 @@ impl TerminalView {
     }
 }
 
+/// Shared routing for a physical key and a disabled optional paste chord.
+/// Printable text still belongs to the input handler and must not be sent twice.
+fn gpui_key_bytes(key: &str, ctrl: bool, alt: bool, shift: bool) -> Vec<u8> {
+    match gpui_key_name(key) {
+        // A named key, translated into the encoding the shared encoder speaks.
+        Some(named) => terminal::key_to_pty_bytes_with_shift(named, ctrl, alt, shift, false),
+        // Printable text, which is what `key_char` carries: it is the character
+        // the layout would have typed, so on a layout where the key is labelled
+        // differently it is still what the user meant. Ctrl+C and the rest go
+        // through the same call, which is where the control-byte mapping lives.
+        //
+        // Text also arrives through `EntityInputHandler`, and the two must not
+        // both send it: an ordinary letter here would be typed twice. Named keys
+        // are excluded from that path — the platform sends no character for
+        // Enter or an arrow — and `key_char` is `None` for them, so this arm
+        // fires only for control combinations, which the handler never sees.
+        None if ctrl => terminal::key_to_pty_bytes(key, ctrl, alt, false),
+        None => Vec::new(),
+    }
+}
+
 /// Translate the shell's name for a special key into the text the shared encoder reads.
 ///
 /// The encoder reads a special key as a Unicode Private Use Area character —
@@ -1130,6 +1140,7 @@ fn gpui_key_name(key: &str) -> Option<&'static str> {
         "end" => "\u{F72B}",
         "pageup" => "\u{F72C}",
         "pagedown" => "\u{F72D}",
+        "insert" => "\u{F727}",
         "delete" => "\u{F728}",
         "f1" => "\u{F704}",
         "f2" => "\u{F705}",

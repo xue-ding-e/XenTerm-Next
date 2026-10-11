@@ -43,7 +43,7 @@ pub(crate) use encoding::TerminalEncoding;
 pub(crate) use input::normalize_pasted_newlines;
 pub(crate) use input::{
     encode_command_bar_input, encode_mouse_event,
-    encode_pasted_text, key_to_pty_bytes, paste_requires_large_review,
+    encode_pasted_text, key_to_pty_bytes, key_to_pty_bytes_with_shift, paste_requires_large_review,
 };
 // The review decision belongs to the view, which holds the setting and builds the
 // dialog; the terminal layer only encodes what it is handed.

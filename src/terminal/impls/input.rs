@@ -221,6 +221,28 @@ pub(crate) fn bare_ctrl_marker_workaround_enabled() -> bool {
 }
 
 pub(crate) fn key_to_pty_bytes(key: &str, ctrl: bool, alt: bool, app_cursor: bool) -> Vec<u8> {
+    key_to_pty_bytes_with_shift(key, ctrl, alt, false, app_cursor)
+}
+
+/// Preserve Insert's modifiers when an optional paste shortcut is disabled.
+/// Other keys retain the existing encoder's behavior.
+pub(crate) fn key_to_pty_bytes_with_shift(
+    key: &str,
+    ctrl: bool,
+    alt: bool,
+    shift: bool,
+    app_cursor: bool,
+) -> Vec<u8> {
+    if key == "\u{F727}" {
+        // Xterm's editing-keypad encoding: Insert is CSI 2 ~; modifier bits
+        // are Shift=1, Alt=2, Control=4, plus one for the parameter itself.
+        let modifier = 1 + u8::from(shift) + 2 * u8::from(alt) + 4 * u8::from(ctrl);
+        return if modifier == 1 {
+            b"\x1b[2~".to_vec()
+        } else {
+            format!("\x1b[2;{modifier}~").into_bytes()
+        };
+    }
     let special: Option<&[u8]> = match key {
         "\u{F700}" => Some(if app_cursor { b"\x1bOA" } else { b"\x1b[A" }),
         "\u{F701}" => Some(if app_cursor { b"\x1bOB" } else { b"\x1b[B" }),
@@ -502,5 +524,30 @@ mod mouse_encoding_tests {
         // afterwards, and the setting is not consent to that.
         let huge = "x".repeat(PASTE_REVIEW_LIMIT + 1);
         assert!(paste_needs_review(&huge, false));
+    }
+}
+
+#[cfg(test)]
+mod insert_encoding_tests {
+    use super::*;
+
+    #[test]
+    fn insert_uses_a_sequence_in_both_cursor_modes() {
+        for app_cursor in [false, true] {
+            assert_eq!(key_to_pty_bytes("\u{F727}", false, false, app_cursor), b"\x1b[2~");
+            assert_eq!(key_to_pty_bytes("\u{F727}", true, false, app_cursor), b"\x1b[2;5~");
+            assert_eq!(key_to_pty_bytes("\u{F727}", false, true, app_cursor), b"\x1b[2;3~");
+            assert_eq!(key_to_pty_bytes("\u{F727}", true, true, app_cursor), b"\x1b[2;7~");
+        }
+    }
+
+    #[test]
+    fn insert_text_and_existing_control_input_keep_their_meaning() {
+        assert_eq!(key_to_pty_bytes("insert", false, false, false), b"insert");
+        assert_eq!(key_to_pty_bytes("中文 insert", false, false, false), "中文 insert".as_bytes());
+        assert_eq!(key_to_pty_bytes("v", true, true, false), b"\x16");
+        assert_eq!(key_to_pty_bytes("c", true, false, false), b"\x03");
+        assert_eq!(key_to_pty_bytes("x", false, true, false), b"\x1bx");
+        assert_eq!(key_to_pty_bytes("\u{F700}", false, false, true), b"\x1bOA");
     }
 }
