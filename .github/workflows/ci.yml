@@ -4,6 +4,7 @@ name: CI
 # remote-mcp.yml and installer-check.yml):
 #   - desktop: compile + isolated GUI tests on all three OSes
 #   - headless-e2e: headless unit tests + Python end-to-end regressions
+#   - migration-e2e: isolated migration CLI regressions on all three OSes
 #   - installer: Linux install-script syntax + regressions
 # Release packaging lives in release.yml.
 
@@ -80,6 +81,30 @@ jobs:
       - name: Test config profile transactions
         if: runner.os != 'Linux'
         run: cargo test --locked --no-default-features --features headless --target ${{ matrix.target }} --jobs 2 config::config
+
+  migration-e2e:
+    name: ${{ matrix.os }} migration CLI regression
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-14]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: migration-cli-${{ runner.os }}
+      # Synthetic independent profiles only; no GUI dependencies or real credentials.
+      - name: Build the headless CLI binary
+        run: cargo build --locked --no-default-features --features headless --jobs 2
+      - name: Stable-ID import and native snapshot migration
+        run: python tests/migration_modes_e2e.py --exe "${{ runner.os == 'Windows' && 'target/debug/xenterm.exe' || 'target/debug/xenterm' }}"
+      - name: Read-only full CLI migration previews
+        run: python tests/migration_preview_e2e.py --exe "${{ runner.os == 'Windows' && 'target/debug/xenterm.exe' || 'target/debug/xenterm' }}"
 
   headless-e2e:
     name: Headless MCP regression

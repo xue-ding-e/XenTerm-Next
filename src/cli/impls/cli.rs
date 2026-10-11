@@ -369,10 +369,10 @@ fn print_help() {
     println!(
         "XenTerm CLI\n\n\
          Usage:\n\
-           xenterm cli export <new-file.json> --include-credentials [--json]
-\n           xenterm cli import <export.json> [--dry-run] [--preserve-ids] [--json]
-\n           xenterm cli sync-native <sessions.json> [--dry-run] [--json]
-\n           xenterm cli sessions [--group <name>] [--json]\n\
+           xenterm cli export <new-file.json> --include-credentials [--json]\n\
+           xenterm cli import <export.json> [--dry-run] [--preserve-ids] [--json]\n\
+           xenterm cli sync-native <sessions.json> [--dry-run] [--json]\n\
+           xenterm cli sessions [--group <name>] [--json]\n\
            xenterm cli session <session-id> [--json]\n\
            xenterm cli exec <session-id> [--timeout <seconds>] [--json] -- <command>\n\
            xenterm cli files <session-id> [path] [--json]\n\
