@@ -510,6 +510,10 @@ fn join_remote(dir: &str, name: &str) -> String {
 }
 
 #[cfg(test)]
+#[path = "overlay_geometry_tests.rs"]
+mod overlay_geometry_tests;
+
+#[cfg(test)]
 #[path = "command_palette_tests.rs"]
 mod command_palette_tests;
 
@@ -2485,14 +2489,15 @@ impl Shell {
         // is needed for the content box to come out that tall.
         const CHROME: f32 = 104.0;
         const MARGIN: f32 = 48.0;
-        // `bounds()` is logical already — see `render` for the division that used
-        // to shrink these by the scale factor and clamp cards to a window two
-        // thirds of the size of the one on screen.
-        let window_width = f32::from(window.bounds().size.width);
-        let window_height = f32::from(window.bounds().size.height);
-        let width = width.min(window_width - MARGIN * 2.0).max(240.0);
-        let margin_top = ((window_height - (height + CHROME)) / 2.0).max(24.0);
-        window.open_dialog(cx, move |dialog, _window, _cx| {
+        window.open_dialog(cx, move |dialog, window, _cx| {
+            // The viewport is already logical pixels. Recompute inside the
+            // builder so an open dialog follows later window resizes too.
+            let viewport = window.viewport_size();
+            let window_width = f32::from(viewport.width);
+            let window_height = f32::from(viewport.height);
+            let width = width.min((window_width - MARGIN * 2.0).max(0.0));
+            let height = height.min((window_height - MARGIN * 2.0 - CHROME).max(0.0));
+            let margin_top = ((window_height - (height + CHROME)) / 2.0).max(24.0);
             let on_close = on_close.clone();
             dialog
                 .on_close(move |_, window, cx| on_close(window, cx))
@@ -2504,12 +2509,11 @@ impl Shell {
                 .child(
                     div()
                         .w_full()
-                        // A floor, not a ceiling: the card itself is
-                        // content-height (the toolkit sets none), so the dialog
-                        // is exactly as tall as its view makes it — and grows
-                        // with the content. The floor keeps a two-row list from
-                        // collapsing to two rows.
-                        .min_h(px(height))
+                        // Give each view a real height budget. Its own scroll
+                        // area can shrink while the editor's footer stays put;
+                        // a minimum alone lets content push the footer offscreen.
+                        .h(px(height))
+                        .min_h_0()
                         .overflow_hidden()
                         .child(view.clone().into_any_element()),
                 )

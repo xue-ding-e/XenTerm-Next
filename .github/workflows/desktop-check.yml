@@ -61,3 +61,11 @@ jobs:
           XDG_DATA_HOME: ${{ runner.temp }}/xenterm-gui-data
           XDG_RUNTIME_DIR: ${{ runner.temp }}/xenterm-gui-runtime
         run: cargo test --locked --target ${{ matrix.target }} --jobs 2 ui::dialog_parity_tests
+      - name: Test complete desktop regression suite on Linux
+        if: runner.os == 'Linux'
+        env:
+          XDG_CONFIG_HOME: ${{ runner.temp }}/xenterm-full-config
+          XDG_DATA_HOME: ${{ runner.temp }}/xenterm-full-data
+          XDG_RUNTIME_DIR: ${{ runner.temp }}/xenterm-full-runtime
+        # Include this PR's regressions and the tests merged from upstream.
+        run: cargo test --locked --target ${{ matrix.target }} --jobs 2 -- --test-threads=1
