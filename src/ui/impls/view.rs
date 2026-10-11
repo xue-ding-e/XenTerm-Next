@@ -1788,7 +1788,17 @@ async fn pump_messages(
     tunnels: super::session_state::TabTunnels,
     opened_file: Arc<Mutex<Option<super::session_state::OpenedFile>>>,
 ) {
-    while let Some(message) = messages.recv().await {
+    const MAX_MESSAGES_PER_TURN: usize = 64;
+    let mut pending = None;
+    loop {
+        let message = match pending.take() {
+            Some(message) => message,
+            None => match messages.recv().await {
+                Some(message) => message,
+                None => break,
+            },
+        };
+        let mut processed = 1;
         let update = match message {
             UiMessage::Render { gate } => this.update(cx, |view, cx| {
                 view.refresh();
@@ -1801,30 +1811,68 @@ async fn pump_messages(
                     gate.finish_flush(through, true);
                 }
             }),
-            UiMessage::Events { tab_id, events } => this.update(cx, |view, cx| {
-                for event in events {
-                    apply_event(
-                        &opened_file,
-                        view,
-                        cx,
-                        &buffer,
-                        &sftp_listings,
-                        &sftp_trees,
-                        &statuses,
-                        &transfers,
-                        &tunnels,
-                        &tab_id,
-                        event,
-                    );
+            UiMessage::Events { tab_id, events } => {
+                // A ready channel must not become one terminal snapshot per
+                // progress packet. Bound the local batch and preserve every
+                // event in order; a render request is a barrier, not an event
+                // that may be moved past a later batch.
+                let mut batches = vec![(tab_id, events)];
+                while processed < MAX_MESSAGES_PER_TURN {
+                    match messages.try_recv() {
+                        Ok(UiMessage::Events { tab_id, events }) => {
+                            batches.push((tab_id, events));
+                            processed += 1;
+                        }
+                        Ok(render) => {
+                            pending = Some(render);
+                            break;
+                        }
+                        Err(_) => break,
+                    }
                 }
-                view.refresh();
-                cx.notify();
-            }),
+                this.update(cx, |view, cx| {
+                    let mut terminal_changed = false;
+                    for (tab_id, events) in batches {
+                        for event in events {
+                            // Transfers have their own shared store and polled
+                            // view. Their bytes do not change the terminal grid.
+                            terminal_changed |=
+                                !matches!(&event, SessionEvent::SftpTransfer { .. });
+                            apply_event(
+                                &opened_file,
+                                view,
+                                cx,
+                                &buffer,
+                                &sftp_listings,
+                                &sftp_trees,
+                                &statuses,
+                                &transfers,
+                                &tunnels,
+                                &tab_id,
+                                event,
+                            );
+                        }
+                    }
+                    if terminal_changed {
+                        view.refresh();
+                        cx.notify();
+                    }
+                })
+            }
         };
         // A failure means the window is gone, and the buffer goes with it — which is
         // what closes the session.
         if update.is_err() {
             break;
+        }
+        if processed == MAX_MESSAGES_PER_TURN || pending.is_some() || !messages.is_empty() {
+            // recv().await is immediately ready while the producer runs ahead.
+            // A non-zero timer really returns control to GPUI, allowing input
+            // and the transfer list's own poll to run before the stream ends.
+            // No view lease or store lock is held across this yield.
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(1))
+                .await;
         }
     }
 }
@@ -2232,6 +2280,7 @@ impl PendingPrompt {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui_kit::gpui::{Entity, Focusable as _, TestAppContext, VisualTestContext};
 
     #[test]
     fn find_bar_text_keeps_contrast_on_each_terminal_palette() {
@@ -2380,5 +2429,401 @@ mod tests {
             crate::terminal::OutputHighlightPreset::Off
         );
         assert!(buffer.custom_highlight_rules.is_empty());
+    }
+
+    struct ProgressHarness {
+        terminal: Entity<TerminalView>,
+        transfers: Entity<crate::ui::TransferListView>,
+    }
+
+    impl Render for ProgressHarness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .child(div().h(px(200.)).child(self.terminal.clone()))
+                .child(self.transfers.clone())
+        }
+    }
+
+    #[gpui_kit::gpui::test]
+    fn live_transfer_events_reach_the_store_and_polling_view_before_completion(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::core::EventSink as _;
+        let (fixture, cx) = progress_fixture(cx);
+        let ProgressFixture {
+            records,
+            sink,
+            harness,
+            ..
+        } = fixture;
+        let transfers = harness.read_with(cx, |harness, _| harness.transfers.clone());
+        for transferred in [0, 32768, 1024 * 1024, 9 * 1024 * 1024] {
+            sink.deliver(
+                "synthetic-transfer-tab",
+                vec![SessionEvent::SftpTransfer {
+                    id: "live-progress".into(),
+                    name: "synthetic.bin".into(),
+                    is_upload: false,
+                    transferred,
+                    total: 16 * 1024 * 1024,
+                    state: 0,
+                    msg: String::new(),
+                }],
+            );
+            cx.run_until_parked();
+            {
+                let store = records.lock().unwrap();
+                let row = store
+                    .get("live-progress")
+                    .expect("progress reaches real event handler");
+                assert_eq!(row.transferred, transferred);
+                assert_eq!(row.phase, crate::core::TransferPhase::Active);
+            }
+            cx.background_executor
+                .advance_clock(std::time::Duration::from_millis(600));
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            });
+            assert!(transfers.read_with(cx, |view, _| view.has_active()));
+            assert!(
+                cx.debug_bounds("cancel-live-progress").is_some(),
+                "running transfer must already offer Cancel at {transferred} bytes"
+            );
+        }
+        let cancel = cx.debug_bounds("cancel-live-progress").unwrap();
+        cx.simulate_click(cancel.center(), Default::default());
+        assert_eq!(
+            transfers.update(cx, |view, _| view.take_action()),
+            Some(crate::ui::TransferAction::Cancel("live-progress".into()))
+        );
+        sink.deliver(
+            "synthetic-transfer-tab",
+            vec![SessionEvent::SftpTransfer {
+                id: "live-progress".into(),
+                name: "synthetic.bin".into(),
+                is_upload: false,
+                transferred: 16 * 1024 * 1024,
+                total: 16 * 1024 * 1024,
+                state: 1,
+                msg: String::new(),
+            }],
+        );
+        cx.run_until_parked();
+        cx.background_executor
+            .advance_clock(std::time::Duration::from_millis(600));
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        assert!(!transfers.read_with(cx, |view, _| view.has_active()));
+        assert!(cx.debug_bounds("cancel-live-progress").is_none());
+        assert_eq!(records.lock().unwrap().rows().len(), 1);
+    }
+
+    struct ProgressFixture {
+        records: crate::core::TransferRecords,
+        sink: super::super::event_sink::GpuiEventSink,
+        gates: crate::terminal::RenderGates,
+        harness: Entity<ProgressHarness>,
+    }
+
+    fn progress_fixture(cx: &mut TestAppContext) -> (ProgressFixture, &mut VisualTestContext) {
+        cx.update(gpui_kit::init);
+        let records = Arc::new(Mutex::new(crate::core::TransferStore::new()));
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let gates = Arc::new(Mutex::new(HashMap::new()));
+        let sink = super::super::event_sink::GpuiEventSink::new(sender, gates.clone());
+        let shared = records.clone();
+        let (harness, cx) = cx.add_window_view(move |_, cx| {
+            let terminal = cx.new(|cx| {
+                TerminalView::new(
+                    "synthetic-transfer-tab".into(),
+                    appearance_with(crate::terminal::OutputHighlightPreset::Off, vec![]),
+                    std::rc::Rc::new(std::cell::RefCell::new(HashMap::new())),
+                    Arc::new(Mutex::new(HashMap::new())),
+                    Arc::new(Mutex::new(HashMap::new())),
+                    Arc::new(Mutex::new(HashMap::new())),
+                    shared.clone(),
+                    Arc::new(Mutex::new(HashMap::new())),
+                    Arc::new(Mutex::new(None)),
+                    receiver,
+                    None,
+                    cx,
+                )
+            });
+            let transfers = cx.new(|cx| crate::ui::TransferListView::new(shared, cx));
+            ProgressHarness {
+                terminal,
+                transfers,
+            }
+        });
+        cx.run_until_parked();
+        (
+            ProgressFixture {
+                records,
+                sink,
+                gates,
+                harness,
+            },
+            cx,
+        )
+    }
+
+    fn progress_event(bytes: u64, total: u64, state: u8) -> SessionEvent {
+        SessionEvent::SftpTransfer {
+            id: "live-progress".into(),
+            name: "synthetic.bin".into(),
+            is_upload: false,
+            transferred: bytes,
+            total,
+            state,
+            msg: String::new(),
+        }
+    }
+
+    #[gpui_kit::gpui::test]
+    fn transfer_backlog_yields_to_polling_and_terminal_input_before_done(cx: &mut TestAppContext) {
+        use crate::core::EventSink as _;
+        let (fixture, cx) = progress_fixture(cx);
+        let ProgressFixture {
+            records,
+            sink,
+            harness,
+            ..
+        } = fixture;
+        let terminal = harness.read_with(cx, |harness, _| harness.terminal.clone());
+        let transfers = harness.read_with(cx, |harness, _| harness.transfers.clone());
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let (commands, mut input) = tokio::sync::mpsc::unbounded_channel();
+        terminal.update(cx, |view, _| {
+            view.handles.borrow_mut().insert(
+                "synthetic-transfer-tab".into(),
+                SessionHandle {
+                    tab_id: "synthetic-transfer-tab".into(),
+                    commands,
+                    join: runtime.spawn(std::future::pending::<()>()),
+                },
+            );
+        });
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            let focus = terminal.read(cx).focus_handle(cx);
+            window.focus(&focus, cx);
+            window.draw(cx).clear(cx);
+        });
+        cx.run_until_parked();
+        // Arm the real 500-ms list poll just before it becomes due. A small
+        // bounded backlog can then prove timer fairness without benchmarking
+        // tens of thousands of expensive baseline terminal snapshots.
+        cx.background_executor
+            .advance_clock(std::time::Duration::from_millis(499));
+        cx.run_until_parked();
+        const TOTAL: u64 = 512;
+        for bytes in 1..=TOTAL {
+            let mut events = vec![progress_event(bytes, TOTAL, u8::from(bytes == TOTAL))];
+            if bytes == 1 {
+                // A mixed batch must still update ordinary terminal state.
+                events.insert(0, SessionEvent::Status("backlog fixture".into()));
+            }
+            sink.deliver("synthetic-transfer-tab", events);
+        }
+        cx.run_until_parked();
+        {
+            let store = records.lock().unwrap();
+            let current = store.get("live-progress").unwrap();
+            assert!(
+                current.transferred > 0 && current.transferred < TOTAL,
+                "one runnable pump turn must not exhaust a continuously-ready queue: {}",
+                current.transferred
+            );
+            assert_eq!(current.phase, crate::core::TransferPhase::Active);
+        }
+        // Let the list's real 500-ms timer run while the transfer is unfinished.
+        // No explicit TransferListView::refresh is called anywhere in this test.
+        cx.background_executor
+            .advance_clock(std::time::Duration::from_millis(1));
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        assert!(transfers.read_with(cx, |view, _| view.has_active()));
+        assert!(cx.debug_bounds("cancel-live-progress").is_some());
+        assert!(
+            records
+                .lock()
+                .unwrap()
+                .get("live-progress")
+                .unwrap()
+                .transferred
+                < TOTAL
+        );
+        // Native key input must remain routable with more progress still queued.
+        cx.simulate_input("responsive");
+        let mut typed = Vec::new();
+        while let Ok(command) = input.try_recv() {
+            if let SessionCommand::RawInput(bytes) = command {
+                typed.extend(bytes);
+            }
+        }
+        assert_eq!(typed, b"responsive");
+        let cancel = cx.debug_bounds("cancel-live-progress").unwrap();
+        cx.simulate_click(cancel.center(), Default::default());
+        assert_eq!(
+            transfers.update(cx, |view, _| view.take_action()),
+            Some(crate::ui::TransferAction::Cancel("live-progress".into()))
+        );
+        cx.background_executor
+            .advance_clock(std::time::Duration::from_millis(16));
+        cx.run_until_parked();
+        let store = records.lock().unwrap();
+        assert_eq!(store.rows().len(), 1);
+        assert_eq!(store.get("live-progress").unwrap().transferred, TOTAL);
+        assert_eq!(
+            store.get("live-progress").unwrap().phase,
+            crate::core::TransferPhase::Done
+        );
+        assert_eq!(
+            terminal
+                .read_with(cx, |view, _| view.status.clone())
+                .as_deref(),
+            Some("backlog fixture")
+        );
+    }
+
+    #[gpui_kit::gpui::test]
+    fn bounded_event_batches_preserve_output_order_and_render_barriers(cx: &mut TestAppContext) {
+        use crate::core::EventSink as _;
+        for count in [63, 64, 65] {
+            let (fixture, cx) = progress_fixture(cx);
+            let ProgressFixture {
+                records,
+                sink,
+                gates,
+                harness,
+            } = fixture;
+            let gate = Arc::new(crate::terminal::TabRenderGate::new(
+                std::time::Duration::ZERO,
+            ));
+            gates
+                .lock()
+                .unwrap()
+                .insert("synthetic-transfer-tab".into(), gate.clone());
+            for bytes in 1..=count {
+                sink.deliver(
+                    "synthetic-transfer-tab",
+                    vec![progress_event(bytes, count, 0)],
+                );
+            }
+            sink.deliver(
+                "synthetic-transfer-tab",
+                vec![
+                    SessionEvent::Output("A\x1b[".into()),
+                    progress_event(count, count, 0),
+                ],
+            );
+            let ticket = sink.request_render("synthetic-transfer-tab").unwrap();
+            sink.deliver(
+                "synthetic-transfer-tab",
+                vec![
+                    SessionEvent::Output("31m中".into()),
+                    SessionEvent::Output("文\x1b[0mB".into()),
+                    progress_event(count, count, 4),
+                ],
+            );
+            // A render barrier already removed from the channel must still be
+            // processed after the last sender closes, followed by later events.
+            drop(sink);
+            cx.run_until_parked();
+            for _ in 0..8 {
+                if format!("{:?}", gate.wait_for(1, std::time::Duration::ZERO)) == "Settled" {
+                    break;
+                }
+                cx.background_executor
+                    .advance_clock(std::time::Duration::from_millis(1));
+                cx.run_until_parked();
+            }
+            assert_eq!(
+                format!("{:?}", ticket.wait_for_flush(std::time::Duration::ZERO)),
+                "Settled"
+            );
+            let at_barrier = harness.read_with(cx, |harness, cx| {
+                harness
+                    .terminal
+                    .read(cx)
+                    .buffer
+                    .lock()
+                    .unwrap()
+                    .parser
+                    .screen()
+                    .contents()
+            });
+            assert_eq!(
+                at_barrier, "A",
+                "later output must not cross a render barrier"
+            );
+            let snapshot_at_barrier = harness.read_with(cx, |harness, cx| {
+                harness
+                    .terminal
+                    .read(cx)
+                    .snapshot
+                    .spans
+                    .iter()
+                    .map(|span| span.text.as_str())
+                    .collect::<String>()
+            });
+            assert_eq!(
+                snapshot_at_barrier.trim(),
+                "A",
+                "the gate must acknowledge a current snapshot"
+            );
+            assert_eq!(
+                records.lock().unwrap().get("live-progress").unwrap().phase,
+                crate::core::TransferPhase::Active
+            );
+            for _ in 0..8 {
+                cx.background_executor
+                    .advance_clock(std::time::Duration::from_millis(1));
+                cx.run_until_parked();
+            }
+            let text = harness.read_with(cx, |harness, cx| {
+                harness
+                    .terminal
+                    .read(cx)
+                    .buffer
+                    .lock()
+                    .unwrap()
+                    .parser
+                    .screen()
+                    .contents()
+            });
+            assert_eq!(
+                text, "A中文B",
+                "batch boundary {count} changed terminal bytes/order"
+            );
+            let snapshot = harness.read_with(cx, |harness, cx| {
+                harness
+                    .terminal
+                    .read(cx)
+                    .snapshot
+                    .spans
+                    .iter()
+                    .map(|span| span.text.as_str())
+                    .collect::<String>()
+            });
+            assert_eq!(snapshot.trim(), "A中文B");
+            let store = records.lock().unwrap();
+            assert_eq!(store.rows().len(), 1);
+            assert_eq!(
+                store.get("live-progress").unwrap().phase,
+                crate::core::TransferPhase::Cancelled
+            );
+        }
     }
 }
