@@ -41,7 +41,6 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-ut
 # and breaks every CI platform. Note the crypto stack is still pre-release
 # (ssh-key 0.7.0-rc, ed25519-dalek 3.0.0-rc) — revisit when it stabilises.
 russh = { version = "0.61", default-features = false, features = ["flate2", "rsa", "ring"] }
-ssh-key = "0.7.0-rc.10"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rand = "0.8"

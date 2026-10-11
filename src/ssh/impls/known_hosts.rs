@@ -16,7 +16,7 @@ use std::path::PathBuf;
 
 use super::structs::HostKeyStatus;
 use anyhow::{Context, Result};
-use ssh_key::{HashAlg, PublicKey};
+use russh::keys::{HashAlg, PublicKey};
 
 /// `host:port` lookup key.
 fn id(host: &str, port: u16) -> String {

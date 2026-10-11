@@ -20,12 +20,11 @@ use uuid::Uuid;
 use anyhow::{anyhow, Context, Result};
 use futures::stream::{FuturesUnordered, StreamExt};
 use russh::client::{self, Handler};
-use russh::keys::key::PrivateKeyWithHashAlg;
+use russh::keys::{key::PrivateKeyWithHashAlg, HashAlg, PublicKey};
 use russh::Disconnect;
 use russh_sftp::client::error::Error as SftpError;
 use russh_sftp::client::{RawSftpSession, SftpSession};
 use russh_sftp::protocol::{FileAttributes, OpenFlags, StatusCode};
-use ssh_key::{HashAlg, PublicKey};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use crate::config::{AuthMethod, Session};
