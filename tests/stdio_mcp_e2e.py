@@ -4,6 +4,7 @@ Run against a --no-default-features --features headless build.
 No real profile, credentials, SSH host trust or external server is used.
 """
 import argparse
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -40,7 +41,7 @@ def main():
         profile.mkdir(mode=0o700)
         session = dict(id='fixture', name='Fixture', host='127.0.0.1', port=1,
                        user='fixture', auth='password', password='synthetic-stdio-secret', kind='ssh')
-        with sqlite3.connect(profile / 'sessions.db') as db:
+        with contextlib.closing(sqlite3.connect(profile / 'sessions.db')) as db, db:
             db.executescript('CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);'
                              'CREATE TABLE sessions (ordinal INTEGER NOT NULL, id TEXT PRIMARY KEY, data TEXT NOT NULL);'
                              'CREATE TABLE command_history (seq INTEGER PRIMARY KEY AUTOINCREMENT, command TEXT NOT NULL);')
@@ -89,7 +90,7 @@ def main():
                     peer.listen()
                     peer.settimeout(5)
                     session['port'] = peer.getsockname()[1]
-                    with sqlite3.connect(profile / 'sessions.db') as db:
+                    with contextlib.closing(sqlite3.connect(profile / 'sessions.db')) as db, db:
                         db.execute('UPDATE sessions SET data=? WHERE id=?', (json.dumps(session), 'fixture'))
                     def silent_peer():
                         try:

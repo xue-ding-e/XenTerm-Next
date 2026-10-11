@@ -139,7 +139,10 @@ def main():
 
         native = root / "native.json"
         native.write_text(json.dumps(dict(sessions=[session("mcp")], mcp_allow_commands=True)))
-        assert mcp(dict(local_path=str(native), dry_run=False), allow=True)["structuredContent"] == dict(added=1, skipped=0, dry_run=False)
+        native_result = mcp(dict(local_path=str(native), dry_run=False), allow=True)["structuredContent"]
+        assert (native_result["added"], native_result["skipped"], native_result["dry_run"]) == (1, 0, False)
+        assert native_result["warnings"][0]["code"] == "global_settings_ignored"
+        assert native_result["warnings"][0]["entries"] == 1
         assert config()["mcp_allow_commands"] is False
         print("PASS: MCP apply and native sessions-only import preserve destination settings")
 

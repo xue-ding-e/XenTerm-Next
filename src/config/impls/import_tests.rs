@@ -1,5 +1,5 @@
 //! Synthetic-only fixtures. No real host, credential, OS keyring or user profile.
-use super::super::SessionTrigger;
+use super::super::{AuthMethod, PortForward, SessionTrigger};
 use super::*;
 
 fn temp_store() -> ConfigStore {
@@ -119,6 +119,231 @@ fn portable_roundtrip_retains_meatshell_format_credentials_fields_and_jump_refer
 }
 
 #[test]
+fn portable_roundtrip_preserves_every_supported_session_field_across_keys_and_disk_reloads() {
+    fn reload(store: &ConfigStore) -> ConfigStore {
+        // Read the actual SQLite snapshot and decrypt it through the normal load path,
+        // without changing global profile selection or consulting an OS keyring.
+        let (cache, disk_fingerprint) =
+            ConfigStore::read_cache_snapshot(&store.path, &store.key).unwrap();
+        let saved_state = SavedState {
+            disk_fingerprint,
+            ..SavedState::of_cache(&cache)
+        };
+        ConfigStore {
+            path: store.path.clone(),
+            backup_dir: None,
+            cache,
+            key: store.key,
+            keyring_enabled: false,
+            saved_state: std::sync::Mutex::new(saved_state).into(),
+        }
+    }
+
+    let mut source = temp_store();
+    for (index, (id, kind, auth)) in [
+        ("ssh-password", SessionKind::Ssh, AuthMethod::Password),
+        ("ssh-key", SessionKind::Ssh, AuthMethod::Key),
+        (
+            "ssh-interactive",
+            SessionKind::Ssh,
+            AuthMethod::KeyboardInteractive,
+        ),
+        ("serial", SessionKind::Serial, AuthMethod::Password),
+        ("telnet", SessionKind::Telnet, AuthMethod::Password),
+        ("local", SessionKind::Local, AuthMethod::Password),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        // Spell out every field, including transport-specific metadata on other
+        // kinds: adding a Session field must force this coverage fixture to evolve.
+        source.cache.sessions.push(Session {
+            id: id.into(),
+            name: format!("Synthetic 配置 {id}"),
+            host: format!("{id}.example.invalid"),
+            port: 2200 + index as u16,
+            user: format!("fixture-{id}"),
+            auth,
+            password: Secret::new(format!("synthetic-password-{id}")),
+            private_key_path: format!("C:\\synthetic\\{id}.key"),
+            private_key_inline: Secret::new(format!("synthetic-inline-key-{id}")),
+            allow_secret_reveal: true,
+            proxy: format!("socks5h://fixture:synthetic-proxy-{id}%40:p@ss@127.0.0.1:1080"),
+            jump_session_id: if id == "ssh-password" {
+                "ssh-interactive".into()
+            } else if id == "ssh-interactive" {
+                "ssh-key".into()
+            } else {
+                String::new()
+            },
+            jump_session_ids: if id == "ssh-password" {
+                vec!["ssh-key".into(), "ssh-interactive".into()]
+            } else {
+                Vec::new()
+            },
+            last_used: Some("2026-01-02T03:04:05Z".into()),
+            group: format!("Synthetic 分组 {id}"),
+            kind,
+            local_distribution: format!("Synthetic-{id}"),
+            local_working_dir: format!("/synthetic/{id}/workspace"),
+            serial_port: format!("/dev/synthetic-tty-{index}"),
+            baud_rate: 9_600,
+            data_bits: 7,
+            stop_bits: 2,
+            parity: "even".into(),
+            flow_control: "hardware".into(),
+            encoding: "GB18030".into(),
+            vt100_drawing: true,
+            forwards: ["local", "remote", "dynamic"]
+                .into_iter()
+                .enumerate()
+                .map(|(offset, kind)| PortForward {
+                    kind: kind.into(),
+                    name: format!("Synthetic {kind} tunnel"),
+                    bind_addr: "127.0.0.2".into(),
+                    bind_port: 10_800 + offset as u16,
+                    host: format!("{kind}.example.invalid"),
+                    host_port: 8_000 + offset as u16,
+                })
+                .collect(),
+            triggers: vec![
+                SessionTrigger {
+                    expect: "Synthetic 提示:".into(),
+                    response: Secret::new(format!("synthetic-trigger-{id}")),
+                    append_enter: false,
+                    repeat: true,
+                },
+                SessionTrigger {
+                    expect: "Synthetic second prompt:".into(),
+                    response: Secret::new(format!("synthetic-second-trigger-{id}")),
+                    append_enter: true,
+                    repeat: false,
+                },
+            ],
+            disable_shell_integration: true,
+            note: format!("Synthetic multiline note\n配置 {id}"),
+        });
+    }
+    source.cache.language = "synthetic-source-setting".into();
+    source.save().unwrap();
+    let source = reload(&source);
+    let (export, count) = source.export_json().unwrap();
+    assert_eq!(count, 6);
+    let exported: serde_json::Value = serde_json::from_str(&export).unwrap();
+    assert_eq!(exported.as_object().unwrap().len(), 2);
+    assert_eq!(exported["meatshell_export"], 1);
+    assert!(!export.contains("synthetic-source-setting"));
+    assert!(exported["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|item| item["last_used"].is_null()));
+
+    let mut destination = temp_store();
+    destination.key = [9; 32];
+    destination.cache.language = "synthetic-destination-setting".into();
+    destination.save().unwrap();
+    let preview = destination.import_json_preview(&export, true).unwrap();
+    assert_eq!((preview.added, preview.skipped), (6, 0));
+    assert_eq!(preview.warnings.len(), 1);
+    assert_eq!(preview.warnings[0].code, "local_permission_reset");
+    assert_eq!(preview.warnings[0].field, "allow_secret_reveal");
+    assert_eq!(preview.warnings[0].entries, 6);
+    assert_eq!(
+        destination.import_json_preview(&export, false).unwrap(),
+        preview
+    );
+
+    let remapped: HashMap<_, _> = source
+        .sessions()
+        .iter()
+        .zip(destination.sessions())
+        .map(|(original, imported)| {
+            assert_ne!(original.id, imported.id);
+            (original.id.clone(), imported.id.clone())
+        })
+        .collect();
+    let mut expected = source.sessions().to_vec();
+    for item in &mut expected {
+        item.id = remapped[&item.id].clone();
+        if !item.jump_session_id.is_empty() {
+            item.jump_session_id = remapped[&item.jump_session_id].clone();
+        }
+        for id in &mut item.jump_session_ids {
+            *id = remapped[id].clone();
+        }
+        // Portable export intentionally drops machine-local recency.
+        item.last_used = None;
+        // A portable file cannot grant the local GUI permission to reveal secrets.
+        item.allow_secret_reveal = false;
+    }
+    assert_eq!(
+        serde_json::to_value(destination.sessions()).unwrap(),
+        serde_json::to_value(&expected).unwrap()
+    );
+    let disk_json = disk(&destination).to_string();
+    for (index, original) in source.sessions().iter().enumerate() {
+        let stored = disk_session(&destination, index);
+        for (encrypted, plaintext) in [
+            (&stored.password, original.password.as_str()),
+            (
+                &stored.private_key_inline,
+                original.private_key_inline.as_str(),
+            ),
+            (
+                &stored.triggers[0].response,
+                original.triggers[0].response.as_str(),
+            ),
+            (
+                &stored.triggers[1].response,
+                original.triggers[1].response.as_str(),
+            ),
+        ] {
+            assert!(!export.contains(plaintext));
+            assert!(!disk_json.contains(plaintext));
+            assert!(ConfigStore::try_decrypt(&source.key, encrypted.as_str()).is_none());
+            assert_eq!(
+                ConfigStore::try_decrypt(&destination.key, encrypted.as_str()).as_deref(),
+                Some(plaintext)
+            );
+        }
+        let proxy_password = crate::config::validation::split_proxy_url(&original.proxy)
+            .auth
+            .unwrap()
+            .1;
+        assert!(!export.contains(proxy_password));
+        assert!(!disk_json.contains(proxy_password));
+    }
+
+    let mut reloaded = reload(&destination);
+    assert_eq!(
+        serde_json::to_value(reloaded.sessions()).unwrap(),
+        serde_json::to_value(expected).unwrap()
+    );
+    assert_eq!(reloaded.cache.language, "synthetic-destination-setting");
+    assert_eq!(
+        reloaded
+            .resolve_jump_chain(&reloaded.sessions()[0])
+            .unwrap()
+            .len(),
+        2
+    );
+    // Local opt-in survives reimport even when the source carries a different
+    // permission: this field is deliberately excluded from duplicate identity.
+    reloaded.cache.sessions[0].allow_secret_reveal = true;
+    reloaded.save().unwrap();
+    let before_repeat = disk(&reloaded);
+    assert_eq!(reloaded.import_json(&export).unwrap(), (0, 6));
+    assert_eq!(disk(&reloaded), before_repeat);
+    let (second_export, second_count) = reloaded.export_json().unwrap();
+    assert_eq!(second_count, 6);
+    assert_eq!(reloaded.import_json(&second_export).unwrap(), (0, 6));
+    assert!(reloaded.sessions()[0].allow_secret_reveal);
+    cleanup(&source);
+    cleanup(&reloaded);
+}
+
+#[test]
 fn public_meatshell_v1_fixture_imports_without_reencoding_the_source() {
     // Produced by the public MeatShell CLI/MCP regression fixture, fixed nonce.
     let mut imported = session("legacy");
@@ -195,7 +420,15 @@ fn native_import_ignores_global_settings_even_if_they_are_malformed() {
     let raw = serde_json::json!({"sessions": [session("new")], "wallpaper": 42,
         "mcp_enabled": true, "mcp_allow_commands": true, "webdav_password": "enc:v1:foreign"})
     .to_string();
-    assert_eq!(store.import_json(&raw).unwrap(), (1, 0));
+    let preview = store.import_json_preview(&raw, true).unwrap();
+    assert_eq!((preview.added, preview.skipped), (1, 0));
+    assert_eq!(preview.warnings.len(), 1);
+    assert_eq!(preview.warnings[0].code, "global_settings_ignored");
+    assert_eq!(preview.warnings[0].field, "settings");
+    assert_eq!(preview.warnings[0].entries, 4);
+    assert_eq!(snapshot(&store), before);
+    assert_eq!(disk(&store), disk_before);
+    assert_eq!(store.import_json_preview(&raw, false).unwrap(), preview);
     let mut after = snapshot(&store);
     after["sessions"] = before["sessions"].clone();
     assert_eq!(after, before);
@@ -577,6 +810,72 @@ fn compatibility_warnings_are_explicit_non_sensitive_and_preview_matches_apply()
     let repeated = store.import_json_preview(&raw, false).unwrap();
     assert_eq!((repeated.added, repeated.skipped), (0, 1));
     assert_eq!(repeated.warnings, applied.warnings);
+    cleanup(&store);
+}
+
+#[test]
+fn nested_unknown_fields_and_global_settings_warn_without_echoing_private_names_or_values() {
+    let sentinel = "SYNTHETIC_PRIVATE_UNKNOWN_FIELD_AND_VALUE";
+    let mut with_nested_fields = serde_json::to_value(session("nested-options")).unwrap();
+    with_nested_fields["forwards"] = serde_json::json!([
+        {"kind": "local", "bind_port": 1080, "host": "target.example.invalid", "host_port": 22},
+        {"kind": "dynamic", "bind_port": 1081}
+    ]);
+    with_nested_fields["forwards"][0][sentinel] = serde_json::json!(sentinel);
+    with_nested_fields["forwards"][1][sentinel] = serde_json::json!(sentinel);
+    with_nested_fields["triggers"] = serde_json::json!([
+        {"expect": "Synthetic prompt", "response": "synthetic-trigger-response"}
+    ]);
+    with_nested_fields["triggers"][0][sentinel] = serde_json::json!(sentinel);
+    let mut with_session_field = serde_json::to_value(session("top-level-options")).unwrap();
+    with_session_field[sentinel] = serde_json::json!(sentinel);
+    let mut payload = serde_json::json!({
+        "meatshell_export": 1,
+        "sessions": [with_nested_fields, with_session_field, session("known-options")],
+        "quick_commands": [{"name": sentinel, "command": sentinel}]
+    });
+    payload[sentinel] = serde_json::json!(sentinel);
+    let raw = payload.to_string();
+    let mut store = temp_store();
+    let before = snapshot(&store);
+    let preview = store.import_json_preview(&raw, true).unwrap();
+    assert_eq!((preview.added, preview.skipped), (3, 0));
+    assert_eq!(preview.warnings.len(), 2);
+    let global = preview
+        .warnings
+        .iter()
+        .find(|w| w.code == "global_settings_ignored")
+        .unwrap();
+    assert_eq!(global.field, "settings");
+    assert_eq!(global.entries, 2);
+    let unknown = preview
+        .warnings
+        .iter()
+        .find(|w| w.code == "unknown_session_fields")
+        .unwrap();
+    assert_eq!(unknown.field, "unknown");
+    // Count affected sessions, not unknown keys or nested objects. Multiple
+    // unknown forwarding/trigger fields in one session still count only once.
+    assert_eq!(unknown.entries, 2);
+    assert!(!serde_json::to_string(&preview).unwrap().contains(sentinel));
+    assert_eq!(snapshot(&store), before);
+    assert!(!store.path.exists());
+
+    let applied = store.import_json_preview(&raw, false).unwrap();
+    assert_eq!(applied, preview);
+    assert!(!snapshot(&store).to_string().contains(sentinel));
+    let nested = &store.sessions()[0];
+    assert_eq!(nested.forwards.len(), 2);
+    assert_eq!(nested.forwards[0].host, "target.example.invalid");
+    assert_eq!(nested.forwards[1].kind, "dynamic");
+    assert_eq!(
+        nested.triggers[0].response.as_str(),
+        "synthetic-trigger-response"
+    );
+    assert!(store.cache.quick_commands.is_empty());
+    let repeated = store.import_json_preview(&raw, false).unwrap();
+    assert_eq!((repeated.added, repeated.skipped), (0, 3));
+    assert_eq!(repeated.warnings, preview.warnings);
     cleanup(&store);
 }
 

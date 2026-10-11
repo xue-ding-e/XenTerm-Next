@@ -16,6 +16,34 @@ pub(crate) fn run(args: &[String]) -> Result<()> {
     let command = CliCommand::parse(Some(command_name))
         .ok_or_else(|| anyhow!("unknown CLI command: {command_name}"))?;
     let value = match command {
+        CliCommand::Export => {
+            let path = args
+                .get(3)
+                .filter(|arg| !arg.starts_with('-'))
+                .ok_or_else(|| {
+                    anyhow!(
+                        "usage: xenterm cli export <new-file.json> --include-credentials [--json]"
+                    )
+                })?;
+            for arg in &args[4..] {
+                if !matches!(arg.as_str(), "--include-credentials" | "--json") {
+                    return Err(anyhow!(
+                        "unknown export option (expected --include-credentials or --json)"
+                    ));
+                }
+            }
+            if !args[4..].iter().any(|arg| arg == "--include-credentials") {
+                return Err(anyhow!(
+                    "portable exports contain recoverable credentials; pass --include-credentials to write a private sessions export"
+                ));
+            }
+            // Keep credential export local to an explicit CLI invocation. It is
+            // deliberately not registered as an automation or MCP tool.
+            let store = crate::config::ConfigStore::load().context("load XenTerm configuration")?;
+            let count = store.export_to_new(std::path::Path::new(path))?;
+            eprintln!("Warning: portable exports contain recoverable credentials. Keep the file private. Only saved sessions are exported; global settings, host trust and external key files are not included.");
+            json!({"exported": count, "scope": "sessions", "includes_credentials": true})
+        }
         CliCommand::Import => {
             let path = args
                 .get(3)
@@ -162,6 +190,10 @@ fn option_value<'a>(args: &'a [String], option: &str) -> Result<Option<&'a str>>
 
 fn print_human(command: CliCommand, value: &Value) {
     match command {
+        CliCommand::Export => println!(
+            "Exported {} saved sessions",
+            value.get("exported").and_then(Value::as_u64).unwrap_or(0)
+        ),
         CliCommand::Import => {
             println!(
                 "{} {} sessions, skipped {} duplicates",
@@ -248,6 +280,7 @@ fn print_help() {
     println!(
         "XenTerm CLI\n\n\
          Usage:\n\
+           xenterm cli export <new-file.json> --include-credentials [--json]\n\
            xenterm cli import <export.json> [--dry-run] [--json]\n\
            xenterm cli sessions [--group <name>] [--json]\n\
            xenterm cli session <session-id> [--json]\n\

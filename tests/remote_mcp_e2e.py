@@ -57,7 +57,7 @@ def main():
         profile.mkdir(mode=0o700)
         saved = profile / 'sessions.db'
         def save_config(config):
-            with sqlite3.connect(saved) as db:
+            with contextlib.closing(sqlite3.connect(saved)) as db, db:
                 db.executescript('CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS sessions (ordinal INTEGER NOT NULL, id TEXT PRIMARY KEY, data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS command_history (seq INTEGER PRIMARY KEY AUTOINCREMENT, command TEXT NOT NULL);')
                 settings = dict(config, sessions=[])
                 db.execute("INSERT OR REPLACE INTO meta VALUES ('settings', ?)", (json.dumps(settings),))

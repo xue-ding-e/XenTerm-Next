@@ -1398,15 +1398,19 @@ pub async fn execute_command(
 ) -> Result<CommandExecution> {
     // A hop which accepts TCP but never completes SSH must not bypass the
     // caller's timeout. Bound the entire route, authentication and command.
+    // Keep the route future off the stack before wrapping it in cancellation
+    // and timeout futures. Otherwise its state is embedded in every CLI/MCP
+    // caller, exhausting the Windows main thread's 1 MiB stack in debug builds.
+    // Boxing still drops it immediately on timeout; no detached task is spawned.
     match tokio::time::timeout(
         timeout,
-        crate::ssh::connection::with_automation_cancellation(execute_command_inner(
+        crate::ssh::connection::with_automation_cancellation(Box::pin(execute_command_inner(
             session,
             jump,
             command,
             timeout,
             max_output_bytes,
-        )),
+        ))),
     )
     .await
     {
@@ -1513,6 +1517,27 @@ fn append_bounded(target: &mut Vec<u8>, data: &[u8], limit: usize, truncated: &m
     let take = remaining.min(data.len());
     target.extend_from_slice(&data[..take]);
     *truncated |= take < data.len();
+}
+
+#[cfg(test)]
+mod command_stack_tests {
+    use super::*;
+
+    #[test]
+    fn command_future_keeps_ssh_state_off_the_stack() {
+        let command = execute_command(
+            Session::new_empty(),
+            vec![],
+            "fixture",
+            std::time::Duration::from_secs(1),
+            1024,
+        );
+        // This guards future layout, not total call-stack usage (covered by
+        // ssh_stack_e2e.py). Leave room for the owned session and bookkeeping,
+        // but never embed the whole route in nested CLI/MCP request futures.
+        let bytes = std::mem::size_of_val(&command);
+        assert!(bytes <= 4096, "SSH command future grew to {bytes} bytes");
+    }
 }
 
 async fn run_session(

@@ -14,7 +14,7 @@ use uuid::Uuid;
 use super::{ConfigFile, ConfigStore, SavedState, Secret, Session, SessionKind};
 
 /// Bound file reads as well as JSON parsing, including files that grow while read.
-const MAX_IMPORT_BYTES: usize = 16 * 1024 * 1024;
+pub(super) const MAX_IMPORT_BYTES: usize = 16 * 1024 * 1024;
 
 /// Import results deliberately contain no connection details or credentials.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -55,6 +55,18 @@ fn compatibility_warnings(value: &serde_json::Value) -> Result<Vec<ImportWarning
         .collect();
     supported.insert("jump_session_ids".into()); // Omitted when empty in v1 exports.
     let mut warnings = Vec::new();
+    let ignored_settings = value.as_object().map_or(0, |object| {
+        object
+            .keys()
+            .filter(|key| !matches!(key.as_str(), "sessions" | "meatshell_export"))
+            .count()
+    });
+    if ignored_settings > 0 {
+        warnings.push(ImportWarning {
+            code: "global_settings_ignored", field: "settings", entries: ignored_settings,
+            message: "Only saved sessions are imported. Global settings, group definitions, command history and host trust are not applied; retain the source profile.",
+        });
+    }
     for (field, message) in legacy {
         let entries = sessions
             .iter()
@@ -79,13 +91,28 @@ fn compatibility_warnings(value: &serde_json::Value) -> Result<Vec<ImportWarning
             });
         }
     }
+    let forward_fields = serde_json::to_value(super::super::PortForward::default())?;
+    let trigger_fields = serde_json::to_value(super::super::SessionTrigger::default())?;
     let unknown = sessions
         .iter()
         .filter(|session| {
             session.as_object().is_some_and(|object| {
                 object.keys().any(|field| {
                     !supported.contains(field) && !legacy.iter().any(|(known, _)| field == known)
-                })
+                }) || [("forwards", &forward_fields), ("triggers", &trigger_fields)]
+                    .iter()
+                    .any(|(field, known)| {
+                        session
+                            .get(field)
+                            .and_then(serde_json::Value::as_array)
+                            .is_some_and(|items| {
+                                items.iter().any(|item| {
+                                    item.as_object().is_some_and(|object| {
+                                        object.keys().any(|key| known.get(key).is_none())
+                                    })
+                                })
+                            })
+                    })
             })
         })
         .count();
