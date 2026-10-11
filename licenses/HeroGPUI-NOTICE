@@ -1,0 +1,17 @@
+HeroGPUI
+Copyright 2026 HeroGPUI contributors
+
+This product is a Rust/GPUI port derived from HeroUI v3.
+HeroUI is Copyright 2025 NextUI Inc. and is licensed under the Apache License,
+Version 2.0.
+
+HeroGPUI includes modified and translated implementations of HeroUI component
+behavior, design tokens, styles, and documentation structure.
+
+This product includes icons from Lucide (https://lucide.dev), copied from the
+lucide-static 1.31.0 release into crates/herogpui-components/assets/lucide/.
+Lucide is Copyright (c) 2026 Lucide Icons and Contributors and is licensed
+under the ISC License. The Lucide icons derived from the Feather project are
+Copyright (c) 2013-present Cole Bemis and are licensed under the MIT License.
+The full license text, including the list of Feather-derived icons, is in
+crates/herogpui-components/assets/lucide/LICENSE.

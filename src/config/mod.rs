@@ -1,3 +1,6 @@
+#[path = "impls/color.rs"]
+pub(crate) mod color;
+
 pub(crate) mod jump_chain;
 #[path = "impls/config.rs"]
 mod config;

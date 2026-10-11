@@ -76,6 +76,8 @@ mod tab_strip;
 mod tokens;
 #[path = "impls/terminal.rs"]
 mod terminal;
+#[path = "impls/color_area.rs"]
+mod color_area;
 #[path = "impls/transfers.rs"]
 mod transfers;
 #[path = "impls/tunnels.rs"]

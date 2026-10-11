@@ -24,6 +24,8 @@ gpui-kit = { version = "0.6.1", optional = true, features = ["test-support"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 regex = "1"
+# CSS/HSV parsing and conversion; the existing GPUI component supplies the picker UI.
+csscolorparser = "=0.9.0"
 glob = "0.3"
 encoding_rs = "0.8"
 anyhow = "1"

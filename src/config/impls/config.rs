@@ -276,26 +276,19 @@ fn restore_user_backup_if_needed(primary_dir: &Path, backup_dir: &Path) -> Resul
     recovery::restore_user_backup_if_needed(primary_dir, backup_dir)
 }
 
-fn normalize_hex_color(value: &str) -> Option<String> {
-    hex_to_rgb(value).map(|(r, g, b)| format!("#{r:02X}{g:02X}{b:02X}"))
+fn normalize_cursor_color(value: &str) -> Option<String> {
+    if value.trim().is_empty() { return Some(String::new()); }
+    crate::config::color::ColorValue::parse(value).ok().map(|color| color.canonical_hex())
 }
 
 /// What reading a store database hands back: the settings blob (secrets
 /// still encrypted), sessions in disk form, history oldest-first.
 type DiskStore = (String, Vec<Session>, Vec<String>);
 
-/// A stored hex colour as its three channels.
-///
-/// Shared with the frontend, which has to draw the colour a setting names: the terminal
-/// view parses this string, and a second parser would be a second answer to what counts
-/// as a valid colour.
-pub fn hex_to_rgb(value: &str) -> Option<(u8, u8, u8)> {
-    let digits = value.trim().strip_prefix('#').unwrap_or(value.trim());
-    if digits.len() != 6 || !digits.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return None;
-    }
-    let channel = |range: std::ops::Range<usize>| u8::from_str_radix(&digits[range], 16).ok();
-    Some((channel(0..2)?, channel(2..4)?, channel(4..6)?))
+/// A stored colour as all four channels. The shared parser keeps configuration
+/// validation and terminal rendering in agreement, including transparent cursors.
+pub fn cursor_color_rgba(value: &str) -> Option<[u8; 4]> {
+    crate::config::color::ColorValue::parse(value).ok().map(|color| color.to_rgba8())
 }
 
 /// A brand-new config (no file yet, or the old one was corrupt). Seeds the
@@ -1242,7 +1235,7 @@ impl ConfigStore {
     }
 
     pub fn terminal_cursor_color(&self) -> &str {
-        if normalize_hex_color(&self.cache.terminal_cursor_color).is_some() {
+        if normalize_cursor_color(&self.cache.terminal_cursor_color).is_some() {
             &self.cache.terminal_cursor_color
         } else {
             ""
@@ -1250,7 +1243,7 @@ impl ConfigStore {
     }
 
     pub fn set_terminal_cursor_color(&mut self, color: &str) -> bool {
-        let Some(normalized) = normalize_hex_color(color) else {
+        let Some(normalized) = normalize_cursor_color(color) else {
             return false;
         };
         self.cache.terminal_cursor_color = normalized;
@@ -3070,6 +3063,37 @@ mod tests {
         assert_eq!(store.terminal_cursor_color(), "#ABCDEF");
         assert!(!store.set_terminal_cursor_color("#GG0000"));
         assert_eq!(store.terminal_cursor_color(), "#ABCDEF");
+    }
+
+    #[test]
+    fn terminal_cursor_color_accepts_css_and_hsv_formats() {
+        let mut store = temp_store();
+        for value in ["rgb(18, 52, 86)", "hsl(210, 65.384615%, 20.392157%)", "hsv(210, 79.069767%, 33.72549%)"] {
+            assert!(store.set_terminal_cursor_color(value), "{value}");
+            assert_eq!(store.terminal_cursor_color(), "#123456", "{value}");
+        }
+    }
+
+    #[test]
+    fn terminal_cursor_color_preserves_alpha_and_default() {
+        let mut store = temp_store();
+        assert!(store.set_terminal_cursor_color("rgba(18, 52, 86, 0.5)"));
+        assert_eq!(store.terminal_cursor_color(), "#12345680");
+        assert!(store.set_terminal_cursor_color("#12345600"));
+        assert_eq!(store.terminal_cursor_color(), "#12345600");
+        assert!(store.set_terminal_cursor_color(""));
+        assert_eq!(store.terminal_cursor_color(), "");
+    }
+
+    #[test]
+    fn terminal_cursor_color_accepts_generic_cmyk_and_rejects_invalid() {
+        let mut store = temp_store();
+        assert!(store.set_terminal_cursor_color("cmyk(0%, 100%, 100%, 0% / 50%)"));
+        assert_eq!(store.terminal_cursor_color(), "#FF000080");
+        for invalid in ["cmyk(0%, 100%, 100%, 101%)", "rgba(1,2,3,NaN)", "rgb("] {
+            assert!(!store.set_terminal_cursor_color(invalid), "{invalid}");
+            assert_eq!(store.terminal_cursor_color(), "#FF000080");
+        }
     }
 
     pub(super) fn sample_session(name: &str) -> Session {

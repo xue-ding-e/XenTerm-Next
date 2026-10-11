@@ -127,8 +127,8 @@ impl TerminalSettings {
             padding: store.terminal_padding(),
             line_spacing: store.terminal_line_spacing(),
             cursor_style: CursorStyle::from_setting(store.terminal_cursor_style()),
-            cursor_color: crate::config::hex_to_rgb(store.terminal_cursor_color())
-                .map(|(r, g, b)| rgba_to_hsla(crate::terminal::Rgba { r, g, b, a: 255 })),
+            cursor_color: crate::config::cursor_color_rgba(store.terminal_cursor_color())
+                .map(|[r, g, b, a]| rgba_to_hsla(crate::terminal::Rgba { r, g, b, a })),
             // The preset and the on-switch are one setting in the buffer's terms: a
             // disabled highlighter is the `Off` preset, which is what makes "enabled" and
             // "which preset" two controls over one behaviour rather than two behaviours.

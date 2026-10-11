@@ -286,6 +286,9 @@ fn paint_grid(
     cx: &mut App,
 ) {
     let cursor = style.cursor_color.unwrap_or(cursor_default);
+    // Cursor alpha is intentional, including zero. Selection, search, scroll
+    // and composition feedback keep the terminal palette's opaque contrast.
+    let indicator = Hsla { a: 1., ..cursor_default };
     // The terminal's own background, so a screen with no output is the same colour
     // as a screen with output rather than the window's.
     window.paint_quad(fill(bounds, background));
@@ -301,10 +304,10 @@ fn paint_grid(
     // The selection goes under the text, not over it: a highlight drawn on top would
     // tint the glyphs themselves, which is what makes some terminals' selections
     // unreadable. Here the text is painted afterwards at full contrast.
-    paint_selection(snapshot, metrics, &cell, cursor, window);
+    paint_selection(snapshot, metrics, &cell, indicator, window);
     // Search hits under the selection, so a hit the user has also selected still reads
     // as selected. Same layer, drawn first.
-    paint_find_matches(snapshot, metrics, &cell, cursor, window);
+    paint_find_matches(snapshot, metrics, &cell, indicator, window);
 
     for span in &snapshot.spans {
         let top_left = cell(span.col, span.row);
@@ -348,11 +351,11 @@ fn paint_grid(
         cell,
         &style.family,
         style.font_size,
-        cursor,
+        indicator,
         window,
         cx,
     );
-    paint_scrollbar(snapshot, bounds, metrics, cursor, window);
+    paint_scrollbar(snapshot, bounds, metrics, indicator, window);
 }
 
 /// Draw the uncommitted IME composition at the cursor, underlined.

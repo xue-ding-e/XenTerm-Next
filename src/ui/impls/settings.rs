@@ -47,6 +47,10 @@ use gpui_kit::assets::IconName;
 
 use crate::config::ConfigStore;
 
+#[path = "settings_color.rs"]
+mod color;
+use color::CursorColorEditor;
+
 /// What the settings page asks the shell to do.
 ///
 /// Recorded rather than done here, because the editor is a full-window overlay and the
@@ -167,6 +171,7 @@ pub(crate) struct SettingsView {
     /// Raw edits outlive page switches. Normalization belongs at a commit
     /// boundary, not after each character of a colour, URL or number.
     text_drafts: std::collections::HashMap<TextSetting, TextDraft>,
+    color_editor: Option<CursorColorEditor>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -254,13 +259,14 @@ impl TextSetting {
     }
 
     fn validate(self, value: &str) -> Result<(), &'static str> {
+        let raw = value;
         let value = value.trim();
         match self {
             Self::Number(kind) => kind.parse(value).map(|_| ()),
-            Self::CursorColor if !value.is_empty() && crate::config::hex_to_rgb(value).is_none() => {
+            Self::CursorColor if !value.is_empty() && crate::config::color::ColorValue::parse(raw).is_err() => {
                 Err(crate::i18n::t(
-                    "请输入六位十六进制颜色（例如 #123456），或留空恢复默认。尚未保存。",
-                    "Enter six hexadecimal digits (for example #123456), or leave blank for the default. Not saved.",
+                    "请输入有效 HEX、RGB、HSL、HSV 或 CMYK 颜色，或留空恢复默认。尚未保存。",
+                    "Enter a valid HEX, RGB, HSL, HSV or CMYK colour, or leave blank for the default. Not saved.",
                 ))
             }
             Self::WebdavUrl if !value.is_empty() => {
@@ -281,7 +287,7 @@ impl TextSetting {
         }
     }
 
-    fn apply(self, store: &mut ConfigStore, value: String) {
+    fn apply(self, store: &mut ConfigStore, value: String) -> Result<(), &'static str> {
         match self {
             Self::Number(kind) => kind.apply(store, kind.parse(&value).expect("validated numeric draft")),
             Self::CursorColor => {
@@ -290,7 +296,9 @@ impl TextSetting {
                     // sentinel, as advertised by this field's description.
                     store.cache.terminal_cursor_color.clear();
                 } else {
-                    store.set_terminal_cursor_color(&value);
+                    if !store.set_terminal_cursor_color(&value) {
+                        return Err(crate::i18n::t("颜色无效，输入已保留。尚未保存。", "Invalid colour. Your input is kept; not saved."));
+                    }
                 }
             }
             _ => {
@@ -303,6 +311,7 @@ impl TextSetting {
                 store.set_webdav_settings(enabled, url, user, password, path, certs);
             }
         }
+        Ok(())
     }
 }
 impl SettingsView {
@@ -319,6 +328,7 @@ impl SettingsView {
             webdav_password_input: None,
             _webdav_password_subscription: None,
             text_drafts: std::collections::HashMap::new(),
+            color_editor: None,
         }
     }
 
@@ -339,7 +349,10 @@ impl SettingsView {
         let result = kind.validate(&value).and_then(|()| {
             let mut store = self.store.borrow_mut();
             let before = store.cache.clone();
-            kind.apply(&mut store, value);
+            if let Err(error) = kind.apply(&mut store, value) {
+                store.cache = before;
+                return Err(error);
+            }
             if store.save().is_err() {
                 store.cache = before;
                 Err(crate::i18n::t(
@@ -358,6 +371,9 @@ impl SettingsView {
             }
             Err(error) => draft.error = Some(error),
         }
+        if kind == TextSetting::CursorColor && !self.text_drafts[&kind].dirty {
+            self.remember_applied_cursor_color();
+        }
         cx.notify();
     }
 
@@ -371,6 +387,9 @@ impl SettingsView {
             let initial = kind.read(&self.store.borrow());
             let input = cx.new(|cx| {
                 let mut input = InputState::new(window, cx).default_value(initial.clone());
+                if kind == TextSetting::CursorColor {
+                    input = input.placeholder(crate::i18n::t("留空使用默认颜色；自动识别输入格式", "Empty uses the default; input format is detected"));
+                }
                 if matches!(kind, TextSetting::Number(_)) {
                     // Keep incomplete/invalid edits verbatim until commit. The
                     // default NumberInput mask otherwise reformats partial input.
@@ -391,9 +410,15 @@ impl SettingsView {
                         draft.last_value = value;
                         draft.dirty = true;
                         draft.error = None;
+                        if kind == TextSetting::CursorColor {
+                            view.sync_cursor_picker(window, cx);
+                        }
                         cx.notify();
                     }
-                    InputEvent::PressEnter { .. } | InputEvent::Blur => {
+                    InputEvent::PressEnter { .. } => {
+                        view.commit_text_draft(kind, &input, window, cx);
+                    }
+                    InputEvent::Blur if kind != TextSetting::CursorColor => {
                         view.commit_text_draft(kind, &input, window, cx);
                     }
                     _ => {}
@@ -433,7 +458,7 @@ impl SettingsView {
             );
         }
         let draft = self.text_drafts.get_mut(&kind).expect("created above");
-        if !draft.dirty {
+        if !draft.dirty && kind != TextSetting::CursorColor {
             let saved = kind.read(&self.store.borrow());
             if draft.input.read(cx).value().as_ref() != saved {
                 draft.last_value = saved.clone();
@@ -1409,9 +1434,9 @@ impl SettingsView {
             )
         };
 
-        // The store refuses partial hex colours. Keep that safety boundary,
-        // but retain incomplete text until the user commits the field.
-        let cursor_color = self.text_field(TextSetting::CursorColor, window, cx);
+        // The existing picker and text formats share one uncommitted draft.
+        // Leaving a field or popup never commits a colour before Cancel can run.
+        let cursor_color = self.cursor_color_field(window, cx);
 
         let font_group = SettingGroup::new()
             .title(crate::i18n::t("字体", "Font"))
@@ -1485,10 +1510,10 @@ impl SettingsView {
                 ),
             )
             .item(
-                SettingItem::new(crate::i18n::t("颜色", "Colour"), cursor_color).description(
+                SettingItem::new(crate::i18n::t("颜色", "Colour"), cursor_color).layout(Axis::Vertical).description(
                     crate::i18n::t(
-                        "十六进制颜色,如 #2D2D2F。留空为默认的浅白色。",
-                        "A hex colour such as #2D2D2F. Empty means the default light grey.",
+                        "选色或输入 HEX、RGB、HSL、HSV、CMYK。透明度只作用于光标；留空使用默认。",
+                        "Pick or enter HEX, RGB, HSL, HSV or CMYK. Alpha affects only the cursor; empty uses the default.",
                     ),
                 ),
             );
