@@ -63,7 +63,12 @@ fn open<'a>(
         handle = Some(view.clone());
         Root::new(view, window, cx)
     });
-    cx.update(|window, _cx| window.resize(gpui_kit::size(px(1100.), px(1800.))));
+    cx.update(|window, _cx| {
+        window.resize(gpui_kit::size(px(1100.), px(1800.)));
+        // The test platform starts inactive. Real focus/blur callbacks are
+        // dispatched only for active windows, just as in the native app.
+        window.activate_window();
+    });
     draw(cx);
     (handle.unwrap(), cx)
 }
@@ -174,10 +179,16 @@ fn number_fields_keep_their_setter_after_page_switch(cx: &mut TestAppContext) {
     let (view, cx) = open(cx, &fixture, SettingsPageId::Files);
     focus_value("280", cx);
     number_change("300", cx);
+    assert_eq!(fixture.store.borrow().quick_panel_height(), 280.);
+    cx.simulate_keystrokes("enter");
+    draw(cx);
     assert_eq!(fixture.store.borrow().quick_panel_height(), 300.);
     page(&view, SettingsPageId::TermFont, cx);
     focus_value("14", cx);
     number_change("18", cx);
+    assert_eq!(fixture.store.borrow().font_size(), 14);
+    cx.simulate_keystrokes("enter");
+    draw(cx);
     assert_eq!(fixture.store.borrow().font_size(), 18);
     assert_eq!(
         fixture.store.borrow().quick_panel_height(),
@@ -352,4 +363,158 @@ fn url_validation_waits_for_commit_and_never_changes_sync_permissions(cx: &mut T
     assert!(!store.webdav_accept_invalid_certs());
     assert!(store.webdav_password().is_empty());
     assert!(view.update(cx, |view, _| view.take_action()).is_none());
+}
+
+fn check_numeric_typing(
+    cx: &mut TestAppContext,
+    selected: SettingsPageId,
+    initial: &str,
+    typed: &str,
+    read: fn(&ConfigStore) -> f64,
+) {
+    let fixture = Fixture::new();
+    let before = read(&fixture.store.borrow());
+    let (_, cx) = open(cx, &fixture, selected);
+    focus_value(initial, cx);
+    cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-a" } else { "ctrl-a" });
+    draw(cx);
+    let mut expected = String::new();
+    for ch in typed.chars() {
+        expected.push(ch);
+        cx.simulate_input(&ch.to_string());
+        draw(cx);
+        assert_eq!(value(cx), expected, "render must retain the whole raw numeric draft");
+        assert_eq!(read(&fixture.store.borrow()), before, "typing must not persist/clamp a partial number");
+        assert!(!fixture.store.borrow().path.exists(), "typing alone must not save");
+    }
+    cx.simulate_keystrokes("enter");
+    draw(cx);
+    assert!((read(&fixture.store.borrow()) - typed.parse::<f64>().unwrap()).abs() < 0.000001);
+    assert_eq!(value(cx), typed, "committed display must not widen f32 representation noise");
+    assert!(fixture.store.borrow().path.exists());
+}
+
+#[gpui_kit::gpui::test]
+fn numeric_panel_font_keeps_three_digit_draft(cx: &mut TestAppContext) {
+    check_numeric_typing(cx, SettingsPageId::Interface, "100", "111", |s| f64::from(s.panel_font()));
+}
+
+#[gpui_kit::gpui::test]
+fn numeric_font_size_keeps_two_digit_draft(cx: &mut TestAppContext) {
+    check_numeric_typing(cx, SettingsPageId::TermFont, "13", "17", |s| f64::from(s.font_size()));
+}
+
+#[gpui_kit::gpui::test]
+fn numeric_line_spacing_keeps_decimal_draft(cx: &mut TestAppContext) {
+    check_numeric_typing(cx, SettingsPageId::TermFont, "1", "0.9", |s| f64::from(s.terminal_line_spacing()));
+}
+
+#[gpui_kit::gpui::test]
+fn numeric_panel_height_keeps_three_digit_draft(cx: &mut TestAppContext) {
+    let initial = Fixture::new().store.borrow().quick_panel_height().to_string();
+    check_numeric_typing(cx, SettingsPageId::Files, &initial, "237", |s| f64::from(s.quick_panel_height()));
+}
+
+fn type_numeric(text: &str, cx: &mut VisualTestContext) {
+    cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-a backspace" } else { "ctrl-a backspace" });
+    if !text.is_empty() { cx.simulate_input(text); }
+    draw(cx);
+    assert_eq!(value(cx), text);
+}
+
+#[gpui_kit::gpui::test]
+fn numeric_invalid_and_failed_save_preserve_the_raw_draft(cx: &mut TestAppContext) {
+    let fixture = Fixture::new();
+    let (view, cx) = open(cx, &fixture, SettingsPageId::Interface);
+    let key = TextSetting::Number(NumberSetting::PanelFont);
+    focus_value("100", cx);
+    for invalid in ["", "-", "abc", "NaN", "inf", "100.5"] {
+        type_numeric(invalid, cx);
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert_eq!(value(cx), invalid);
+        assert_eq!(fixture.store.borrow().panel_font(), 100);
+        assert!(!fixture.store.borrow().path.exists());
+        assert!(view.read_with(cx, |view, _| view.text_drafts[&key].error.is_some()));
+    }
+    page(&view, SettingsPageId::Files, cx);
+    page(&view, SettingsPageId::Interface, cx);
+    focus_value("100.5", cx);
+    assert!(view.read_with(cx, |view, _| view.text_drafts[&key].error.is_some()));
+    type_numeric("111", cx);
+    let path = fixture.store.borrow().path.clone();
+    std::fs::create_dir(&path).unwrap();
+    cx.simulate_keystrokes("enter");
+    draw(cx);
+    assert_eq!(value(cx), "111");
+    assert_eq!(fixture.store.borrow().panel_font(), 100);
+    assert!(view.read_with(cx, |view, _| view.text_drafts[&key].error.is_some()));
+    std::fs::remove_dir(&path).unwrap();
+    cx.simulate_keystrokes("enter");
+    draw(cx);
+    assert_eq!(fixture.store.borrow().panel_font(), 111);
+    let connection = rusqlite::Connection::open(path).unwrap();
+    let raw: String = connection.query_row("SELECT value FROM meta WHERE key='settings'", [], |row| row.get(0)).unwrap();
+    let saved: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(saved["panel_font"], 111);
+    assert!(!fixture.store.borrow().mcp_enabled());
+    assert!(!fixture.store.borrow().webdav_enabled());
+    assert!(!fixture.store.borrow().webdav_accept_invalid_certs());
+}
+
+#[gpui_kit::gpui::test]
+fn numeric_spacing_buttons_step_by_tenths_and_clamp(cx: &mut TestAppContext) {
+    let fixture = Fixture::new();
+    fixture.store.borrow_mut().set_terminal_line_spacing(0.8);
+    let (_, cx) = open(cx, &fixture, SettingsPageId::TermFont);
+    let bounds = cx.debug_bounds("settings-number-LineSpacing").unwrap();
+    assert!(bounds.size.height > px(20.));
+    let increment = gpui_kit::point(bounds.right() - px(12.), bounds.center().y);
+    let decrement = gpui_kit::point(bounds.left() + px(12.), bounds.center().y);
+    cx.simulate_click(increment, gpui_kit::Modifiers::default());
+    draw(cx);
+    assert!((fixture.store.borrow().terminal_line_spacing() - 0.9).abs() < 0.000001);
+    assert_eq!(value(cx), "0.9");
+    for _ in 0..10 { cx.simulate_click(increment, gpui_kit::Modifiers::default()); draw(cx); }
+    assert_eq!(fixture.store.borrow().terminal_line_spacing(), 1.5);
+    assert_eq!(value(cx), "1.5");
+    cx.simulate_click(decrement, gpui_kit::Modifiers::default());
+    draw(cx);
+    assert!((fixture.store.borrow().terminal_line_spacing() - 1.4).abs() < 0.000001);
+    assert_eq!(value(cx), "1.4");
+    type_numeric("0.7", cx);
+    cx.simulate_keystrokes("enter");
+    draw(cx);
+    assert_eq!(fixture.store.borrow().terminal_line_spacing(), 0.8);
+    assert_eq!(value(cx), "0.8");
+}
+
+#[gpui_kit::gpui::test]
+fn numeric_blur_commits_whole_values_without_rebinding_other_pages(cx: &mut TestAppContext) {
+    let fixture = Fixture::new();
+    let (view, cx) = open(cx, &fixture, SettingsPageId::Interface);
+    focus_value("100", cx);
+    type_numeric("79", cx);
+    let nav = cx.debug_bounds("settings-nav-TermFont").unwrap();
+    cx.simulate_click(nav.center(), gpui_kit::Modifiers::default());
+    draw(cx);
+    assert_eq!(view.read_with(cx, |view, _| view.selected), SettingsPageId::TermFont);
+    assert_eq!(fixture.store.borrow().panel_font(), 80);
+    focus_value("13", cx);
+    type_numeric("33", cx);
+    let nav = cx.debug_bounds("settings-nav-Files").unwrap();
+    cx.simulate_click(nav.center(), gpui_kit::Modifiers::default());
+    draw(cx);
+    assert_eq!(fixture.store.borrow().font_size(), 32);
+    let initial = fixture.store.borrow().quick_panel_height().to_string();
+    focus_value(&initial, cx);
+    type_numeric("601.5", cx);
+    let nav = cx.debug_bounds("settings-nav-Interface").unwrap();
+    cx.simulate_click(nav.center(), gpui_kit::Modifiers::default());
+    draw(cx);
+    assert_eq!(fixture.store.borrow().quick_panel_height(), 600.);
+    focus_value("80", cx);
+    assert_eq!(fixture.store.borrow().font_size(), 32);
+    assert_eq!(fixture.store.borrow().terminal_line_spacing(), 1.);
+    assert!(!fixture.store.borrow().mcp_enabled());
 }
