@@ -88,7 +88,7 @@ pub(crate) fn run(args: &[String]) -> Result<()> {
             if remote_command.trim().is_empty() {
                 return Err(anyhow!("remote command must not be empty"));
             }
-            let timeout = option_value(args, "--timeout")?
+            let timeout = option_value(&args[..delimiter], "--timeout")?
                 .map(|value| value.parse::<u64>())
                 .transpose()
                 .context("--timeout must be a positive integer")?
@@ -170,11 +170,41 @@ pub(crate) fn run(args: &[String]) -> Result<()> {
         }
     };
 
-    if args.iter().any(|arg| arg == "--json") {
+    let options = local_options(command, args);
+    if options.iter().any(|arg| arg == "--json") {
         println!("{}", serde_json::to_string_pretty(&value)?);
     } else {
         print_human(command, &value);
     }
+    if command == CliCommand::Exec {
+        ensure_remote_success(&value)?;
+    }
+    Ok(())
+}
+
+/// A remote program's flags after `--` must never change local CLI behavior.
+fn local_options(command: CliCommand, args: &[String]) -> &[String] {
+    if command == CliCommand::Exec {
+        &args[..args
+            .iter()
+            .position(|arg| arg == "--")
+            .unwrap_or(args.len())]
+    } else {
+        args
+    }
+}
+
+/// Preserve the result output for scripts, but make failed remote commands fail
+/// locally too. A missing exit status cannot be treated as confirmed success.
+fn ensure_remote_success(value: &Value) -> Result<()> {
+    anyhow::ensure!(
+        value.get("timed_out").and_then(Value::as_bool) != Some(true),
+        "remote command timed out"
+    );
+    anyhow::ensure!(
+        value.get("exit_code").and_then(Value::as_i64) == Some(0),
+        "remote command failed"
+    );
     Ok(())
 }
 
@@ -307,5 +337,39 @@ mod tests {
         ];
         assert_eq!(option_value(&args, "--group").unwrap(), Some("prod"));
         assert_eq!(option_value(&args, "--json").unwrap(), None);
+    }
+
+    #[test]
+    fn remote_options_are_not_local_options() {
+        let args = [
+            "xenterm",
+            "cli",
+            "exec",
+            "fixture",
+            "--",
+            "command",
+            "--json",
+            "--timeout",
+            "not-a-number",
+        ]
+        .map(String::from);
+        let local = local_options(CliCommand::Exec, &args);
+        assert_eq!(local.len(), 4);
+        assert!(!local.iter().any(|arg| arg == "--json"));
+        assert_eq!(option_value(local, "--timeout").unwrap(), None);
+        assert_eq!(local_options(CliCommand::Sessions, &args), args);
+    }
+
+    #[test]
+    fn only_confirmed_zero_remote_exit_is_success() {
+        assert!(ensure_remote_success(&json!({"exit_code": 0, "timed_out": false})).is_ok());
+        for value in [
+            json!({"exit_code": 17}),
+            json!({"exit_code": null}),
+            json!({}),
+            json!({"exit_code": 0, "timed_out": true}),
+        ] {
+            assert!(ensure_remote_success(&value).is_err());
+        }
     }
 }
