@@ -38,6 +38,7 @@ use gpui_kit::{
 // The full Lucide catalog rather than the component library's curated subset: the icons
 // this panel needs for its own actions are not in that subset.
 use gpui_kit::assets::IconName;
+use gpui_kit::TestSupportExt as _;
 
 use crate::config::ConfigStore;
 use crate::core::quick::{self, QuickRow};
@@ -259,6 +260,9 @@ impl QuickCommandsView {
             .when(folded && count > 0, |this| {
                 this.child(
                     div()
+                        .id(SharedString::from(format!("quick-group-count-{}", row.group)))
+                        .test_support()
+                        .aria_label(count.to_string())
                         .text_xs()
                         .text_color(theme.muted_foreground)
                         .child(SharedString::from(count.to_string())),
@@ -355,13 +359,14 @@ impl Render for QuickCommandsView {
             );
         }
         for (index, row) in rows.iter().enumerate() {
-            // How many entries follow this heading before the next one: the count is what
-            // makes a folded group readable as "there is something in here".
+            // The first command also carries the heading; count it along with
+            // the following entries, but not an empty group's placeholder.
             let count = rows[index..]
                 .iter()
                 .skip(1)
                 .take_while(|next| !next.header)
-                .count();
+                .count()
+                + usize::from(row.index.is_some());
             let folded = self.collapsed.contains(&row.group);
             if row.header {
                 body.push(self.group_header(row, count, cx));
@@ -410,3 +415,7 @@ impl Render for QuickCommandsView {
             )
     }
 }
+
+#[cfg(test)]
+#[path = "quick_group_count_tests.rs"]
+mod count_tests;
