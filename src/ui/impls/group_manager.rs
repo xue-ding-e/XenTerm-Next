@@ -32,6 +32,7 @@ use gpui_kit::{
 
 // The full Lucide catalog rather than the component library's curated subset.
 use gpui_kit::assets::IconName;
+use gpui_kit::gpui::Focusable as _;
 
 use crate::config::ConfigStore;
 
@@ -121,12 +122,31 @@ impl GroupManagerView {
             window,
             |_: &mut Self, _, _: &gpui_kit::component::input::InputEvent, _, cx| cx.notify(),
         );
+        // Switching rows also retires the previous input. Carry its focus to
+        // the replacement without taking focus from another control.
+        if self
+            .editing
+            .as_ref()
+            .is_some_and(|(_, previous, _)| previous.read(cx).focus_handle(cx).is_focused(window))
+        {
+            window.focus(&input.read(cx).focus_handle(cx), cx);
+        }
         self.editing = Some((group, input, subscription));
         cx.notify();
     }
 
-    /// Drop the inline rename without writing anything.
-    fn cancel_edit(&mut self, cx: &mut Context<Self>) {
+    /// End the inline rename without changing the creation draft. If the
+    /// disappearing input owns focus, hand it to the creation box first: a
+    /// dialog's close button dispatches Cancel through the current focus path.
+    fn finish_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let restore_focus = self
+            .editing
+            .as_ref()
+            .is_some_and(|(_, input, _)| input.read(cx).focus_handle(cx).is_focused(window));
+        if restore_focus {
+            let focus = self.create.read(cx).focus_handle(cx);
+            window.focus(&focus, cx);
+        }
         self.editing = None;
         cx.notify();
     }
@@ -162,8 +182,7 @@ impl GroupManagerView {
         };
         let name = input.read(cx).value().trim().to_string();
         if name.is_empty() || name == old {
-            self.editing = None;
-            cx.notify();
+            self.finish_edit(window, cx);
             return;
         }
         {
@@ -174,8 +193,7 @@ impl GroupManagerView {
             }
         }
         self.pending = Some(GroupManagerAction::Saved);
-        self.editing = None;
-        cx.notify();
+        self.finish_edit(window, cx);
     }
 
     /// Delete a group, leaving its sessions ungrouped.
@@ -195,7 +213,7 @@ impl GroupManagerView {
             .map(|(g, _, _)| g == group)
             .unwrap_or(false)
         {
-            self.editing = None;
+            self.finish_edit(window, cx);
         }
         cx.notify();
     }
@@ -285,7 +303,9 @@ impl GroupManagerView {
                             .label(crate::i18n::t("取消", "Cancel"))
                             .ghost()
                             .small()
-                            .on_click(cx.listener(|this, _, _, cx| this.cancel_edit(cx))),
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.finish_edit(window, cx)),
+                            ),
                     )
                     .into_any_element()
             } else {
