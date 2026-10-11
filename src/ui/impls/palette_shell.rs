@@ -162,16 +162,8 @@ impl Shell {
                     }
                 });
             }
-            CommandId::NextTab => {
-                self.pages
-                    .terminal
-                    .update(cx, |page, cx| page.cycle_tab(false, cx));
-            }
-            CommandId::PrevTab => {
-                self.pages
-                    .terminal
-                    .update(cx, |page, cx| page.cycle_tab(true, cx));
-            }
+            CommandId::NextTab => self.cycle_terminal_tab(false, window, cx),
+            CommandId::PrevTab => self.cycle_terminal_tab(true, window, cx),
             CommandId::Reconnect => self.reconnect_ended_session(cx),
             CommandId::ToggleDock => {
                 self.pages.terminal.update(cx, |page, cx| {

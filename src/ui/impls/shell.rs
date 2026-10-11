@@ -960,6 +960,25 @@ impl Shell {
         cx.notify();
     }
 
+    /// User-driven tab cycling changes both workspace selection and keyboard target.
+    /// Keep background state-only cycling from taking focus away from another page.
+    pub(crate) fn cycle_terminal_tab(
+        &mut self,
+        reverse: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let terminal_visible = self.pages.active == PageId::Terminal;
+        self.pages.terminal.update(cx, |page, cx| {
+            let before = page.active_tab_id();
+            page.cycle_tab(reverse, cx);
+            if terminal_visible && page.active_tab_id() != before {
+                // The shared focus helper also respects active dialogs and sheets.
+                page.focus_active_tab(window, cx);
+            }
+        });
+    }
+
     /// The rail, the page, and the two keystrokes the window keeps for itself.
     fn render_body(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let page = self.pages.render_active();
@@ -998,15 +1017,11 @@ impl Shell {
                     this.reconnect_ended_session(cx);
                 },
             ))
-            .on_action(cx.listener(|this, _: &crate::ui::NextTab, _, cx| {
-                this.pages
-                    .terminal
-                    .update(cx, |page, cx| page.cycle_tab(false, cx));
+            .on_action(cx.listener(|this, _: &crate::ui::NextTab, window, cx| {
+                this.cycle_terminal_tab(false, window, cx);
             }))
-            .on_action(cx.listener(|this, _: &crate::ui::PrevTab, _, cx| {
-                this.pages
-                    .terminal
-                    .update(cx, |page, cx| page.cycle_tab(true, cx));
+            .on_action(cx.listener(|this, _: &crate::ui::PrevTab, window, cx| {
+                this.cycle_terminal_tab(true, window, cx);
             }))
             .on_action(cx.listener(|this, _: &crate::ui::CloseTab, window, cx| {
                 let terminal_visible = this.pages.active == PageId::Terminal;
