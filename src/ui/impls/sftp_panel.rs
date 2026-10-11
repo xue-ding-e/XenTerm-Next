@@ -239,6 +239,21 @@ impl SftpPanelView {
             .map(|(_, generation)| *generation)
     }
 
+    /// A destructive request must still describe this exact, settled listing.
+    pub(crate) fn matches_delete_request(
+        &self,
+        tab: &str,
+        path: &str,
+        generation: u64,
+        selected: &[String],
+    ) -> bool {
+        self.loading_since.is_none()
+            && self.synced_generation(tab) == Some(generation)
+            && self.listing.generation() == generation
+            && self.listing.path() == path
+            && self.listing.selected_paths() == selected
+    }
+
     /// Show a freshly arrived tree.
     ///
     /// Pushed rather than built here: the session owns which directories are expanded, and

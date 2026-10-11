@@ -2120,9 +2120,7 @@ impl Shell {
                 }
                 PanelAction::Delete(paths) => {
                     if let Some(commands) = &handle {
-                        for remote in paths {
-                            let _ = commands.send(crate::sftp::SftpCommand::Delete(remote));
-                        }
+                        self.confirm_sftp_delete(&tab_id, panel, paths, commands, window, cx);
                     }
                 }
             }
@@ -2134,6 +2132,196 @@ impl Shell {
             self.pages.terminal.update(cx, |page, cx| page.refresh_dock(cx));
             cx.notify();
         }
+    }
+
+    /// Confirm a fixed selection, then revalidate it against its original tab
+    /// and transport. No result or a changed context never authorizes a retry.
+    fn confirm_sftp_delete(
+        &mut self,
+        tab_id: &str,
+        panel: &Entity<SftpPanelView>,
+        paths: Vec<String>,
+        commands: &tokio::sync::mpsc::UnboundedSender<crate::sftp::SftpCommand>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use gpui_kit::component::dialog::DialogButtonProps;
+        use gpui_kit::TestSupportExt as _;
+
+        let listing = self.state.listing(tab_id);
+        let directory = listing.path().to_string();
+        let generation = listing.generation();
+        if paths.is_empty()
+            || !panel
+                .read(cx)
+                .matches_delete_request(tab_id, &directory, generation, &paths)
+        {
+            self.say(
+                crate::i18n::t(
+                    "列表已变化，请重新选择后删除。",
+                    "The listing changed. Select the items again before deleting.",
+                ),
+                cx,
+            );
+            return;
+        }
+        let session = self
+            .pages
+            .terminal
+            .read(cx)
+            .tab_title(Some(tab_id))
+            .unwrap_or_else(|| tab_id.to_string());
+        let summary: SharedString = format!(
+            "{}: {}\n{}: {}\n{}: {}\n\n{}\n\n{}",
+            crate::i18n::t("选中项目", "Selected items"),
+            paths.len(),
+            crate::i18n::t("会话", "Session"),
+            session,
+            crate::i18n::t("远程目录", "Remote directory"),
+            directory,
+            paths.join("\n"),
+            crate::i18n::t(
+                "将永久删除以上远程项目及所选目录内的全部内容，此操作无法撤销。",
+                "These remote items and all contents of selected directories will be permanently deleted. This cannot be undone."
+            ),
+        )
+        .into();
+        let tab_id = tab_id.to_string();
+        let origin = cx.entity().downgrade();
+        let panel = panel.downgrade();
+        // A pending question must not keep a closed transport alive.
+        let transport = commands.downgrade();
+        let cancel_focus = cx.focus_handle();
+        let initial_focus = cancel_focus.clone();
+        let resolved = Rc::new(Cell::new(false));
+        window.open_dialog(cx, move |dialog, _, cx| {
+            let dismissed = resolved.clone();
+            let cancelled = resolved.clone();
+            let submitted = resolved.clone();
+            let origin = origin.clone();
+            let panel = panel.clone();
+            let transport = transport.clone();
+            let tab_id = tab_id.clone();
+            let directory = directory.clone();
+            let paths = paths.clone();
+            let submit = Rc::new(move |window: &mut Window, cx: &mut gpui_kit::App| {
+                cx.stop_propagation();
+                // Two clicks can arrive before the dismissal frame.
+                if submitted.replace(true) {
+                    return;
+                }
+                if let Some(origin) = origin.upgrade() {
+                    origin.update(cx, |shell, cx| {
+                        let current = shell.state.listing(&tab_id);
+                        let original_transport = transport.upgrade();
+                        let current_transport =
+                            shell.state.sftp_handles.lock().ok().and_then(|handles| {
+                                handles.get(&tab_id).map(|handle| handle.commands.clone())
+                            });
+                        let unchanged = shell.pages.active == PageId::Terminal
+                            && shell.pages.terminal.read(cx).active_tab_id().as_deref()
+                                == Some(tab_id.as_str())
+                            && current.path() == directory
+                            && current.generation() == generation
+                            && current.selected_paths() == paths
+                            && panel.upgrade().is_some_and(|panel| {
+                                panel
+                                    .read(cx)
+                                    .matches_delete_request(&tab_id, &directory, generation, &paths)
+                            })
+                            && original_transport
+                                .as_ref()
+                                .zip(current_transport.as_ref())
+                                .is_some_and(|(original, current)| {
+                                    original.same_channel(current) && !current.is_closed()
+                                });
+                        if unchanged {
+                            if let Some(commands) = current_transport {
+                                for path in &paths {
+                                    let _ = commands
+                                        .send(crate::sftp::SftpCommand::Delete(path.clone()));
+                                }
+                            }
+                        } else {
+                            shell.say(
+                                crate::i18n::t(
+                                    "目录、选择或连接已变化，请重新选择后删除。",
+                                    "The directory, selection, or connection changed. \
+                                     Select the items again before deleting.",
+                                ),
+                                cx,
+                            );
+                        }
+                    });
+                }
+                window.close_dialog(cx);
+            });
+            let submit_key = submit.clone();
+            let theme = cx.theme();
+            let cancel_button = gpui_kit::base::Button::new("sftp-delete-cancel")
+                .track_focus(&cancel_focus)
+                .px_3()
+                .py_2()
+                .rounded_md()
+                .bg(theme.primary)
+                .text_color(theme.primary_foreground)
+                .border_2()
+                .border_color(theme.border)
+                .focus_visible(|style| style.border_color(theme.ring))
+                .child(crate::i18n::t("取消", "Cancel"))
+                .on_click(move |_, window, cx| {
+                    cx.stop_propagation();
+                    cancelled.set(true);
+                    window.close_dialog(cx);
+                });
+            let delete_button = gpui_kit::base::Button::new("sftp-delete-confirm")
+                .px_3()
+                .py_2()
+                .rounded_md()
+                .bg(theme.danger)
+                .text_color(theme.danger_foreground)
+                .border_2()
+                .border_color(theme.border)
+                .focus_visible(|style| style.border_color(theme.ring))
+                .child(crate::i18n::t("永久删除", "Permanently delete"))
+                .on_click(move |_, window, cx| submit(window, cx))
+                .on_action(
+                    move |_: &gpui_kit::component::dialog::Confirm, window, cx| {
+                        submit_key(window, cx);
+                    },
+                );
+            dialog
+                .title(crate::i18n::t(
+                    "确认删除远程项目",
+                    "Confirm remote deletion",
+                ))
+                .w(px(520.))
+                .overlay_closable(false)
+                // Enter at the dialog level is cancellation. Only activating
+                // the named Delete button below can submit the request.
+                .button_props(DialogButtonProps::default().on_ok(|_, _, _| true))
+                .on_close(move |_, _, _| dismissed.set(true))
+                .child(
+                    div()
+                        .id("sftp-delete-summary")
+                        .test_support()
+                        .w_full()
+                        .max_h(px(240.))
+                        .overflow_y_scroll()
+                        .aria_label(summary.clone())
+                        .text_sm()
+                        .child(summary.clone()),
+                )
+                .footer(
+                    h_flex()
+                        .w_full()
+                        .justify_end()
+                        .gap_2()
+                        .child(cancel_button)
+                        .child(delete_button),
+                )
+        });
+        initial_focus.focus(window, cx);
     }
 
     /// Perform whatever the transfer records popover asked for since the last
@@ -2940,3 +3128,5 @@ impl<T: TabFollower> Detached<T> {
 #[cfg(test)]
 #[path = "shell_close_focus_tests.rs"]
 mod shell_close_focus_tests;
+#[path = "sftp_delete_tests.rs"]
+mod sftp_delete_tests;
