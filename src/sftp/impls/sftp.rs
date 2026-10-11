@@ -18,7 +18,6 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 use anyhow::{anyhow, Context, Result};
-use async_trait::async_trait;
 use futures::stream::{FuturesUnordered, StreamExt};
 use russh::client::{self, Handler};
 use russh::keys::key::PrivateKeyWithHashAlg;
@@ -404,7 +403,8 @@ async fn run_sftp(
                 ),
                 handle.authenticate_password(&user, password.as_str()),
             )
-            .await?;
+            .await?
+            .success();
             if !ok {
                 // Match the shell session's fallback: russh can hang if a second
                 // auth method is attempted on the same failed handle, so reconnect
@@ -468,8 +468,7 @@ async fn run_sftp(
             let keypair = crate::ssh::load_session_private_key_offthread(&session, pass).await?;
             // RSA keys need an explicit SHA-2 hash; other key types don't.
             let hash = keypair.algorithm().is_rsa().then_some(HashAlg::Sha256);
-            let key_with_hash = PrivateKeyWithHashAlg::new(Arc::new(keypair), hash)
-                .context("invalid private key")?;
+            let key_with_hash = PrivateKeyWithHashAlg::new(Arc::new(keypair), hash);
             crate::ssh::network_stage(
                 &format!(
                     "SFTP public-key authentication at {}:{}",
@@ -478,6 +477,7 @@ async fn run_sftp(
                 handle.authenticate_publickey(&user, key_with_hash),
             )
             .await?
+            .success()
         }
     };
 
@@ -2385,7 +2385,6 @@ impl crate::ssh::connection::HandshakeHandler for SftpClientHandler {
     }
 }
 
-#[async_trait]
 impl Handler for SftpClientHandler {
     type Error = russh::Error;
 

@@ -336,7 +336,6 @@ mod tests {
 
     struct TestHandler(HostKeyWait);
 
-    #[async_trait::async_trait]
     impl Handler for TestHandler {
         type Error = russh::Error;
     }
