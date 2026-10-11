@@ -297,23 +297,20 @@ impl QuickManagerView {
         let Some(index) = self.editing else {
             return;
         };
-        {
+        let target = {
             let mut store = self.store.borrow_mut();
             let mut commands = store.quick_commands().to_vec();
-            if !quick::reorder(&mut commands, index, move_up) {
+            let Some(target) = quick::reorder(&mut commands, index, move_up) else {
                 return;
-            }
+            };
             store.set_quick_commands(commands);
             if let Err(error) = store.save() {
                 tracing::warn!("could not save the quick commands: {error:#}");
             }
-        }
+            target
+        };
         self.pending = Some(QuickManagerAction::Saved);
-        self.select(
-            Some(if move_up { index - 1 } else { index + 1 }),
-            window,
-            cx,
-        );
+        self.select(Some(target), window, cx);
     }
 
     /// The form: the three fields, the switch, and the buttons that act on them.
@@ -414,6 +411,9 @@ impl QuickManagerView {
         let selected = index.is_some() && index == self.editing;
 
         h_flex()
+            // Scope the repeated action-button IDs to this command row.
+            .id(SharedString::from(format!("quick-manager-row-{}", index.unwrap())))
+            .debug_selector(|| format!("quick-manager-row-{}", index.unwrap()))
             .w_full()
             .gap_2()
             .px_2()
@@ -705,3 +705,7 @@ impl Render for QuickManagerView {
         )
     }
 }
+
+#[cfg(test)]
+#[path = "quick_manager_row_tests.rs"]
+mod row_tests;

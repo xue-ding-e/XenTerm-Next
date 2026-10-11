@@ -114,16 +114,14 @@ pub fn rows(commands: &[QuickCommand], groups: &[String]) -> Vec<QuickRow> {
     rows
 }
 
-/// Move an entry one place within its own group, and report whether it moved.
+/// Move an entry one place within its own group, and return its new index.
 ///
 /// Within its own group, not within the store: the panel shows groups, so "up" means up
 /// among the entries the user can see, and swapping with an entry that is displayed in a
 /// different group would look like nothing happening. The entries live in one vec in
 /// display-group order, so a move is a swap with the nearest member of the same group.
-pub fn reorder(commands: &mut [QuickCommand], index: usize, move_up: bool) -> bool {
-    let Some(current) = commands.get(index) else {
-        return false;
-    };
+pub fn reorder(commands: &mut [QuickCommand], index: usize, move_up: bool) -> Option<usize> {
+    let current = commands.get(index)?;
     let group = current.group.trim().to_string();
     let target = if move_up {
         (0..index)
@@ -134,9 +132,9 @@ pub fn reorder(commands: &mut [QuickCommand], index: usize, move_up: bool) -> bo
     };
     if let Some(target) = target {
         commands.swap(index, target);
-        true
+        Some(target)
     } else {
-        false
+        None
     }
 }
 
@@ -225,7 +223,7 @@ mod tests {
             command("x", "other"),
             command("b", "ops"),
         ];
-        assert!(reorder(&mut commands, 2, true));
+        assert_eq!(reorder(&mut commands, 2, true), Some(0));
         let names: Vec<&str> = commands.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(
             names,
@@ -233,8 +231,11 @@ mod tests {
             "b swapped with a, not with the entry displayed in another group"
         );
         assert!(
-            !reorder(&mut commands, 0, true),
+            reorder(&mut commands, 0, true).is_none(),
             "the first entry of a group has nowhere to go"
         );
+        assert_eq!(reorder(&mut commands, 0, false), Some(2));
+        assert_eq!(reorder(&mut commands, 2, false), None);
+        assert_eq!(reorder(&mut commands, 3, true), None);
     }
 }
