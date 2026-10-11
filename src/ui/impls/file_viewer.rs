@@ -96,7 +96,7 @@ pub(crate) struct FileViewerView {
     /// The name as the heading shows it.
     name: String,
     /// Whether this file was opened to be changed. A read-only viewer still has a text area —
-    /// it is the same widget, and a disabled one is what says "you cannot type here".
+    /// it is the same widget, with read-only mode preserving selection and copy.
     editable: bool,
     /// The text itself. An entity because that is what the input widget is built from.
     text: Entity<TextareaState>,
@@ -273,7 +273,11 @@ impl Render for FileViewerView {
                 .w_full()
                 .flex_1()
                 .min_h_0()
-                .child(Textarea::new(&self.text))
+                .child(
+                    // Multiline inputs default to auto height. The text area
+                    // must use this body's height budget rather than one row.
+                    Textarea::new(&self.text).h_full().readonly(!self.editable),
+                )
                 .into_any_element(),
         };
 
@@ -296,9 +300,8 @@ mod tests {
     /// entity and the path lives on the view, so a save is the one moment the two meet — and
     /// a save that writes the file's *original* text, or to the wrong path, is silent.
     ///
-    /// The text is set through the textarea's own state rather than by typing, because typing
-    /// does not reach an input in this harness; what matters is that the value the widget
-    /// reports is the value the action carries.
+    /// This test sets the textarea state directly to isolate the Save payload.
+    /// The event-level tests below cover real typing and read-only interaction.
     #[gpui_kit::gpui::test]
     fn saving_reports_the_text_the_box_holds(cx: &mut TestAppContext) {
         cx.update(gpui_kit::init);
@@ -372,5 +375,190 @@ mod tests {
             "a viewer that cannot write does not offer to"
         );
         let _ = view;
+    }
+    struct LayoutHarness {
+        viewer: Entity<FileViewerView>,
+        legacy_min_height: bool,
+    }
+
+    impl Render for LayoutHarness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .debug_selector(|| "viewer-height-wrapper".into())
+                .w(gpui_kit::px(640.))
+                .map(|element| {
+                    if self.legacy_min_height {
+                        element.min_h(gpui_kit::px(400.))
+                    } else {
+                        element.h(gpui_kit::px(400.)).min_h_0().overflow_hidden()
+                    }
+                })
+                .child(self.viewer.clone())
+        }
+    }
+
+    fn open_fixture(
+        cx: &mut TestAppContext,
+        editable: bool,
+        legacy_min_height: bool,
+        content: String,
+    ) -> (
+        Entity<FileViewerView>,
+        &mut gpui_kit::gpui::VisualTestContext,
+    ) {
+        cx.update(gpui_kit::init);
+        let (harness, cx) = cx.add_window_view(move |window, cx| {
+            let viewer = cx.new(|cx| {
+                FileViewerView::new(
+                    "/synthetic/fixture.txt".into(),
+                    "fixture.txt".into(),
+                    content,
+                    editable,
+                    String::new(),
+                    window,
+                    cx,
+                )
+            });
+            LayoutHarness {
+                viewer,
+                legacy_min_height,
+            }
+        });
+        draw(cx);
+        let viewer = harness.read_with(cx, |harness, _| harness.viewer.clone());
+        (viewer, cx)
+    }
+
+    fn draw(cx: &mut gpui_kit::gpui::VisualTestContext) {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+    }
+
+    fn focus_text(viewer: &Entity<FileViewerView>, cx: &mut gpui_kit::gpui::VisualTestContext) {
+        use gpui_kit::gpui::Focusable as _;
+        cx.update(|window, cx| {
+            let text = viewer.read(cx).text.clone();
+            let focus = text.read(cx).focus_handle(cx);
+            window.focus(&focus, cx);
+        });
+    }
+
+    fn shortcut(key: &str) -> String {
+        format!(
+            "{}-{key}",
+            if cfg!(target_os = "macos") {
+                "cmd"
+            } else {
+                "ctrl"
+            }
+        )
+    }
+
+    #[gpui_kit::gpui::test]
+    fn textarea_uses_the_available_height_in_both_overlay_wrappers(cx: &mut TestAppContext) {
+        use gpui_kit::test::TestWindowExt as _;
+        let mut measurements = Vec::new();
+        for legacy_min_height in [true, false] {
+            let content = (0..80)
+                .map(|n| format!("fixture line {n}\n"))
+                .collect::<String>();
+            let (viewer, cx) = open_fixture(cx, false, legacy_min_height, content);
+            let wrapper = cx.debug_bounds("viewer-height-wrapper").unwrap();
+            let input = cx.update(|window, cx| {
+                window
+                    .find(("input", viewer.read(cx).text.entity_id()))
+                    .bounds()
+            });
+            measurements.push((
+                legacy_min_height,
+                f32::from(wrapper.size.height),
+                f32::from(input.size.height),
+            ));
+        }
+        eprintln!("legacy_min_height, wrapper, textarea: {measurements:?}");
+        for (legacy, wrapper, input) in measurements {
+            assert!(input >= wrapper * 0.65, "textarea should use the viewer's height, not a row-height input: legacy={legacy}, wrapper={wrapper}, textarea={input}");
+        }
+    }
+
+    #[gpui_kit::gpui::test]
+    fn readonly_view_rejects_edits_but_keeps_selection_and_copy(cx: &mut TestAppContext) {
+        let original = "first line\nsecond 中文\nthird line".to_string();
+        let (viewer, cx) = open_fixture(cx, false, false, original.clone());
+        focus_text(&viewer, cx);
+        cx.simulate_keystrokes(&shortcut("a"));
+        assert_eq!(
+            viewer.read_with(cx, |viewer, cx| viewer
+                .text
+                .read(cx)
+                .selected_value()
+                .to_string()),
+            original
+        );
+        cx.simulate_keystrokes(&shortcut("c"));
+        assert_eq!(
+            cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text())),
+            Some(original.clone())
+        );
+        cx.simulate_input("attempted replacement");
+        cx.simulate_keystrokes("backspace delete");
+        cx.update(|_, cx| {
+            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("paste attempt".into()))
+        });
+        cx.simulate_keystrokes(&shortcut("v"));
+        assert_eq!(
+            viewer.read_with(cx, |viewer, cx| viewer.text.read(cx).value().to_string()),
+            original
+        );
+        assert!(viewer
+            .update(cx, |viewer, _| viewer.take_action())
+            .is_none());
+    }
+
+    #[gpui_kit::gpui::test]
+    fn editable_view_accepts_real_input_and_close_never_saves_it(cx: &mut TestAppContext) {
+        use gpui_kit::test::TestWindowExt as _;
+        let (viewer, cx) = open_fixture(cx, true, false, "original".into());
+        focus_text(&viewer, cx);
+        cx.simulate_keystrokes(&shortcut("a"));
+        cx.simulate_input("edited draft\nsecond line");
+        assert_eq!(
+            viewer.read_with(cx, |viewer, cx| viewer.text.read(cx).value().to_string()),
+            "edited draft\nsecond line"
+        );
+        assert!(viewer
+            .update(cx, |viewer, _| viewer.take_action())
+            .is_none());
+        let save = cx.debug_bounds("file-viewer-save").unwrap();
+        cx.simulate_click(save.center(), Modifiers::default());
+        assert_eq!(
+            viewer.update(cx, |viewer, _| viewer.take_action()),
+            Some(FileViewerAction::Save {
+                path: "/synthetic/fixture.txt".into(),
+                content: "edited draft\nsecond line".into()
+            })
+        );
+        let close = cx.update(|window, _| window.find("file-viewer-close").bounds());
+        cx.simulate_click(close.center(), Modifiers::default());
+        assert_eq!(
+            viewer.update(cx, |viewer, _| viewer.take_action()),
+            Some(FileViewerAction::Close)
+        );
+        assert!(viewer
+            .update(cx, |viewer, _| viewer.take_action())
+            .is_none());
+
+        let (viewer, cx) = open_fixture(cx, true, false, "unchanged remote".into());
+        focus_text(&viewer, cx);
+        cx.simulate_input("unsaved draft");
+        let close = cx.update(|window, _| window.find("file-viewer-close").bounds());
+        cx.simulate_click(close.center(), Modifiers::default());
+        assert_eq!(
+            viewer.update(cx, |viewer, _| viewer.take_action()),
+            Some(FileViewerAction::Close)
+        );
+        assert!(viewer
+            .update(cx, |viewer, _| viewer.take_action())
+            .is_none());
     }
 }
