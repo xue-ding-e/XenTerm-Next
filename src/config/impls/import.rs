@@ -58,7 +58,7 @@ fn compatibility_warnings(value: &serde_json::Value) -> Result<Vec<ImportWarning
     let ignored_settings = value.as_object().map_or(0, |object| {
         object
             .keys()
-            .filter(|key| !matches!(key.as_str(), "sessions" | "meatshell_export"))
+            .filter(|key| !matches!(key.as_str(), "sessions" | "meatshell_export" | "xenterm_export"))
             .count()
     });
     if ignored_settings > 0 {
