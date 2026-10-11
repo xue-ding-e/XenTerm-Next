@@ -505,6 +505,8 @@ xenterm/
 
 ## Development
 
+Before contributing, read the [contribution guide (Chinese)](CONTRIBUTING.md) for PR scope, conflict handling, review readiness, and API compatibility checks.
+
 - **The interface is GPUI only.** There is no feature flag to build against and no second
   frontend to keep in step. A bare `xenterm` launch and the migration-era `xenterm gpui`
   argument both open the same shell.
