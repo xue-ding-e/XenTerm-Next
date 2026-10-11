@@ -1,56 +1,122 @@
 name: Release
 
-# Build native packages for Windows / Linux / macOS.
-#  - Push a tag like `v0.2.3`  -> builds all platforms and attaches the archives
-#    to a GitHub Release.
-#  - Run manually (workflow_dispatch) -> builds all platforms and uploads them as
-#    downloadable workflow artifacts (no release created).
+# One workflow, one artifact set (same platforms, same AppImage / .deb / MSI /
+# Flatpak / glibc-2.28 tarballs as before — only the version strings differ):
+#  - push a tag `vX.Y.Z`  -> stable mode; once every build succeeds, all
+#    artifacts attach to the GitHub Release in one step (no partial releases).
+#  - push to main         -> beta mode; replaces the single rolling `beta`
+#    pre-release. Feature branches never build releases (ci.yml covers them).
+#  - workflow_dispatch    -> mode input: `beta` (default, publish rolling beta),
+#    `stable` (attach to the selected tag's release — retry path for a failed
+#    tag build), `dry-run` (build artifacts only, publish nothing).
+#
+# Forks: tag pushes build and attach to the fork's own release (marked
+# pre-release, never "latest"); rolling-beta publishing only ever runs in
+# ixbaicn/XenTerm.
 
 on:
   push:
+    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "beta = rolling beta; stable = attach to the selected tag's release; dry-run = artifacts only"
+        type: choice
+        options: [beta, stable, dry-run]
+        default: beta
 
 permissions:
   contents: write   # needed to create / update the GitHub Release
 
+# Same ref: a newer run cancels the older one (rolling beta). Different tags
+# never cancel each other.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  check-version:
-    name: Check tag version
+  prepare:
+    name: Resolve mode and version
     runs-on: ubuntu-latest
+    outputs:
+      mode: ${{ steps.resolve.outputs.mode }}           # stable | beta | dry-run
+      version: ${{ steps.resolve.outputs.version }}     # vX.Y.Z | beta-<sha7> | <ref>
+      deb_version: ${{ steps.resolve.outputs.deb_version }}
+      app_version: ${{ steps.resolve.outputs.app_version }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Ensure tag matches Cargo package version
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Resolve mode and version
+        id: resolve
         shell: bash
+        env:
+          INPUT_MODE: ${{ inputs.mode }}
         run: |
           set -eu
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
           CARGO_VERSION="$(sed -n '/^\[package\]/,/^\[/ s/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
-          LOCK_VERSION="$(awk '
-            $0 == "name = \"xenterm\"" { found = 1; next }
-            found && $1 == "version" {
-              gsub(/"/, "", $3)
-              print $3
-              exit
-            }
-          ' Cargo.lock)"
-          if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
-            echo "Tag ${GITHUB_REF_NAME} does not match Cargo.toml version ${CARGO_VERSION}."
-            echo "Run: pwsh ./scripts/release.ps1 ${GITHUB_REF_NAME}"
-            exit 1
+          if [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            MODE=stable
+            VERSION="$GITHUB_REF_NAME"
+            LOCK_VERSION="$(awk '
+              $0 == "name = \"xenterm\"" { found = 1; next }
+              found && $1 == "version" {
+                gsub(/"/, "", $3)
+                print $3
+                exit
+              }
+            ' Cargo.lock)"
+            if [ "${VERSION#v}" != "$CARGO_VERSION" ]; then
+              echo "Tag ${VERSION} does not match Cargo.toml version ${CARGO_VERSION}."
+              echo "Run: pwsh ./scripts/release.ps1 ${VERSION}"
+              exit 1
+            fi
+            if [ "${VERSION#v}" != "$LOCK_VERSION" ]; then
+              echo "Tag ${VERSION} does not match Cargo.lock xenterm version ${LOCK_VERSION}."
+              echo "Run: pwsh ./scripts/release.ps1 ${VERSION}"
+              exit 1
+            fi
+            DEB_VERSION="${VERSION#v}"
+            APP_VERSION="${VERSION#v}"
+          elif [ "$INPUT_MODE" = "stable" ]; then
+            if [ "$GITHUB_REF_TYPE" != "tag" ]; then
+              echo "Mode 'stable' requires dispatching on a tag ref (got ${GITHUB_REF_NAME:-<none>})."
+              exit 1
+            fi
+            MODE=stable
+            VERSION="$GITHUB_REF_NAME"
+            DEB_VERSION="${VERSION#v}"
+            APP_VERSION="${VERSION#v}"
+          elif [ "$INPUT_MODE" = "dry-run" ]; then
+            MODE=dry-run
+            VERSION="${GITHUB_REF_NAME:-dev}"
+            DEB_VERSION="$CARGO_VERSION"
+            APP_VERSION="$CARGO_VERSION"
+          else
+            MODE=beta
+            VERSION="beta-${GITHUB_SHA::7}"
+            # Unlike a tag ("v0.7.3"), "beta-<sha>" is not a valid Debian
+            # upstream version (it must start with a digit), so derive one from
+            # Cargo.toml: 0.7.3~beta.<sha7> sorts *before* the 0.7.3 release,
+            # which is what a pre-release should do.
+            DEB_VERSION="${CARGO_VERSION}~beta.${GITHUB_SHA::7}"
+            APP_VERSION="${CARGO_VERSION}-beta"
           fi
-          if [ "$TAG_VERSION" != "$LOCK_VERSION" ]; then
-            echo "Tag ${GITHUB_REF_NAME} does not match Cargo.lock xenterm version ${LOCK_VERSION}."
-            echo "Run: pwsh ./scripts/release.ps1 ${GITHUB_REF_NAME}"
-            exit 1
-          fi
+          echo "mode=$MODE"               >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION"         >> "$GITHUB_OUTPUT"
+          echo "deb_version=$DEB_VERSION" >> "$GITHUB_OUTPUT"
+          echo "app_version=$APP_VERSION" >> "$GITHUB_OUTPUT"
 
+  # Fork pushes to main must not burn 8 release-build jobs on a rolling beta
+  # they will never publish; everything else builds everywhere.
   build:
     name: ${{ matrix.name }}
-    needs: check-version
+    needs: prepare
+    if: needs.prepare.outputs.mode != 'beta' || github.repository == 'ixbaicn/XenTerm' || github.event_name == 'workflow_dispatch'
     runs-on: ${{ matrix.os }}
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      DEB_VERSION: ${{ needs.prepare.outputs.deb_version }}
+      APP_VERSION: ${{ needs.prepare.outputs.app_version }}
     strategy:
       fail-fast: false
       matrix:
@@ -100,7 +166,7 @@ jobs:
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          key: release-${{ matrix.target }}
 
       - name: Build (release)
         run: cargo build --release --target ${{ matrix.target }}
@@ -108,16 +174,20 @@ jobs:
       - name: Verify binary version
         if: runner.os != 'Windows'
         shell: bash
+        env:
+          MODE: ${{ needs.prepare.outputs.mode }}
         run: |
           set -eu
-          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
-            EXPECTED="${GITHUB_REF_NAME#v}"
+          if [ "$MODE" = "stable" ]; then
+            EXPECTED="${VERSION#v}"
           else
             EXPECTED="$(sed -n '/^\[package\]/,/^\[/ s/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
           fi
           ACTUAL="$(target/${{ matrix.target }}/release/${{ matrix.bin }} --version)"
           test "$ACTUAL" = "xenterm ${EXPECTED}"
 
+      # AppImage/MSI stay best-effort: if the tooling hiccups it must not block
+      # the .tar.gz / .zip.
       - name: Build AppImage
         if: matrix.name == 'linux-x86_64'
         continue-on-error: true           # don't block the .tar.gz if AppImage fails
@@ -125,7 +195,6 @@ jobs:
           APPIMAGE_EXTRACT_AND_RUN: "1"   # no FUSE needed in CI
         run: |
           set -eu
-          VERSION="${GITHUB_REF_NAME:-dev}"
           wget -q -O linuxdeploy \
             https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
           wget -q -O linuxdeploy-plugin-appimage \
@@ -147,8 +216,6 @@ jobs:
         shell: bash
         run: |
           set -eu
-          VERSION="${GITHUB_REF_NAME:-dev}"
-          VERSION_NUM="${VERSION#v}"
           case "${{ matrix.target }}" in
             x86_64-unknown-linux-gnu) DEB_ARCH=amd64 ;;
             aarch64-unknown-linux-gnu) DEB_ARCH=arm64 ;;
@@ -182,7 +249,7 @@ jobs:
           test -n "$DEPENDS"
           cat > "$ROOT/DEBIAN/control" <<EOF
           Package: xenterm
-          Version: ${VERSION_NUM}
+          Version: ${DEB_VERSION}
           Section: net
           Priority: optional
           Architecture: ${DEB_ARCH}
@@ -202,7 +269,6 @@ jobs:
         shell: bash
         run: |
           set -eu
-          VERSION="${GITHUB_REF_NAME:-dev}"
           STAGE="xenterm-${VERSION}-${{ matrix.name }}"
 
           if [ "${{ runner.os }}" = "macOS" ]; then
@@ -230,9 +296,7 @@ jobs:
             sips -z 512 512 "assets/icon@512.png" --out xenterm.iconset/icon_512x512.png     >/dev/null
             iconutil -c icns xenterm.iconset -o "$CONTENTS/Resources/xenterm.icns"
 
-            # Substitute __VERSION__ placeholder (strip leading 'v' from tag)
-            VERSION_NUM="${VERSION#v}"
-            sed "s/__VERSION__/${VERSION_NUM}/g" assets/Info.plist > "$CONTENTS/Info.plist"
+            sed "s/__VERSION__/${APP_VERSION}/g" assets/Info.plist > "$CONTENTS/Info.plist"
 
             # Ad-hoc code-sign the assembled bundle.
             # The release profile strips the binary (Cargo.toml: strip = "symbols"),
@@ -269,21 +333,20 @@ jobs:
           fi
 
       # MSI installer with a "choose install location" wizard (WixUI_InstallDir).
-      # Best-effort: if the WiX/cargo-wix tooling hiccups it must not block the
-      # .zip release, hence continue-on-error.
+      # Product/@Version comes from Cargo.toml via cargo-wix, so the packaged
+      # version is the crate version regardless of the artifact version string.
       - name: Build MSI installer (Windows)
         if: matrix.name == 'windows-x86_64'
         continue-on-error: true
         shell: pwsh
         run: |
-          $VERSION = "$env:GITHUB_REF_NAME"; if (-not $VERSION) { $VERSION = "dev" }
           # WiX 3 toolset (candle/light) that cargo-wix drives.
           choco install wixtoolset -y --no-progress
           $candle = Get-ChildItem "C:\Program Files (x86)\WiX Toolset*\bin\candle.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($candle) { $env:PATH = "$($candle.DirectoryName);$env:PATH" }
           cargo install cargo-wix --locked
-          cargo wix --no-build --nocapture --target ${{ matrix.target }} --output "xenterm-$VERSION-windows-x86_64.msi"
-          echo "MSI=xenterm-$VERSION-windows-x86_64.msi" >> $env:GITHUB_ENV
+          cargo wix --no-build --nocapture --target ${{ matrix.target }} --output "xenterm-$env:VERSION-windows-x86_64.msi"
+          echo "MSI=xenterm-$env:VERSION-windows-x86_64.msi" >> $env:GITHUB_ENV
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
@@ -312,53 +375,16 @@ jobs:
           name: windows-x86_64-msi
           path: ${{ env.MSI }}
 
-      - name: Attach to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          # Custom fork builds must stay separate from upstream stable releases.
-          prerelease: ${{ github.repository != 'ixbaicn/XenTerm' }}
-          make_latest: ${{ github.repository == 'ixbaicn/XenTerm' && 'true' || 'false' }}
-          files: ${{ env.ASSET }}
-          fail_on_unmatched_files: true
-
-      - name: Attach AppImage to GitHub Release
-        if: matrix.name == 'linux-x86_64' && startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          # Custom fork builds must stay separate from upstream stable releases.
-          prerelease: ${{ github.repository != 'ixbaicn/XenTerm' }}
-          make_latest: ${{ github.repository == 'ixbaicn/XenTerm' && 'true' || 'false' }}
-          files: ${{ env.APPIMAGE }}
-          fail_on_unmatched_files: true
-
-      - name: Attach Debian package to GitHub Release
-        if: runner.os == 'Linux' && startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          # Custom fork builds must stay separate from upstream stable releases.
-          prerelease: ${{ github.repository != 'ixbaicn/XenTerm' }}
-          make_latest: ${{ github.repository == 'ixbaicn/XenTerm' && 'true' || 'false' }}
-          files: ${{ env.DEB }}
-          fail_on_unmatched_files: true
-
-      - name: Attach MSI to GitHub Release
-        if: matrix.name == 'windows-x86_64' && env.MSI != '' && startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          # Custom fork builds must stay separate from upstream stable releases.
-          prerelease: ${{ github.repository != 'ixbaicn/XenTerm' }}
-          make_latest: ${{ github.repository == 'ixbaicn/XenTerm' && 'true' || 'false' }}
-          files: ${{ env.MSI }}
-          fail_on_unmatched_files: false
-
   build-flatpak:
     name: linux-x86_64-flatpak
-    needs: [check-version, build]
+    needs: [prepare, build]
+    if: needs.prepare.outputs.mode != 'beta' || github.repository == 'ixbaicn/XenTerm' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-22.04
     container:
       image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-25.08
       options: --privileged
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
 
     steps:
       - uses: actions/checkout@v4
@@ -381,7 +407,7 @@ jobs:
       - name: Build Flatpak bundle
         uses: flatpak/flatpak-github-actions/flatpak-builder@v6
         with:
-          bundle: xenterm-${{ github.ref_name }}-linux-x86_64.flatpak
+          bundle: xenterm-${{ env.VERSION }}-linux-x86_64.flatpak
           manifest-path: packaging/flatpak/io.github.yituorou.xenterm.yml
           cache-key: flatpak-builder-${{ github.sha }}
 
@@ -389,23 +415,26 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: linux-x86_64-flatpak
-          path: xenterm-${{ github.ref_name }}-linux-x86_64.flatpak
+          path: xenterm-${{ env.VERSION }}-linux-x86_64.flatpak
 
-      - name: Attach Flatpak to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          # Custom fork builds must stay separate from upstream stable releases.
-          prerelease: ${{ github.repository != 'ixbaicn/XenTerm' }}
-          make_latest: ${{ github.repository == 'ixbaicn/XenTerm' && 'true' || 'false' }}
-          files: xenterm-${{ github.ref_name }}-linux-x86_64.flatpak
-          fail_on_unmatched_files: true
-
-  build-linux-aarch64-glibc228:
-    name: linux-aarch64-glibc228
-    needs: check-version
-    runs-on: ubuntu-22.04-arm
+  build-glibc228:
+    name: linux-${{ matrix.arch }}-glibc228
+    needs: prepare
+    if: needs.prepare.outputs.mode != 'beta' || github.repository == 'ixbaicn/XenTerm' || github.event_name == 'workflow_dispatch'
+    runs-on: ${{ matrix.runner }}
     container: debian:10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - arch: aarch64
+            runner: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
 
     steps:
       - name: Prepare Debian 10 build dependencies
@@ -442,7 +471,7 @@ jobs:
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:
-          key: aarch64-unknown-linux-gnu-glibc228
+          key: release-glibc228-${{ matrix.target }}
 
       - name: Build (release)
         shell: bash
@@ -450,15 +479,15 @@ jobs:
           set -eu
           . "$HOME/.cargo/env"
           rustc --version
-          cargo build --release --target aarch64-unknown-linux-gnu
+          cargo build --release --target ${{ matrix.target }}
 
       - name: Verify glibc baseline
         shell: bash
         run: |
           set -eu
           ldd --version | sed -n '1p'
-          file target/aarch64-unknown-linux-gnu/release/xenterm
-          objdump -T target/aarch64-unknown-linux-gnu/release/xenterm \
+          file target/${{ matrix.target }}/release/xenterm
+          objdump -T target/${{ matrix.target }}/release/xenterm \
             | grep -o 'GLIBC_[0-9.]*' \
             | sort -Vu \
             | tail -n 10 || true
@@ -467,11 +496,10 @@ jobs:
         shell: bash
         run: |
           set -eu
-          VERSION="${GITHUB_REF_NAME:-dev}"
-          STAGE="xenterm-${VERSION}-linux-aarch64-glibc228"
+          STAGE="xenterm-${VERSION}-linux-${{ matrix.arch }}-glibc228"
 
           mkdir "$STAGE"
-          cp "target/aarch64-unknown-linux-gnu/release/xenterm" "$STAGE/"
+          cp "target/${{ matrix.target }}/release/xenterm" "$STAGE/"
           cp README.md README.zh.md CHANGELOG.md THIRD_PARTY_NOTICES.md "$STAGE/" 2>/dev/null || true
           cp assets/xenterm.desktop assets/install-linux.sh "assets/icon@512.png" "$STAGE/" 2>/dev/null || true
           tar -czf "${STAGE}.tar.gz" "$STAGE"
@@ -480,107 +508,45 @@ jobs:
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: linux-aarch64-glibc228
+          name: linux-${{ matrix.arch }}-glibc228
           path: ${{ env.ASSET }}
 
-      - name: Attach to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          # Custom fork builds must stay separate from upstream stable releases.
-          prerelease: ${{ github.repository != 'ixbaicn/XenTerm' }}
-          make_latest: ${{ github.repository == 'ixbaicn/XenTerm' && 'true' || 'false' }}
-          files: ${{ env.ASSET }}
-          fail_on_unmatched_files: true
-
-  build-linux-x86_64-glibc228:
-    name: linux-x86_64-glibc228
-    needs: check-version
-    runs-on: ubuntu-22.04
-    container: debian:10
-
+  publish:
+    name: Publish
+    needs: [prepare, build, build-flatpak, build-glibc228]
+    if: needs.prepare.outputs.mode != 'dry-run'
+    runs-on: ubuntu-latest
     steps:
-      - name: Prepare Debian 10 build dependencies
-        shell: bash
-        run: |
-          set -eu
-          sed -i \
-            -e 's|deb.debian.org/debian|archive.debian.org/debian|g' \
-            -e 's|security.debian.org/debian-security|archive.debian.org/debian-security|g' \
-            -e '/buster-updates/d' \
-            /etc/apt/sources.list
-          printf 'Acquire::Check-Valid-Until "false";\n' > /etc/apt/apt.conf.d/99archive
-
-          apt-get update
-          apt-get install -y --no-install-recommends \
-            ca-certificates curl git xz-utils file tar \
-            build-essential pkg-config cmake \
-            libfontconfig1-dev libfreetype6-dev \
-            libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
-            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
-            libgl1-mesa-dev libegl1-mesa-dev libgtk-3-dev \
-            libudev-dev
-
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        shell: bash
-        run: |
-          set -eu
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-            | sh -s -- -y --profile minimal --default-toolchain stable
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-
-      - name: Cache cargo build
-        uses: Swatinem/rust-cache@v2
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
         with:
-          key: x86_64-unknown-linux-gnu-glibc228
+          pattern: "*"
+          path: dist
+          merge-multiple: true
 
-      - name: Build (release)
-        shell: bash
-        run: |
-          set -eu
-          . "$HOME/.cargo/env"
-          rustc --version
-          cargo build --release --target x86_64-unknown-linux-gnu
-
-      - name: Verify glibc baseline
-        shell: bash
-        run: |
-          set -eu
-          ldd --version | sed -n '1p'
-          file target/x86_64-unknown-linux-gnu/release/xenterm
-          objdump -T target/x86_64-unknown-linux-gnu/release/xenterm \
-            | grep -o 'GLIBC_[0-9.]*' \
-            | sort -Vu \
-            | tail -n 10 || true
-
-      - name: Package
-        shell: bash
-        run: |
-          set -eu
-          VERSION="${GITHUB_REF_NAME:-dev}"
-          STAGE="xenterm-${VERSION}-linux-x86_64-glibc228"
-
-          mkdir "$STAGE"
-          cp "target/x86_64-unknown-linux-gnu/release/xenterm" "$STAGE/"
-          cp README.md README.zh.md CHANGELOG.md THIRD_PARTY_NOTICES.md "$STAGE/" 2>/dev/null || true
-          cp assets/xenterm.desktop assets/install-linux.sh "assets/icon@512.png" "$STAGE/" 2>/dev/null || true
-          tar -czf "${STAGE}.tar.gz" "$STAGE"
-          echo "ASSET=${STAGE}.tar.gz" >> "$GITHUB_ENV"
-
-      - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-x86_64-glibc228
-          path: ${{ env.ASSET }}
-
-      - name: Attach to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Attach all artifacts to the GitHub Release
+        if: needs.prepare.outputs.mode == 'stable'
         uses: softprops/action-gh-release@v2
         with:
           # Custom fork builds must stay separate from upstream stable releases.
           prerelease: ${{ github.repository != 'ixbaicn/XenTerm' }}
           make_latest: ${{ github.repository == 'ixbaicn/XenTerm' && 'true' || 'false' }}
-          files: ${{ env.ASSET }}
+          files: dist/*
           fail_on_unmatched_files: true
+
+      - name: Replace the rolling beta release
+        # Fork releases must never touch the upstream's rolling beta.
+        if: needs.prepare.outputs.mode == 'beta' && (github.repository == 'ixbaicn/XenTerm' || github.event_name == 'workflow_dispatch')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          # Drop the rolling beta release/tag...
+          gh release delete beta --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
+          # Versioned preview releases belong to the user and are never purged.
+          SHORT_SHA="${GITHUB_SHA::7}"
+          gh release create beta dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --prerelease \
+            --title "Beta (${SHORT_SHA})" \
+            --notes "自动构建的预览版（beta），来自 commit ${SHORT_SHA}。每次代码提交都会替换此预览版，始终只保留最新一个。"

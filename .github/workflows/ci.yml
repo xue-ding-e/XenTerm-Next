@@ -1,0 +1,119 @@
+name: CI
+
+# Consolidated push/PR gate (formerly desktop-check.yml, profile-consistency.yml,
+# remote-mcp.yml and installer-check.yml):
+#   - desktop: compile + isolated GUI tests on all three OSes
+#   - headless-e2e: headless unit tests + Python end-to-end regressions
+#   - installer: Linux install-script syntax + regressions
+# Release packaging lives in release.yml.
+
+on:
+  push:
+    paths: ["Cargo.toml", "Cargo.lock", "build.rs", "src/**", "tests/*_e2e.py", "tests/tls_proxy_fixture.py", "assets/install-linux.sh", "tests/install_linux_test.py", ".github/workflows/ci.yml"]
+  pull_request:
+    paths: ["Cargo.toml", "Cargo.lock", "build.rs", "src/**", "tests/*_e2e.py", "tests/tls_proxy_fixture.py", "assets/install-linux.sh", "tests/install_linux_test.py", ".github/workflows/ci.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  desktop:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, name: Linux desktop }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, name: Windows desktop }
+          - { os: macos-14, target: aarch64-apple-darwin, name: macOS desktop }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux desktop development libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config cmake \
+            libfontconfig1-dev libfreetype6-dev \
+            libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libgl1-mesa-dev libegl1-mesa-dev libgtk-3-dev libudev-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: desktop-check-${{ matrix.target }}
+      # Keep the upstream stable/MSVC Windows configuration. Debug checking
+      # avoids the release-only fxc.exe shader compilation and package tooling.
+      - run: cargo check --locked --target ${{ matrix.target }} --jobs 2
+      # Separate invocations so PowerShell cannot hide a failing first command
+      # behind the second native command's successful exit status.
+      - name: Test session editor interactions
+        env:
+          XDG_CONFIG_HOME: ${{ runner.temp }}/xenterm-gui-config
+          XDG_DATA_HOME: ${{ runner.temp }}/xenterm-gui-data
+          XDG_RUNTIME_DIR: ${{ runner.temp }}/xenterm-gui-runtime
+        run: cargo test --locked --target ${{ matrix.target }} --jobs 2 ui::session_editor::tests
+      - name: Test native dialog interactions
+        env:
+          XDG_CONFIG_HOME: ${{ runner.temp }}/xenterm-gui-config
+          XDG_DATA_HOME: ${{ runner.temp }}/xenterm-gui-data
+          XDG_RUNTIME_DIR: ${{ runner.temp }}/xenterm-gui-runtime
+        run: cargo test --locked --target ${{ matrix.target }} --jobs 2 ui::dialog_parity_tests
+      - name: Test complete desktop regression suite on Linux
+        if: runner.os == 'Linux'
+        env:
+          XDG_CONFIG_HOME: ${{ runner.temp }}/xenterm-full-config
+          XDG_DATA_HOME: ${{ runner.temp }}/xenterm-full-data
+          XDG_RUNTIME_DIR: ${{ runner.temp }}/xenterm-full-runtime
+        # Include this PR's regressions and the tests merged from upstream.
+        run: cargo test --locked --target ${{ matrix.target }} --jobs 2 -- --test-threads=1
+      # Config profile transactions outside Linux (from the former
+      # profile-consistency.yml; on Linux the full suite above covers them).
+      - name: Test config profile transactions
+        if: runner.os != 'Linux'
+        run: cargo test --locked --no-default-features --features headless --target ${{ matrix.target }} --jobs 2 config::config
+
+  headless-e2e:
+    name: Headless MCP regression
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: sudo apt-get update && sudo apt-get install --no-install-recommends -y nginx
+      - run: python -m pip install cryptography paramiko
+      - name: Headless unit tests (no GUI system dependencies)
+        run: env -u ALL_PROXY -u all_proxy -u HTTP_PROXY -u http_proxy -u HTTPS_PROXY -u https_proxy cargo test --locked --no-default-features --features headless
+      - run: cargo build --locked --no-default-features --features headless
+      - run: python tests/config_import_e2e.py --exe target/debug/xenterm
+      - run: python tests/ssh_jump_chain_e2e.py --exe target/debug/xenterm
+      - run: python tests/ssh_jump_chain_e2e.py --exe target/debug/xenterm --stage-timeouts
+      - run: python tests/stdio_mcp_e2e.py --exe target/debug/xenterm
+      - run: python tests/remote_mcp_e2e.py --exe target/debug/xenterm --path /mcp
+      - run: python tests/remote_mcp_e2e.py --exe target/debug/xenterm --nginx /usr/sbin/nginx --path /xenterm/mcp
+      - run: python tests/remote_mcp_e2e.py --exe target/debug/xenterm --nginx /usr/sbin/nginx --path /xenterm/mcp --protocol-version 2025-11-25
+
+  installer:
+    name: Linux installer check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install desktop validation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y desktop-file-utils python3-gi gir1.2-glib-2.0
+      - name: Check installer syntax
+        run: bash -n assets/install-linux.sh
+      - name: Run isolated installer regressions
+        run: /usr/bin/python3 tests/install_linux_test.py
