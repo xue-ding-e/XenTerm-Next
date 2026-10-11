@@ -757,7 +757,7 @@ impl TerminalPage {
                         });
                     }
                 }
-                TabAction::Close(id) => self.close_tab(&id, cx),
+                TabAction::Close(id) => self.close_tab_and_focus(&id, window, cx),
                 TabAction::MoveLeft(id) => self.move_tab(&id, -1, cx),
                 TabAction::MoveRight(id) => self.move_tab(&id, 1, cx),
                 TabAction::Split(id) => self.split_pane(&id, false, cx),
@@ -891,6 +891,37 @@ impl TerminalPage {
             tab.meta.set_override((!typed.is_empty()).then_some(typed));
         }
         cx.notify();
+    }
+
+    /// Close a tab from the visible workspace and focus its surviving neighbour.
+    /// Background closes keep using `close_tab`, so a settings input or another
+    /// window-level control does not lose focus when its terminal is retired.
+    pub(crate) fn close_tab_and_focus(
+        &mut self,
+        tab_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use gpui_kit::component::{Root, WindowExt as _};
+        use gpui_kit::gpui::Focusable as _;
+
+        let was_active = self.active_tab.as_deref() == Some(tab_id);
+        self.close_tab(tab_id, cx);
+        if !was_active
+            || (window.root::<Root>().flatten().is_some() && window.has_active_dialog(cx))
+        {
+            return;
+        }
+        if let Some(tab) = self
+            .tabs
+            .iter()
+            .find(|tab| Some(tab.id.as_str()) == self.active_tab.as_deref())
+        {
+            // Selecting the neighbour updates workspace state but not GPUI's
+            // input target. Move that target before subsequent keyboard input.
+            let focus = tab.view.read(cx).focus_handle(cx);
+            window.focus(&focus, cx);
+        }
     }
 
     /// Close a tab and end its session.
@@ -2054,6 +2085,313 @@ mod dock_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod close_focus_tests {
+    use super::*;
+    use gpui_kit::component::{Root, WindowExt as _};
+    use gpui_kit::gpui::{Focusable as _, TestAppContext, VisualTestContext};
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+
+    struct Harness {
+        page: Entity<TerminalPage>,
+        foreign_input: Entity<InputState>,
+        terminal_visible: bool,
+        _root_subscription: Option<Subscription>,
+    }
+
+    impl Render for Harness {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            if self._root_subscription.is_none() {
+                self._root_subscription = crate::ui::follow_root(window, cx);
+            }
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .key_context("Shell")
+                .on_action(cx.listener(|this, _: &crate::ui::CloseTab, _, cx| {
+                    let visible = this.terminal_visible;
+                    this.page.update(cx, |page, cx| {
+                        if let Some(id) = page.active_tab_id() {
+                            if visible {
+                                // The tab-strip close action is drained through
+                                // the production UI path with its real Window.
+                                *page.tab_action.borrow_mut() = Some(TabAction::Close(id));
+                                cx.notify();
+                            } else {
+                                page.close_tab(&id, cx);
+                            }
+                        }
+                    });
+                }))
+                .on_action(cx.listener(|this, _: &crate::ui::SplitRight, _, cx| {
+                    this.page
+                        .update(cx, |page, cx| page.split_active_tab(false, cx));
+                }))
+                .child(if self.terminal_visible {
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .child(self.page.clone())
+                        .into_any_element()
+                } else {
+                    div().flex_1().child("Settings fixture").into_any_element()
+                })
+                .child(Input::new(&self.foreign_input))
+                .children(Root::render_dialog_layer(window, cx))
+        }
+    }
+
+    struct Fixture {
+        page: Entity<TerminalPage>,
+        foreign_input: Entity<InputState>,
+        inboxes: Rc<RefCell<HashMap<String, tokio::sync::mpsc::UnboundedReceiver<SessionCommand>>>>,
+    }
+
+    fn fixture(
+        cx: &mut TestAppContext,
+        count: usize,
+        terminal_visible: bool,
+    ) -> (Fixture, &mut VisualTestContext) {
+        cx.update(gpui_kit::init);
+        cx.update(crate::ui::actions::init);
+        let mut profile = crate::config::Session::new_empty();
+        profile.id = "blocked-fixture-profile".into();
+        profile.host = "127.0.0.1".into();
+        profile.port = 0;
+        // Resolve fails synchronously before any transport starts. This keeps
+        // the stable public open_session_tab path and its real views while
+        // tests supply local command channels, never a server or credentials.
+        profile.jump_session_ids = vec!["missing-fixture-hop".into()];
+        let mut cache = crate::config::ConfigFile::default();
+        cache.sessions.push(profile);
+        let mut store = crate::config::ConfigStore {
+            path: Default::default(),
+            backup_dir: None,
+            cache,
+            key: [0; 32],
+            keyring_enabled: false,
+            saved_state: Mutex::new(crate::config::SavedState::default()).into(),
+        };
+        store.set_sidebar_collapsed(true);
+        let runtime = Arc::new(tokio::runtime::Runtime::new().unwrap());
+        let state = crate::ui::SessionState::new(
+            runtime.clone(),
+            Arc::new(Mutex::new(HashMap::new())),
+            Rc::new(RefCell::new(store)),
+        );
+        let inboxes = Rc::new(RefCell::new(HashMap::new()));
+        let built = Rc::new(RefCell::new(None));
+        let built_for_window = built.clone();
+        let inboxes_for_window = inboxes.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let page = cx.new(|cx| {
+                let mut page =
+                    TerminalPage::new(state.clone(), Rc::new(Cell::new(1280.)), window, cx);
+                for index in 0..count {
+                    let id = format!("tab-{index}");
+                    page.open_session_tab(&id, "blocked-fixture-profile", cx);
+                    assert!(
+                        !state.handles.borrow().contains_key(&id),
+                        "invalid fixture route must not start a real transport"
+                    );
+                    let (commands, receiver) = tokio::sync::mpsc::unbounded_channel();
+                    state.handles.borrow_mut().insert(
+                        id.clone(),
+                        crate::session::protocol::SessionHandle {
+                            tab_id: id.clone(),
+                            commands,
+                            join: runtime.spawn(std::future::pending::<()>()),
+                        },
+                    );
+                    inboxes_for_window.borrow_mut().insert(id, receiver);
+                }
+                page.set_active_tab((count > 0).then(|| "tab-0".into()), cx);
+                page
+            });
+            let foreign_input = cx.new(|cx| InputState::new(window, cx));
+            let harness = cx.new(|_| Harness {
+                page: page.clone(),
+                foreign_input: foreign_input.clone(),
+                terminal_visible,
+                _root_subscription: None,
+            });
+            *built_for_window.borrow_mut() = Some((page, foreign_input));
+            Root::new(harness, window, cx)
+        });
+        draw(cx);
+        let (page, foreign_input) = built.borrow_mut().take().unwrap();
+        (
+            Fixture {
+                page,
+                foreign_input,
+                inboxes,
+            },
+            cx,
+        )
+    }
+
+    fn draw(cx: &mut VisualTestContext) {
+        for _ in 0..3 {
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            });
+            cx.run_until_parked();
+        }
+    }
+
+    fn focus_tab(fixture: &Fixture, id: &str, cx: &mut VisualTestContext) {
+        cx.update(|window, cx| {
+            let page = fixture.page.read(cx);
+            let tab = page.tabs.iter().find(|tab| tab.id.as_str() == id).unwrap();
+            let focus = tab.view.read(cx).focus_handle(cx);
+            window.focus(&focus, cx);
+        });
+        draw(cx);
+    }
+
+    fn received(fixture: &Fixture, id: &str) -> Vec<u8> {
+        let mut data = Vec::new();
+        let mut inboxes = fixture.inboxes.borrow_mut();
+        let receiver = inboxes.get_mut(id).unwrap();
+        while let Ok(command) = receiver.try_recv() {
+            if let SessionCommand::RawInput(bytes) = command {
+                data.extend(bytes);
+            }
+        }
+        data
+    }
+
+    #[gpui_kit::gpui::test]
+    fn closing_active_split_panes_restores_keyboard_input_without_a_click(cx: &mut TestAppContext) {
+        let (fixture, cx) = fixture(cx, 3, true);
+        focus_tab(&fixture, "tab-0", cx);
+        for closing in ["tab-1", "tab-2"] {
+            cx.simulate_keystrokes("ctrl-shift-e");
+            draw(cx);
+            assert_eq!(
+                fixture
+                    .page
+                    .read_with(cx, |page, _| page.active_tab_id())
+                    .as_deref(),
+                Some(closing)
+            );
+            // Establish the same focused right pane as the GUI repro. Nothing
+            // clicks or focuses after the close key below.
+            focus_tab(&fixture, closing, cx);
+            cx.simulate_input("before-close");
+            assert_eq!(received(&fixture, closing), b"before-close");
+            cx.simulate_keystrokes("ctrl-shift-w");
+            draw(cx);
+            assert_eq!(
+                fixture
+                    .page
+                    .read_with(cx, |page, _| page.active_tab_id())
+                    .as_deref(),
+                Some("tab-0")
+            );
+            cx.simulate_input("echo after-close");
+            cx.simulate_keystrokes("enter");
+            let bytes = received(&fixture, "tab-0");
+            assert!(
+                String::from_utf8_lossy(&bytes).contains("echo after-close"),
+                "typing must reach the surviving pane without a mouse click; got {bytes:?}"
+            );
+            assert!(received(&fixture, closing).is_empty());
+        }
+        assert_eq!(fixture.page.read_with(cx, |page, _| page.tabs.len()), 1);
+    }
+
+    #[gpui_kit::gpui::test]
+    fn closing_nonactive_tab_does_not_steal_another_controls_focus(cx: &mut TestAppContext) {
+        let (fixture, cx) = fixture(cx, 2, true);
+        cx.update(|window, cx| {
+            let focus = fixture.foreign_input.read(cx).focus_handle(cx);
+            window.focus(&focus, cx);
+            fixture.page.update(cx, |page, cx| {
+                *page.tab_action.borrow_mut() = Some(TabAction::Close("tab-1".into()));
+                cx.notify();
+            });
+        });
+        draw(cx);
+        cx.simulate_input("foreign input");
+        assert_eq!(
+            fixture
+                .foreign_input
+                .read_with(cx, |input, _| input.value().to_string()),
+            "foreign input"
+        );
+        assert!(received(&fixture, "tab-0").is_empty());
+        assert_eq!(
+            fixture
+                .page
+                .read_with(cx, |page, _| page.active_tab_id())
+                .as_deref(),
+            Some("tab-0")
+        );
+    }
+
+    #[gpui_kit::gpui::test]
+    fn closing_from_another_page_preserves_its_input_focus(cx: &mut TestAppContext) {
+        let (fixture, cx) = fixture(cx, 2, false);
+        cx.update(|window, cx| {
+            let focus = fixture.foreign_input.read(cx).focus_handle(cx);
+            window.focus(&focus, cx);
+        });
+        draw(cx);
+        cx.dispatch_action(crate::ui::CloseTab);
+        draw(cx);
+        assert_eq!(fixture.page.read_with(cx, |page, _| page.tabs.len()), 1);
+        cx.simulate_input("settings remain focused");
+        assert_eq!(
+            fixture
+                .foreign_input
+                .read_with(cx, |input, _| input.value().to_string()),
+            "settings remain focused"
+        );
+        assert!(received(&fixture, "tab-1").is_empty());
+    }
+
+    #[gpui_kit::gpui::test]
+    fn closing_the_last_tab_and_repeating_close_is_safe(cx: &mut TestAppContext) {
+        let (fixture, cx) = fixture(cx, 1, true);
+        focus_tab(&fixture, "tab-0", cx);
+        cx.simulate_keystrokes("ctrl-shift-w");
+        draw(cx);
+        cx.dispatch_action(crate::ui::CloseTab);
+        draw(cx);
+        assert!(fixture.page.read_with(cx, |page, _| page.tabs.is_empty()
+            && page.active_tab_id().is_none()
+            && page.state.handles.borrow().is_empty()));
+        assert!(received(&fixture, "tab-0").is_empty());
+    }
+
+    #[gpui_kit::gpui::test]
+    fn closing_active_tab_under_a_dialog_does_not_take_dialog_focus(cx: &mut TestAppContext) {
+        let (fixture, cx) = fixture(cx, 2, true);
+        focus_tab(&fixture, "tab-0", cx);
+        cx.update(|window, cx| {
+            window.open_dialog(cx, |dialog, _, _| {
+                dialog
+                    .title("Modal fixture")
+                    .child("Keep this modal focused")
+            })
+        });
+        draw(cx);
+        let before = cx.update(|window, cx| window.focused(cx).expect("dialog focus"));
+        fixture.page.update(cx, |page, cx| {
+            *page.tab_action.borrow_mut() = Some(TabAction::Close("tab-0".into()));
+            cx.notify();
+        });
+        draw(cx);
+        assert!(cx.update(|window, _| before.is_focused(window)));
+        assert_eq!(fixture.page.read_with(cx, |page, _| page.tabs.len()), 1);
+    }
+}
+
 
 #[cfg(test)]
 mod reconnect_tests {

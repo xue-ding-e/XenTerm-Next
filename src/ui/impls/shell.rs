@@ -998,10 +998,15 @@ impl Shell {
                     .terminal
                     .update(cx, |page, cx| page.cycle_tab(true, cx));
             }))
-            .on_action(cx.listener(|this, _: &crate::ui::CloseTab, _, cx| {
+            .on_action(cx.listener(|this, _: &crate::ui::CloseTab, window, cx| {
+                let terminal_visible = this.pages.active == PageId::Terminal;
                 this.pages.terminal.update(cx, |page, cx| {
                     if let Some(id) = page.active_tab_id() {
-                        page.close_tab(&id, cx);
+                        if terminal_visible {
+                            page.close_tab_and_focus(&id, window, cx);
+                        } else {
+                            page.close_tab(&id, cx);
+                        }
                     }
                 });
             }))
@@ -2888,3 +2893,7 @@ impl<T: TabFollower> Detached<T> {
         let _ = handle.update(cx, |_, window, _| window.set_window_title(&title(&host)));
     }
 }
+
+#[cfg(test)]
+#[path = "shell_close_focus_tests.rs"]
+mod shell_close_focus_tests;
