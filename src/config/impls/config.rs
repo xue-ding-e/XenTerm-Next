@@ -4452,6 +4452,27 @@ mod wallpaper_settings_tests {
     }
 
     #[test]
+    fn wallpaper_save_preserves_execution_history_defaults_and_access_policy() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = fixture(dir.path().join("sessions.db"));
+        store.cache = fresh_config();
+        assert!(!store.mcp_execution_log_enabled());
+        assert_eq!(store.mcp_execution_log_retention_days(), 7);
+        store.set_mcp_access_mode(McpAccessMode::Restricted);
+        store.set_mcp_allow_commands(false);
+        let mut wallpaper = WallpaperSettings::default();
+        wallpaper.enabled = true;
+        wallpaper.rotation = 23.;
+        store.save_wallpaper_settings(wallpaper.clone()).unwrap();
+        let (loaded, _) = ConfigStore::read_cache_snapshot(&store.path, &store.key).unwrap();
+        assert_eq!(loaded.wallpaper_settings, wallpaper);
+        assert_eq!(loaded.mcp_execution_log_retention_days, 7);
+        assert!(!loaded.mcp_execution_log_enabled);
+        assert!(!loaded.mcp_allow_commands);
+        assert_eq!(loaded.mcp_access_mode, Some(McpAccessMode::Restricted));
+    }
+
+    #[test]
     fn wallpaper_save_failure_rolls_back_live_preference() {
         let dir = tempfile::tempdir().unwrap();
         let blocked = dir.path().join("not-a-directory");
