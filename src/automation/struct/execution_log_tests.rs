@@ -142,3 +142,94 @@ fn long_multibyte_commands_are_bounded_without_invalid_utf8() {
     assert!(original.starts_with(&clipped));
     assert!(original.len() > clipped.len());
 }
+
+fn write_fixture_day(dir: &Path, day: usize, body: &[u8]) {
+    std::fs::write(dir.join(format!("executions-2026-01-{day:02}.jsonl")), body).unwrap();
+}
+
+#[test]
+fn read_file_budget_counts_malformed_files_and_prefers_newest_days() {
+    let root = tempfile::tempdir().unwrap();
+    let value = record("older valid record");
+    let body = serde_json::to_vec(&value).unwrap();
+    write_fixture_day(root.path(), 1, &body);
+    write_fixture_day(root.path(), 2, b"invalid JSON\n");
+    write_fixture_day(root.path(), 3, b"also invalid\n");
+    assert!(read_records_with_budget(root.path(), 2, MAX_READ_BYTES).is_empty());
+    assert_eq!(read_records_with_budget(root.path(), 3, MAX_READ_BYTES), [value]);
+    assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 3);
+}
+
+#[test]
+fn read_byte_budget_counts_corruption_and_accepts_exact_boundary() {
+    let root = tempfile::tempdir().unwrap();
+    let value = record("older valid record");
+    let body = serde_json::to_vec(&value).unwrap();
+    write_fixture_day(root.path(), 1, &body);
+    let corrupt = vec![b'!'; body.len()];
+    write_fixture_day(root.path(), 2, &corrupt);
+    assert!(read_records_with_budget(root.path(), 2, body.len() as u64).is_empty());
+    assert!(read_records_with_budget(root.path(), 2, (body.len() * 2 - 1) as u64).is_empty());
+    assert_eq!(
+        read_records_with_budget(root.path(), 2, (body.len() * 2) as u64),
+        [value]
+    );
+    assert_eq!(std::fs::read(root.path().join("executions-2026-01-02.jsonl")).unwrap(), corrupt);
+}
+
+#[test]
+fn zero_budgets_do_not_read_and_invalid_names_or_oversized_files_are_ignored() {
+    let root = tempfile::tempdir().unwrap();
+    let value = record("valid record");
+    let body = serde_json::to_vec(&value).unwrap();
+    write_fixture_day(root.path(), 1, &body);
+    for name in ["executions-not-a-date.jsonl", "executions-2026-1-02.jsonl", "personal-note.jsonl"] {
+        std::fs::write(root.path().join(name), &body).unwrap();
+    }
+    let oversized = root.path().join("executions-2026-01-03.jsonl");
+    std::fs::File::create(&oversized).unwrap().set_len(MAX_FILE_BYTES + 1).unwrap();
+    std::fs::create_dir(root.path().join("executions-2026-01-04.jsonl")).unwrap();
+    assert!(read_records_with_budget(root.path(), 0, MAX_READ_BYTES).is_empty());
+    assert!(read_records_with_budget(root.path(), MAX_READ_FILES, 0).is_empty());
+    assert_eq!(read_records_in(root.path()), [value]);
+    assert_eq!(std::fs::metadata(oversized).unwrap().len(), MAX_FILE_BYTES + 1);
+    assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 6);
+}
+
+#[test]
+fn read_record_limit_keeps_latest_lines_and_tolerates_invalid_utf8() {
+    let root = tempfile::tempdir().unwrap();
+    let mut value = record("");
+    let mut body = Vec::new();
+    for index in 0..=MAX_READ_RECORDS {
+        value.id = index.to_string();
+        value.finished_at_ms = index as u64;
+        serde_json::to_writer(&mut body, &value).unwrap();
+        body.push(b'\n');
+    }
+    body.extend_from_slice(b"\xffinvalid\n");
+    assert!(body.len() as u64 <= MAX_FILE_BYTES);
+    write_fixture_day(root.path(), 1, &body);
+    let result = read_records_in(root.path());
+    assert_eq!(result.len(), MAX_READ_RECORDS);
+    assert_eq!(result.first().unwrap().id, MAX_READ_RECORDS.to_string());
+    assert_eq!(result.last().unwrap().id, "1");
+}
+
+#[cfg(unix)]
+#[test]
+fn reads_never_follow_log_or_directory_symlinks() {
+    use std::os::unix::fs::symlink;
+    let root = tempfile::tempdir().unwrap();
+    let logs = root.path().join("logs");
+    std::fs::create_dir(&logs).unwrap();
+    let target = root.path().join("private.jsonl");
+    let body = serde_json::to_vec(&record("not a log")).unwrap();
+    std::fs::write(&target, &body).unwrap();
+    symlink(&target, logs.join("executions-2026-01-01.jsonl")).unwrap();
+    assert!(read_records_in(&logs).is_empty());
+    let alias = root.path().join("alias");
+    symlink(&logs, &alias).unwrap();
+    assert!(read_records_in(&alias).is_empty());
+    assert_eq!(std::fs::read(target).unwrap(), body);
+}

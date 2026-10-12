@@ -13,6 +13,11 @@ use super::Frontend;
 
 const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_COMMAND_BYTES: usize = 8 * 1024;
+// Bound work even when every line is malformed or every daily file is full.
+const MAX_READ_FILES: usize = 32;
+const MAX_READ_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_READ_ENTRIES: usize = 4096;
+const MAX_READ_RECORDS: usize = 10_000;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ExecutionRecord {
@@ -265,39 +270,73 @@ pub(crate) fn read_records() -> Vec<ExecutionRecord> {
 }
 
 fn read_records_in(dir: &Path) -> Vec<ExecutionRecord> {
-    if reject_link(dir).is_err() {
+    read_records_with_budget(dir, MAX_READ_FILES, MAX_READ_BYTES)
+}
+
+fn read_records_with_budget(dir: &Path, max_files: usize, max_bytes: u64) -> Vec<ExecutionRecord> {
+    if max_files == 0 || max_bytes == 0 || reject_link(dir).is_err() {
         return Vec::new();
     }
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
+    // Normal retention has at most 365 daily files. Cap discovery as well for
+    // externally modified directories; this viewer is not an archival search.
     let mut paths: Vec<_> = entries
+        .take(MAX_READ_ENTRIES)
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("jsonl"))
         .filter(|p| {
-            p.file_stem()
+            p.file_name()
                 .and_then(|s| s.to_str())
-                .is_some_and(|s| s.starts_with("executions-"))
+                .and_then(|s| s.strip_prefix("executions-"))
+                .and_then(|s| s.strip_suffix(".jsonl"))
+                .and_then(|s| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()
+                    .filter(|date| date.format("%Y-%m-%d").to_string() == s))
+                .is_some()
         })
-        .filter(|p| reject_link(p).is_ok())
-        .filter(|p| std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.len() <= MAX_FILE_BYTES))
         .collect();
     paths.sort_by(|a, b| b.cmp(a));
     let mut records = Vec::new();
-    for path in paths {
-        if let Ok(body) = std::fs::read_to_string(path) {
-            let remaining = 10_000usize.saturating_sub(records.len());
-            records.extend(
-                body.lines()
-                    .rev()
-                    .filter_map(|line| serde_json::from_str(line).ok())
-                    .take(remaining),
-            );
-        }
-        if records.len() >= 10_000 {
+    let mut bytes_left = max_bytes;
+    for path in paths.into_iter().take(max_files) {
+        if bytes_left == 0 || records.len() >= MAX_READ_RECORDS {
             break;
         }
+        if !std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_file()) {
+            continue;
+        }
+        let Ok(file) = std::fs::File::open(&path) else {
+            continue;
+        };
+        let Ok(metadata) = file.metadata() else {
+            continue;
+        };
+        if !metadata.is_file() || metadata.len() > MAX_FILE_BYTES {
+            continue;
+        }
+        // Charge attempted bytes even if a read fails. Take enforces the bound
+        // on the opened file even if an external writer grows it after metadata.
+        // Stop before a file that cannot fit: never parse a budget-truncated line.
+        if metadata.len() > bytes_left {
+            break;
+        }
+        let allowance = metadata.len();
+        let mut body = Vec::new();
+        let result = file.take(allowance).read_to_end(&mut body);
+        bytes_left = bytes_left.saturating_sub(body.len() as u64);
+        if result.is_err() {
+            // An I/O error must not allow repeated full-budget reads.
+            bytes_left = bytes_left.saturating_sub(allowance.saturating_sub(body.len() as u64));
+            continue;
+        }
+        let remaining = MAX_READ_RECORDS.saturating_sub(records.len());
+        records.extend(
+            body.split(|byte| *byte == b'\n')
+                .rev()
+                .filter_map(|line| serde_json::from_slice(line).ok())
+                .take(remaining),
+        );
     }
     records.sort_by_key(|record: &ExecutionRecord| std::cmp::Reverse(record.finished_at_ms));
     records

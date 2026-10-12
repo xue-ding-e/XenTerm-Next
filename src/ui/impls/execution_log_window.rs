@@ -25,42 +25,85 @@ use gpui_kit::component::Disableable as _;
 /// Re-read at a modest interval; the refresh button also updates immediately.
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
 
+/// Coalesce refresh requests while the single background read is running.
+#[derive(Default)]
+struct RefreshState {
+    running: bool,
+    pending: bool,
+}
+
+impl RefreshState {
+    fn request(&mut self) -> bool {
+        if self.running {
+            self.pending = true;
+            false
+        } else {
+            self.running = true;
+            true
+        }
+    }
+
+    fn finish(&mut self) -> bool {
+        if std::mem::take(&mut self.pending) {
+            true
+        } else {
+            self.running = false;
+            false
+        }
+    }
+}
+
 /// Optional personal execution history, in its own window.
 pub(crate) struct ExecutionLogView {
     /// The records as of the last read, newest result first.
     records: Vec<ExecutionRecord>,
     /// The scroll position of the virtualized journal list.
     list_scroll: UniformListScrollHandle,
+    refresh_state: RefreshState,
+    _refresh: Option<Task<()>>,
     _poll: Task<()>,
 }
 
 impl ExecutionLogView {
     pub(crate) fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let records = read_records();
         let poll = cx.spawn(async move |this, cx| loop {
             cx.background_executor().timer(POLL_INTERVAL).await;
-            let alive = this.update(cx, |view, cx| {
-                let records = read_records();
+            if this.update(cx, |view, cx| view.refresh(cx)).is_err() {
+                break;
+            }
+        });
+        let mut view = Self {
+            records: Vec::new(),
+            list_scroll: UniformListScrollHandle::new(),
+            refresh_state: RefreshState::default(),
+            _refresh: None,
+            _poll: poll,
+        };
+        view.refresh(cx);
+        view
+    }
+
+    /// Re-read the journal now, for the toolbar's 刷新. Only the bounded disk
+    /// read and JSON parsing run off-thread; entity updates stay on the UI thread.
+    fn refresh(&mut self, cx: &mut Context<Self>) {
+        if !self.refresh_state.request() {
+            return;
+        }
+        self._refresh = Some(cx.spawn(async move |this, cx| loop {
+            let records = cx.background_executor().spawn(async { read_records() }).await;
+            let again = this.update(cx, |view, cx| {
                 if records != view.records {
                     view.records = records;
                     cx.notify();
                 }
+                view.refresh_state.finish()
             });
-            if alive.is_err() {
+            // A closed view is never retained by this task. Serial reads also
+            // prevent an older result from overwriting a later manual refresh.
+            if !matches!(again, Ok(true)) {
                 break;
             }
-        });
-        Self {
-            records,
-            list_scroll: UniformListScrollHandle::new(),
-            _poll: poll,
-        }
-    }
-
-    /// Re-read the journal now, for the toolbar's 刷新.
-    fn refresh(&mut self, cx: &mut Context<Self>) {
-        self.records = read_records();
-        cx.notify();
+        }));
     }
 
     /// Open the journal folder in the OS file manager — the raw files are the
@@ -326,6 +369,13 @@ impl Render for ExecutionLogView {
                     ),
             )
             .child(
+                div().px_3().pb_2().text_xs().text_color(theme.muted_foreground)
+                    .child(crate::i18n::t(
+                        "仅加载近期记录（最多 32 个文件、16 MiB）；完整历史可在文件夹中查看。",
+                        "Recent history only (up to 32 files / 16 MiB); open the folder for complete history.",
+                    )),
+            )
+            .child(
                 div()
                     .id(SharedString::from("execution-rows"))
                     .debug_selector(|| "execution-rows-container".into())
@@ -394,7 +444,7 @@ impl ExecutionLogWindowHandle {
                 self.view = opened.borrow().as_ref().map(|view| view.downgrade());
             }
             Err(error) => {
-                tracing::warn!("could not open the audit window: {error}");
+                tracing::warn!("could not open the execution history window: {error}");
             }
         }
     }
@@ -404,6 +454,22 @@ impl ExecutionLogWindowHandle {
 mod tests {
     use super::*;
     use gpui_kit::gpui::TestAppContext;
+
+    #[test]
+    fn refresh_requests_are_serial_and_coalesce_without_losing_manual_refresh() {
+        let mut state = RefreshState::default();
+        assert!(state.request());
+        assert!(!state.request());
+        assert!(!state.request());
+        assert!(state.finish());
+        assert!(state.running);
+        assert!(!state.pending);
+        assert!(!state.request());
+        assert!(state.finish());
+        assert!(!state.finish());
+        assert!(!state.running);
+        assert!(state.request());
+    }
 
     #[gpui_kit::gpui::test]
     fn clicking_an_execution_copies_its_complete_command(cx: &mut TestAppContext) {
@@ -425,6 +491,8 @@ mod tests {
                     exit_code: Some(0),
                 }],
                 list_scroll: UniformListScrollHandle::new(),
+                refresh_state: RefreshState::default(),
+                _refresh: None,
                 _poll: cx.spawn(async move |_, _| {}),
             });
             Root::new(view, window, cx)

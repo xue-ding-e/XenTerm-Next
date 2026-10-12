@@ -117,13 +117,15 @@ jobs:
         with:
           python-version: "3.12"
       - run: sudo apt-get update && sudo apt-get install --no-install-recommends -y nginx
-      - run: python -m pip install cryptography paramiko
+      - run: python -m pip install cryptography paramiko mcp
       - name: Headless unit tests (no GUI system dependencies)
         run: env -u ALL_PROXY -u all_proxy -u HTTP_PROXY -u http_proxy -u HTTPS_PROXY -u https_proxy cargo test --locked --no-default-features --features headless
       - run: cargo build --locked --no-default-features --features headless
       - run: python tests/config_import_e2e.py --exe target/debug/xenterm
       - run: python tests/config_export_e2e.py --exe target/debug/xenterm
       - run: python tests/cli_exec_e2e.py --exe target/debug/xenterm
+      - run: python tests/access_policy_e2e.py --exe target/debug/xenterm
+      - run: python tests/execution_log_e2e.py --exe target/debug/xenterm
       - run: python tests/migration_modes_e2e.py --exe target/debug/xenterm
       - run: python tests/migration_preview_e2e.py --exe target/debug/xenterm
       - run: python tests/ssh_jump_chain_e2e.py --exe target/debug/xenterm

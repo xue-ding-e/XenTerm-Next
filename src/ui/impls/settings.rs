@@ -193,7 +193,7 @@ struct TextDraft {
 
 /// Numeric appearance settings share raw text drafts, while their existing
 /// ConfigStore setters remain the single authority for clamping saved values.
-/// Approval timeout and audit retention are separate policy controls.
+/// Execution-history retention is a separate policy control.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum NumberSetting {
     PanelFont,
