@@ -42,6 +42,7 @@ enum StartMode {
     /// the migration window is still accepted so existing shortcuts, jump-list
     /// tasks and scripts keep working.
     Ui,
+    ApprovalUi,
     Version,
 }
 
@@ -51,6 +52,7 @@ impl StartMode {
             Some("mcp") if args.get(2).is_some_and(|arg| arg == "serve") => Self::Mcp,
             Some("cli") => Self::Cli,
             Some("gpui") => Self::Ui,
+            Some("approval-ui") => Self::ApprovalUi,
             _ if args.iter().any(|arg| arg == "--version" || arg == "-V") => Self::Version,
             _ => Self::Ui,
         }
@@ -103,6 +105,15 @@ fn main() -> anyhow::Result<()> {
         StartMode::Ui => ui::run(),
         #[cfg(not(feature = "desktop"))]
         StartMode::Ui => anyhow::bail!("headless build: use xenterm cli help or xenterm mcp serve"),
+        #[cfg(feature = "desktop")]
+        StartMode::ApprovalUi => {
+            anyhow::ensure!(config::has_explicit_data_dir(), "approval UI requires --data-dir");
+            let id = args.get(2).filter(|_| args.len() == 3)
+                .ok_or_else(|| anyhow::anyhow!("usage: xenterm --data-dir <profile> approval-ui <request-id>"))?;
+            ui::run_approval(id.clone())
+        }
+        #[cfg(not(feature = "desktop"))]
+        StartMode::ApprovalUi => anyhow::bail!("approval UI requires the desktop build"),
         StartMode::Version => unreachable!("handled above"),
     }
 }
@@ -178,6 +189,13 @@ mod tests {
             "sessions".to_string(),
         ];
         assert!(matches!(StartMode::detect(&cli), StartMode::Cli));
+
+        let approval = vec![
+            "xenterm".to_string(),
+            "approval-ui".to_string(),
+            "request-id".to_string(),
+        ];
+        assert!(matches!(StartMode::detect(&approval), StartMode::ApprovalUi));
 
         let version = vec!["xenterm".to_string(), "--version".to_string()];
         assert!(matches!(StartMode::detect(&version), StartMode::Version));

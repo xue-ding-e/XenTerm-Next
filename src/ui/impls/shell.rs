@@ -253,7 +253,7 @@ pub(crate) fn run() -> Result<()> {
                         window_width,
                         webdav_task: None,
                         approval_queue: Vec::new(),
-                        approval_opened_at: std::collections::HashMap::new(),
+                        active_approval: None,
                         approval_reported: std::collections::HashSet::new(),
                         approval_shown: std::collections::HashSet::new(),
                         audit_last_prune_day: None,
@@ -393,9 +393,9 @@ pub(crate) struct Shell {
     /// approval poll; each head-of-queue entry is shown once as a dialog and
     /// resolved by whichever button the human presses.
     approval_queue: Vec<crate::automation::approval::ApprovalRequest>,
-    /// When the dialog for each shown request was opened — the UI-side
-    /// decision deadline the deny button's countdown runs against.
-    approval_opened_at: std::collections::HashMap<String, std::time::Instant>,
+    /// The single approval modal owned by this shell. A finished request may
+    /// remain here while a different modal is above it in the Root stack.
+    active_approval: Option<crate::ui::dialogs::ApprovalDialogHandle>,
     /// Requests whose completion has already been reported on the status
     /// line, so the poll reports a decision once, not once per second.
     approval_reported: std::collections::HashSet<String>,
@@ -733,9 +733,28 @@ impl Shell {
                     cx.notify();
                 }
                 let queue_root = crate::automation::approval::queue_dir();
+                let pending_ids: std::collections::HashSet<_> = requests
+                    .iter()
+                    .filter(|request| request.status == "pending")
+                    .map(|request| request.id.clone())
+                    .collect();
+                let mut repaint = false;
                 for request in requests {
                     match request.status.as_str() {
                         "pending" => {
+                            if crate::automation::approval::past_deadline(&request) {
+                                crate::automation::approval::resolve_timeout_in(
+                                    &queue_root,
+                                    &request.id,
+                                );
+                                if let Some(active) = &shell.active_approval {
+                                    if active.request_id == request.id {
+                                        active.finished.set(true);
+                                        repaint = true;
+                                    }
+                                }
+                                continue;
+                            }
                             if !shell.approval_shown.contains(&request.id)
                                 && !shell
                                     .approval_queue
@@ -743,12 +762,12 @@ impl Shell {
                                     .any(|q| q.id == request.id)
                             {
                                 shell.approval_queue.push(request);
+                                repaint = true;
                             }
                         }
                         "approved" | "denied" => {
                             // One line on the status line per finished
-                            // decision, then the file goes — the asking
-                            // process has long since read its answer.
+                            // decision. The requester owns file consumption.
                             if shell.approval_reported.insert(request.id.clone()) {
                                 let outcome = if request.status == "approved" {
                                     crate::i18n::t("已批准", "Approved")
@@ -768,20 +787,26 @@ impl Shell {
                                     cx,
                                 );
                             }
-                            if let Some(path) = &request.path {
-                                let _ = std::fs::remove_file(path);
+                            if let Some(active) = &shell.active_approval {
+                                if active.request_id == request.id {
+                                    active.finished.set(true);
+                                    repaint = true;
+                                }
                             }
-                            //  keeps the id: the dialog may
-                            // still be on screen for a frame or two, and a
-                            // re-queue after the feedback pass would reopen it
-                            // over the very answer it is showing.
                         }
                         _ => {}
                     }
                 }
+                shell.approval_queue.retain(|request| pending_ids.contains(&request.id));
+                if let Some(active) = &shell.active_approval {
+                    if !pending_ids.contains(&active.request_id) {
+                        active.finished.set(true);
+                        repaint = true;
+                    }
+                }
                 // A dialog with a live countdown repaints once a second, so
                 // the deny button's timer actually counts down.
-                if !shell.approval_opened_at.is_empty() {
+                if repaint || shell.active_approval.as_ref().is_some_and(|a| !a.closed.get() && !a.finished.get()) {
                     cx.notify();
                 }
                 // The audit sweep runs when the day turns — a daily job has no
@@ -807,6 +832,21 @@ impl Shell {
     /// risk reasons as a list. The deny button carries the countdown — the
     /// number is the promise the timeout makes, visible where the action is.
     fn drain_approval_queue(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(active) = &self.active_approval {
+            if active.closed.get() {
+                self.active_approval = None;
+            } else {
+                // Root only exposes a stack pop. The handle checks focus so
+                // a different modal above this approval remains untouched.
+                if active.close_if_finished(window, cx) {
+                    self.active_approval = None;
+                }
+                return;
+            }
+        }
+        if window.has_active_dialog(cx) {
+            return;
+        }
         // One dialog per request, ever: the first frame this request is at
         // the head of the queue marks it shown and opens the dialog, and the
         // frames after that skip it. Without the mark, a dialog opened from
@@ -821,16 +861,8 @@ impl Shell {
             return;
         };
 
-        // The UI-side decision deadline: if the human has not answered within
-        // the request's own wait window, the window denies it automatically —
-        // the same fail-closed answer the MCP side would reach, just sooner
-        // and with a message the user actually sees.
-        let opened = self
-            .approval_opened_at
-            .entry(request.id.clone())
-            .or_insert_with(std::time::Instant::now);
-        if opened.elapsed().as_secs() >= request.wait_timeout_secs {
-            self.approval_opened_at.remove(&request.id);
+        // A request can expire while it waits behind another modal.
+        if crate::automation::approval::past_deadline(&request) {
             self.approval_shown.insert(request.id.clone());
             self.approval_queue.retain(|q| q.id != request.id);
             crate::automation::approval::resolve_timeout_in(
@@ -859,36 +891,21 @@ impl Shell {
         // request's own deadline each time the builder runs.
         let request_for_body = request.clone();
         let reasons_for_body = request.reasons.clone();
-        let request_for_countdown = request.clone();
         let id_for_ok = request.id.clone();
         let id_for_cancel = request.id.clone();
 
-        crate::ui::dialogs::approval_dialog(
+        self.active_approval = Some(crate::ui::dialogs::approval_dialog(
             window,
             cx,
             request_for_body,
             reasons_for_body,
-            move || {
-                let left = crate::automation::approval::seconds_left(&request_for_countdown);
-                if left > 0 {
-                    SharedString::from(format!(
-                        "{} ({}s)",
-                        crate::i18n::t("拒绝", "Deny"),
-                        left
-                    ))
-                } else {
-                    SharedString::from(crate::i18n::t("拒绝", "Deny"))
-                }
+            move |_, _| {
+                crate::automation::approval::resolve_manual(&id_for_ok, true)
             },
             move |_, _| {
-                crate::automation::approval::resolve_manual(&id_for_ok, true);
-                true
+                crate::automation::approval::resolve_manual(&id_for_cancel, false)
             },
-            move |_, _| {
-                crate::automation::approval::resolve_manual(&id_for_cancel, false);
-                true
-            },
-        );
+        ));
     }
 
     /// Say something on the status line: readable for a few seconds, then it

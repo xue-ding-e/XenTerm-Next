@@ -36,7 +36,7 @@ fn fixture(cx: &mut TestAppContext) -> (Entity<Shell>, &mut VisualTestContext) {
                 window_width,
                 webdav_task: None,
                 approval_queue: Vec::new(),
-                approval_opened_at: std::collections::HashMap::new(),
+                active_approval: None,
                 approval_reported: std::collections::HashSet::new(),
                 approval_shown: std::collections::HashSet::new(),
                 audit_last_prune_day: None,

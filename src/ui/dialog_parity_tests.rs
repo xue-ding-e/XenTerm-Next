@@ -267,3 +267,156 @@ fn command_period_dismisses_nested_select_before_dialog(cx: &mut TestAppContext)
     cx.simulate_keystrokes("cmd-.");
     assert_cancelled(&fixture, cx);
 }
+
+struct ApprovalFixture {
+    approved: Rc<Cell<usize>>,
+    denied: Rc<Cell<usize>>,
+    handle: super::dialogs::ApprovalDialogHandle,
+}
+
+fn open_synthetic_approval(cx: &mut TestAppContext) -> (ApprovalFixture, &mut VisualTestContext) {
+    open_synthetic_approval_with(cx, true, false)
+}
+
+fn open_synthetic_approval_with(
+    cx: &mut TestAppContext,
+    approve_success: bool,
+    expired: bool,
+) -> (ApprovalFixture, &mut VisualTestContext) {
+    cx.update(gpui_kit::init);
+    let harness = Rc::new(std::cell::RefCell::new(None));
+    let harness_for_window = harness.clone();
+    let (_, cx) = cx.add_window_view(move |window, cx| {
+        let view = cx.new(|_| DialogHarness {
+            _root_subscription: None,
+        });
+        *harness_for_window.borrow_mut() = Some(view.clone());
+        Root::new(view, window, cx)
+    });
+    let approved = Rc::new(Cell::new(0));
+    let denied = Rc::new(Cell::new(0));
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let request = crate::automation::approval::ApprovalRequest {
+        id: "synthetic-ui-request".into(),
+        session: "synthetic session".into(),
+        command: "synthetic command".into(),
+        reasons: vec!["synthetic reason".into()],
+        created_at_ms: if expired { now - 70_000 } else { now },
+        wait_timeout_secs: 60,
+        status: "pending".into(),
+        decided_by: String::new(),
+        path: None,
+    };
+    let view: Entity<DialogHarness> = harness.borrow_mut().take().unwrap();
+    let handle = cx.update(|window, cx| view.update(cx, |_, cx| {
+        let approved_for_callback = approved.clone();
+        let denied_for_callback = denied.clone();
+        super::dialogs::approval_dialog(
+            window,
+            cx,
+            request.clone(),
+            request.reasons.clone(),
+            move |_, _| {
+                approved_for_callback.set(approved_for_callback.get() + 1);
+                approve_success
+            },
+            move |_, _| {
+                denied_for_callback.set(denied_for_callback.get() + 1);
+                true
+            },
+        )
+    }));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while cx.debug_bounds("approval-confirm").is_none() {
+        draw(cx);
+        assert!(std::time::Instant::now() < deadline);
+    }
+    (ApprovalFixture { approved, denied, handle }, cx)
+}
+
+#[gpui_kit::gpui::test]
+fn approval_footer_click_closes_without_denial(cx: &mut TestAppContext) {
+    let (fixture, cx) = open_synthetic_approval(cx);
+    let bounds = cx.debug_bounds("approval-confirm").unwrap();
+    cx.simulate_click(bounds.center(), Modifiers::default());
+    draw(cx);
+    assert_eq!(fixture.approved.get(), 1);
+    assert_eq!(fixture.denied.get(), 0);
+    assert!(fixture.handle.closed.get());
+    assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+}
+
+#[gpui_kit::gpui::test]
+fn approval_enter_closes_without_denial(cx: &mut TestAppContext) {
+    let (fixture, cx) = open_synthetic_approval(cx);
+    cx.simulate_keystrokes("enter");
+    draw(cx);
+    assert_eq!(fixture.approved.get(), 1);
+    assert_eq!(fixture.denied.get(), 0);
+    assert!(fixture.handle.closed.get());
+}
+
+#[gpui_kit::gpui::test]
+fn approval_deny_footer_calls_denial_once(cx: &mut TestAppContext) {
+    let (fixture, cx) = open_synthetic_approval(cx);
+    let bounds = cx.debug_bounds("approval-deny").unwrap();
+    cx.simulate_click(bounds.center(), Modifiers::default());
+    draw(cx);
+    assert_eq!(fixture.approved.get(), 0);
+    assert_eq!(fixture.denied.get(), 1);
+    assert!(fixture.handle.closed.get());
+}
+
+#[gpui_kit::gpui::test]
+fn failed_approval_stays_open_until_denied(cx: &mut TestAppContext) {
+    let (fixture, cx) = open_synthetic_approval_with(cx, false, false);
+    cx.simulate_keystrokes("enter");
+    draw(cx);
+    assert_eq!(fixture.approved.get(), 1);
+    assert_eq!(fixture.denied.get(), 0);
+    assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+    cx.simulate_keystrokes("escape");
+    draw(cx);
+    assert_eq!(fixture.denied.get(), 1);
+}
+
+#[gpui_kit::gpui::test]
+fn expired_approval_cannot_be_confirmed(cx: &mut TestAppContext) {
+    let (fixture, cx) = open_synthetic_approval_with(cx, true, true);
+    let bounds = cx.debug_bounds("approval-confirm").unwrap();
+    cx.simulate_click(bounds.center(), Modifiers::default());
+    cx.simulate_keystrokes("enter");
+    draw(cx);
+    assert_eq!(fixture.approved.get(), 0);
+    assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+}
+
+#[gpui_kit::gpui::test]
+fn disappeared_approval_cannot_be_confirmed(cx: &mut TestAppContext) {
+    let (fixture, cx) = open_synthetic_approval(cx);
+    fixture.handle.finished.set(true);
+    draw(cx);
+    cx.simulate_keystrokes("enter");
+    assert_eq!(fixture.approved.get(), 0);
+    assert_eq!(fixture.denied.get(), 0);
+}
+
+#[gpui_kit::gpui::test]
+fn finished_approval_does_not_close_a_later_modal(cx: &mut TestAppContext) {
+    let (fixture, cx) = open_synthetic_approval(cx);
+    cx.update(|window, cx| {
+        window.open_dialog(cx, |dialog, _, _| dialog.title("Other modal"));
+    });
+    fixture.handle.finished.set(true);
+    let closed_other = cx.update(|window, cx| fixture.handle.close_if_finished(window, cx));
+    assert!(!closed_other);
+    assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+    cx.update(|window, cx| window.close_dialog(cx));
+    let closed_approval = cx.update(|window, cx| fixture.handle.close_if_finished(window, cx));
+    assert!(closed_approval);
+    assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+    assert_eq!(fixture.denied.get(), 0);
+}

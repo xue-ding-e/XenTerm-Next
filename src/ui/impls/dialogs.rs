@@ -15,17 +15,20 @@
 //! hosts the overlay layers itself; application views neither mount those layers
 //! nor subscribe to Root just to repaint them.
 
+use std::{cell::Cell, rc::Rc};
+
+use gpui_kit::component::Disableable as _;
 use gpui_kit::{
     component::{
         button::{Button, ButtonVariants, ButtonVariant},
         dialog::{DialogAction, DialogButtonProps, DialogClose, DialogFooter},
         h_flex,
         input::{Input, InputState},
-        v_flex, WindowExt as _, Sizable as _, ActiveTheme as _,
+        v_flex, Root, Sizable as _, ActiveTheme as _, WindowExt as _,
     },
     div,
     prelude::*,
-    px, App, Context, Entity, IntoElement, SharedString, Window,
+    px, App, Context, Entity, FocusHandle, IntoElement, SharedString, Subscription, Window,
 };
 
 /// Extend the toolkit's dialog keys with the native macOS cancel shortcut.
@@ -186,62 +189,180 @@ mod tests {
 /// label, the command in the mono family on its own block, the risk reasons
 /// as a bulleted list — because the whole point of asking is that the human
 /// can see *what* they are approving and *why* it was flagged. The dialog
-/// centers itself in the window: `margin_top` is computed from the viewport
-/// instead of the toolkit's fixed top-tenth, and an explicit width is what
-/// makes the toolkit's own horizontal centering arithmetic land.
+/// stays near the window's top so longer commands fit: `margin_top` is
+/// computed from the viewport, while an explicit width keeps the toolkit's
+/// horizontal centering arithmetic correct.
 ///
-/// `deny_label` is re-evaluated every frame — it carries the countdown. Both
-/// answers close the dialog; the caller resolves the request file either way.
+/// The caller keeps the handle until the request finishes, so a later poll can
+/// close only this dialog when it becomes the topmost modal again.
+pub(crate) struct ApprovalDialogHandle {
+    pub request_id: String,
+    pub focus: FocusHandle,
+    pub closed: Rc<Cell<bool>>,
+    pub finished: Rc<Cell<bool>>,
+}
+
+impl ApprovalDialogHandle {
+    pub(crate) fn close_if_finished(&self, window: &mut Window, cx: &mut App) -> bool {
+        if self.finished.get()
+            && window.has_active_dialog(cx)
+            && self.focus.contains_focused(window, cx)
+        {
+            window.close_dialog(cx);
+            return true;
+        }
+        false
+    }
+}
+
 pub(crate) fn approval_dialog<T: Render + 'static>(
     window: &mut Window,
     cx: &mut Context<T>,
     request: crate::automation::approval::ApprovalRequest,
     reasons: Vec<String>,
-    deny_label: impl Fn() -> SharedString + 'static,
     on_approve: impl Fn(&mut Window, &mut App) -> bool + 'static,
     on_deny: impl Fn(&mut Window, &mut App) -> bool + 'static,
-) {
-    let on_approve = std::rc::Rc::new(on_approve);
-    let on_deny = std::rc::Rc::new(on_deny);
-    let title = crate::i18n::t("风险命令审批", "Risky command approval");
-    window.open_dialog(cx, move |dialog, window, cx| {
-        // Centered: a fixed width for the horizontal arithmetic, and
-        // a top margin that puts the card's middle at the window's.
-        let viewport_h = f32::from(window.viewport_size().height);
-        let margin_top = (viewport_h * 0.26).max(60.0);
-        let reasons_list = reasons
-            .iter()
-            .map(|reason| {
-                div()
-                    .child(SharedString::from(format!("• {reason}")))
-                    .into_any_element()
-            })
-            .collect::<Vec<_>>();
-        let seconds_left = crate::automation::approval::seconds_left(&request);
-        dialog
-            .title(title.clone())
-            .width(px(560.))
-            .margin_top(margin_top)
-            .button_props(
-                DialogButtonProps::default()
-                    .ok_text(crate::i18n::t("批准", "Approve"))
-                    .ok_variant(ButtonVariant::Danger)
-                    // The two callbacks' bools mean opposite things —
-                    // `on_ok`: true keeps the dialog open; `on_cancel`:
-                    // true closes it. Both answers here close it, so
-                    // ok returns false and cancel returns true.
-                    .on_ok({
-                        let on_approve = on_approve.clone();
-                        move |_, window, cx| {
-                            on_approve(window, cx);
-                            false
-                        }
+) -> ApprovalDialogHandle {
+    let on_approve = Rc::new(on_approve);
+    let on_deny = Rc::new(on_deny);
+    let closed = Rc::new(Cell::new(false));
+    let answered = Rc::new(Cell::new(false));
+    let finished = Rc::new(Cell::new(false));
+    let request_id = request.id.clone();
+    let title = crate::i18n::t("确认本次操作", "Confirm this operation");
+    let closed_for_dialog = closed.clone();
+    let answered_for_dialog = answered.clone();
+    let finished_for_dialog = finished.clone();
+    Root::update(window, cx, move |root, window, cx| {
+        root.open_dialog(
+            move |dialog, window, cx| {
+                let closed = closed_for_dialog.clone();
+                let answered = answered_for_dialog.clone();
+                let finished = finished_for_dialog.clone();
+                // Center horizontally and leave vertical room for command details.
+                let viewport_h = f32::from(window.viewport_size().height);
+                let margin_top = (viewport_h * 0.12).max(24.0);
+                let reasons_list = reasons
+                    .iter()
+                    .map(|reason| {
+                        div()
+                            .child(SharedString::from(format!("• {reason}")))
+                            .into_any_element()
                     })
-                    .on_cancel({
+                    .collect::<Vec<_>>();
+                let seconds_left = crate::automation::approval::seconds_left(&request);
+                dialog
+                    .title(title.clone())
+                    .width(px(600.))
+                    .overlay_closable(false)
+                    .margin_top(margin_top)
+                    .button_props(
+                        DialogButtonProps::default()
+                            .ok_text(crate::i18n::t("允许一次", "Allow once"))
+                            .ok_variant(ButtonVariant::Danger)
+                            .on_ok({
+                                let on_approve = on_approve.clone();
+                                let answered = answered.clone();
+                                let finished = finished.clone();
+                                let request = request.clone();
+                                move |_, window, cx| {
+                                    if finished.get()
+                                        || crate::automation::approval::past_deadline(&request)
+                                    {
+                                        return false;
+                                    }
+                                    let approved = on_approve(window, cx);
+                                    if approved {
+                                        answered.set(true);
+                                    }
+                                    approved
+                                }
+                            })
+                            .on_cancel(|_, _, _| true),
+                    )
+                    .child(
+                        v_flex()
+                            .gap_4()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(crate::i18n::t(
+                                        "此操作触及敏感位置。请核对会话和命令后决定是否执行。",
+                                        "This operation touches a sensitive location. Review the session and command before continuing.",
+                                    )),
+                            )
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .w(px(56.))
+                                            .flex_shrink_0()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(crate::i18n::t("会话", "Session")),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .text_sm()
+                                            .child(request.session.clone()),
+                                    ),
+                            )
+                            .child(
+                                v_flex()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(crate::i18n::t("命令", "Command")),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("approval-command")
+                                            .w_full()
+                                            .min_w_0()
+                                            .max_h(px(180.))
+                                            .overflow_y_scroll()
+                                            .rounded_lg()
+                                            .border_1()
+                                            .border_color(cx.theme().border)
+                                            .bg(cx.theme().muted)
+                                            .px_3()
+                                            .py_2()
+                                            .font_family(cx.theme().mono_font_family.clone())
+                                            .text_sm()
+                                            .child(request.command.clone()),
+                                    ),
+                            )
+                            .child(
+                                v_flex()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(crate::i18n::t(
+                                                "风险原因",
+                                                "Why this was flagged",
+                                            )),
+                                    )
+                                    .children(reasons_list),
+                            ),
+                    )
+                    .footer(approval_footer(
+                        seconds_left,
+                        seconds_left == 0 || finished.get(),
+                    ))
+                    .on_close({
                         let on_deny = on_deny.clone();
                         move |_, window, cx| {
-                            on_deny(window, cx);
-                            true
+                            if !closed.replace(true) && !answered.get() && !finished.get() {
+                                on_deny(window, cx);
+                            }
                         }
                     }),
             )
@@ -323,4 +444,51 @@ pub(crate) fn approval_dialog<T: Render + 'static>(
                 }
             })
     });
+    ApprovalDialogHandle {
+        request_id,
+        focus: window.focused(cx).expect("new approval dialog has focus"),
+        closed,
+        finished,
+    }
+}
+
+fn approval_footer(seconds_left: u64, expired: bool) -> impl IntoElement {
+    let caption = if expired {
+        crate::i18n::t("请求已结束", "Request finished").to_string()
+    } else {
+        format!(
+            "{} {seconds_left}s",
+            crate::i18n::t("超时后拒绝 · 剩余", "Refuses on timeout · Remaining")
+        )
+    };
+    h_flex()
+        .w_full()
+        .items_center()
+        .justify_between()
+        .child(div().text_xs().child(SharedString::from(caption)))
+        .child(
+            DialogFooter::new()
+                .child(
+                    div().debug_selector(|| "approval-deny".into()).child(
+                        DialogClose::new().trigger(move |button| {
+                            button.label(crate::i18n::t("拒绝", "Deny")).small()
+                        }),
+                    ),
+                )
+                .child(
+                    DialogAction::new().child(
+                        div().debug_selector(|| "approval-confirm".into()).child(
+                            Button::new("approval-confirm")
+                                .label(if expired {
+                                    crate::i18n::t("已过期", "Expired")
+                                } else {
+                                    crate::i18n::t("允许一次", "Allow once")
+                                })
+                                .small()
+                                .danger()
+                                .disabled(expired),
+                        ),
+                    ),
+                ),
+        )
 }

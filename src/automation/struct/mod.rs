@@ -1,5 +1,7 @@
 mod access;
 pub(crate) mod approval;
+#[cfg(all(windows, not(feature = "desktop")))]
+mod native_approval;
 pub(crate) mod risk;
 
 pub(crate) use access::Frontend;
