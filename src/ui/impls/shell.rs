@@ -248,10 +248,11 @@ pub(crate) fn run() -> Result<()> {
                         )
                     });
 
-                    let shell = Shell {
+                    let mut shell = Shell {
                         pages: Pages::new(terminal),
                         window_width,
                         webdav_task: None,
+                        persistence_poll: None,
                         process_window: Detached::new(process_window_title),
                         execution_log_window: crate::ui::ExecutionLogWindowHandle::new(),
                         system_info_window: Detached::new(system_info_window_title),
@@ -265,6 +266,7 @@ pub(crate) fn run() -> Result<()> {
                         quick_connect_pick: None,
                         _quick_connect_subscription: None,
                     };
+                    shell.start_persistence_poll(cx);
                     shell
                 });
                 // `Root` has to be the window's first view. It is what the
@@ -380,6 +382,8 @@ pub(crate) struct Shell {
     window_width: Rc<Cell<f32>>,
     /// The WebDAV sync in flight, if any. Kept because dropping a Task cancels it.
     webdav_task: Option<gpui_kit::Task<()>>,
+    /// Observe background save outcomes without reviving the removed approval queue.
+    persistence_poll: Option<gpui_kit::Task<()>>,
     /// The process monitor, while it is open.
     ///
     /// Detached rather than a panel: a table you keep beside the terminal. See
@@ -669,6 +673,22 @@ impl Shell {
     fn refresh_persistence_warning(&mut self) -> bool {
         let error = self.state.store.borrow().persistence_error();
         self.persistence_warning.refresh(error)
+    }
+
+    /// Background saves can finish while the window is idle. Observe their
+    /// sanitized outcome once per second and repaint only when it changes.
+    /// This timer does not scan files or make approval/permission decisions.
+    fn start_persistence_poll(&mut self, cx: &mut Context<Self>) {
+        self.persistence_poll = Some(cx.spawn(async move |this, cx| loop {
+            cx.background_executor().timer(std::time::Duration::from_secs(1)).await;
+            if this.update(cx, |shell, cx| {
+                if shell.refresh_persistence_warning() {
+                    cx.notify();
+                }
+            }).is_err() {
+                break;
+            }
+        }));
     }
 
     /// Say something on the status line: readable for a few seconds, then it

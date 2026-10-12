@@ -44,15 +44,9 @@ fn fixture_without_forced_focus(cx: &mut TestAppContext) -> (Entity<Shell>, &mut
                 pages: Pages::new(terminal),
                 window_width,
                 webdav_task: None,
-                approval_queue: Vec::new(),
-                approval_opened_at: std::collections::HashMap::new(),
-                approval_reported: std::collections::HashSet::new(),
-                approval_shown: std::collections::HashSet::new(),
-                audit_last_prune_day: None,
-                // No real approval queue or background persistence in this fixture.
-                approval_poll: None,
+                persistence_poll: None,
                 process_window: Detached::new(process_window_title),
-                audit_window: crate::ui::AuditWindowHandle::new(),
+                execution_log_window: crate::ui::ExecutionLogWindowHandle::new(),
                 system_info_window: Detached::new(system_info_window_title),
                 open_file: None,
                 state,
@@ -464,3 +458,34 @@ mod tab_cycle_tests;
 
 #[path = "shell_pane_cycle_tests.rs"]
 mod pane_cycle_tests;
+
+#[gpui_kit::gpui::test]
+fn idle_shell_observes_background_save_failure_and_recovery(cx: &mut TestAppContext) {
+    let (shell, cx) = fixture_without_forced_focus(cx);
+    let saved = shell.update(cx, |shell, cx| {
+        shell.start_persistence_poll(cx);
+        shell.state.store.borrow().saved_state.clone()
+    });
+    cx.run_until_parked();
+    let notifications = Rc::new(Cell::new(0));
+    let count = notifications.clone();
+    let _subscription = cx.update(|_, cx| cx.observe(&shell, move |_, _| {
+        count.set(count.get() + 1);
+    }));
+    // Simulate the persistence worker, with no input or explicit shell notify.
+    saved.lock().unwrap().error = Some("Synthetic background save failure".into());
+    cx.executor().advance_clock(std::time::Duration::from_secs(1));
+    cx.run_until_parked();
+    assert_eq!(shell.read_with(cx, |shell, _| shell.persistence_warning.message.clone()),
+        Some("Synthetic background save failure".into()));
+    assert!(notifications.get() > 0);
+    let unchanged = notifications.get();
+    cx.executor().advance_clock(std::time::Duration::from_secs(1));
+    cx.run_until_parked();
+    assert_eq!(notifications.get(), unchanged, "unchanged outcomes must not repaint");
+    saved.lock().unwrap().error = None;
+    cx.executor().advance_clock(std::time::Duration::from_secs(1));
+    cx.run_until_parked();
+    assert!(shell.read_with(cx, |shell, _| shell.persistence_warning.message.is_none()));
+    assert!(notifications.get() > unchanged);
+}
