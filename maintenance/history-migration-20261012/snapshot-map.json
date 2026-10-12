@@ -1,0 +1,820 @@
+[
+  {
+    "old": "1cd9857d390ef023d786a3e72555872fa6f8b2a1",
+    "new": "2fa7cb1c0220a8b3349c839c3d580d03ec2d10de",
+    "tree": "a5b910d9456ffbf425c7f485d746b8d38a97a704",
+    "old_parents": [],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [],
+    "absorbed_commits": 0
+  },
+  {
+    "old": "ce35ba2163a2b2ef9fb13aa9689eb9bc64a961d1",
+    "new": "3293c748cc1a3f472949ca202944f466c754e685",
+    "tree": "1850a69d2df8b245398191260b80e96b7d66b94e",
+    "old_parents": [
+      "1cd9857d390ef023d786a3e72555872fa6f8b2a1"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [],
+    "absorbed_commits": 0
+  },
+  {
+    "old": "54acf26959de2032d60af9fc28c78d4c55045d94",
+    "new": "ac1b34663597cf470f2559cada57ddf772707bcf",
+    "tree": "dfe38a434011acfc7db61bc9793fe61a60a3b370",
+    "old_parents": [
+      "ce35ba2163a2b2ef9fb13aa9689eb9bc64a961d1"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [],
+    "absorbed_commits": 0
+  },
+  {
+    "old": "3525af41706cc6803b78eea829ba49abd6741b72",
+    "new": "da4be2e6ffccb42f5bed7990617a255da408c85e",
+    "tree": "9d53ef374294425397d26fd41d9d50075147ff6f",
+    "old_parents": [
+      "54acf26959de2032d60af9fc28c78d4c55045d94"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [],
+    "absorbed_commits": 0
+  },
+  {
+    "old": "360763d6324479513a87cafdb9c3c1b755d21e41",
+    "new": "6906ab2db7480bdb19673dbf40bc4d7d593e3085",
+    "tree": "d13fcc1f236fdeb76cdb76b4926f2f9c32facdcd",
+    "old_parents": [
+      "3525af41706cc6803b78eea829ba49abd6741b72"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [],
+    "absorbed_commits": 0
+  },
+  {
+    "old": "18581d9d97028856737886e800b43af61d94e2e3",
+    "new": "9da125813960dccaa4c7ba811a38cf14b7ab708c",
+    "tree": "7cf7e404f4994f8390f2e8ece301cf948469c1b5",
+    "old_parents": [
+      "360763d6324479513a87cafdb9c3c1b755d21e41"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [],
+    "absorbed_commits": 0
+  },
+  {
+    "old": "da0925cd8ac9e03f99ead9bd905870f46beff231",
+    "new": "49d77c50fb96e85aad16c123544fba6a9c5101af",
+    "tree": "406dde61eacc9420eeb6a75be1217a4039ede31e",
+    "old_parents": [
+      "18581d9d97028856737886e800b43af61d94e2e3"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [],
+    "absorbed_commits": 0
+  },
+  {
+    "old": "2dfef0d958504eddf3298c070ee6a4c71e749f83",
+    "new": "489de5917310d300dfdfe33c85fa1794cffa98ca",
+    "tree": "02f49deb897538a2c90da519e1f1da4f755ff367",
+    "old_parents": [
+      "da0925cd8ac9e03f99ead9bd905870f46beff231",
+      "2a3cd3af25a3783749b60185a09af8aa73e2ca91"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "xue-ding-e <106448173+xue-ding-e@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 4
+  },
+  {
+    "old": "4711259c9930b2e27dd759ae46a62086bcbfe029",
+    "new": "e303256bda2d58a152629e49c43a1289a50b1921",
+    "tree": "4065829692a89eaa39115e41aa765f673c14df79",
+    "old_parents": [
+      "2dfef0d958504eddf3298c070ee6a4c71e749f83",
+      "33dec491f6c752624f0421faced446f664523c81"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "xue-ding-e <106448173+xue-ding-e@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 4
+  },
+  {
+    "old": "24bd3168d8231f2b49f86091cac48be1f703bef3",
+    "new": "6be91615d2f411945eef44ec7ff131b23e899356",
+    "tree": "d5d8d4229efd9224fb940174433a7ad156728b73",
+    "old_parents": [
+      "4711259c9930b2e27dd759ae46a62086bcbfe029",
+      "62a30f6c2346b9e23747a219bc6fd06fa9f0bcfb"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "xue-ding-e <106448173+xue-ding-e@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 29
+  },
+  {
+    "old": "13f5d725bc895779ef131a89142037c970d0d2d8",
+    "new": "f232b23ca5eab7cd17ccc3138ecf8b0f1023ff8a",
+    "tree": "fda85493fb00e5ee9c4780b7666f90eb129df897",
+    "old_parents": [
+      "24bd3168d8231f2b49f86091cac48be1f703bef3",
+      "af1aefa9b227979418670f8bacca5657470a5378"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "xue-ding-e <106448173+xue-ding-e@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 1
+  },
+  {
+    "old": "14b3aec2d14f88f435cce63e4ee9fd21570a2582",
+    "new": "111179e7fcfe7958920d6c3f4694f03246bec7ec",
+    "tree": "d9c0d08deb4229b7e87cf3517e11e773b5939a8c",
+    "old_parents": [
+      "13f5d725bc895779ef131a89142037c970d0d2d8",
+      "9af8ad34fd2a43b11236c0f22bd352379b18a14c"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "xue-ding-e <106448173+xue-ding-e@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 3
+  },
+  {
+    "old": "caee14aca4b5f8245ff5af8a36f7ad5c670406b5",
+    "new": "c851cd3f672f8267bcfa410b6dc4707dfc575a0f",
+    "tree": "c4cfa451f1bcf1a5117411d15594d2ae23d21540",
+    "old_parents": [
+      "14b3aec2d14f88f435cce63e4ee9fd21570a2582"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [],
+    "absorbed_commits": 0
+  },
+  {
+    "old": "6aaba54191513930a4ce013c1af654149c9237f6",
+    "new": "612f774cf55f6e564d648c8a88a821c31d11b7dd",
+    "tree": "75997a16bb2fc6fd6291a1500e738da33a542c0b",
+    "old_parents": [
+      "caee14aca4b5f8245ff5af8a36f7ad5c670406b5"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [],
+    "absorbed_commits": 0
+  },
+  {
+    "old": "296f52db53535d5d83755713c5be035087179844",
+    "new": "51fb066ed15bc8de48ad8a477027ef51e86b44e6",
+    "tree": "13ad8d1a692601ca28e9424d2cf0ae55ba691b0a",
+    "old_parents": [
+      "6aaba54191513930a4ce013c1af654149c9237f6",
+      "d9925157167105d28636535fa4d75ae1cc67b854"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "xue-ding-e <106448173+xue-ding-e@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 1
+  },
+  {
+    "old": "d2d24cd197ae90eace079943b1e0acda8d1a5f8c",
+    "new": "3a5380cd2cadbd4facbe79de333d5012634ab123",
+    "tree": "5451463502a82819480d39c8dfac0224c05aa6ca",
+    "old_parents": [
+      "296f52db53535d5d83755713c5be035087179844",
+      "036305d5a6a61987745370af461ee72c37cf1954"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "xue-ding-e <106448173+xue-ding-e@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 1
+  },
+  {
+    "old": "333f847871c35e8b70b0c469d45728fc3fd4a70c",
+    "new": "5d53dcc7c753a6c6b61c88e6e003674bead545bf",
+    "tree": "f8e79072414342f10f3f742563996d769e2b2fff",
+    "old_parents": [
+      "d2d24cd197ae90eace079943b1e0acda8d1a5f8c",
+      "d21c7ccf9ca148fb9352d6eea014f2f9862728cd"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "xue-ding-e <106448173+xue-ding-e@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 1
+  },
+  {
+    "old": "49d527f6fba0926c1bb13bb270bc326f580e21c1",
+    "new": "7cfeea0798f38d5f24bc99f94a43f867a8946cd7",
+    "tree": "a55d34aec0c6a182e73553330b9bdf8df9c59bb0",
+    "old_parents": [
+      "333f847871c35e8b70b0c469d45728fc3fd4a70c",
+      "c4753ef1b01fa545277ce7c29e9a118daca4b817"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "xue-ding-e <106448173+xue-ding-e@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 1
+  },
+  {
+    "old": "2f0b68c90fd48c7b7f1fa9b9a1adf8c9427601af",
+    "new": "bfd285a570bf3d889a51495c60a1ecbef2c3291e",
+    "tree": "4f99d108642ca2041e608e5f19b6ccb9b2dc8d09",
+    "old_parents": [
+      "49d527f6fba0926c1bb13bb270bc326f580e21c1",
+      "2ae55493628bc12fb1474ae1ff0c0cfbbfbdb0f6"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "xue-ding-e <106448173+xue-ding-e@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 1
+  },
+  {
+    "old": "52c3cbdf2ab7f97e74cba02412206cf626051291",
+    "new": "4f94b4ca10f1788cfe13cf48ebca0aafc5c57168",
+    "tree": "9b72d32a6d0abb3c7c9b06a6d808df08b1b70468",
+    "old_parents": [
+      "2f0b68c90fd48c7b7f1fa9b9a1adf8c9427601af",
+      "69841e61cc37268703760a422b12d464a15a5dcb"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "xue-ding-e <106448173+xue-ding-e@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 1
+  },
+  {
+    "old": "0e629f75cb8a39fd309125f993cce2bb7c7acd09",
+    "new": "fd63e7ccf4e3d1c16790a25f12c71f663882619c",
+    "tree": "ea9889c2996ab4f55578d779906e5089de6add98",
+    "old_parents": [
+      "52c3cbdf2ab7f97e74cba02412206cf626051291",
+      "5101978909aae3ecac390d7d099d2ee87fd26de4"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "xue-ding-e <106448173+xue-ding-e@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 2
+  },
+  {
+    "old": "a0252517410fcf5e4b37bd0f93bb4608b55ba47a",
+    "new": "046fde4435d1c3f834a44b7967d2c86aa7ce4a00",
+    "tree": "1dfabb5f54736ab48e602e4501d205d533db4fe6",
+    "old_parents": [
+      "0e629f75cb8a39fd309125f993cce2bb7c7acd09",
+      "f3d025ad19d154e43b9250e25855228ba58f8e62"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "xue-ding-e <106448173+xue-ding-e@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 1
+  },
+  {
+    "old": "17e8b35d22a3f2c82758107ee56ba98c4f3b2e1e",
+    "new": "1685b036a9a7fbef8581ab8f53ec52a78342d726",
+    "tree": "93410ec811120020aa51d3753a5668757171eb9e",
+    "old_parents": [
+      "a0252517410fcf5e4b37bd0f93bb4608b55ba47a",
+      "8fffb510bca6c2eef1027bd6fa283d2211045777"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "xue-ding-e <106448173+xue-ding-e@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 1
+  },
+  {
+    "old": "1e1bfcb386349d7dea490791c02c92d6f2e1c1f3",
+    "new": "0147c08a912de380efee2e9aaac4920d12796e79",
+    "tree": "eb25c092207939f914e2e02f03c0c772b260948c",
+    "old_parents": [
+      "17e8b35d22a3f2c82758107ee56ba98c4f3b2e1e",
+      "1192ad12d4910f725fd534ee80ca7deddc423f92"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "xue-ding-e <106448173+xue-ding-e@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 1
+  },
+  {
+    "old": "ef70e7dbd36d72254efc8ec144ad3dbc454f81e5",
+    "new": "f83286db8c96a65df7a98ce79a20aacffdf8ee54",
+    "tree": "0ba66d4065652ee542e60cac6cc5b7f0d55b4e23",
+    "old_parents": [
+      "1e1bfcb386349d7dea490791c02c92d6f2e1c1f3",
+      "01ff0d7a73707416de7f459f7dc17c2f2e71f106"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "xue-ding-e <106448173+xue-ding-e@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 2
+  },
+  {
+    "old": "4720342aeb0ca47f59e6e65d62c4d0e65676c0e1",
+    "new": "d7943299d0a60a2f2f588591dfc482b83a850a62",
+    "tree": "30c5ffe331bea61d3b4f7e262a03d011eb27adda",
+    "old_parents": [
+      "ef70e7dbd36d72254efc8ec144ad3dbc454f81e5",
+      "dbd22b601434734022642b25a366a7d09df5fab8"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "xue-ding-e <106448173+xue-ding-e@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 2
+  },
+  {
+    "old": "d6bde7eb9fc185ecfaa0f617af5b790273d36a37",
+    "new": "b828bc0a5c3abfc71252012ef61aee4092f142ed",
+    "tree": "94208a2476b480c312daf84a77974ba01888184f",
+    "old_parents": [
+      "4720342aeb0ca47f59e6e65d62c4d0e65676c0e1",
+      "fe977c30271add8a9eb7cdb8eb49e168822b27e5"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "xue-ding-e <106448173+xue-ding-e@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 1
+  },
+  {
+    "old": "d05920a94e082dfec5508541b3275d6e790fe7b9",
+    "new": "4bfec15f0e6d9c44989e5185778eacab4e3218a6",
+    "tree": "44cb99906eadc1b3703a77c962cf2c8032915bf9",
+    "old_parents": [
+      "d6bde7eb9fc185ecfaa0f617af5b790273d36a37",
+      "aeb1e81a76c23662e1efd2d0a7c868af6c2dbe39"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "xue-ding-e <106448173+xue-ding-e@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 2
+  },
+  {
+    "old": "05a75680ee684206160900a626e3f4c2d72a51d7",
+    "new": "16023b1a00e1a362b22ab93236bf84bc5db46725",
+    "tree": "1b8b302556a844fd9d0c8bf5fa548420d51125c2",
+    "old_parents": [
+      "d05920a94e082dfec5508541b3275d6e790fe7b9",
+      "c09056c1bedb6bfac804b94da9f6bc3ce76f2d58"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "xue-ding-e <106448173+xue-ding-e@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 1
+  },
+  {
+    "old": "c21fc23cf447dc5b3a5ed3368087812323881947",
+    "new": "dfcfc9b7858c2d91662c55c14d51100388aa30fb",
+    "tree": "50426fac44d15b3885a11fbe3a7226d80eb7a49e",
+    "old_parents": [
+      "05a75680ee684206160900a626e3f4c2d72a51d7"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [],
+    "absorbed_commits": 0
+  },
+  {
+    "old": "8d2633d6fc81cdf8061b7d49217b67a0090864a2",
+    "new": "7318d5ea98cb0a2bbe51324dfcd4b2a4c81fc7bd",
+    "tree": "1443be744d9ab4b8ed51816f5543228b4f33e7d0",
+    "old_parents": [
+      "c21fc23cf447dc5b3a5ed3368087812323881947"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [],
+    "absorbed_commits": 0
+  },
+  {
+    "old": "5c169b3ea60eb6ce13030bee7e4c47257fbec97b",
+    "new": "385f659470ca370c27a42383332aec57ecadcd36",
+    "tree": "a72280413f1509ab3c6c4e2d48f5141b46968843",
+    "old_parents": [
+      "8d2633d6fc81cdf8061b7d49217b67a0090864a2"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [],
+    "absorbed_commits": 0
+  },
+  {
+    "old": "9e52027dc7dbda63e99ae3011893837ee020012d",
+    "new": "75805bc5a194518e54267e3e8a8ea5f2b84615b8",
+    "tree": "4249e125e7c537014d228e7d89f00d34fbc3d8ed",
+    "old_parents": [
+      "5c169b3ea60eb6ce13030bee7e4c47257fbec97b",
+      "8070ea7af20f98a0d69201546dcb66e8795ed789"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "xue-ding-e <106448173+xue-ding-e@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 9
+  },
+  {
+    "old": "712c71bccc63f4f4d17189789e850009a3373821",
+    "new": "71b046d1ab598a5e288f4c69090c9a561cf8b241",
+    "tree": "448fbb9f43d97de12fba521e8f5f2c2212c6c5f7",
+    "old_parents": [
+      "9e52027dc7dbda63e99ae3011893837ee020012d",
+      "0ff2f530b3647a8e511c894ab522c002fd3164b0"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "xue-ding-e <106448173+xue-ding-e@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 1
+  },
+  {
+    "old": "718c77d8a64c00bfd06d9434b7cc42594afe864a",
+    "new": "9eb4a00e9d3d1fdf2daf37c56363dd6758fbd7ba",
+    "tree": "adb75f7c258139c9400479daa96fc7dcdac3183e",
+    "old_parents": [
+      "712c71bccc63f4f4d17189789e850009a3373821",
+      "4c0d801e807998df064b648e6e61134f628f1cba"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "xue-ding-e <106448173+xue-ding-e@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 2
+  },
+  {
+    "old": "aa14a9f0bce8dca7401f059668ba1b2c2e90becc",
+    "new": "514c1ffbf363e0f98e44f2faab2c8f52f75c0fc5",
+    "tree": "862f7ae3204da6104eb9175090c46b68672c4301",
+    "old_parents": [
+      "718c77d8a64c00bfd06d9434b7cc42594afe864a",
+      "2b8672c2e514b6b4066ccf8e36e6c43a65e081e1"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "xue-ding-e <106448173+xue-ding-e@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 2
+  },
+  {
+    "old": "3c2f2bcb5a32b7d36a4c2e042c8733b7eeb9de38",
+    "new": "16ecbf2680eec215e6026f004a95f21ca4664a55",
+    "tree": "185aecdcf2290f0baf0d90980e6f6cfb572f4d26",
+    "old_parents": [
+      "aa14a9f0bce8dca7401f059668ba1b2c2e90becc",
+      "d206bce4a6966e3781830f8015992edcb21b08ba"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "xue-ding-e <106448173+xue-ding-e@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 2
+  },
+  {
+    "old": "64f87770af67498464d890f8f71a6758cb2a1aee",
+    "new": "af295b5c5d4ba6186ab3a44c0ca2129d949ebeb0",
+    "tree": "2b61038cc874eada7aad387705d8d4e721cd3d31",
+    "old_parents": [
+      "3c2f2bcb5a32b7d36a4c2e042c8733b7eeb9de38",
+      "f14aed54469853004e2aa4e3b13daf36047c1da3"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "xue-ding-e <106448173+xue-ding-e@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 2
+  },
+  {
+    "old": "409aef12d6b20c0afe8c08418078a0a90dd2c55c",
+    "new": "1db969e7b7d57d8ab134c938a40937f3fc5f2317",
+    "tree": "258e094ec5c0d13941b970d175abecd25cd639cf",
+    "old_parents": [
+      "64f87770af67498464d890f8f71a6758cb2a1aee",
+      "af7880e2e5912423bd5b7e3f4adbd423222bada9"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "xue-ding-e <106448173+xue-ding-e@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 6
+  },
+  {
+    "old": "edb446a32dc2c95f96ad82227876c05ebaa15939",
+    "new": "195d177b48a0dedba1db81f7d5166be7d7062ff6",
+    "tree": "fda094b6709786f10c8acadb9d130bdf24c93a36",
+    "old_parents": [
+      "409aef12d6b20c0afe8c08418078a0a90dd2c55c",
+      "16c6ba5f2a0d67628b39c4dca53fcb312f184f07"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "xue-ding-e <106448173+xue-ding-e@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 1
+  },
+  {
+    "old": "3b2ad9a1e0b2453785d1e2a42a306f8cfe6e2051",
+    "new": "4a1e3a44135c559f506f8ca6c096430a4daa2857",
+    "tree": "9f76db888f3d93367d0cdc21e118bbb8ee27db37",
+    "old_parents": [
+      "edb446a32dc2c95f96ad82227876c05ebaa15939",
+      "2610ad8463e361c630ea245ef9f5452ceede4124"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "xue-ding-e <106448173+xue-ding-e@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 1
+  },
+  {
+    "old": "269d1f424fd4e88a6ca8d7192fb5008b066305a8",
+    "new": "6fbe062197890c15fc0c372ea94ee7e215de8b0a",
+    "tree": "1caa27acc637e28feee1f0486411d114d7206e15",
+    "old_parents": [
+      "3b2ad9a1e0b2453785d1e2a42a306f8cfe6e2051",
+      "310cb055fcba694dc481932bc4ebd9aa4a4b7971"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "xue-ding-e <106448173+xue-ding-e@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 2
+  },
+  {
+    "old": "cec1480bcd0220771f6492260c4d6476cdbaf484",
+    "new": "4509e1e50df1e07b893f8de2d4b24166d7c5090f",
+    "tree": "3b39ba108230a6346eb02c884bb6f28b2ec2b49b",
+    "old_parents": [
+      "269d1f424fd4e88a6ca8d7192fb5008b066305a8",
+      "b31b0fcd8338ab8df5213feab808164ecbfe86e0"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "xue-ding-e <106448173+xue-ding-e@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 1
+  },
+  {
+    "old": "09e00eee0cd3a2703807a7277d396e4d03bb9d01",
+    "new": "d8ce40c47abc836a69052617f3e8c87863a7afab",
+    "tree": "f4507e896279b0c093a952e41b8ed38cb2f8a0c6",
+    "old_parents": [
+      "cec1480bcd0220771f6492260c4d6476cdbaf484",
+      "11a3f5e46a5fe8b08b5ff47f0a8a5569a037f112"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "xue-ding-e <106448173+xue-ding-e@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 2
+  },
+  {
+    "old": "b123310b301120e504f59810e234e17c77bd52f2",
+    "new": "302427a4a5c33ec4ce18c152ce4b9cee1bf8d810",
+    "tree": "906cc6f71a7f74502c0ef9863cbf6530be4b8418",
+    "old_parents": [
+      "09e00eee0cd3a2703807a7277d396e4d03bb9d01",
+      "8c7f05b0553bc80551d05ba91ee069c43b0b1640"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "xue-ding-e <106448173+xue-ding-e@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 1
+  },
+  {
+    "old": "46def0b4e47dccc7bb67a726608f63886b349154",
+    "new": "39f42d2f398223e66b542b20c3f999a65dd336e2",
+    "tree": "2b4e9927aed0c5c356def015aeb2c15c9d7b5df6",
+    "old_parents": [
+      "b123310b301120e504f59810e234e17c77bd52f2",
+      "b0f780696629ee2d62f4fbe5d95fcc015e3f2ec9"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "xue-ding-e <106448173+xue-ding-e@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 2
+  },
+  {
+    "old": "c2ddad1a3690e21a6b2088ef30959332a19f5ac9",
+    "new": "fe99ff073b720441796f016c6389aeb46ea75a9b",
+    "tree": "4416c3ac1a34b27023e9ae1153c0527a71d31773",
+    "old_parents": [
+      "46def0b4e47dccc7bb67a726608f63886b349154",
+      "5cafc58ccf74207ceeb6cbde2cd20f2c54976818"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "xue-ding-e <106448173+xue-ding-e@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 2
+  },
+  {
+    "old": "7768239e8e387d0308e77f49237d20f8c1bbbace",
+    "new": "8ebe460df2b73e3af9d77e9ec9e3a5e893742cdb",
+    "tree": "793bbba6b861aeb5d08e4dfa6aeafadbd9ea4f11",
+    "old_parents": [
+      "c2ddad1a3690e21a6b2088ef30959332a19f5ac9",
+      "180b90bcc3af8868f99889c4af28d8dd6b0d2d73"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "xue-ding-e <106448173+xue-ding-e@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 2
+  },
+  {
+    "old": "bea1570df9ccd1883fbf2195ce9b614ff44c643e",
+    "new": "29aca604f7f0de5e581a0b0834684acebc7824af",
+    "tree": "0948feda661e3d5530531f02a032b5283e8b9766",
+    "old_parents": [
+      "7768239e8e387d0308e77f49237d20f8c1bbbace",
+      "556b3001c431ac9a82fda08d7766942ce4bd0f12"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "xue-ding-e <106448173+xue-ding-e@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 1
+  },
+  {
+    "old": "d8ca20e9db96b73ecba7635bae5d07bc1dec8ef9",
+    "new": "a7c9750c2317032ec7d409e38238b5815e11b2a1",
+    "tree": "0a79300e86c6c7e29b4214d87e43609d13d7a640",
+    "old_parents": [
+      "bea1570df9ccd1883fbf2195ce9b614ff44c643e",
+      "ab21b8884aabbab9f0472d7091ca22764254bb3b"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "xue-ding-e <106448173+xue-ding-e@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 2
+  },
+  {
+    "old": "898511b87cbc19802d48d45e689ac521771e185e",
+    "new": "d2c4037c6ae79693d264ff894534bb54b5fb2c92",
+    "tree": "2faec8d3d6d9afbcb4127c596235a261d3498017",
+    "old_parents": [
+      "d8ca20e9db96b73ecba7635bae5d07bc1dec8ef9",
+      "61288971169800466775045590ea31c960fee710"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "xue-ding-e <106448173+xue-ding-e@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 2
+  },
+  {
+    "old": "fb959bbb570c5d49af416d7eb09feaace0f73817",
+    "new": "14bd42a377e73d439d71f19a0e94124e868e951e",
+    "tree": "7f9104c07869c86754644f5a061c8fde8e5e0221",
+    "old_parents": [
+      "898511b87cbc19802d48d45e689ac521771e185e",
+      "e385ab463b5f73d9e785cae5bbb7daf000128e55"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "xue-ding-e <106448173+xue-ding-e@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 4
+  },
+  {
+    "old": "4fa15de5f8e387a5a39e4b1db343b055db00668d",
+    "new": "e37aca4b8214e85bc86002282808444470a92d4b",
+    "tree": "c0f7c1c5c8fe9c3425392a18f490e4913deae839",
+    "old_parents": [
+      "fb959bbb570c5d49af416d7eb09feaace0f73817"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [],
+    "absorbed_commits": 0
+  },
+  {
+    "old": "1b16d64d3ed0b41477d9821f4b6dca3eacae1597",
+    "new": "374b1280fa1f27079c20316c20126ef039cb37b0",
+    "tree": "b2aa92b3b0a0f18791dd26206a859ca31b002a9d",
+    "old_parents": [
+      "4fa15de5f8e387a5a39e4b1db343b055db00668d",
+      "7c97d6794608462b56c327f5cb7220fc03defdad"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "xue-ding-e <106448173+xue-ding-e@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 5
+  },
+  {
+    "old": "d05dfd2e1c1e0ea2f73d70902664804f0f432cdb",
+    "new": "673b195d56a22b81f959cc1e152529601c317c00",
+    "tree": "3a2cf35f217d47ee4f616fc45d6ced84abfd843b",
+    "old_parents": [
+      "1b16d64d3ed0b41477d9821f4b6dca3eacae1597",
+      "15cddba606ce2c184003a84048e47f73bb7bac3d"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "xue-ding-e <106448173+xue-ding-e@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 2
+  },
+  {
+    "old": "7a3778e948eac0dd0bc575d9dd8e180efdb6b51d",
+    "new": "7155f65c2a4b1292462fd5b9ea9adc48ddc256a2",
+    "tree": "89447d10dae10a9fa6c99dd66a8c8239d8ab7b54",
+    "old_parents": [
+      "d05dfd2e1c1e0ea2f73d70902664804f0f432cdb",
+      "29f31d37d6f702b5079408cea0a84e9a47c30f46"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 1
+  },
+  {
+    "old": "c54c9d0ab3f16a39326c1c119061e6eb54fb76a9",
+    "new": "7e345b068fa40379a738ec09f6e6425aa5946e68",
+    "tree": "a00590331256e94896aeca8518d925c8d52b7954",
+    "old_parents": [
+      "7a3778e948eac0dd0bc575d9dd8e180efdb6b51d"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [],
+    "absorbed_commits": 0
+  },
+  {
+    "old": "8fd1b3c840373e46841a26036c6d7b8b21d3e9f5",
+    "new": "9c9b25a61bc03ce07966f6aa9b021e7b1a68632a",
+    "tree": "cf75cac92da223422dda6d0b85aff28b3db31ccb",
+    "old_parents": [
+      "c54c9d0ab3f16a39326c1c119061e6eb54fb76a9",
+      "de8e01f44e809d1645cd585e379c6749d46b7806"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 1
+  },
+  {
+    "old": "613f5a578e0d2503c445df6490a020e96313fde8",
+    "new": "81c0027cdde7b025c73769771d1662e9221a8a3c",
+    "tree": "67f6532950779a9da68fcc4591b0f2cf764f6e56",
+    "old_parents": [
+      "8fd1b3c840373e46841a26036c6d7b8b21d3e9f5"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [],
+    "absorbed_commits": 0
+  },
+  {
+    "old": "1274f040ae01460e05fbe200eb5b04d39891a6b6",
+    "new": "789357c5c4f518979ff2db1ae0528f4e31f2e45e",
+    "tree": "f276a9e52d9315ea04c51d09df063850c2375c6f",
+    "old_parents": [
+      "613f5a578e0d2503c445df6490a020e96313fde8",
+      "b7dd6be51f30e8258efb430fed2bde212ffd8c67"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "xue-ding-e <106448173+xue-ding-e@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 1
+  },
+  {
+    "old": "59ccbcc774fa0b1e3cc97827817e0af9fd8d7c33",
+    "new": "134c23341c9b74f183534708e7616536f3287c1b",
+    "tree": "e6e236c743ebd67451bb6a9c3664adbd4af9770f",
+    "old_parents": [
+      "1274f040ae01460e05fbe200eb5b04d39891a6b6",
+      "432a161ec868deb0dfa1564dc31caa4c0c0caafd"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [
+      "xue-ding-e <106448173+xue-ding-e@users.noreply.github.com>"
+    ],
+    "absorbed_commits": 1
+  },
+  {
+    "old": "d641af3b924757fc26806ffbb68e82217033c41f",
+    "new": "be4d0e484ebc9b4d5b0684b2ea726ee1b2120cb3",
+    "tree": "8c26bd9e4f52b563f8bc32430bb1e0f268754a0f",
+    "old_parents": [
+      "59ccbcc774fa0b1e3cc97827817e0af9fd8d7c33"
+    ],
+    "author": "小白 <hi@ixbai.top>",
+    "coauthors": [],
+    "absorbed_commits": 0
+  }
+]

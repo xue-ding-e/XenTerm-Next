@@ -1,0 +1,23 @@
+{
+  "source": "4c41332a71df492af847bbbb4e70881b250dd564",
+  "candidate": "a8c644aa7051260529f9a92c36c3968013be83d0",
+  "parent": "93d1aa6a1d822848dcafa3ca8ee15378c9118f6a",
+  "tree": "197e0c6a17573dc5a497b75ec8af5526699da75c",
+  "integrated_commits": [
+    "65960aa046df941e21ac7ebe7bab31e4e2d031e0",
+    "4c41332a71df492af847bbbb4e70881b250dd564"
+  ],
+  "authors": [
+    "Qing Liang <106448173+xue-ding-e@users.noreply.github.com>"
+  ],
+  "followup_fixes": [
+    {
+      "source": "a2ecc054d15bf75bae4b903ef58b0f0aadbedb9c",
+      "candidate": "79b17d9741c20b5ebd29d4db01783fdea746675d",
+      "parent": "73a670db17a57539146112899a00a3967c64d8bd",
+      "tree": "1a4637f8afd8914ed52419a10ff12de1db286e42"
+    }
+  ],
+  "final_source": "a2ecc054d15bf75bae4b903ef58b0f0aadbedb9c",
+  "final_candidate": "79b17d9741c20b5ebd29d4db01783fdea746675d"
+}

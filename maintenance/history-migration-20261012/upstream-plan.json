@@ -1,0 +1,35 @@
+{
+  "repository": "ixbaicn/XenTerm",
+  "expected_remote_refs": {
+    "refs/heads/main": "d641af3b924757fc26806ffbb68e82217033c41f",
+    "refs/tags/beta": "d641af3b924757fc26806ffbb68e82217033c41f"
+  },
+  "backups": [
+    {
+      "file": "upstream-before.bundle",
+      "sha256": "4a4784421b64b3b1a5008f71ba23884e51304458d3c412bfc7e5b5c6eff57be5"
+    },
+    {
+      "file": "fork-before.bundle",
+      "sha256": "ea3d25370fd6c489ec5dc498755feeeca7b0734ac7749bf335a932705a04c88b"
+    }
+  ],
+  "actions": [
+    {
+      "ref": "refs/heads/main",
+      "expected_old": "d641af3b924757fc26806ffbb68e82217033c41f",
+      "new": "be4d0e484ebc9b4d5b0684b2ea726ee1b2120cb3"
+    },
+    {
+      "ref": "refs/tags/beta",
+      "expected_old": "d641af3b924757fc26806ffbb68e82217033c41f",
+      "new": "be4d0e484ebc9b4d5b0684b2ea726ee1b2120cb3"
+    }
+  ],
+  "pr_heads_not_merged": {
+    "93": "562a893403a63090a8c3b9d276b3ccb1ada8d776",
+    "95": "a2ecc054d15bf75bae4b903ef58b0f0aadbedb9c",
+    "97": "6144ce73a790f8f3d4d133002ca898ed101ae9fb"
+  },
+  "note": "This stage only switches equivalent upstream main/beta after administrator freeze. Unmerged PRs have a separately tested linear stack in fork-plan.template.json. Preparation creates fresh complete bundles and binds their hashes without changing expected remote refs."
+}

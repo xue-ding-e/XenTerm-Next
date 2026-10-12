@@ -1,0 +1,15 @@
+{
+  "old_main": "d641af3b924757fc26806ffbb68e82217033c41f",
+  "candidate_main": "be4d0e484ebc9b4d5b0684b2ea726ee1b2120cb3",
+  "candidate_ref": "refs/heads/history/linear-main-20261012",
+  "tree": "8c26bd9e4f52b563f8bc32430bb1e0f268754a0f",
+  "original_commits": 180,
+  "linear_commits": 62,
+  "original_first_parent_merges": 46,
+  "candidate_merges": 0,
+  "every_snapshot_tree_equal": true,
+  "original_refs_unchanged": true,
+  "committer": "Qing Liang <106448173+xue-ding-e@users.noreply.github.com>",
+  "committer_date": "2026-10-12T16:40:00+00:00",
+  "remote_modified": false
+}

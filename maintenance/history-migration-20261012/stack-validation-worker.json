@@ -1,0 +1,245 @@
+{
+  "candidate_tip": "79b17d9741c20b5ebd29d4db01783fdea746675d",
+  "candidate_tree": "1a4637f8afd8914ed52419a10ff12de1db286e42",
+  "merge_commits_to_root": 0,
+  "policy": {
+    "source": "6144ce73a790f8f3d4d133002ca898ed101ae9fb",
+    "candidate": "2e3f15f304e0e0f58567a2b0702e219a3b233d74",
+    "exact_tree_equal": true
+  },
+  "pr93": {
+    "source": "562a893403a63090a8c3b9d276b3ccb1ada8d776",
+    "candidate": "93d1aa6a1d822848dcafa3ca8ee15378c9118f6a",
+    "parent": "2e3f15f304e0e0f58567a2b0702e219a3b233d74",
+    "tree": "1c96d58aabc1fb96c9f6b5b89af81acfb45a62e2",
+    "integrated_commits": [
+      "16d8e29357ee157f98c19585758e0f13de571495",
+      "322d4beb00d3d93b928d455c804569362f0e8d25",
+      "d0d5b70f7c0a6b37469778d837816dee22ca5f50",
+      "7ea632317640d39274a5c85670d8b529694cb20e",
+      "ed7305a095cc62f0434a54030a45bf0b882bc098",
+      "f6a5ab6545e37e781edd1b225aab6f85975afe96",
+      "345668cc48d6fb02f23fc733475dbc746c15c816",
+      "d6e302c9ac1b1557f2913d77e035784d3a06cdff",
+      "f48562afb66cd995de8733e894f84f1299085f23",
+      "a09680b04dcc3930d5bc523dc031fd1b9723441e",
+      "dd26fb06f0ede3f08a17bf3f28e5904e18b274a4",
+      "834d9659ea6c2a3a052fa7b44042250aa1f5e324",
+      "bfbeb4bca3224d51c28e2128efb19ff406416942",
+      "326691ff4f6682a8f14018f1dddb1fa6aaa09eda",
+      "2f66a7ca8bab9b1c8e31aea36c367add49cd7676",
+      "fc99a8fe1b46a619cac130c84565a5bc034bea40",
+      "a35b08fce508ab49ef4d71f677160bb89814d6bf",
+      "a9e37a719b2fca12609fd12a81e51bb8458e1992",
+      "3a6187a0b13aeefc61b4d4a9a8d10a9cacfb90fe",
+      "0470008c574f4c60cd3b7858860ec6f8501c9313",
+      "f450261dd068969ef5927a1dbebeae7b0dac073e",
+      "562a893403a63090a8c3b9d276b3ccb1ada8d776"
+    ],
+    "authors": [
+      "xue-ding-e <106448173+xue-ding-e@users.noreply.github.com>",
+      "xuedinge <781408517@qq.com>",
+      "小白 <hi@ixbai.top>"
+    ]
+  },
+  "pr95": {
+    "source": "4c41332a71df492af847bbbb4e70881b250dd564",
+    "candidate": "a8c644aa7051260529f9a92c36c3968013be83d0",
+    "parent": "93d1aa6a1d822848dcafa3ca8ee15378c9118f6a",
+    "tree": "197e0c6a17573dc5a497b75ec8af5526699da75c",
+    "integrated_commits": [
+      "65960aa046df941e21ac7ebe7bab31e4e2d031e0",
+      "4c41332a71df492af847bbbb4e70881b250dd564"
+    ],
+    "authors": [
+      "Qing Liang <106448173+xue-ding-e@users.noreply.github.com>"
+    ]
+  },
+  "additional_candidate_only_test_commit": "73a670db17a57539146112899a00a3967c64d8bd",
+  "overlapping_files_manually_reviewed": [
+    "src/config/impls/config.rs",
+    "src/config/struct/config_file.rs",
+    "src/ui/impls/settings.rs",
+    "src/ui/impls/settings_input_tests.rs",
+    "src/ui/mod.rs"
+  ],
+  "pr93_exclusive_paths_preserved": {
+    ".github/workflows/ci.yml": true,
+    "docs/REMOTE_MCP.md": true,
+    "src/automation/impls/tools.rs": true,
+    "src/automation/mod.rs": true,
+    "src/automation/struct/approval.rs": true,
+    "src/automation/struct/execution_log.rs": true,
+    "src/automation/struct/execution_log_tests.rs": true,
+    "src/automation/struct/mod.rs": true,
+    "src/automation/struct/risk.rs": true,
+    "src/cli/impls/cli.rs": true,
+    "src/cli/struct/command.rs": true,
+    "src/config/impls/mcp_access_mode_tests.rs": true,
+    "src/config/struct/mcp_access_mode.rs": true,
+    "src/config/struct/mod.rs": true,
+    "src/mcp/impls/http.rs": true,
+    "src/mcp/impls/server.rs": true,
+    "src/mcp/impls/tools.rs": true,
+    "src/ui/impls/audit_window.rs": true,
+    "src/ui/impls/command_palette.rs": true,
+    "src/ui/impls/command_palette_tests.rs": true,
+    "src/ui/impls/dialogs.rs": true,
+    "src/ui/impls/execution_log_window.rs": true,
+    "src/ui/impls/file_dialog_tests.rs": true,
+    "src/ui/impls/group_dialog_tests.rs": true,
+    "src/ui/impls/palette_shell.rs": true,
+    "src/ui/impls/quick_popover_tests.rs": true,
+    "src/ui/impls/rule_dialog_tests.rs": true,
+    "src/ui/impls/sftp_copy_path_tests.rs": true,
+    "src/ui/impls/sftp_delete_tests.rs": true,
+    "src/ui/impls/shell.rs": true,
+    "src/ui/impls/shell_close_focus_tests.rs": true,
+    "tests/access_policy_e2e.py": true,
+    "tests/execution_log_e2e.py": true
+  },
+  "pr95_exclusive_paths_preserved": {
+    "Cargo.toml": true,
+    "README.md": true,
+    "README.zh.md": true,
+    "src/arch_guards.rs": true,
+    "src/main.rs": true,
+    "src/ui/impls/view.rs": true,
+    "src/ui/impls/view_insert_tests.rs": true,
+    "src/ui/impls/view_resource_tests.rs": true,
+    "src/ui/impls/wallpaper_editor.rs": true,
+    "src/ui/impls/wallpaper_layer.rs": true,
+    "src/wallpaper.rs": true
+  },
+  "conflict_resolution": "config.rs末尾同时保留mcp_access_mode_tests与wallpaper_settings_tests",
+  "tests": {
+    "desktop": {
+      "passed": 888,
+      "ignored_existing": 7,
+      "failed": 0
+    },
+    "headless": {
+      "passed": 534,
+      "failed": 0
+    },
+    "desktop_build": "passed",
+    "headless_build": "passed",
+    "access_policy_e2e": "passed on desktop and headless",
+    "execution_log_e2e": "passed on desktop and headless",
+    "gui_coexistence_smoke": "passed on exact final 79b17d9 binary: real native wallpaper import/apply; status/find bars remain opaque above wallpaper grid; MCP execution logging off and retention 7 days"
+  },
+  "workspace_clean": true,
+  "remote_old_refs_changed": false,
+  "verification_commands": [
+    "cargo test --locked --jobs 2 -- --test-threads=1",
+    "cargo test --locked --no-default-features --features headless --jobs 2",
+    "cargo build --locked --jobs 2",
+    "cargo build --locked --no-default-features --features headless --jobs 2",
+    "python tests/access_policy_e2e.py --exe <desktop-or-headless-binary>",
+    "python tests/execution_log_e2e.py --exe <desktop-or-headless-binary>"
+  ],
+  "previous_validated_candidate": "73a670db17a57539146112899a00a3967c64d8bd",
+  "pr95_followup_fixes": [
+    {
+      "source": "a2ecc054d15bf75bae4b903ef58b0f0aadbedb9c",
+      "candidate": "79b17d9741c20b5ebd29d4db01783fdea746675d",
+      "parent": "73a670db17a57539146112899a00a3967c64d8bd",
+      "method": "cherry-pick -x; single parent; exact two-file source fix",
+      "reason": "wallpaper bounds exclude terminal status/find bars"
+    }
+  ],
+  "gui_evidence_previous": {
+    "source": "73a670db17a57539146112899a00a3967c64d8bd",
+    "binary_sha256": "da8e16e7e02f749f445c0699ef73e1a728f48a042f743d89c911a23102f56332",
+    "screenshots": [
+      "wallpaper-qa-screenshots/08-stack-wallpaper-defaults.png",
+      "wallpaper-qa-screenshots/09-stack-mcp-defaults.png"
+    ],
+    "log": "linear-stack-native-gui.log",
+    "test_apps_closed": true
+  },
+  "ci_previous": {
+    "repository": "xue-ding-e/XenTerm",
+    "ref": "history/stack-pr95-20261012",
+    "head": "73a670db17a57539146112899a00a3967c64d8bd",
+    "run": "https://github.com/xue-ding-e/XenTerm/actions/runs/38282939506",
+    "status": "completed",
+    "conclusion": "success"
+  },
+  "ci": {
+    "repository": "xue-ding-e/XenTerm",
+    "ref": "history/stack-pr95-20261012",
+    "head": "79b17d9741c20b5ebd29d4db01783fdea746675d",
+    "run": "https://github.com/xue-ding-e/XenTerm/actions/runs/38287536982",
+    "status": "completed",
+    "conclusion": "success",
+    "jobs": [
+      {
+        "name": "Linux installer check",
+        "conclusion": "success",
+        "completed_at": "2026-10-12T17:56:38Z"
+      },
+      {
+        "name": "Windows SSH command stack",
+        "conclusion": "success",
+        "completed_at": "2026-10-12T18:06:54Z"
+      },
+      {
+        "name": "windows-latest migration CLI regression",
+        "conclusion": "success",
+        "completed_at": "2026-10-12T18:08:47Z"
+      },
+      {
+        "name": "Linux desktop",
+        "conclusion": "success",
+        "completed_at": "2026-10-12T18:14:36Z"
+      },
+      {
+        "name": "Windows desktop",
+        "conclusion": "success",
+        "completed_at": "2026-10-12T18:01:10Z"
+      },
+      {
+        "name": "macos-14 migration CLI regression",
+        "conclusion": "success",
+        "completed_at": "2026-10-12T18:03:44Z"
+      },
+      {
+        "name": "Headless MCP regression",
+        "conclusion": "success",
+        "completed_at": "2026-10-12T18:02:48Z"
+      },
+      {
+        "name": "macOS desktop",
+        "conclusion": "success",
+        "completed_at": "2026-10-12T17:59:10Z"
+      },
+      {
+        "name": "ubuntu-22.04 migration CLI regression",
+        "conclusion": "success",
+        "completed_at": "2026-10-12T18:01:49Z"
+      }
+    ]
+  },
+  "gui_evidence": {
+    "source": "79b17d9741c20b5ebd29d4db01783fdea746675d",
+    "binary": "gui-build-deps/xenterm-linear-stack-79b17d9",
+    "binary_sha256": "6bc3f0867e5e0fd3886fa5e329b3ba45d9a0380d0298cc686c8d666ce940098a",
+    "profile": "gui-linear-stack-profile (isolated synthetic profile; default MCP settings left unchanged)",
+    "screenshots": [
+      "wallpaper-qa-screenshots/12-stack-mcp-defaults-79b17d9.png",
+      "wallpaper-qa-screenshots/13-stack-grid-boundary-79b17d9.png"
+    ],
+    "log": "linear-stack-79b17d9-native-gui.log",
+    "checks": [
+      "MCP execution records disabled by default; retention 7 days",
+      "Synthetic fixture imported using actual native file picker and applied",
+      "Local sh executed echo stack_grid_ok; Ctrl+F stack_grid returned two matches",
+      "Status and find bars remain solid dark; wallpaper begins at grid boundary"
+    ],
+    "scope": "Minimal final-stack native smoke in light app theme; full PR95 flows and light/dark bounds were independently verified on a2ecc05",
+    "test_apps_closed": true,
+    "verified_at_utc": "2026-10-12T17:54:15Z"
+  },
+  "candidate_remote_ref_verified": true
+}

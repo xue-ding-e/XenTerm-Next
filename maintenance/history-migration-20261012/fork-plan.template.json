@@ -1,0 +1,551 @@
+{
+  "repository": "xue-ding-e/XenTerm",
+  "review_status": "ready",
+  "expected_remote_refs": {
+    "refs/heads/chore/gpui-kit-071": "ab21b8884aabbab9f0472d7091ca22764254bb3b",
+    "refs/heads/docs/community-contribution-guidelines-20261011": "b7dd6be51f30e8258efb430fed2bde212ffd8c67",
+    "refs/heads/docs/linear-history-policy-20261012": "6144ce73a790f8f3d4d133002ca898ed101ae9fb",
+    "refs/heads/evidence/ui-chevron-signed-rotation-qa-20261007": "58d578bb7e84d438a05671ca2388dead0798b8a1",
+    "refs/heads/evidence/ui-context-menu-qa-20261006": "55592aca4f17365c3171b50fffc258027e7d959a",
+    "refs/heads/evidence/ui-cursor-color-qa-20261006": "48ebb52bbec2cc0291000222e6e8f1fa24e8ad23",
+    "refs/heads/evidence/ui-directory-copy-path-qa-20261006": "fef233e0ea5eeb3a2cc5d74de7c48f2cdd301ec3",
+    "refs/heads/evidence/ui-editor-validation-qa-20261006": "6bd7dd2a2b93d748f110c26d0d183e0971c8a2d9",
+    "refs/heads/evidence/ui-file-dialog-close-qa-20261006": "700dcbc912c9656016742f03ee42ca252015a885",
+    "refs/heads/evidence/ui-file-viewer-qa-20261006": "48bdb8870beaf7e7f219a8ac027a38c33a81377a",
+    "refs/heads/evidence/ui-findbar-qa-20261006": "fff4b9b77a8222c09479c8002478e670ce7f0d4b",
+    "refs/heads/evidence/ui-focus-insert-20261007": "fcb2ed5b52461b70d264022f6c03bddd11fc7875",
+    "refs/heads/evidence/ui-group-inline-focus-qa-20261006": "27255030bc96411aa37ad48815a5b39c5f869906",
+    "refs/heads/evidence/ui-jump-qa-20261006": "b34d75a5f162922df3cfc427727f6f27d61affbe",
+    "refs/heads/evidence/ui-list-refresh-qa-20261006": "02436cf961ca3faacd9eda1862bbc9c4a92a2984",
+    "refs/heads/evidence/ui-overlay-height-qa-20261006": "ad29ee58d96975a22d8a7dfd51e3eb2fcd4fb7ce",
+    "refs/heads/evidence/ui-palette-qa-20261006": "7f7092093d8828c30409a764d4c56ce2def47e32",
+    "refs/heads/evidence/ui-palette-scroll-qa-20261006": "c27b9ff8413ea3e553f50fb9255cb8ed499d143c",
+    "refs/heads/evidence/ui-pane-cycle-focus-qa-20261007": "eda95409055fe45dc76110cb6c1867df0eb0f435",
+    "refs/heads/evidence/ui-quick-group-count-qa-20261007": "be481223bbffeed5dd01922c8179c302c3bcda4e",
+    "refs/heads/evidence/ui-quick-popover-dismiss-qa-20261006": "1b109c445978f69700758cc9043b38ff7dc2cb3f",
+    "refs/heads/evidence/ui-quick-row-actions-qa-20261007": "36c2d78a58b14f2c0914303f1ca46a6e7ede9c30",
+    "refs/heads/evidence/ui-reconnect-qa-20261006": "f132431ecb160a6893cc2ab5cd73454b92359541",
+    "refs/heads/evidence/ui-resource-state-qa-20261006": "508d86c3dcc9e5b45c8d4d50659254fea938bb04",
+    "refs/heads/evidence/ui-rule-dialog-save-close-qa-20261006": "12db0d120a9bfbeaf62c09233496209b33467fc8",
+    "refs/heads/evidence/ui-settings-numeric-qa-20261006": "32757180b7ee7b13d3784435527d2fcf068a2143",
+    "refs/heads/evidence/ui-settings-qa-20261006": "a1363b98e36f50e2acdc03d45cc22c6656e7a490",
+    "refs/heads/evidence/ui-sftp-column-language-qa-20261007": "03d0eb2e2ab973d825265ae89e6f97e5f4ad2cf0",
+    "refs/heads/evidence/ui-sftp-delete-confirmation-qa-20261007": "7e282e5349195b17216af2f2e3246c197562df75",
+    "refs/heads/evidence/ui-sftp-file-actions-qa-20261006": "94983adb0bfb863d8f2cda765cd8dc1b6331e729",
+    "refs/heads/evidence/ui-startup-language-qa-20261007": "a18e6d2c99db5abdfa7abdd5bae3b5e8b7e0b29e",
+    "refs/heads/evidence/ui-tab-cycle-focus-qa-20261007": "b507140529e421b1cc386bcbd0369d5e9c024722",
+    "refs/heads/evidence/ui-terminal-close-focus-qa-20261006": "0ecd628363705079eac5acaf4a126b8c59652c90",
+    "refs/heads/evidence/ui-terminal-entry-focus-qa-20261006": "be3aaea75a9ac8267f90d18e5caed8dea1601a73",
+    "refs/heads/evidence/ui-toolkit-071-qa-20261007": "4f7aabb7c3a6d39882a64926939491a49312021d",
+    "refs/heads/evidence/ui-transfer-progress-qa-20261006": "5ca1c9cb2a9097ae7e9f5c93a228e44680886879",
+    "refs/heads/feat/cli-portable-export": "8070ea7af20f98a0d69201546dcb66e8795ed789",
+    "refs/heads/feat/cli-stable-id-migration": "9741bdb7179cb0fd1fd35ce350dae8dea8ee9e2e",
+    "refs/heads/feat/gui-secret-reveal": "9af8ad34fd2a43b11236c0f22bd352379b18a14c",
+    "refs/heads/feat/isolated-wallpaper-editor": "a2ecc054d15bf75bae4b903ef58b0f0aadbedb9c",
+    "refs/heads/feat/ssh-automation-workflows": "62a30f6c2346b9e23747a219bc6fd06fa9f0bcfb",
+    "refs/heads/feat/ui-cursor-color-picker": "310cb055fcba694dc481932bc4ebd9aa4a4b7971",
+    "refs/heads/feat/xenterm-user-workflows": "8139182360f4f90c30e97790a8e1ca999d07cee4",
+    "refs/heads/fix/cli-exec-status-and-options": "0ff2f530b3647a8e511c894ab522c002fd3164b0",
+    "refs/heads/fix/linux-install-prefix": "2a3cd3af25a3783749b60185a09af8aa73e2ca91",
+    "refs/heads/fix/portable-export-marker-warning-20261011": "7ab9c04cda49fd24843a7a4d884e71b3a6a3f522",
+    "refs/heads/fix/profile-write-conflicts": "594faaac6938ad885ebfb3b3cc1dbd54e6c95063",
+    "refs/heads/fix/profile-write-conflicts-upstream": "af1aefa9b227979418670f8bacca5657470a5378",
+    "refs/heads/fix/sftp-dock-toggle": "33dec491f6c752624f0421faced446f664523c81",
+    "refs/heads/fix/ssh-command-stack": "26026ed8296240a07d27f58b39d592cb91412e52",
+    "refs/heads/fix/ui-bastion-layout": "d9925157167105d28636535fa4d75ae1cc67b854",
+    "refs/heads/fix/ui-chevron-signed-rotation": "b31b0fcd8338ab8df5213feab808164ecbfe86e0",
+    "refs/heads/fix/ui-command-palette-borrow": "036305d5a6a61987745370af461ee72c37cf1954",
+    "refs/heads/fix/ui-command-palette-scroll": "5101978909aae3ecac390d7d099d2ee87fd26de4",
+    "refs/heads/fix/ui-directory-copy-path": "4c0d801e807998df064b648e6e61134f628f1cba",
+    "refs/heads/fix/ui-file-dialog-dismissal": "fe977c30271add8a9eb7cdb8eb49e168822b27e5",
+    "refs/heads/fix/ui-file-viewer-layout-readonly": "dbd22b601434734022642b25a366a7d09df5fab8",
+    "refs/heads/fix/ui-findbar-contrast": "1192ad12d4910f725fd534ee80ca7deddc423f92",
+    "refs/heads/fix/ui-group-inline-focus": "2b8672c2e514b6b4066ccf8e36e6c43a65e081e1",
+    "refs/heads/fix/ui-insert-fallback": "e385ab463b5f73d9e785cae5bbb7daf000128e55",
+    "refs/heads/fix/ui-overlay-height-budget": "01ff0d7a73707416de7f459f7dc17c2f2e71f106",
+    "refs/heads/fix/ui-pane-cycle-focus": "5cafc58ccf74207ceeb6cbde2cd20f2c54976818",
+    "refs/heads/fix/ui-quick-group-count": "61288971169800466775045590ea31c960fee710",
+    "refs/heads/fix/ui-quick-popover-dismiss": "d206bce4a6966e3781830f8015992edcb21b08ba",
+    "refs/heads/fix/ui-quick-row-actions": "11a3f5e46a5fe8b08b5ff47f0a8a5569a037f112",
+    "refs/heads/fix/ui-resource-sample-state": "2610ad8463e361c630ea245ef9f5452ceede4124",
+    "refs/heads/fix/ui-rule-dialog-save-close": "f14aed54469853004e2aa4e3b13daf36047c1da3",
+    "refs/heads/fix/ui-session-editor-validation": "c4753ef1b01fa545277ce7c29e9a118daca4b817",
+    "refs/heads/fix/ui-session-list-refresh": "2ae55493628bc12fb1474ae1ff0c0cfbbfbdb0f6",
+    "refs/heads/fix/ui-session-reconnect": "69841e61cc37268703760a422b12d464a15a5dcb",
+    "refs/heads/fix/ui-session-row-context-menu": "8fffb510bca6c2eef1027bd6fa283d2211045777",
+    "refs/heads/fix/ui-settings-input-state": "d21c7ccf9ca148fb9352d6eea014f2f9862728cd",
+    "refs/heads/fix/ui-settings-numeric-drafts": "16c6ba5f2a0d67628b39c4dca53fcb312f184f07",
+    "refs/heads/fix/ui-sftp-column-language": "180b90bcc3af8868f99889c4af28d8dd6b0d2d73",
+    "refs/heads/fix/ui-sftp-delete-confirmation": "8c7f05b0553bc80551d05ba91ee069c43b0b1640",
+    "refs/heads/fix/ui-sftp-file-actions": "f3d025ad19d154e43b9250e25855228ba58f8e62",
+    "refs/heads/fix/ui-startup-language": "556b3001c431ac9a82fda08d7766942ce4bd0f12",
+    "refs/heads/fix/ui-tab-cycle-focus": "b0f780696629ee2d62f4fbe5d95fcc015e3f2ec9",
+    "refs/heads/fix/ui-terminal-close-focus": "aeb1e81a76c23662e1efd2d0a7c868af6c2dbe39",
+    "refs/heads/fix/ui-terminal-entry-focus": "af7880e2e5912423bd5b7e3f4adbd423222bada9",
+    "refs/heads/fix/ui-transfer-progress-fairness": "c09056c1bedb6bfac804b94da9f6bc3ce76f2d58",
+    "refs/heads/history/admin-handoff-20261012": "9785c23bbdc0e8c0da4667e6e955a7a5c2f3dfe6",
+    "refs/heads/history/linear-admin-final-20261012": "7a9b1882da6a8e6c649626c91feebf7b8728d249",
+    "refs/heads/history/linear-admin-final-v2-20261012": "$HANDOFF_HEAD",
+    "refs/heads/history/linear-main-20261012": "be4d0e484ebc9b4d5b0684b2ea726ee1b2120cb3",
+    "refs/heads/history/stack-policy-20261012": "2e3f15f304e0e0f58567a2b0702e219a3b233d74",
+    "refs/heads/history/stack-pr93-20261012": "93d1aa6a1d822848dcafa3ca8ee15378c9118f6a",
+    "refs/heads/history/stack-pr95-20261012": "79b17d9741c20b5ebd29d4db01783fdea746675d",
+    "refs/heads/main": "17e8b35d22a3f2c82758107ee56ba98c4f3b2e1e",
+    "refs/heads/migration/meatshell-cli-to-xenterm": "562a893403a63090a8c3b9d276b3ccb1ada8d776",
+    "refs/heads/sync/user-latest-20261008": "8139182360f4f90c30e97790a8e1ca999d07cee4",
+    "refs/heads/test/portable-export-marker-regression-20261011": "432a161ec868deb0dfa1564dc31caa4c0c0caafd"
+  },
+  "actions": [
+    {
+      "ref": "refs/heads/chore/gpui-kit-071",
+      "expected_old": "ab21b8884aabbab9f0472d7091ca22764254bb3b",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/docs/community-contribution-guidelines-20261011",
+      "expected_old": "b7dd6be51f30e8258efb430fed2bde212ffd8c67",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/docs/linear-history-policy-20261012",
+      "expected_old": "6144ce73a790f8f3d4d133002ca898ed101ae9fb",
+      "new": "2e3f15f304e0e0f58567a2b0702e219a3b233d74"
+    },
+    {
+      "ref": "refs/heads/evidence/ui-chevron-signed-rotation-qa-20261007",
+      "expected_old": "58d578bb7e84d438a05671ca2388dead0798b8a1",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/evidence/ui-context-menu-qa-20261006",
+      "expected_old": "55592aca4f17365c3171b50fffc258027e7d959a",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/evidence/ui-cursor-color-qa-20261006",
+      "expected_old": "48ebb52bbec2cc0291000222e6e8f1fa24e8ad23",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/evidence/ui-directory-copy-path-qa-20261006",
+      "expected_old": "fef233e0ea5eeb3a2cc5d74de7c48f2cdd301ec3",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/evidence/ui-editor-validation-qa-20261006",
+      "expected_old": "6bd7dd2a2b93d748f110c26d0d183e0971c8a2d9",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/evidence/ui-file-dialog-close-qa-20261006",
+      "expected_old": "700dcbc912c9656016742f03ee42ca252015a885",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/evidence/ui-file-viewer-qa-20261006",
+      "expected_old": "48bdb8870beaf7e7f219a8ac027a38c33a81377a",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/evidence/ui-findbar-qa-20261006",
+      "expected_old": "fff4b9b77a8222c09479c8002478e670ce7f0d4b",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/evidence/ui-focus-insert-20261007",
+      "expected_old": "fcb2ed5b52461b70d264022f6c03bddd11fc7875",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/evidence/ui-group-inline-focus-qa-20261006",
+      "expected_old": "27255030bc96411aa37ad48815a5b39c5f869906",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/evidence/ui-jump-qa-20261006",
+      "expected_old": "b34d75a5f162922df3cfc427727f6f27d61affbe",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/evidence/ui-list-refresh-qa-20261006",
+      "expected_old": "02436cf961ca3faacd9eda1862bbc9c4a92a2984",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/evidence/ui-overlay-height-qa-20261006",
+      "expected_old": "ad29ee58d96975a22d8a7dfd51e3eb2fcd4fb7ce",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/evidence/ui-palette-qa-20261006",
+      "expected_old": "7f7092093d8828c30409a764d4c56ce2def47e32",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/evidence/ui-palette-scroll-qa-20261006",
+      "expected_old": "c27b9ff8413ea3e553f50fb9255cb8ed499d143c",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/evidence/ui-pane-cycle-focus-qa-20261007",
+      "expected_old": "eda95409055fe45dc76110cb6c1867df0eb0f435",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/evidence/ui-quick-group-count-qa-20261007",
+      "expected_old": "be481223bbffeed5dd01922c8179c302c3bcda4e",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/evidence/ui-quick-popover-dismiss-qa-20261006",
+      "expected_old": "1b109c445978f69700758cc9043b38ff7dc2cb3f",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/evidence/ui-quick-row-actions-qa-20261007",
+      "expected_old": "36c2d78a58b14f2c0914303f1ca46a6e7ede9c30",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/evidence/ui-reconnect-qa-20261006",
+      "expected_old": "f132431ecb160a6893cc2ab5cd73454b92359541",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/evidence/ui-resource-state-qa-20261006",
+      "expected_old": "508d86c3dcc9e5b45c8d4d50659254fea938bb04",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/evidence/ui-rule-dialog-save-close-qa-20261006",
+      "expected_old": "12db0d120a9bfbeaf62c09233496209b33467fc8",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/evidence/ui-settings-numeric-qa-20261006",
+      "expected_old": "32757180b7ee7b13d3784435527d2fcf068a2143",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/evidence/ui-settings-qa-20261006",
+      "expected_old": "a1363b98e36f50e2acdc03d45cc22c6656e7a490",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/evidence/ui-sftp-column-language-qa-20261007",
+      "expected_old": "03d0eb2e2ab973d825265ae89e6f97e5f4ad2cf0",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/evidence/ui-sftp-delete-confirmation-qa-20261007",
+      "expected_old": "7e282e5349195b17216af2f2e3246c197562df75",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/evidence/ui-sftp-file-actions-qa-20261006",
+      "expected_old": "94983adb0bfb863d8f2cda765cd8dc1b6331e729",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/evidence/ui-startup-language-qa-20261007",
+      "expected_old": "a18e6d2c99db5abdfa7abdd5bae3b5e8b7e0b29e",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/evidence/ui-tab-cycle-focus-qa-20261007",
+      "expected_old": "b507140529e421b1cc386bcbd0369d5e9c024722",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/evidence/ui-terminal-close-focus-qa-20261006",
+      "expected_old": "0ecd628363705079eac5acaf4a126b8c59652c90",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/evidence/ui-terminal-entry-focus-qa-20261006",
+      "expected_old": "be3aaea75a9ac8267f90d18e5caed8dea1601a73",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/evidence/ui-toolkit-071-qa-20261007",
+      "expected_old": "4f7aabb7c3a6d39882a64926939491a49312021d",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/evidence/ui-transfer-progress-qa-20261006",
+      "expected_old": "5ca1c9cb2a9097ae7e9f5c93a228e44680886879",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/feat/cli-portable-export",
+      "expected_old": "8070ea7af20f98a0d69201546dcb66e8795ed789",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/feat/cli-stable-id-migration",
+      "expected_old": "9741bdb7179cb0fd1fd35ce350dae8dea8ee9e2e",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/feat/gui-secret-reveal",
+      "expected_old": "9af8ad34fd2a43b11236c0f22bd352379b18a14c",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/feat/isolated-wallpaper-editor",
+      "expected_old": "a2ecc054d15bf75bae4b903ef58b0f0aadbedb9c",
+      "new": "79b17d9741c20b5ebd29d4db01783fdea746675d"
+    },
+    {
+      "ref": "refs/heads/feat/ssh-automation-workflows",
+      "expected_old": "62a30f6c2346b9e23747a219bc6fd06fa9f0bcfb",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/feat/ui-cursor-color-picker",
+      "expected_old": "310cb055fcba694dc481932bc4ebd9aa4a4b7971",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/feat/xenterm-user-workflows",
+      "expected_old": "8139182360f4f90c30e97790a8e1ca999d07cee4",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/fix/cli-exec-status-and-options",
+      "expected_old": "0ff2f530b3647a8e511c894ab522c002fd3164b0",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/fix/linux-install-prefix",
+      "expected_old": "2a3cd3af25a3783749b60185a09af8aa73e2ca91",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/fix/portable-export-marker-warning-20261011",
+      "expected_old": "7ab9c04cda49fd24843a7a4d884e71b3a6a3f522",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/fix/profile-write-conflicts",
+      "expected_old": "594faaac6938ad885ebfb3b3cc1dbd54e6c95063",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/fix/profile-write-conflicts-upstream",
+      "expected_old": "af1aefa9b227979418670f8bacca5657470a5378",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/fix/sftp-dock-toggle",
+      "expected_old": "33dec491f6c752624f0421faced446f664523c81",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/fix/ssh-command-stack",
+      "expected_old": "26026ed8296240a07d27f58b39d592cb91412e52",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/fix/ui-bastion-layout",
+      "expected_old": "d9925157167105d28636535fa4d75ae1cc67b854",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/fix/ui-chevron-signed-rotation",
+      "expected_old": "b31b0fcd8338ab8df5213feab808164ecbfe86e0",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/fix/ui-command-palette-borrow",
+      "expected_old": "036305d5a6a61987745370af461ee72c37cf1954",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/fix/ui-command-palette-scroll",
+      "expected_old": "5101978909aae3ecac390d7d099d2ee87fd26de4",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/fix/ui-directory-copy-path",
+      "expected_old": "4c0d801e807998df064b648e6e61134f628f1cba",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/fix/ui-file-dialog-dismissal",
+      "expected_old": "fe977c30271add8a9eb7cdb8eb49e168822b27e5",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/fix/ui-file-viewer-layout-readonly",
+      "expected_old": "dbd22b601434734022642b25a366a7d09df5fab8",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/fix/ui-findbar-contrast",
+      "expected_old": "1192ad12d4910f725fd534ee80ca7deddc423f92",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/fix/ui-group-inline-focus",
+      "expected_old": "2b8672c2e514b6b4066ccf8e36e6c43a65e081e1",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/fix/ui-insert-fallback",
+      "expected_old": "e385ab463b5f73d9e785cae5bbb7daf000128e55",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/fix/ui-overlay-height-budget",
+      "expected_old": "01ff0d7a73707416de7f459f7dc17c2f2e71f106",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/fix/ui-pane-cycle-focus",
+      "expected_old": "5cafc58ccf74207ceeb6cbde2cd20f2c54976818",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/fix/ui-quick-group-count",
+      "expected_old": "61288971169800466775045590ea31c960fee710",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/fix/ui-quick-popover-dismiss",
+      "expected_old": "d206bce4a6966e3781830f8015992edcb21b08ba",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/fix/ui-quick-row-actions",
+      "expected_old": "11a3f5e46a5fe8b08b5ff47f0a8a5569a037f112",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/fix/ui-resource-sample-state",
+      "expected_old": "2610ad8463e361c630ea245ef9f5452ceede4124",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/fix/ui-rule-dialog-save-close",
+      "expected_old": "f14aed54469853004e2aa4e3b13daf36047c1da3",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/fix/ui-session-editor-validation",
+      "expected_old": "c4753ef1b01fa545277ce7c29e9a118daca4b817",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/fix/ui-session-list-refresh",
+      "expected_old": "2ae55493628bc12fb1474ae1ff0c0cfbbfbdb0f6",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/fix/ui-session-reconnect",
+      "expected_old": "69841e61cc37268703760a422b12d464a15a5dcb",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/fix/ui-session-row-context-menu",
+      "expected_old": "8fffb510bca6c2eef1027bd6fa283d2211045777",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/fix/ui-settings-input-state",
+      "expected_old": "d21c7ccf9ca148fb9352d6eea014f2f9862728cd",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/fix/ui-settings-numeric-drafts",
+      "expected_old": "16c6ba5f2a0d67628b39c4dca53fcb312f184f07",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/fix/ui-sftp-column-language",
+      "expected_old": "180b90bcc3af8868f99889c4af28d8dd6b0d2d73",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/fix/ui-sftp-delete-confirmation",
+      "expected_old": "8c7f05b0553bc80551d05ba91ee069c43b0b1640",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/fix/ui-sftp-file-actions",
+      "expected_old": "f3d025ad19d154e43b9250e25855228ba58f8e62",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/fix/ui-startup-language",
+      "expected_old": "556b3001c431ac9a82fda08d7766942ce4bd0f12",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/fix/ui-tab-cycle-focus",
+      "expected_old": "b0f780696629ee2d62f4fbe5d95fcc015e3f2ec9",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/fix/ui-terminal-close-focus",
+      "expected_old": "aeb1e81a76c23662e1efd2d0a7c868af6c2dbe39",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/fix/ui-terminal-entry-focus",
+      "expected_old": "af7880e2e5912423bd5b7e3f4adbd423222bada9",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/fix/ui-transfer-progress-fairness",
+      "expected_old": "c09056c1bedb6bfac804b94da9f6bc3ce76f2d58",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/history/admin-handoff-20261012",
+      "expected_old": "9785c23bbdc0e8c0da4667e6e955a7a5c2f3dfe6",
+      "new": "$HANDOFF_HEAD"
+    },
+    {
+      "ref": "refs/heads/history/linear-admin-final-20261012",
+      "expected_old": "7a9b1882da6a8e6c649626c91feebf7b8728d249",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/main",
+      "expected_old": "17e8b35d22a3f2c82758107ee56ba98c4f3b2e1e",
+      "new": "be4d0e484ebc9b4d5b0684b2ea726ee1b2120cb3"
+    },
+    {
+      "ref": "refs/heads/migration/meatshell-cli-to-xenterm",
+      "expected_old": "562a893403a63090a8c3b9d276b3ccb1ada8d776",
+      "new": "93d1aa6a1d822848dcafa3ca8ee15378c9118f6a"
+    },
+    {
+      "ref": "refs/heads/sync/user-latest-20261008",
+      "expected_old": "8139182360f4f90c30e97790a8e1ca999d07cee4",
+      "new": null
+    },
+    {
+      "ref": "refs/heads/test/portable-export-marker-regression-20261011",
+      "expected_old": "432a161ec868deb0dfa1564dc31caa4c0c0caafd",
+      "new": null
+    }
+  ],
+  "expected_target_trees": {
+    "refs/heads/docs/linear-history-policy-20261012": "12a4e923720da8f6713ed2c4c83168c72395e831",
+    "refs/heads/feat/isolated-wallpaper-editor": "1a4637f8afd8914ed52419a10ff12de1db286e42",
+    "refs/heads/history/admin-handoff-20261012": "$HANDOFF_TREE",
+    "refs/heads/history/linear-main-20261012": "8c26bd9e4f52b563f8bc32430bb1e0f268754a0f",
+    "refs/heads/history/stack-policy-20261012": "12a4e923720da8f6713ed2c4c83168c72395e831",
+    "refs/heads/history/stack-pr93-20261012": "1c96d58aabc1fb96c9f6b5b89af81acfb45a62e2",
+    "refs/heads/history/stack-pr95-20261012": "1a4637f8afd8914ed52419a10ff12de1db286e42",
+    "refs/heads/main": "8c26bd9e4f52b563f8bc32430bb1e0f268754a0f",
+    "refs/heads/migration/meatshell-cli-to-xenterm": "1c96d58aabc1fb96c9f6b5b89af81acfb45a62e2",
+    "refs/heads/history/linear-admin-final-v2-20261012": "$HANDOFF_TREE"
+  },
+  "fork_bundle": "fork-before.bundle",
+  "backups": [],
+  "handoff_ref": "refs/heads/history/linear-admin-final-v2-20261012",
+  "note": "Resolve self placeholders only from the pinned handoff commit during preparation. No remote changes during preparation."
+}

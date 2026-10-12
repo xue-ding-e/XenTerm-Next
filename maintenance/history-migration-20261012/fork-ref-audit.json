@@ -1,0 +1,3767 @@
+{
+  "schema_version": 1,
+  "verified_at_utc": "2026-10-12T16:45:25.551774+00:00",
+  "fork_repository": "xue-ding-e/XenTerm",
+  "upstream_repository": "ixbaicn/XenTerm",
+  "upstream_audit_sha": "d641af3b924757fc26806ffbb68e82217033c41f",
+  "scope": "Classification of the 84 pre-migration fork branch refs; read-only source/PR impact audit. No deletion or force-update decision is made.",
+  "audited_branch_count": 84,
+  "fork_tag_count": 0,
+  "fork_tags": [],
+  "classification_counts": {
+    "merged_contribution": 44,
+    "evidence_only": 33,
+    "open_contribution": 2,
+    "aggregate_integration": 2,
+    "semantic_duplicate_fix": 1,
+    "duplicate_implementation": 1,
+    "upstream_ancestor": 1
+  },
+  "additional_live_refs_outside_old_audit": [
+    {
+      "name": "history/linear-main-20261012",
+      "sha": "be4d0e484ebc9b4d5b0684b2ea726ee1b2120cb3",
+      "excluded_from_old_ref_cleanup": true,
+      "reason": "Created after original 84-ref snapshot; not classified or authorized for cleanup here."
+    }
+  ],
+  "explicitly_excluded_new_candidate_refs": [
+    "refs/heads/history/linear-main-20261012"
+  ],
+  "refs": [
+    {
+      "name": "chore/gpui-kit-071",
+      "ref": "refs/heads/chore/gpui-kit-071",
+      "type": "branch",
+      "old_sha": "ab21b8884aabbab9f0472d7091ca22764254bb3b",
+      "live_sha_at_verification": "ab21b8884aabbab9f0472d7091ca22764254bb3b",
+      "prs": [
+        {
+          "number": 79,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/79",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:57:04Z",
+          "draft": true,
+          "head_ref": "chore/gpui-kit-071",
+          "head_sha": "ab21b8884aabbab9f0472d7091ca22764254bb3b",
+          "relationship": "direct_head_branch"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "merged_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly."
+      ]
+    },
+    {
+      "name": "docs/community-contribution-guidelines-20261011",
+      "ref": "refs/heads/docs/community-contribution-guidelines-20261011",
+      "type": "branch",
+      "old_sha": "b7dd6be51f30e8258efb430fed2bde212ffd8c67",
+      "live_sha_at_verification": "b7dd6be51f30e8258efb430fed2bde212ffd8c67",
+      "prs": [
+        {
+          "number": 91,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/91",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T11:25:30Z",
+          "draft": false,
+          "head_ref": "docs/community-contribution-guidelines-20261011",
+          "head_sha": "b7dd6be51f30e8258efb430fed2bde212ffd8c67",
+          "relationship": "direct_head_branch"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "merged_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly."
+      ]
+    },
+    {
+      "name": "evidence/ui-chevron-signed-rotation-qa-20261007",
+      "ref": "refs/heads/evidence/ui-chevron-signed-rotation-qa-20261007",
+      "type": "branch",
+      "old_sha": "58d578bb7e84d438a05671ca2388dead0798b8a1",
+      "live_sha_at_verification": "58d578bb7e84d438a05671ca2388dead0798b8a1",
+      "prs": [
+        {
+          "number": 65,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/65",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:42:14Z",
+          "draft": true,
+          "head_ref": "fix/ui-chevron-signed-rotation",
+          "head_sha": "b31b0fcd8338ab8df5213feab808164ecbfe86e0",
+          "relationship": "evidence_ref_or_tip_explicitly_referenced_in_pr_body"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "evidence_only",
+      "basis": [
+        "All unique non-merge changed paths, relative to all audited non-evidence heads, are under contribution-evidence/.",
+        "Associated PR body explicitly contains this branch name or exact branch-tip SHA."
+      ],
+      "unique_commit_shas": [
+        "58d578bb7e84d438a05671ca2388dead0798b8a1"
+      ],
+      "unique_changed_paths": [
+        "contribution-evidence/2026-10-07/chevron-after-expanded-run.jpg",
+        "contribution-evidence/2026-10-07/chevron-after-folded.jpg",
+        "contribution-evidence/2026-10-07/chevron-before-expanded.jpg"
+      ],
+      "pr_body_evidence_urls": [
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/58d578bb7e84d438a05671ca2388dead0798b8a1/contribution-evidence/2026-10-07/chevron-after-expanded-run.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/58d578bb7e84d438a05671ca2388dead0798b8a1/contribution-evidence/2026-10-07/chevron-after-folded.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/58d578bb7e84d438a05671ca2388dead0798b8a1/contribution-evidence/2026-10-07/chevron-before-expanded.jpg"
+      ],
+      "preservation_caution": "Published review evidence refers to old names or commit SHAs. Preserve recoverable original objects and account for published links before any separately authorized rewrite or cleanup."
+    },
+    {
+      "name": "evidence/ui-context-menu-qa-20261006",
+      "ref": "refs/heads/evidence/ui-context-menu-qa-20261006",
+      "type": "branch",
+      "old_sha": "55592aca4f17365c3171b50fffc258027e7d959a",
+      "live_sha_at_verification": "55592aca4f17365c3171b50fffc258027e7d959a",
+      "prs": [
+        {
+          "number": 35,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/35",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-07T11:48:24Z",
+          "draft": false,
+          "head_ref": "fix/ui-session-row-context-menu",
+          "head_sha": "8fffb510bca6c2eef1027bd6fa283d2211045777",
+          "relationship": "evidence_ref_or_tip_explicitly_referenced_in_pr_body"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "evidence_only",
+      "basis": [
+        "All unique non-merge changed paths, relative to all audited non-evidence heads, are under contribution-evidence/.",
+        "Associated PR body explicitly contains this branch name or exact branch-tip SHA."
+      ],
+      "unique_commit_shas": [
+        "55592aca4f17365c3171b50fffc258027e7d959a",
+        "128bc57c3f7eb78b09850e0b93a1f0841d4817d7"
+      ],
+      "unique_changed_paths": [
+        "contribution-evidence/2026-10-06/context-after-right-click-b.jpg",
+        "contribution-evidence/2026-10-06/context-before-missing-menu.jpg"
+      ],
+      "pr_body_evidence_urls": [
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/55592aca4f17365c3171b50fffc258027e7d959a/contribution-evidence/2026-10-06/context-after-right-click-b.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/55592aca4f17365c3171b50fffc258027e7d959a/contribution-evidence/2026-10-06/context-before-missing-menu.jpg"
+      ],
+      "preservation_caution": "Published review evidence refers to old names or commit SHAs. Preserve recoverable original objects and account for published links before any separately authorized rewrite or cleanup."
+    },
+    {
+      "name": "evidence/ui-cursor-color-qa-20261006",
+      "ref": "refs/heads/evidence/ui-cursor-color-qa-20261006",
+      "type": "branch",
+      "old_sha": "48ebb52bbec2cc0291000222e6e8f1fa24e8ad23",
+      "live_sha_at_verification": "48ebb52bbec2cc0291000222e6e8f1fa24e8ad23",
+      "prs": [
+        {
+          "number": 63,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/63",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:41:55Z",
+          "draft": true,
+          "head_ref": "feat/ui-cursor-color-picker",
+          "head_sha": "310cb055fcba694dc481932bc4ebd9aa4a4b7971",
+          "relationship": "evidence_ref_or_tip_explicitly_referenced_in_pr_body"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "evidence_only",
+      "basis": [
+        "All unique non-merge changed paths, relative to all audited non-evidence heads, are under contribution-evidence/.",
+        "Associated PR body explicitly contains this branch name or exact branch-tip SHA."
+      ],
+      "unique_commit_shas": [
+        "48ebb52bbec2cc0291000222e6e8f1fa24e8ad23"
+      ],
+      "unique_changed_paths": [],
+      "pr_body_evidence_urls": [],
+      "preservation_caution": "Published review evidence refers to old names or commit SHAs. Preserve recoverable original objects and account for published links before any separately authorized rewrite or cleanup."
+    },
+    {
+      "name": "evidence/ui-directory-copy-path-qa-20261006",
+      "ref": "refs/heads/evidence/ui-directory-copy-path-qa-20261006",
+      "type": "branch",
+      "old_sha": "fef233e0ea5eeb3a2cc5d74de7c48f2cdd301ec3",
+      "live_sha_at_verification": "fef233e0ea5eeb3a2cc5d74de7c48f2cdd301ec3",
+      "prs": [
+        {
+          "number": 49,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/49",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:37:08Z",
+          "draft": false,
+          "head_ref": "fix/ui-directory-copy-path",
+          "head_sha": "4c0d801e807998df064b648e6e61134f628f1cba",
+          "relationship": "evidence_ref_or_tip_explicitly_referenced_in_pr_body"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "evidence_only",
+      "basis": [
+        "All unique non-merge changed paths, relative to all audited non-evidence heads, are under contribution-evidence/.",
+        "Associated PR body explicitly contains this branch name or exact branch-tip SHA."
+      ],
+      "unique_commit_shas": [
+        "fef233e0ea5eeb3a2cc5d74de7c48f2cdd301ec3"
+      ],
+      "unique_changed_paths": [
+        "contribution-evidence/2026-10-06/directory-copy-path-after-menu.jpg",
+        "contribution-evidence/2026-10-06/directory-copy-path-after-os-clipboard.jpg",
+        "contribution-evidence/2026-10-06/directory-copy-path-before-menu.jpg"
+      ],
+      "pr_body_evidence_urls": [
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/fef233e0ea5eeb3a2cc5d74de7c48f2cdd301ec3/contribution-evidence/2026-10-06/directory-copy-path-after-menu.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/fef233e0ea5eeb3a2cc5d74de7c48f2cdd301ec3/contribution-evidence/2026-10-06/directory-copy-path-after-os-clipboard.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/fef233e0ea5eeb3a2cc5d74de7c48f2cdd301ec3/contribution-evidence/2026-10-06/directory-copy-path-before-menu.jpg"
+      ],
+      "preservation_caution": "Published review evidence refers to old names or commit SHAs. Preserve recoverable original objects and account for published links before any separately authorized rewrite or cleanup."
+    },
+    {
+      "name": "evidence/ui-editor-validation-qa-20261006",
+      "ref": "refs/heads/evidence/ui-editor-validation-qa-20261006",
+      "type": "branch",
+      "old_sha": "6bd7dd2a2b93d748f110c26d0d183e0971c8a2d9",
+      "live_sha_at_verification": "6bd7dd2a2b93d748f110c26d0d183e0971c8a2d9",
+      "prs": [
+        {
+          "number": 25,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/25",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-07T11:45:12Z",
+          "draft": false,
+          "head_ref": "fix/ui-session-editor-validation",
+          "head_sha": "c4753ef1b01fa545277ce7c29e9a118daca4b817",
+          "relationship": "evidence_ref_or_tip_explicitly_referenced_in_pr_body"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "evidence_only",
+      "basis": [
+        "All unique non-merge changed paths, relative to all audited non-evidence heads, are under contribution-evidence/.",
+        "Associated PR body explicitly contains this branch name or exact branch-tip SHA."
+      ],
+      "unique_commit_shas": [
+        "6bd7dd2a2b93d748f110c26d0d183e0971c8a2d9"
+      ],
+      "unique_changed_paths": [
+        "contribution-evidence/2026-10-06/editor-after-port-abc.jpg",
+        "contribution-evidence/2026-10-06/editor-after-port65536.jpg",
+        "contribution-evidence/2026-10-06/editor-before-port65536.jpg"
+      ],
+      "pr_body_evidence_urls": [
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/6bd7dd2a2b93d748f110c26d0d183e0971c8a2d9/contribution-evidence/2026-10-06/editor-after-port-abc.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/6bd7dd2a2b93d748f110c26d0d183e0971c8a2d9/contribution-evidence/2026-10-06/editor-after-port65536.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/6bd7dd2a2b93d748f110c26d0d183e0971c8a2d9/contribution-evidence/2026-10-06/editor-before-port65536.jpg"
+      ],
+      "preservation_caution": "Published review evidence refers to old names or commit SHAs. Preserve recoverable original objects and account for published links before any separately authorized rewrite or cleanup."
+    },
+    {
+      "name": "evidence/ui-file-dialog-close-qa-20261006",
+      "ref": "refs/heads/evidence/ui-file-dialog-close-qa-20261006",
+      "type": "branch",
+      "old_sha": "700dcbc912c9656016742f03ee42ca252015a885",
+      "live_sha_at_verification": "700dcbc912c9656016742f03ee42ca252015a885",
+      "prs": [
+        {
+          "number": 43,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/43",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T05:11:02Z",
+          "draft": false,
+          "head_ref": "fix/ui-file-dialog-dismissal",
+          "head_sha": "fe977c30271add8a9eb7cdb8eb49e168822b27e5",
+          "relationship": "evidence_ref_or_tip_explicitly_referenced_in_pr_body"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "evidence_only",
+      "basis": [
+        "All unique non-merge changed paths, relative to all audited non-evidence heads, are under contribution-evidence/.",
+        "Associated PR body explicitly contains this branch name or exact branch-tip SHA."
+      ],
+      "unique_commit_shas": [
+        "700dcbc912c9656016742f03ee42ca252015a885"
+      ],
+      "unique_changed_paths": [
+        "contribution-evidence/2026-10-06/file-dialog-close-after-escape-palette.jpg",
+        "contribution-evidence/2026-10-06/file-dialog-close-after-inner-x-palette.jpg",
+        "contribution-evidence/2026-10-06/file-dialog-close-after-outer-x-quickconnect.jpg",
+        "contribution-evidence/2026-10-06/file-dialog-close-after-unsaved-edit.jpg",
+        "contribution-evidence/2026-10-06/file-dialog-close-after-unsaved-reopen.jpg",
+        "contribution-evidence/2026-10-06/file-dialog-close-before-escape-blocked.jpg",
+        "contribution-evidence/2026-10-06/file-dialog-close-before-inner-close-recovery.jpg"
+      ],
+      "pr_body_evidence_urls": [
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/700dcbc912c9656016742f03ee42ca252015a885/contribution-evidence/2026-10-06/file-dialog-close-after-escape-palette.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/700dcbc912c9656016742f03ee42ca252015a885/contribution-evidence/2026-10-06/file-dialog-close-after-inner-x-palette.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/700dcbc912c9656016742f03ee42ca252015a885/contribution-evidence/2026-10-06/file-dialog-close-after-outer-x-quickconnect.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/700dcbc912c9656016742f03ee42ca252015a885/contribution-evidence/2026-10-06/file-dialog-close-after-unsaved-edit.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/700dcbc912c9656016742f03ee42ca252015a885/contribution-evidence/2026-10-06/file-dialog-close-after-unsaved-reopen.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/700dcbc912c9656016742f03ee42ca252015a885/contribution-evidence/2026-10-06/file-dialog-close-before-escape-blocked.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/700dcbc912c9656016742f03ee42ca252015a885/contribution-evidence/2026-10-06/file-dialog-close-before-inner-close-recovery.jpg"
+      ],
+      "preservation_caution": "Published review evidence refers to old names or commit SHAs. Preserve recoverable original objects and account for published links before any separately authorized rewrite or cleanup."
+    },
+    {
+      "name": "evidence/ui-file-viewer-qa-20261006",
+      "ref": "refs/heads/evidence/ui-file-viewer-qa-20261006",
+      "type": "branch",
+      "old_sha": "48bdb8870beaf7e7f219a8ac027a38c33a81377a",
+      "live_sha_at_verification": "48bdb8870beaf7e7f219a8ac027a38c33a81377a",
+      "prs": [
+        {
+          "number": 41,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/41",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T05:10:32Z",
+          "draft": false,
+          "head_ref": "fix/ui-file-viewer-layout-readonly",
+          "head_sha": "dbd22b601434734022642b25a366a7d09df5fab8",
+          "relationship": "evidence_ref_or_tip_explicitly_referenced_in_pr_body"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "evidence_only",
+      "basis": [
+        "All unique non-merge changed paths, relative to all audited non-evidence heads, are under contribution-evidence/.",
+        "Associated PR body explicitly contains this branch name or exact branch-tip SHA."
+      ],
+      "unique_commit_shas": [
+        "48bdb8870beaf7e7f219a8ac027a38c33a81377a"
+      ],
+      "unique_changed_paths": [
+        "contribution-evidence/2026-10-06/file-viewer-after-edit-save.jpg",
+        "contribution-evidence/2026-10-06/file-viewer-after-height.jpg",
+        "contribution-evidence/2026-10-06/file-viewer-after-long-text-bottom.jpg",
+        "contribution-evidence/2026-10-06/file-viewer-after-long-text-top.jpg",
+        "contribution-evidence/2026-10-06/file-viewer-after-readonly-selection.jpg",
+        "contribution-evidence/2026-10-06/file-viewer-after-unsaved-close-reopen.jpg",
+        "contribution-evidence/2026-10-06/file-viewer-before-height.jpg"
+      ],
+      "pr_body_evidence_urls": [
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/48bdb8870beaf7e7f219a8ac027a38c33a81377a/contribution-evidence/2026-10-06/file-viewer-after-edit-save.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/48bdb8870beaf7e7f219a8ac027a38c33a81377a/contribution-evidence/2026-10-06/file-viewer-after-height.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/48bdb8870beaf7e7f219a8ac027a38c33a81377a/contribution-evidence/2026-10-06/file-viewer-after-long-text-bottom.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/48bdb8870beaf7e7f219a8ac027a38c33a81377a/contribution-evidence/2026-10-06/file-viewer-after-long-text-top.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/48bdb8870beaf7e7f219a8ac027a38c33a81377a/contribution-evidence/2026-10-06/file-viewer-after-readonly-selection.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/48bdb8870beaf7e7f219a8ac027a38c33a81377a/contribution-evidence/2026-10-06/file-viewer-after-unsaved-close-reopen.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/48bdb8870beaf7e7f219a8ac027a38c33a81377a/contribution-evidence/2026-10-06/file-viewer-before-height.jpg"
+      ],
+      "preservation_caution": "Published review evidence refers to old names or commit SHAs. Preserve recoverable original objects and account for published links before any separately authorized rewrite or cleanup."
+    },
+    {
+      "name": "evidence/ui-findbar-qa-20261006",
+      "ref": "refs/heads/evidence/ui-findbar-qa-20261006",
+      "type": "branch",
+      "old_sha": "fff4b9b77a8222c09479c8002478e670ce7f0d4b",
+      "live_sha_at_verification": "fff4b9b77a8222c09479c8002478e670ce7f0d4b",
+      "prs": [
+        {
+          "number": 37,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/37",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T05:09:44Z",
+          "draft": false,
+          "head_ref": "fix/ui-findbar-contrast",
+          "head_sha": "1192ad12d4910f725fd534ee80ca7deddc423f92",
+          "relationship": "evidence_ref_or_tip_explicitly_referenced_in_pr_body"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "evidence_only",
+      "basis": [
+        "All unique non-merge changed paths, relative to all audited non-evidence heads, are under contribution-evidence/.",
+        "Associated PR body explicitly contains this branch name or exact branch-tip SHA."
+      ],
+      "unique_commit_shas": [
+        "fff4b9b77a8222c09479c8002478e670ce7f0d4b",
+        "1ea6505ebc6ef2d039421627fc42cdc2ade1a565"
+      ],
+      "unique_changed_paths": [
+        "contribution-evidence/2026-10-06/findbar-after-light-app.jpg",
+        "contribution-evidence/2026-10-06/findbar-before-light-app.jpg"
+      ],
+      "pr_body_evidence_urls": [
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/fff4b9b77a8222c09479c8002478e670ce7f0d4b/contribution-evidence/2026-10-06/findbar-after-light-app.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/fff4b9b77a8222c09479c8002478e670ce7f0d4b/contribution-evidence/2026-10-06/findbar-before-light-app.jpg"
+      ],
+      "preservation_caution": "Published review evidence refers to old names or commit SHAs. Preserve recoverable original objects and account for published links before any separately authorized rewrite or cleanup."
+    },
+    {
+      "name": "evidence/ui-focus-insert-20261007",
+      "ref": "refs/heads/evidence/ui-focus-insert-20261007",
+      "type": "branch",
+      "old_sha": "fcb2ed5b52461b70d264022f6c03bddd11fc7875",
+      "live_sha_at_verification": "fcb2ed5b52461b70d264022f6c03bddd11fc7875",
+      "prs": [
+        {
+          "number": 84,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/84",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:58:08Z",
+          "draft": true,
+          "head_ref": "fix/ui-insert-fallback",
+          "head_sha": "e385ab463b5f73d9e785cae5bbb7daf000128e55",
+          "relationship": "evidence_ref_or_tip_explicitly_referenced_in_pr_body"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "evidence_only",
+      "basis": [
+        "All unique non-merge changed paths, relative to all audited non-evidence heads, are under contribution-evidence/.",
+        "Associated PR body explicitly contains this branch name or exact branch-tip SHA."
+      ],
+      "unique_commit_shas": [
+        "fcb2ed5b52461b70d264022f6c03bddd11fc7875",
+        "bcd1cdb058e4090b02638e8e601fe4cd726c3079",
+        "a6adf50f209c9e8c44455416236228fc540108fd"
+      ],
+      "unique_changed_paths": [
+        "contribution-evidence/2026-10-07/focus-insert/insert-before-upstream-shift-raw.jpg",
+        "contribution-evidence/2026-10-07/focus-insert/insert-upstream-control.json",
+        "contribution-evidence/2026-10-07/focus-insert/native-results.json",
+        "contribution-evidence/2026-10-07/focus-insert/recovered-pure-focus-01-cold-ctrl-k.jpg",
+        "contribution-evidence/2026-10-07/focus-insert/recovered-pure-focus-01-cold-ctrl-k.png",
+        "contribution-evidence/2026-10-07/focus-insert/recovered-pure-focus-02-empty-palette.jpg",
+        "contribution-evidence/2026-10-07/focus-insert/recovered-pure-focus-02-empty-palette.png",
+        "contribution-evidence/2026-10-07/focus-insert/recovered-pure-focus-03-input-not-stolen.jpg",
+        "contribution-evidence/2026-10-07/focus-insert/recovered-pure-focus-03-input-not-stolen.png",
+        "contribution-evidence/2026-10-07/focus-insert/recovered-pure-focus-04-settings-return.jpg",
+        "contribution-evidence/2026-10-07/focus-insert/recovered-pure-focus-04-settings-return.png",
+        "contribution-evidence/2026-10-07/focus-insert/recovered-pure-focus-05-return-palette.jpg",
+        "contribution-evidence/2026-10-07/focus-insert/recovered-pure-focus-05-return-palette.png",
+        "contribution-evidence/2026-10-07/focus-insert/recovered-pure-focus-06-last-tab-reopen.jpg",
+        "contribution-evidence/2026-10-07/focus-insert/recovered-pure-focus-06-last-tab-reopen.png",
+        "contribution-evidence/2026-10-07/focus-insert/recovered-pure-insert-01-enabled-paste.jpg",
+        "contribution-evidence/2026-10-07/focus-insert/recovered-pure-insert-01-enabled-paste.png",
+        "contribution-evidence/2026-10-07/focus-insert/recovered-pure-insert-02-extra-disabled.jpg",
+        "contribution-evidence/2026-10-07/focus-insert/recovered-pure-insert-02-extra-disabled.png",
+        "contribution-evidence/2026-10-07/focus-insert/recovered-pure-insert-03-shift-raw.jpg",
+        "contribution-evidence/2026-10-07/focus-insert/recovered-pure-insert-03-shift-raw.png",
+        "contribution-evidence/2026-10-07/focus-insert/recovered-pure-insert-04-insert-raw.jpg",
+        "contribution-evidence/2026-10-07/focus-insert/recovered-pure-insert-04-insert-raw.png",
+        "contribution-evidence/2026-10-07/focus-insert/recovered-pure-insert-05-basic-paste.jpg",
+        "contribution-evidence/2026-10-07/focus-insert/recovered-pure-insert-05-basic-paste.png",
+        "contribution-evidence/2026-10-07/focus-insert/recovered-pure-insert-06-basic-shift-paste.jpg",
+        "contribution-evidence/2026-10-07/focus-insert/recovered-pure-insert-06-basic-shift-paste.png"
+      ],
+      "pr_body_evidence_urls": [
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/bcd1cdb058e4090b02638e8e601fe4cd726c3079/contribution-evidence/2026-10-07/focus-insert/insert-key-bytes.json",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/bcd1cdb058e4090b02638e8e601fe4cd726c3079/contribution-evidence/2026-10-07/focus-insert/native-results.json",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/bcd1cdb058e4090b02638e8e601fe4cd726c3079/contribution-evidence/2026-10-07/focus-insert/recovered-pure-insert-01-enabled-paste.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/bcd1cdb058e4090b02638e8e601fe4cd726c3079/contribution-evidence/2026-10-07/focus-insert/recovered-pure-insert-02-extra-disabled.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/bcd1cdb058e4090b02638e8e601fe4cd726c3079/contribution-evidence/2026-10-07/focus-insert/recovered-pure-insert-03-shift-raw.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/bcd1cdb058e4090b02638e8e601fe4cd726c3079/contribution-evidence/2026-10-07/focus-insert/recovered-pure-insert-04-insert-raw.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/bcd1cdb058e4090b02638e8e601fe4cd726c3079/contribution-evidence/2026-10-07/focus-insert/recovered-pure-insert-05-basic-paste.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/bcd1cdb058e4090b02638e8e601fe4cd726c3079/contribution-evidence/2026-10-07/focus-insert/recovered-pure-insert-06-basic-shift-paste.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/fcb2ed5b52461b70d264022f6c03bddd11fc7875/contribution-evidence/2026-10-07/focus-insert/insert-before-upstream-shift-raw.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/fcb2ed5b52461b70d264022f6c03bddd11fc7875/contribution-evidence/2026-10-07/focus-insert/insert-upstream-control.json"
+      ],
+      "preservation_caution": "Published review evidence refers to old names or commit SHAs. Preserve recoverable original objects and account for published links before any separately authorized rewrite or cleanup."
+    },
+    {
+      "name": "evidence/ui-group-inline-focus-qa-20261006",
+      "ref": "refs/heads/evidence/ui-group-inline-focus-qa-20261006",
+      "type": "branch",
+      "old_sha": "27255030bc96411aa37ad48815a5b39c5f869906",
+      "live_sha_at_verification": "27255030bc96411aa37ad48815a5b39c5f869906",
+      "prs": [
+        {
+          "number": 51,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/51",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:37:40Z",
+          "draft": false,
+          "head_ref": "fix/ui-group-inline-focus",
+          "head_sha": "2b8672c2e514b6b4066ccf8e36e6c43a65e081e1",
+          "relationship": "evidence_ref_or_tip_explicitly_referenced_in_pr_body"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "evidence_only",
+      "basis": [
+        "All unique non-merge changed paths, relative to all audited non-evidence heads, are under contribution-evidence/.",
+        "Associated PR body explicitly contains this branch name or exact branch-tip SHA."
+      ],
+      "unique_commit_shas": [
+        "27255030bc96411aa37ad48815a5b39c5f869906"
+      ],
+      "unique_changed_paths": [
+        "contribution-evidence/2026-10-06/group-inline-after-cancel-close.jpg",
+        "contribution-evidence/2026-10-06/group-inline-after-cancel-keeps-draft.jpg",
+        "contribution-evidence/2026-10-06/group-inline-after-save-close.jpg",
+        "contribution-evidence/2026-10-06/group-inline-before-cancel.jpg",
+        "contribution-evidence/2026-10-06/group-inline-before-close-blocked.jpg"
+      ],
+      "pr_body_evidence_urls": [
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/27255030bc96411aa37ad48815a5b39c5f869906/contribution-evidence/2026-10-06/group-inline-after-cancel-close.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/27255030bc96411aa37ad48815a5b39c5f869906/contribution-evidence/2026-10-06/group-inline-after-cancel-keeps-draft.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/27255030bc96411aa37ad48815a5b39c5f869906/contribution-evidence/2026-10-06/group-inline-after-save-close.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/27255030bc96411aa37ad48815a5b39c5f869906/contribution-evidence/2026-10-06/group-inline-before-cancel.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/27255030bc96411aa37ad48815a5b39c5f869906/contribution-evidence/2026-10-06/group-inline-before-close-blocked.jpg"
+      ],
+      "preservation_caution": "Published review evidence refers to old names or commit SHAs. Preserve recoverable original objects and account for published links before any separately authorized rewrite or cleanup."
+    },
+    {
+      "name": "evidence/ui-jump-qa-20261006",
+      "ref": "refs/heads/evidence/ui-jump-qa-20261006",
+      "type": "branch",
+      "old_sha": "b34d75a5f162922df3cfc427727f6f27d61affbe",
+      "live_sha_at_verification": "b34d75a5f162922df3cfc427727f6f27d61affbe",
+      "prs": [
+        {
+          "number": 19,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/19",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-07T11:06:35Z",
+          "draft": false,
+          "head_ref": "fix/ui-bastion-layout",
+          "head_sha": "d9925157167105d28636535fa4d75ae1cc67b854",
+          "relationship": "evidence_ref_or_tip_explicitly_referenced_in_pr_body"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "evidence_only",
+      "basis": [
+        "All unique non-merge changed paths, relative to all audited non-evidence heads, are under contribution-evidence/.",
+        "Associated PR body explicitly contains this branch name or exact branch-tip SHA."
+      ],
+      "unique_commit_shas": [
+        "b34d75a5f162922df3cfc427727f6f27d61affbe"
+      ],
+      "unique_changed_paths": [
+        "contribution-evidence/2026-10-06/jump-after-five-hop.jpg",
+        "contribution-evidence/2026-10-06/jump-after-one-hop.jpg",
+        "contribution-evidence/2026-10-06/jump-after-reordered.jpg",
+        "contribution-evidence/2026-10-06/jump-after-tooltip.jpg",
+        "contribution-evidence/2026-10-06/jump-after-two-hop.jpg",
+        "contribution-evidence/2026-10-06/jump-before.jpg"
+      ],
+      "pr_body_evidence_urls": [
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/b34d75a5f162922df3cfc427727f6f27d61affbe/contribution-evidence/2026-10-06/jump-after-five-hop.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/b34d75a5f162922df3cfc427727f6f27d61affbe/contribution-evidence/2026-10-06/jump-after-one-hop.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/b34d75a5f162922df3cfc427727f6f27d61affbe/contribution-evidence/2026-10-06/jump-after-reordered.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/b34d75a5f162922df3cfc427727f6f27d61affbe/contribution-evidence/2026-10-06/jump-after-tooltip.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/b34d75a5f162922df3cfc427727f6f27d61affbe/contribution-evidence/2026-10-06/jump-after-two-hop.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/b34d75a5f162922df3cfc427727f6f27d61affbe/contribution-evidence/2026-10-06/jump-before.jpg"
+      ],
+      "preservation_caution": "Published review evidence refers to old names or commit SHAs. Preserve recoverable original objects and account for published links before any separately authorized rewrite or cleanup."
+    },
+    {
+      "name": "evidence/ui-list-refresh-qa-20261006",
+      "ref": "refs/heads/evidence/ui-list-refresh-qa-20261006",
+      "type": "branch",
+      "old_sha": "02436cf961ca3faacd9eda1862bbc9c4a92a2984",
+      "live_sha_at_verification": "02436cf961ca3faacd9eda1862bbc9c4a92a2984",
+      "prs": [
+        {
+          "number": 27,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/27",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-07T11:45:37Z",
+          "draft": false,
+          "head_ref": "fix/ui-session-list-refresh",
+          "head_sha": "2ae55493628bc12fb1474ae1ff0c0cfbbfbdb0f6",
+          "relationship": "evidence_ref_or_tip_explicitly_referenced_in_pr_body"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "evidence_only",
+      "basis": [
+        "All unique non-merge changed paths, relative to all audited non-evidence heads, are under contribution-evidence/.",
+        "Associated PR body explicitly contains this branch name or exact branch-tip SHA."
+      ],
+      "unique_commit_shas": [
+        "02436cf961ca3faacd9eda1862bbc9c4a92a2984",
+        "80d1138723a737eb71617a73c23cf5988c522019"
+      ],
+      "unique_changed_paths": [
+        "contribution-evidence/2026-10-06/list-after-add-group.jpg",
+        "contribution-evidence/2026-10-06/list-after-delete.jpg",
+        "contribution-evidence/2026-10-06/list-before-group-misalignment.jpg"
+      ],
+      "pr_body_evidence_urls": [
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/02436cf961ca3faacd9eda1862bbc9c4a92a2984/contribution-evidence/2026-10-06/list-after-add-group.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/02436cf961ca3faacd9eda1862bbc9c4a92a2984/contribution-evidence/2026-10-06/list-before-group-misalignment.jpg"
+      ],
+      "preservation_caution": "Published review evidence refers to old names or commit SHAs. Preserve recoverable original objects and account for published links before any separately authorized rewrite or cleanup."
+    },
+    {
+      "name": "evidence/ui-overlay-height-qa-20261006",
+      "ref": "refs/heads/evidence/ui-overlay-height-qa-20261006",
+      "type": "branch",
+      "old_sha": "ad29ee58d96975a22d8a7dfd51e3eb2fcd4fb7ce",
+      "live_sha_at_verification": "ad29ee58d96975a22d8a7dfd51e3eb2fcd4fb7ce",
+      "prs": [
+        {
+          "number": 39,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/39",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T05:10:12Z",
+          "draft": false,
+          "head_ref": "fix/ui-overlay-height-budget",
+          "head_sha": "01ff0d7a73707416de7f459f7dc17c2f2e71f106",
+          "relationship": "evidence_ref_or_tip_explicitly_referenced_in_pr_body"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "evidence_only",
+      "basis": [
+        "All unique non-merge changed paths, relative to all audited non-evidence heads, are under contribution-evidence/.",
+        "Associated PR body explicitly contains this branch name or exact branch-tip SHA."
+      ],
+      "unique_commit_shas": [
+        "ad29ee58d96975a22d8a7dfd51e3eb2fcd4fb7ce",
+        "9dc554a89a34dcb2301ec0c7e1212d1e99709cc6",
+        "5ea5a7ab3682c2069b60079e788a8393069a1112"
+      ],
+      "unique_changed_paths": [
+        "contribution-evidence/2026-10-06/overlay-after-five-hop-scroll-bottom.jpg",
+        "contribution-evidence/2026-10-06/overlay-after-open-at-minimum.jpg",
+        "contribution-evidence/2026-10-06/overlay-before-minimum-window.jpg",
+        "contribution-evidence/2026-10-06/overlay-diagnostic-after-queue-drained.jpg",
+        "contribution-evidence/2026-10-06/overlay-diagnostic-after-restore.jpg",
+        "contribution-evidence/2026-10-06/overlay-native-resize-still-fails.jpg",
+        "contribution-evidence/2026-10-06/overlay-resize-intermediate-clipping.jpg"
+      ],
+      "pr_body_evidence_urls": [
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/ad29ee58d96975a22d8a7dfd51e3eb2fcd4fb7ce/contribution-evidence/2026-10-06/overlay-after-five-hop-scroll-bottom.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/ad29ee58d96975a22d8a7dfd51e3eb2fcd4fb7ce/contribution-evidence/2026-10-06/overlay-after-open-at-minimum.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/ad29ee58d96975a22d8a7dfd51e3eb2fcd4fb7ce/contribution-evidence/2026-10-06/overlay-before-minimum-window.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/ad29ee58d96975a22d8a7dfd51e3eb2fcd4fb7ce/contribution-evidence/2026-10-06/overlay-diagnostic-after-queue-drained.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/ad29ee58d96975a22d8a7dfd51e3eb2fcd4fb7ce/contribution-evidence/2026-10-06/overlay-diagnostic-after-restore.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/ad29ee58d96975a22d8a7dfd51e3eb2fcd4fb7ce/contribution-evidence/2026-10-06/overlay-resize-intermediate-clipping.jpg"
+      ],
+      "preservation_caution": "Published review evidence refers to old names or commit SHAs. Preserve recoverable original objects and account for published links before any separately authorized rewrite or cleanup."
+    },
+    {
+      "name": "evidence/ui-palette-qa-20261006",
+      "ref": "refs/heads/evidence/ui-palette-qa-20261006",
+      "type": "branch",
+      "old_sha": "7f7092093d8828c30409a764d4c56ce2def47e32",
+      "live_sha_at_verification": "7f7092093d8828c30409a764d4c56ce2def47e32",
+      "prs": [
+        {
+          "number": 21,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/21",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-07T11:07:09Z",
+          "draft": false,
+          "head_ref": "fix/ui-command-palette-borrow",
+          "head_sha": "036305d5a6a61987745370af461ee72c37cf1954",
+          "relationship": "evidence_ref_or_tip_explicitly_referenced_in_pr_body"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "evidence_only",
+      "basis": [
+        "All unique non-merge changed paths, relative to all audited non-evidence heads, are under contribution-evidence/.",
+        "Associated PR body explicitly contains this branch name or exact branch-tip SHA."
+      ],
+      "unique_commit_shas": [
+        "7f7092093d8828c30409a764d4c56ce2def47e32"
+      ],
+      "unique_changed_paths": [
+        "contribution-evidence/2026-10-06/palette-after-synthetic-ssh.jpg",
+        "contribution-evidence/2026-10-06/palette-before-redacted.jpg"
+      ],
+      "pr_body_evidence_urls": [
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/7f7092093d8828c30409a764d4c56ce2def47e32/contribution-evidence/2026-10-06/palette-after-synthetic-ssh.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/7f7092093d8828c30409a764d4c56ce2def47e32/contribution-evidence/2026-10-06/palette-before-redacted.jpg"
+      ],
+      "preservation_caution": "Published review evidence refers to old names or commit SHAs. Preserve recoverable original objects and account for published links before any separately authorized rewrite or cleanup."
+    },
+    {
+      "name": "evidence/ui-palette-scroll-qa-20261006",
+      "ref": "refs/heads/evidence/ui-palette-scroll-qa-20261006",
+      "type": "branch",
+      "old_sha": "c27b9ff8413ea3e553f50fb9255cb8ed499d143c",
+      "live_sha_at_verification": "c27b9ff8413ea3e553f50fb9255cb8ed499d143c",
+      "prs": [
+        {
+          "number": 31,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/31",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-07T11:46:45Z",
+          "draft": false,
+          "head_ref": "fix/ui-command-palette-scroll",
+          "head_sha": "5101978909aae3ecac390d7d099d2ee87fd26de4",
+          "relationship": "evidence_ref_or_tip_explicitly_referenced_in_pr_body"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "evidence_only",
+      "basis": [
+        "All unique non-merge changed paths, relative to all audited non-evidence heads, are under contribution-evidence/.",
+        "Associated PR body explicitly contains this branch name or exact branch-tip SHA."
+      ],
+      "unique_commit_shas": [
+        "c27b9ff8413ea3e553f50fb9255cb8ed499d143c"
+      ],
+      "unique_changed_paths": [
+        "contribution-evidence/2026-10-06/palette-scroll-after-bottom.jpg",
+        "contribution-evidence/2026-10-06/palette-scroll-before.jpg"
+      ],
+      "pr_body_evidence_urls": [
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/c27b9ff8413ea3e553f50fb9255cb8ed499d143c/contribution-evidence/2026-10-06/palette-scroll-after-bottom.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/c27b9ff8413ea3e553f50fb9255cb8ed499d143c/contribution-evidence/2026-10-06/palette-scroll-before.jpg"
+      ],
+      "preservation_caution": "Published review evidence refers to old names or commit SHAs. Preserve recoverable original objects and account for published links before any separately authorized rewrite or cleanup."
+    },
+    {
+      "name": "evidence/ui-pane-cycle-focus-qa-20261007",
+      "ref": "refs/heads/evidence/ui-pane-cycle-focus-qa-20261007",
+      "type": "branch",
+      "old_sha": "eda95409055fe45dc76110cb6c1867df0eb0f435",
+      "live_sha_at_verification": "eda95409055fe45dc76110cb6c1867df0eb0f435",
+      "prs": [
+        {
+          "number": 73,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/73",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:47:28Z",
+          "draft": true,
+          "head_ref": "fix/ui-pane-cycle-focus",
+          "head_sha": "5cafc58ccf74207ceeb6cbde2cd20f2c54976818",
+          "relationship": "evidence_ref_or_tip_explicitly_referenced_in_pr_body"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "evidence_only",
+      "basis": [
+        "All unique non-merge changed paths, relative to all audited non-evidence heads, are under contribution-evidence/.",
+        "Associated PR body explicitly contains this branch name or exact branch-tip SHA."
+      ],
+      "unique_commit_shas": [
+        "eda95409055fe45dc76110cb6c1867df0eb0f435"
+      ],
+      "unique_changed_paths": [
+        "contribution-evidence/2026-10-07/pane-cycle-native-observation.jpg",
+        "contribution-evidence/2026-10-07/pane-cycle-xfwm-shortcut-conflict.jpg"
+      ],
+      "pr_body_evidence_urls": [
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/eda95409055fe45dc76110cb6c1867df0eb0f435/contribution-evidence/2026-10-07/pane-cycle-native-observation.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/eda95409055fe45dc76110cb6c1867df0eb0f435/contribution-evidence/2026-10-07/pane-cycle-xfwm-shortcut-conflict.jpg"
+      ],
+      "preservation_caution": "Published review evidence refers to old names or commit SHAs. Preserve recoverable original objects and account for published links before any separately authorized rewrite or cleanup."
+    },
+    {
+      "name": "evidence/ui-quick-group-count-qa-20261007",
+      "ref": "refs/heads/evidence/ui-quick-group-count-qa-20261007",
+      "type": "branch",
+      "old_sha": "be481223bbffeed5dd01922c8179c302c3bcda4e",
+      "live_sha_at_verification": "be481223bbffeed5dd01922c8179c302c3bcda4e",
+      "prs": [
+        {
+          "number": 81,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/81",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:57:49Z",
+          "draft": true,
+          "head_ref": "fix/ui-quick-group-count",
+          "head_sha": "61288971169800466775045590ea31c960fee710",
+          "relationship": "evidence_ref_or_tip_explicitly_referenced_in_pr_body"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "evidence_only",
+      "basis": [
+        "All unique non-merge changed paths, relative to all audited non-evidence heads, are under contribution-evidence/.",
+        "Associated PR body explicitly contains this branch name or exact branch-tip SHA."
+      ],
+      "unique_commit_shas": [
+        "be481223bbffeed5dd01922c8179c302c3bcda4e"
+      ],
+      "unique_changed_paths": [
+        "contribution-evidence/2026-10-07/quick-count-after-expanded.jpg",
+        "contribution-evidence/2026-10-07/quick-count-after-two-groups.jpg",
+        "contribution-evidence/2026-10-07/quick-count-before-expanded-three.jpg",
+        "contribution-evidence/2026-10-07/quick-count-before-folded-two.jpg"
+      ],
+      "pr_body_evidence_urls": [
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/be481223bbffeed5dd01922c8179c302c3bcda4e/contribution-evidence/2026-10-07/quick-count-after-expanded.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/be481223bbffeed5dd01922c8179c302c3bcda4e/contribution-evidence/2026-10-07/quick-count-after-two-groups.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/be481223bbffeed5dd01922c8179c302c3bcda4e/contribution-evidence/2026-10-07/quick-count-before-expanded-three.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/be481223bbffeed5dd01922c8179c302c3bcda4e/contribution-evidence/2026-10-07/quick-count-before-folded-two.jpg"
+      ],
+      "preservation_caution": "Published review evidence refers to old names or commit SHAs. Preserve recoverable original objects and account for published links before any separately authorized rewrite or cleanup."
+    },
+    {
+      "name": "evidence/ui-quick-popover-dismiss-qa-20261006",
+      "ref": "refs/heads/evidence/ui-quick-popover-dismiss-qa-20261006",
+      "type": "branch",
+      "old_sha": "1b109c445978f69700758cc9043b38ff7dc2cb3f",
+      "live_sha_at_verification": "1b109c445978f69700758cc9043b38ff7dc2cb3f",
+      "prs": [
+        {
+          "number": 53,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/53",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:38:25Z",
+          "draft": true,
+          "head_ref": "fix/ui-quick-popover-dismiss",
+          "head_sha": "d206bce4a6966e3781830f8015992edcb21b08ba",
+          "relationship": "evidence_ref_or_tip_explicitly_referenced_in_pr_body"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "evidence_only",
+      "basis": [
+        "All unique non-merge changed paths, relative to all audited non-evidence heads, are under contribution-evidence/.",
+        "Associated PR body explicitly contains this branch name or exact branch-tip SHA."
+      ],
+      "unique_commit_shas": [
+        "1b109c445978f69700758cc9043b38ff7dc2cb3f"
+      ],
+      "unique_changed_paths": [
+        "contribution-evidence/2026-10-06/quick-popover-after-manager-close.jpg",
+        "contribution-evidence/2026-10-06/quick-popover-after-manager.jpg",
+        "contribution-evidence/2026-10-06/quick-popover-after-own-close.jpg",
+        "contribution-evidence/2026-10-06/quick-popover-before-overlap.jpg"
+      ],
+      "pr_body_evidence_urls": [
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/1b109c445978f69700758cc9043b38ff7dc2cb3f/contribution-evidence/2026-10-06/quick-popover-after-manager-close.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/1b109c445978f69700758cc9043b38ff7dc2cb3f/contribution-evidence/2026-10-06/quick-popover-after-manager.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/1b109c445978f69700758cc9043b38ff7dc2cb3f/contribution-evidence/2026-10-06/quick-popover-after-own-close.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/1b109c445978f69700758cc9043b38ff7dc2cb3f/contribution-evidence/2026-10-06/quick-popover-before-overlap.jpg"
+      ],
+      "preservation_caution": "Published review evidence refers to old names or commit SHAs. Preserve recoverable original objects and account for published links before any separately authorized rewrite or cleanup."
+    },
+    {
+      "name": "evidence/ui-quick-row-actions-qa-20261007",
+      "ref": "refs/heads/evidence/ui-quick-row-actions-qa-20261007",
+      "type": "branch",
+      "old_sha": "36c2d78a58b14f2c0914303f1ca46a6e7ede9c30",
+      "live_sha_at_verification": "36c2d78a58b14f2c0914303f1ca46a6e7ede9c30",
+      "prs": [
+        {
+          "number": 67,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/67",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:42:31Z",
+          "draft": true,
+          "head_ref": "fix/ui-quick-row-actions",
+          "head_sha": "11a3f5e46a5fe8b08b5ff47f0a8a5569a037f112",
+          "relationship": "evidence_ref_or_tip_explicitly_referenced_in_pr_body"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "evidence_only",
+      "basis": [
+        "All unique non-merge changed paths, relative to all audited non-evidence heads, are under contribution-evidence/.",
+        "Associated PR body explicitly contains this branch name or exact branch-tip SHA."
+      ],
+      "unique_commit_shas": [
+        "36c2d78a58b14f2c0914303f1ca46a6e7ede9c30"
+      ],
+      "unique_changed_paths": [
+        "contribution-evidence/2026-10-07/quick-row-after-cross-group.jpg",
+        "contribution-evidence/2026-10-07/quick-row-after-edit.jpg",
+        "contribution-evidence/2026-10-07/quick-row-after-move.jpg",
+        "contribution-evidence/2026-10-07/quick-row-before-noop.jpg"
+      ],
+      "pr_body_evidence_urls": [
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/36c2d78a58b14f2c0914303f1ca46a6e7ede9c30/contribution-evidence/2026-10-07/quick-row-after-cross-group.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/36c2d78a58b14f2c0914303f1ca46a6e7ede9c30/contribution-evidence/2026-10-07/quick-row-after-edit.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/36c2d78a58b14f2c0914303f1ca46a6e7ede9c30/contribution-evidence/2026-10-07/quick-row-after-move.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/36c2d78a58b14f2c0914303f1ca46a6e7ede9c30/contribution-evidence/2026-10-07/quick-row-before-noop.jpg"
+      ],
+      "preservation_caution": "Published review evidence refers to old names or commit SHAs. Preserve recoverable original objects and account for published links before any separately authorized rewrite or cleanup."
+    },
+    {
+      "name": "evidence/ui-reconnect-qa-20261006",
+      "ref": "refs/heads/evidence/ui-reconnect-qa-20261006",
+      "type": "branch",
+      "old_sha": "f132431ecb160a6893cc2ab5cd73454b92359541",
+      "live_sha_at_verification": "f132431ecb160a6893cc2ab5cd73454b92359541",
+      "prs": [
+        {
+          "number": 29,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/29",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-07T11:46:03Z",
+          "draft": false,
+          "head_ref": "fix/ui-session-reconnect",
+          "head_sha": "69841e61cc37268703760a422b12d464a15a5dcb",
+          "relationship": "evidence_ref_or_tip_explicitly_referenced_in_pr_body"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "evidence_only",
+      "basis": [
+        "All unique non-merge changed paths, relative to all audited non-evidence heads, are under contribution-evidence/.",
+        "Associated PR body explicitly contains this branch name or exact branch-tip SHA."
+      ],
+      "unique_commit_shas": [
+        "f132431ecb160a6893cc2ab5cd73454b92359541"
+      ],
+      "unique_changed_paths": [
+        "contribution-evidence/2026-10-06/reconnect-after-duplicate.jpg",
+        "contribution-evidence/2026-10-06/reconnect-after-prompt.jpg",
+        "contribution-evidence/2026-10-06/reconnect-before-cancel.jpg"
+      ],
+      "pr_body_evidence_urls": [
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/f132431ecb160a6893cc2ab5cd73454b92359541/contribution-evidence/2026-10-06/reconnect-after-duplicate.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/f132431ecb160a6893cc2ab5cd73454b92359541/contribution-evidence/2026-10-06/reconnect-after-prompt.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/f132431ecb160a6893cc2ab5cd73454b92359541/contribution-evidence/2026-10-06/reconnect-before-cancel.jpg"
+      ],
+      "preservation_caution": "Published review evidence refers to old names or commit SHAs. Preserve recoverable original objects and account for published links before any separately authorized rewrite or cleanup."
+    },
+    {
+      "name": "evidence/ui-resource-state-qa-20261006",
+      "ref": "refs/heads/evidence/ui-resource-state-qa-20261006",
+      "type": "branch",
+      "old_sha": "508d86c3dcc9e5b45c8d4d50659254fea938bb04",
+      "live_sha_at_verification": "508d86c3dcc9e5b45c8d4d50659254fea938bb04",
+      "prs": [
+        {
+          "number": 61,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/61",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:41:20Z",
+          "draft": true,
+          "head_ref": "fix/ui-resource-sample-state",
+          "head_sha": "2610ad8463e361c630ea245ef9f5452ceede4124",
+          "relationship": "evidence_ref_or_tip_explicitly_referenced_in_pr_body"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "evidence_only",
+      "basis": [
+        "All unique non-merge changed paths, relative to all audited non-evidence heads, are under contribution-evidence/.",
+        "Associated PR body explicitly contains this branch name or exact branch-tip SHA."
+      ],
+      "unique_commit_shas": [
+        "508d86c3dcc9e5b45c8d4d50659254fea938bb04"
+      ],
+      "unique_changed_paths": [],
+      "pr_body_evidence_urls": [],
+      "preservation_caution": "Published review evidence refers to old names or commit SHAs. Preserve recoverable original objects and account for published links before any separately authorized rewrite or cleanup."
+    },
+    {
+      "name": "evidence/ui-rule-dialog-save-close-qa-20261006",
+      "ref": "refs/heads/evidence/ui-rule-dialog-save-close-qa-20261006",
+      "type": "branch",
+      "old_sha": "12db0d120a9bfbeaf62c09233496209b33467fc8",
+      "live_sha_at_verification": "12db0d120a9bfbeaf62c09233496209b33467fc8",
+      "prs": [
+        {
+          "number": 55,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/55",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:39:11Z",
+          "draft": true,
+          "head_ref": "fix/ui-rule-dialog-save-close",
+          "head_sha": "f14aed54469853004e2aa4e3b13daf36047c1da3",
+          "relationship": "evidence_ref_or_tip_explicitly_referenced_in_pr_body"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "evidence_only",
+      "basis": [
+        "All unique non-merge changed paths, relative to all audited non-evidence heads, are under contribution-evidence/.",
+        "Associated PR body explicitly contains this branch name or exact branch-tip SHA."
+      ],
+      "unique_commit_shas": [
+        "12db0d120a9bfbeaf62c09233496209b33467fc8"
+      ],
+      "unique_changed_paths": [
+        "contribution-evidence/2026-10-06/rule-dialog-after-invalid-rejected.jpg",
+        "contribution-evidence/2026-10-06/rule-dialog-after-saved-closed.jpg",
+        "contribution-evidence/2026-10-06/rule-dialog-before-first-save.jpg",
+        "contribution-evidence/2026-10-06/rule-dialog-before-repeat-save.jpg"
+      ],
+      "pr_body_evidence_urls": [
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/12db0d120a9bfbeaf62c09233496209b33467fc8/contribution-evidence/2026-10-06/rule-dialog-after-invalid-rejected.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/12db0d120a9bfbeaf62c09233496209b33467fc8/contribution-evidence/2026-10-06/rule-dialog-after-saved-closed.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/12db0d120a9bfbeaf62c09233496209b33467fc8/contribution-evidence/2026-10-06/rule-dialog-before-first-save.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/12db0d120a9bfbeaf62c09233496209b33467fc8/contribution-evidence/2026-10-06/rule-dialog-before-repeat-save.jpg"
+      ],
+      "preservation_caution": "Published review evidence refers to old names or commit SHAs. Preserve recoverable original objects and account for published links before any separately authorized rewrite or cleanup."
+    },
+    {
+      "name": "evidence/ui-settings-numeric-qa-20261006",
+      "ref": "refs/heads/evidence/ui-settings-numeric-qa-20261006",
+      "type": "branch",
+      "old_sha": "32757180b7ee7b13d3784435527d2fcf068a2143",
+      "live_sha_at_verification": "32757180b7ee7b13d3784435527d2fcf068a2143",
+      "prs": [
+        {
+          "number": 59,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/59",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:40:53Z",
+          "draft": true,
+          "head_ref": "fix/ui-settings-numeric-drafts",
+          "head_sha": "16c6ba5f2a0d67628b39c4dca53fcb312f184f07",
+          "relationship": "evidence_ref_or_tip_explicitly_referenced_in_pr_body"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "evidence_only",
+      "basis": [
+        "All unique non-merge changed paths, relative to all audited non-evidence heads, are under contribution-evidence/.",
+        "Associated PR body explicitly contains this branch name or exact branch-tip SHA."
+      ],
+      "unique_commit_shas": [
+        "32757180b7ee7b13d3784435527d2fcf068a2143"
+      ],
+      "unique_changed_paths": [],
+      "pr_body_evidence_urls": [],
+      "preservation_caution": "Published review evidence refers to old names or commit SHAs. Preserve recoverable original objects and account for published links before any separately authorized rewrite or cleanup."
+    },
+    {
+      "name": "evidence/ui-settings-qa-20261006",
+      "ref": "refs/heads/evidence/ui-settings-qa-20261006",
+      "type": "branch",
+      "old_sha": "a1363b98e36f50e2acdc03d45cc22c6656e7a490",
+      "live_sha_at_verification": "a1363b98e36f50e2acdc03d45cc22c6656e7a490",
+      "prs": [
+        {
+          "number": 23,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/23",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-07T11:08:48Z",
+          "draft": false,
+          "head_ref": "fix/ui-settings-input-state",
+          "head_sha": "d21c7ccf9ca148fb9352d6eea014f2f9862728cd",
+          "relationship": "evidence_ref_or_tip_explicitly_referenced_in_pr_body"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "evidence_only",
+      "basis": [
+        "All unique non-merge changed paths, relative to all audited non-evidence heads, are under contribution-evidence/.",
+        "Associated PR body explicitly contains this branch name or exact branch-tip SHA."
+      ],
+      "unique_commit_shas": [
+        "a1363b98e36f50e2acdc03d45cc22c6656e7a490"
+      ],
+      "unique_changed_paths": [
+        "contribution-evidence/2026-10-06/settings-after-color.jpg",
+        "contribution-evidence/2026-10-06/settings-after-error.jpg",
+        "contribution-evidence/2026-10-06/settings-after-url.jpg",
+        "contribution-evidence/2026-10-06/settings-before-color.jpg",
+        "contribution-evidence/2026-10-06/settings-before-url.jpg"
+      ],
+      "pr_body_evidence_urls": [
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/a1363b98e36f50e2acdc03d45cc22c6656e7a490/contribution-evidence/2026-10-06/settings-after-color.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/a1363b98e36f50e2acdc03d45cc22c6656e7a490/contribution-evidence/2026-10-06/settings-after-error.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/a1363b98e36f50e2acdc03d45cc22c6656e7a490/contribution-evidence/2026-10-06/settings-after-url.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/a1363b98e36f50e2acdc03d45cc22c6656e7a490/contribution-evidence/2026-10-06/settings-before-color.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/a1363b98e36f50e2acdc03d45cc22c6656e7a490/contribution-evidence/2026-10-06/settings-before-url.jpg"
+      ],
+      "preservation_caution": "Published review evidence refers to old names or commit SHAs. Preserve recoverable original objects and account for published links before any separately authorized rewrite or cleanup."
+    },
+    {
+      "name": "evidence/ui-sftp-column-language-qa-20261007",
+      "ref": "refs/heads/evidence/ui-sftp-column-language-qa-20261007",
+      "type": "branch",
+      "old_sha": "03d0eb2e2ab973d825265ae89e6f97e5f4ad2cf0",
+      "live_sha_at_verification": "03d0eb2e2ab973d825265ae89e6f97e5f4ad2cf0",
+      "prs": [
+        {
+          "number": 75,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/75",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:48:30Z",
+          "draft": true,
+          "head_ref": "fix/ui-sftp-column-language",
+          "head_sha": "180b90bcc3af8868f99889c4af28d8dd6b0d2d73",
+          "relationship": "evidence_ref_or_tip_explicitly_referenced_in_pr_body"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "evidence_only",
+      "basis": [
+        "All unique non-merge changed paths, relative to all audited non-evidence heads, are under contribution-evidence/.",
+        "Associated PR body explicitly contains this branch name or exact branch-tip SHA."
+      ],
+      "unique_commit_shas": [
+        "03d0eb2e2ab973d825265ae89e6f97e5f4ad2cf0"
+      ],
+      "unique_changed_paths": [
+        "contribution-evidence/2026-10-07/sftp-columns-after-english.jpg",
+        "contribution-evidence/2026-10-07/sftp-columns-after-sort-selection.jpg",
+        "contribution-evidence/2026-10-07/sftp-columns-before-hardcoded-chinese.jpg"
+      ],
+      "pr_body_evidence_urls": [
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/03d0eb2e2ab973d825265ae89e6f97e5f4ad2cf0/contribution-evidence/2026-10-07/sftp-columns-after-english.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/03d0eb2e2ab973d825265ae89e6f97e5f4ad2cf0/contribution-evidence/2026-10-07/sftp-columns-after-sort-selection.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/03d0eb2e2ab973d825265ae89e6f97e5f4ad2cf0/contribution-evidence/2026-10-07/sftp-columns-before-hardcoded-chinese.jpg"
+      ],
+      "preservation_caution": "Published review evidence refers to old names or commit SHAs. Preserve recoverable original objects and account for published links before any separately authorized rewrite or cleanup."
+    },
+    {
+      "name": "evidence/ui-sftp-delete-confirmation-qa-20261007",
+      "ref": "refs/heads/evidence/ui-sftp-delete-confirmation-qa-20261007",
+      "type": "branch",
+      "old_sha": "7e282e5349195b17216af2f2e3246c197562df75",
+      "live_sha_at_verification": "7e282e5349195b17216af2f2e3246c197562df75",
+      "prs": [
+        {
+          "number": 69,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/69",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:43:14Z",
+          "draft": true,
+          "head_ref": "fix/ui-sftp-delete-confirmation",
+          "head_sha": "8c7f05b0553bc80551d05ba91ee069c43b0b1640",
+          "relationship": "evidence_ref_or_tip_explicitly_referenced_in_pr_body"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "evidence_only",
+      "basis": [
+        "All unique non-merge changed paths, relative to all audited non-evidence heads, are under contribution-evidence/.",
+        "Associated PR body explicitly contains this branch name or exact branch-tip SHA."
+      ],
+      "unique_commit_shas": [
+        "7e282e5349195b17216af2f2e3246c197562df75"
+      ],
+      "unique_changed_paths": [
+        "contribution-evidence/2026-10-07/sftp-delete-after-cancel-keeps-items.jpg",
+        "contribution-evidence/2026-10-07/sftp-delete-after-confirm-scope.jpg",
+        "contribution-evidence/2026-10-07/sftp-delete-after-explicit-confirm.jpg",
+        "contribution-evidence/2026-10-07/sftp-delete-before-immediate.jpg"
+      ],
+      "pr_body_evidence_urls": [
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/7e282e5349195b17216af2f2e3246c197562df75/contribution-evidence/2026-10-07/sftp-delete-after-cancel-keeps-items.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/7e282e5349195b17216af2f2e3246c197562df75/contribution-evidence/2026-10-07/sftp-delete-after-confirm-scope.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/7e282e5349195b17216af2f2e3246c197562df75/contribution-evidence/2026-10-07/sftp-delete-after-explicit-confirm.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/7e282e5349195b17216af2f2e3246c197562df75/contribution-evidence/2026-10-07/sftp-delete-before-immediate.jpg"
+      ],
+      "preservation_caution": "Published review evidence refers to old names or commit SHAs. Preserve recoverable original objects and account for published links before any separately authorized rewrite or cleanup."
+    },
+    {
+      "name": "evidence/ui-sftp-file-actions-qa-20261006",
+      "ref": "refs/heads/evidence/ui-sftp-file-actions-qa-20261006",
+      "type": "branch",
+      "old_sha": "94983adb0bfb863d8f2cda765cd8dc1b6331e729",
+      "live_sha_at_verification": "94983adb0bfb863d8f2cda765cd8dc1b6331e729",
+      "prs": [
+        {
+          "number": 33,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/33",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-07T11:47:38Z",
+          "draft": false,
+          "head_ref": "fix/ui-sftp-file-actions",
+          "head_sha": "f3d025ad19d154e43b9250e25855228ba58f8e62",
+          "relationship": "evidence_ref_or_tip_explicitly_referenced_in_pr_body"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "evidence_only",
+      "basis": [
+        "All unique non-merge changed paths, relative to all audited non-evidence heads, are under contribution-evidence/.",
+        "Associated PR body explicitly contains this branch name or exact branch-tip SHA."
+      ],
+      "unique_commit_shas": [
+        "94983adb0bfb863d8f2cda765cd8dc1b6331e729",
+        "7e1fe383e5bb5f789e47bf56365152b0e3d5b976"
+      ],
+      "unique_changed_paths": [
+        "contribution-evidence/2026-10-06/sftp-after-context-open-preview.jpg",
+        "contribution-evidence/2026-10-06/sftp-after-directory-navigation.jpg",
+        "contribution-evidence/2026-10-06/sftp-after-file-icons.jpg",
+        "contribution-evidence/2026-10-06/sftp-after-hello-preview.jpg",
+        "contribution-evidence/2026-10-06/sftp-before-file-icons.jpg",
+        "contribution-evidence/2026-10-06/sftp-before-file-open-error.jpg"
+      ],
+      "pr_body_evidence_urls": [
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/94983adb0bfb863d8f2cda765cd8dc1b6331e729/contribution-evidence/2026-10-06/sftp-after-context-open-preview.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/94983adb0bfb863d8f2cda765cd8dc1b6331e729/contribution-evidence/2026-10-06/sftp-after-directory-navigation.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/94983adb0bfb863d8f2cda765cd8dc1b6331e729/contribution-evidence/2026-10-06/sftp-after-file-icons.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/94983adb0bfb863d8f2cda765cd8dc1b6331e729/contribution-evidence/2026-10-06/sftp-after-hello-preview.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/94983adb0bfb863d8f2cda765cd8dc1b6331e729/contribution-evidence/2026-10-06/sftp-before-file-icons.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/94983adb0bfb863d8f2cda765cd8dc1b6331e729/contribution-evidence/2026-10-06/sftp-before-file-open-error.jpg"
+      ],
+      "preservation_caution": "Published review evidence refers to old names or commit SHAs. Preserve recoverable original objects and account for published links before any separately authorized rewrite or cleanup."
+    },
+    {
+      "name": "evidence/ui-startup-language-qa-20261007",
+      "ref": "refs/heads/evidence/ui-startup-language-qa-20261007",
+      "type": "branch",
+      "old_sha": "a18e6d2c99db5abdfa7abdd5bae3b5e8b7e0b29e",
+      "live_sha_at_verification": "a18e6d2c99db5abdfa7abdd5bae3b5e8b7e0b29e",
+      "prs": [
+        {
+          "number": 77,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/77",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:48:30Z",
+          "draft": true,
+          "head_ref": "fix/ui-startup-language",
+          "head_sha": "556b3001c431ac9a82fda08d7766942ce4bd0f12",
+          "relationship": "evidence_ref_or_tip_explicitly_referenced_in_pr_body"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "evidence_only",
+      "basis": [
+        "All unique non-merge changed paths, relative to all audited non-evidence heads, are under contribution-evidence/.",
+        "Associated PR body explicitly contains this branch name or exact branch-tip SHA."
+      ],
+      "unique_commit_shas": [
+        "a18e6d2c99db5abdfa7abdd5bae3b5e8b7e0b29e"
+      ],
+      "unique_changed_paths": [
+        "contribution-evidence/2026-10-07/startup-language-after-first-window.jpg",
+        "contribution-evidence/2026-10-07/startup-language-after-settings.jpg",
+        "contribution-evidence/2026-10-07/startup-language-before-mismatch.jpg"
+      ],
+      "pr_body_evidence_urls": [
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/a18e6d2c99db5abdfa7abdd5bae3b5e8b7e0b29e/contribution-evidence/2026-10-07/startup-language-after-first-window.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/a18e6d2c99db5abdfa7abdd5bae3b5e8b7e0b29e/contribution-evidence/2026-10-07/startup-language-after-settings.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/a18e6d2c99db5abdfa7abdd5bae3b5e8b7e0b29e/contribution-evidence/2026-10-07/startup-language-before-mismatch.jpg"
+      ],
+      "preservation_caution": "Published review evidence refers to old names or commit SHAs. Preserve recoverable original objects and account for published links before any separately authorized rewrite or cleanup."
+    },
+    {
+      "name": "evidence/ui-tab-cycle-focus-qa-20261007",
+      "ref": "refs/heads/evidence/ui-tab-cycle-focus-qa-20261007",
+      "type": "branch",
+      "old_sha": "b507140529e421b1cc386bcbd0369d5e9c024722",
+      "live_sha_at_verification": "b507140529e421b1cc386bcbd0369d5e9c024722",
+      "prs": [
+        {
+          "number": 71,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/71",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:43:52Z",
+          "draft": true,
+          "head_ref": "fix/ui-tab-cycle-focus",
+          "head_sha": "b0f780696629ee2d62f4fbe5d95fcc015e3f2ec9",
+          "relationship": "evidence_ref_or_tip_explicitly_referenced_in_pr_body"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "evidence_only",
+      "basis": [
+        "All unique non-merge changed paths, relative to all audited non-evidence heads, are under contribution-evidence/.",
+        "Associated PR body explicitly contains this branch name or exact branch-tip SHA."
+      ],
+      "unique_commit_shas": [
+        "b507140529e421b1cc386bcbd0369d5e9c024722"
+      ],
+      "unique_changed_paths": [
+        "contribution-evidence/2026-10-07/tab-cycle-after-forward.jpg",
+        "contribution-evidence/2026-10-07/tab-cycle-after-reverse.jpg",
+        "contribution-evidence/2026-10-07/tab-cycle-before-input-missing.jpg"
+      ],
+      "pr_body_evidence_urls": [
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/b507140529e421b1cc386bcbd0369d5e9c024722/contribution-evidence/2026-10-07/tab-cycle-after-forward.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/b507140529e421b1cc386bcbd0369d5e9c024722/contribution-evidence/2026-10-07/tab-cycle-after-reverse.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/b507140529e421b1cc386bcbd0369d5e9c024722/contribution-evidence/2026-10-07/tab-cycle-before-input-missing.jpg"
+      ],
+      "preservation_caution": "Published review evidence refers to old names or commit SHAs. Preserve recoverable original objects and account for published links before any separately authorized rewrite or cleanup."
+    },
+    {
+      "name": "evidence/ui-terminal-close-focus-qa-20261006",
+      "ref": "refs/heads/evidence/ui-terminal-close-focus-qa-20261006",
+      "type": "branch",
+      "old_sha": "0ecd628363705079eac5acaf4a126b8c59652c90",
+      "live_sha_at_verification": "0ecd628363705079eac5acaf4a126b8c59652c90",
+      "prs": [
+        {
+          "number": 45,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/45",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T05:11:26Z",
+          "draft": false,
+          "head_ref": "fix/ui-terminal-close-focus",
+          "head_sha": "aeb1e81a76c23662e1efd2d0a7c868af6c2dbe39",
+          "relationship": "evidence_ref_or_tip_explicitly_referenced_in_pr_body"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "evidence_only",
+      "basis": [
+        "All unique non-merge changed paths, relative to all audited non-evidence heads, are under contribution-evidence/.",
+        "Associated PR body explicitly contains this branch name or exact branch-tip SHA."
+      ],
+      "unique_commit_shas": [
+        "0ecd628363705079eac5acaf4a126b8c59652c90"
+      ],
+      "unique_changed_paths": [
+        "contribution-evidence/2026-10-06/terminal-close-after-immediate-input.jpg",
+        "contribution-evidence/2026-10-06/terminal-close-after-repeat-input.jpg",
+        "contribution-evidence/2026-10-06/terminal-close-after-split.jpg",
+        "contribution-evidence/2026-10-06/terminal-close-before-click-recovery.jpg",
+        "contribution-evidence/2026-10-06/terminal-close-before-input-lost.jpg",
+        "contribution-evidence/2026-10-06/terminal-close-before-split.jpg"
+      ],
+      "pr_body_evidence_urls": [
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/0ecd628363705079eac5acaf4a126b8c59652c90/contribution-evidence/2026-10-06/terminal-close-after-immediate-input.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/0ecd628363705079eac5acaf4a126b8c59652c90/contribution-evidence/2026-10-06/terminal-close-after-repeat-input.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/0ecd628363705079eac5acaf4a126b8c59652c90/contribution-evidence/2026-10-06/terminal-close-after-split.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/0ecd628363705079eac5acaf4a126b8c59652c90/contribution-evidence/2026-10-06/terminal-close-before-click-recovery.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/0ecd628363705079eac5acaf4a126b8c59652c90/contribution-evidence/2026-10-06/terminal-close-before-input-lost.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/0ecd628363705079eac5acaf4a126b8c59652c90/contribution-evidence/2026-10-06/terminal-close-before-split.jpg"
+      ],
+      "preservation_caution": "Published review evidence refers to old names or commit SHAs. Preserve recoverable original objects and account for published links before any separately authorized rewrite or cleanup."
+    },
+    {
+      "name": "evidence/ui-terminal-entry-focus-qa-20261006",
+      "ref": "refs/heads/evidence/ui-terminal-entry-focus-qa-20261006",
+      "type": "branch",
+      "old_sha": "be3aaea75a9ac8267f90d18e5caed8dea1601a73",
+      "live_sha_at_verification": "be3aaea75a9ac8267f90d18e5caed8dea1601a73",
+      "prs": [
+        {
+          "number": 57,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/57",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:40:17Z",
+          "draft": true,
+          "head_ref": "fix/ui-terminal-entry-focus",
+          "head_sha": "af7880e2e5912423bd5b7e3f4adbd423222bada9",
+          "relationship": "evidence_ref_or_tip_explicitly_referenced_in_pr_body"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "evidence_only",
+      "basis": [
+        "All unique non-merge changed paths, relative to all audited non-evidence heads, are under contribution-evidence/.",
+        "Associated PR body explicitly contains this branch name or exact branch-tip SHA."
+      ],
+      "unique_commit_shas": [
+        "be3aaea75a9ac8267f90d18e5caed8dea1601a73"
+      ],
+      "unique_changed_paths": [
+        "contribution-evidence/2026-10-06/terminal-entry-after-duplicate.jpg",
+        "contribution-evidence/2026-10-06/terminal-entry-after-palette-close.jpg",
+        "contribution-evidence/2026-10-06/terminal-entry-after-quick-cancel.jpg",
+        "contribution-evidence/2026-10-06/terminal-entry-after-quick-connect.jpg",
+        "contribution-evidence/2026-10-06/terminal-entry-after-quick-reuse.jpg",
+        "contribution-evidence/2026-10-06/terminal-entry-after-tab-activation.jpg",
+        "contribution-evidence/2026-10-06/terminal-entry-after-tab-x.jpg",
+        "contribution-evidence/2026-10-06/terminal-entry-before-palette-close-input-lost.jpg",
+        "contribution-evidence/2026-10-06/terminal-entry-before-tab-click-input-lost.jpg",
+        "contribution-evidence/2026-10-06/terminal-entry-before-tab-x-blank.jpg"
+      ],
+      "pr_body_evidence_urls": [
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/bcd1cdb058e4090b02638e8e601fe4cd726c3079/contribution-evidence/2026-10-07/focus-insert/recovered-pure-focus-01-cold-ctrl-k.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/bcd1cdb058e4090b02638e8e601fe4cd726c3079/contribution-evidence/2026-10-07/focus-insert/recovered-pure-focus-02-empty-palette.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/bcd1cdb058e4090b02638e8e601fe4cd726c3079/contribution-evidence/2026-10-07/focus-insert/recovered-pure-focus-03-input-not-stolen.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/bcd1cdb058e4090b02638e8e601fe4cd726c3079/contribution-evidence/2026-10-07/focus-insert/recovered-pure-focus-04-settings-return.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/bcd1cdb058e4090b02638e8e601fe4cd726c3079/contribution-evidence/2026-10-07/focus-insert/recovered-pure-focus-05-return-palette.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/bcd1cdb058e4090b02638e8e601fe4cd726c3079/contribution-evidence/2026-10-07/focus-insert/recovered-pure-focus-06-last-tab-reopen.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/be3aaea75a9ac8267f90d18e5caed8dea1601a73/contribution-evidence/2026-10-06/terminal-entry-after-duplicate.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/be3aaea75a9ac8267f90d18e5caed8dea1601a73/contribution-evidence/2026-10-06/terminal-entry-after-palette-close.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/be3aaea75a9ac8267f90d18e5caed8dea1601a73/contribution-evidence/2026-10-06/terminal-entry-after-quick-cancel.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/be3aaea75a9ac8267f90d18e5caed8dea1601a73/contribution-evidence/2026-10-06/terminal-entry-after-quick-connect.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/be3aaea75a9ac8267f90d18e5caed8dea1601a73/contribution-evidence/2026-10-06/terminal-entry-after-quick-reuse.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/be3aaea75a9ac8267f90d18e5caed8dea1601a73/contribution-evidence/2026-10-06/terminal-entry-after-tab-activation.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/be3aaea75a9ac8267f90d18e5caed8dea1601a73/contribution-evidence/2026-10-06/terminal-entry-after-tab-x.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/be3aaea75a9ac8267f90d18e5caed8dea1601a73/contribution-evidence/2026-10-06/terminal-entry-before-palette-close-input-lost.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/be3aaea75a9ac8267f90d18e5caed8dea1601a73/contribution-evidence/2026-10-06/terminal-entry-before-tab-click-input-lost.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/be3aaea75a9ac8267f90d18e5caed8dea1601a73/contribution-evidence/2026-10-06/terminal-entry-before-tab-x-blank.jpg"
+      ],
+      "preservation_caution": "Published review evidence refers to old names or commit SHAs. Preserve recoverable original objects and account for published links before any separately authorized rewrite or cleanup."
+    },
+    {
+      "name": "evidence/ui-toolkit-071-qa-20261007",
+      "ref": "refs/heads/evidence/ui-toolkit-071-qa-20261007",
+      "type": "branch",
+      "old_sha": "4f7aabb7c3a6d39882a64926939491a49312021d",
+      "live_sha_at_verification": "4f7aabb7c3a6d39882a64926939491a49312021d",
+      "prs": [
+        {
+          "number": 79,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/79",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:57:04Z",
+          "draft": true,
+          "head_ref": "chore/gpui-kit-071",
+          "head_sha": "ab21b8884aabbab9f0472d7091ca22764254bb3b",
+          "relationship": "evidence_ref_or_tip_explicitly_referenced_in_pr_body"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "evidence_only",
+      "basis": [
+        "All unique non-merge changed paths, relative to all audited non-evidence heads, are under contribution-evidence/.",
+        "Associated PR body explicitly contains this branch name or exact branch-tip SHA."
+      ],
+      "unique_commit_shas": [
+        "4f7aabb7c3a6d39882a64926939491a49312021d"
+      ],
+      "unique_changed_paths": [],
+      "pr_body_evidence_urls": [],
+      "preservation_caution": "Published review evidence refers to old names or commit SHAs. Preserve recoverable original objects and account for published links before any separately authorized rewrite or cleanup."
+    },
+    {
+      "name": "evidence/ui-transfer-progress-qa-20261006",
+      "ref": "refs/heads/evidence/ui-transfer-progress-qa-20261006",
+      "type": "branch",
+      "old_sha": "5ca1c9cb2a9097ae7e9f5c93a228e44680886879",
+      "live_sha_at_verification": "5ca1c9cb2a9097ae7e9f5c93a228e44680886879",
+      "prs": [
+        {
+          "number": 47,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/47",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T05:11:54Z",
+          "draft": false,
+          "head_ref": "fix/ui-transfer-progress-fairness",
+          "head_sha": "c09056c1bedb6bfac804b94da9f6bc3ce76f2d58",
+          "relationship": "evidence_ref_or_tip_explicitly_referenced_in_pr_body"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "evidence_only",
+      "basis": [
+        "All unique non-merge changed paths, relative to all audited non-evidence heads, are under contribution-evidence/.",
+        "Associated PR body explicitly contains this branch name or exact branch-tip SHA."
+      ],
+      "unique_commit_shas": [
+        "5ca1c9cb2a9097ae7e9f5c93a228e44680886879"
+      ],
+      "unique_changed_paths": [
+        "contribution-evidence/2026-10-06/transfer-progress-after-cancelled.jpg",
+        "contribution-evidence/2026-10-06/transfer-progress-after-running.jpg",
+        "contribution-evidence/2026-10-06/transfer-progress-after-session-alive.jpg",
+        "contribution-evidence/2026-10-06/transfer-progress-before-completed.jpg",
+        "contribution-evidence/2026-10-06/transfer-progress-before-empty.jpg"
+      ],
+      "pr_body_evidence_urls": [
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/5ca1c9cb2a9097ae7e9f5c93a228e44680886879/contribution-evidence/2026-10-06/transfer-progress-after-cancelled.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/5ca1c9cb2a9097ae7e9f5c93a228e44680886879/contribution-evidence/2026-10-06/transfer-progress-after-running.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/5ca1c9cb2a9097ae7e9f5c93a228e44680886879/contribution-evidence/2026-10-06/transfer-progress-after-session-alive.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/5ca1c9cb2a9097ae7e9f5c93a228e44680886879/contribution-evidence/2026-10-06/transfer-progress-before-completed.jpg",
+        "https://raw.githubusercontent.com/xue-ding-e/XenTerm/5ca1c9cb2a9097ae7e9f5c93a228e44680886879/contribution-evidence/2026-10-06/transfer-progress-before-empty.jpg"
+      ],
+      "preservation_caution": "Published review evidence refers to old names or commit SHAs. Preserve recoverable original objects and account for published links before any separately authorized rewrite or cleanup."
+    },
+    {
+      "name": "feat/cli-portable-export",
+      "ref": "refs/heads/feat/cli-portable-export",
+      "type": "branch",
+      "old_sha": "8070ea7af20f98a0d69201546dcb66e8795ed789",
+      "live_sha_at_verification": "8070ea7af20f98a0d69201546dcb66e8795ed789",
+      "prs": [
+        {
+          "number": 13,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/13",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:34:41Z",
+          "draft": true,
+          "head_ref": "feat/cli-portable-export",
+          "head_sha": "8070ea7af20f98a0d69201546dcb66e8795ed789",
+          "relationship": "direct_head_branch"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "merged_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly."
+      ]
+    },
+    {
+      "name": "feat/cli-stable-id-migration",
+      "ref": "refs/heads/feat/cli-stable-id-migration",
+      "type": "branch",
+      "old_sha": "9741bdb7179cb0fd1fd35ce350dae8dea8ee9e2e",
+      "live_sha_at_verification": "9741bdb7179cb0fd1fd35ce350dae8dea8ee9e2e",
+      "prs": [
+        {
+          "number": 86,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/86",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T09:07:46Z",
+          "draft": true,
+          "head_ref": "feat/cli-stable-id-migration",
+          "head_sha": "15cddba606ce2c184003a84048e47f73bb7bac3d",
+          "relationship": "direct_head_branch"
+        },
+        {
+          "number": 92,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/92",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T11:27:35Z",
+          "draft": false,
+          "head_ref": "test/portable-export-marker-regression-20261011",
+          "head_sha": "432a161ec868deb0dfa1564dc31caa4c0c0caafd",
+          "relationship": "post_merge_fix_regression_coverage"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "merged_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly.",
+        "Current branch tip differs from PR #86 recorded merge head. The post-merge marker fix is semantically covered by upstream c54c9d0ab3f16a39326c1c119061e6eb54fb76a9 and merged PR #92. Remaining differences are a marker-name constant refactor and formatting."
+      ],
+      "post_merge_residual": {
+        "sha": "9741bdb7179cb0fd1fd35ce350dae8dea8ee9e2e",
+        "semantic_fix_upstream_sha": "c54c9d0ab3f16a39326c1c119061e6eb54fb76a9",
+        "new_product_feature": false
+      }
+    },
+    {
+      "name": "feat/gui-secret-reveal",
+      "ref": "refs/heads/feat/gui-secret-reveal",
+      "type": "branch",
+      "old_sha": "9af8ad34fd2a43b11236c0f22bd352379b18a14c",
+      "live_sha_at_verification": "9af8ad34fd2a43b11236c0f22bd352379b18a14c",
+      "prs": [
+        {
+          "number": 11,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/11",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-05T08:47:22Z",
+          "draft": false,
+          "head_ref": "feat/gui-secret-reveal",
+          "head_sha": "9af8ad34fd2a43b11236c0f22bd352379b18a14c",
+          "relationship": "direct_head_branch"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "merged_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly."
+      ]
+    },
+    {
+      "name": "feat/isolated-wallpaper-editor",
+      "ref": "refs/heads/feat/isolated-wallpaper-editor",
+      "type": "branch",
+      "old_sha": "65960aa046df941e21ac7ebe7bab31e4e2d031e0",
+      "live_sha_at_verification": "65960aa046df941e21ac7ebe7bab31e4e2d031e0",
+      "prs": [
+        {
+          "number": 95,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/95",
+          "state": "open",
+          "merged": false,
+          "merged_at": null,
+          "draft": true,
+          "head_ref": "feat/isolated-wallpaper-editor",
+          "head_sha": "65960aa046df941e21ac7ebe7bab31e4e2d031e0",
+          "relationship": "direct_head_branch"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "open_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly."
+      ]
+    },
+    {
+      "name": "feat/ssh-automation-workflows",
+      "ref": "refs/heads/feat/ssh-automation-workflows",
+      "type": "branch",
+      "old_sha": "62a30f6c2346b9e23747a219bc6fd06fa9f0bcfb",
+      "live_sha_at_verification": "62a30f6c2346b9e23747a219bc6fd06fa9f0bcfb",
+      "prs": [
+        {
+          "number": 7,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/7",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-02T13:12:36Z",
+          "draft": false,
+          "head_ref": "feat/ssh-automation-workflows",
+          "head_sha": "62a30f6c2346b9e23747a219bc6fd06fa9f0bcfb",
+          "relationship": "direct_head_branch"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "merged_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly."
+      ]
+    },
+    {
+      "name": "feat/ui-cursor-color-picker",
+      "ref": "refs/heads/feat/ui-cursor-color-picker",
+      "type": "branch",
+      "old_sha": "310cb055fcba694dc481932bc4ebd9aa4a4b7971",
+      "live_sha_at_verification": "310cb055fcba694dc481932bc4ebd9aa4a4b7971",
+      "prs": [
+        {
+          "number": 63,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/63",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:41:55Z",
+          "draft": true,
+          "head_ref": "feat/ui-cursor-color-picker",
+          "head_sha": "310cb055fcba694dc481932bc4ebd9aa4a4b7971",
+          "relationship": "direct_head_branch"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "merged_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly."
+      ]
+    },
+    {
+      "name": "feat/xenterm-user-workflows",
+      "ref": "refs/heads/feat/xenterm-user-workflows",
+      "type": "branch",
+      "old_sha": "8139182360f4f90c30e97790a8e1ca999d07cee4",
+      "live_sha_at_verification": "8139182360f4f90c30e97790a8e1ca999d07cee4",
+      "prs": [
+        {
+          "number": 86,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/86",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T09:07:46Z",
+          "draft": true,
+          "head_ref": "feat/cli-stable-id-migration",
+          "head_sha": "15cddba606ce2c184003a84048e47f73bb7bac3d",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 84,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/84",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:58:08Z",
+          "draft": true,
+          "head_ref": "fix/ui-insert-fallback",
+          "head_sha": "e385ab463b5f73d9e785cae5bbb7daf000128e55",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 81,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/81",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:57:49Z",
+          "draft": true,
+          "head_ref": "fix/ui-quick-group-count",
+          "head_sha": "61288971169800466775045590ea31c960fee710",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 79,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/79",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:57:04Z",
+          "draft": true,
+          "head_ref": "chore/gpui-kit-071",
+          "head_sha": "ab21b8884aabbab9f0472d7091ca22764254bb3b",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 77,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/77",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:48:30Z",
+          "draft": true,
+          "head_ref": "fix/ui-startup-language",
+          "head_sha": "556b3001c431ac9a82fda08d7766942ce4bd0f12",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 75,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/75",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:48:30Z",
+          "draft": true,
+          "head_ref": "fix/ui-sftp-column-language",
+          "head_sha": "180b90bcc3af8868f99889c4af28d8dd6b0d2d73",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 73,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/73",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:47:28Z",
+          "draft": true,
+          "head_ref": "fix/ui-pane-cycle-focus",
+          "head_sha": "5cafc58ccf74207ceeb6cbde2cd20f2c54976818",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 71,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/71",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:43:52Z",
+          "draft": true,
+          "head_ref": "fix/ui-tab-cycle-focus",
+          "head_sha": "b0f780696629ee2d62f4fbe5d95fcc015e3f2ec9",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 69,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/69",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:43:14Z",
+          "draft": true,
+          "head_ref": "fix/ui-sftp-delete-confirmation",
+          "head_sha": "8c7f05b0553bc80551d05ba91ee069c43b0b1640",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 67,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/67",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:42:31Z",
+          "draft": true,
+          "head_ref": "fix/ui-quick-row-actions",
+          "head_sha": "11a3f5e46a5fe8b08b5ff47f0a8a5569a037f112",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 65,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/65",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:42:14Z",
+          "draft": true,
+          "head_ref": "fix/ui-chevron-signed-rotation",
+          "head_sha": "b31b0fcd8338ab8df5213feab808164ecbfe86e0",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 63,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/63",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:41:55Z",
+          "draft": true,
+          "head_ref": "feat/ui-cursor-color-picker",
+          "head_sha": "310cb055fcba694dc481932bc4ebd9aa4a4b7971",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 61,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/61",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:41:20Z",
+          "draft": true,
+          "head_ref": "fix/ui-resource-sample-state",
+          "head_sha": "2610ad8463e361c630ea245ef9f5452ceede4124",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 59,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/59",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:40:53Z",
+          "draft": true,
+          "head_ref": "fix/ui-settings-numeric-drafts",
+          "head_sha": "16c6ba5f2a0d67628b39c4dca53fcb312f184f07",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 57,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/57",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:40:17Z",
+          "draft": true,
+          "head_ref": "fix/ui-terminal-entry-focus",
+          "head_sha": "af7880e2e5912423bd5b7e3f4adbd423222bada9",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 55,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/55",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:39:11Z",
+          "draft": true,
+          "head_ref": "fix/ui-rule-dialog-save-close",
+          "head_sha": "f14aed54469853004e2aa4e3b13daf36047c1da3",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 53,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/53",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:38:25Z",
+          "draft": true,
+          "head_ref": "fix/ui-quick-popover-dismiss",
+          "head_sha": "d206bce4a6966e3781830f8015992edcb21b08ba",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 51,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/51",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:37:40Z",
+          "draft": false,
+          "head_ref": "fix/ui-group-inline-focus",
+          "head_sha": "2b8672c2e514b6b4066ccf8e36e6c43a65e081e1",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 49,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/49",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:37:08Z",
+          "draft": false,
+          "head_ref": "fix/ui-directory-copy-path",
+          "head_sha": "4c0d801e807998df064b648e6e61134f628f1cba",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 47,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/47",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T05:11:54Z",
+          "draft": false,
+          "head_ref": "fix/ui-transfer-progress-fairness",
+          "head_sha": "c09056c1bedb6bfac804b94da9f6bc3ce76f2d58",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 45,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/45",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T05:11:26Z",
+          "draft": false,
+          "head_ref": "fix/ui-terminal-close-focus",
+          "head_sha": "aeb1e81a76c23662e1efd2d0a7c868af6c2dbe39",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 43,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/43",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T05:11:02Z",
+          "draft": false,
+          "head_ref": "fix/ui-file-dialog-dismissal",
+          "head_sha": "fe977c30271add8a9eb7cdb8eb49e168822b27e5",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 41,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/41",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T05:10:32Z",
+          "draft": false,
+          "head_ref": "fix/ui-file-viewer-layout-readonly",
+          "head_sha": "dbd22b601434734022642b25a366a7d09df5fab8",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 39,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/39",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T05:10:12Z",
+          "draft": false,
+          "head_ref": "fix/ui-overlay-height-budget",
+          "head_sha": "01ff0d7a73707416de7f459f7dc17c2f2e71f106",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 37,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/37",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T05:09:44Z",
+          "draft": false,
+          "head_ref": "fix/ui-findbar-contrast",
+          "head_sha": "1192ad12d4910f725fd534ee80ca7deddc423f92",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 35,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/35",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-07T11:48:24Z",
+          "draft": false,
+          "head_ref": "fix/ui-session-row-context-menu",
+          "head_sha": "8fffb510bca6c2eef1027bd6fa283d2211045777",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 33,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/33",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-07T11:47:38Z",
+          "draft": false,
+          "head_ref": "fix/ui-sftp-file-actions",
+          "head_sha": "f3d025ad19d154e43b9250e25855228ba58f8e62",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 31,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/31",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-07T11:46:45Z",
+          "draft": false,
+          "head_ref": "fix/ui-command-palette-scroll",
+          "head_sha": "5101978909aae3ecac390d7d099d2ee87fd26de4",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 29,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/29",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-07T11:46:03Z",
+          "draft": false,
+          "head_ref": "fix/ui-session-reconnect",
+          "head_sha": "69841e61cc37268703760a422b12d464a15a5dcb",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 27,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/27",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-07T11:45:37Z",
+          "draft": false,
+          "head_ref": "fix/ui-session-list-refresh",
+          "head_sha": "2ae55493628bc12fb1474ae1ff0c0cfbbfbdb0f6",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 25,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/25",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-07T11:45:12Z",
+          "draft": false,
+          "head_ref": "fix/ui-session-editor-validation",
+          "head_sha": "c4753ef1b01fa545277ce7c29e9a118daca4b817",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 23,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/23",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-07T11:08:48Z",
+          "draft": false,
+          "head_ref": "fix/ui-settings-input-state",
+          "head_sha": "d21c7ccf9ca148fb9352d6eea014f2f9862728cd",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 21,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/21",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-07T11:07:09Z",
+          "draft": false,
+          "head_ref": "fix/ui-command-palette-borrow",
+          "head_sha": "036305d5a6a61987745370af461ee72c37cf1954",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 19,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/19",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-07T11:06:35Z",
+          "draft": false,
+          "head_ref": "fix/ui-bastion-layout",
+          "head_sha": "d9925157167105d28636535fa4d75ae1cc67b854",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 17,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/17",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:34:41Z",
+          "draft": true,
+          "head_ref": "fix/ssh-command-stack",
+          "head_sha": "26026ed8296240a07d27f58b39d592cb91412e52",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 15,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/15",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:35:44Z",
+          "draft": true,
+          "head_ref": "fix/cli-exec-status-and-options",
+          "head_sha": "0ff2f530b3647a8e511c894ab522c002fd3164b0",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 13,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/13",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:34:41Z",
+          "draft": true,
+          "head_ref": "feat/cli-portable-export",
+          "head_sha": "8070ea7af20f98a0d69201546dcb66e8795ed789",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 11,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/11",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-05T08:47:22Z",
+          "draft": false,
+          "head_ref": "feat/gui-secret-reveal",
+          "head_sha": "9af8ad34fd2a43b11236c0f22bd352379b18a14c",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 8,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/8",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-03T04:10:31Z",
+          "draft": false,
+          "head_ref": "fix/profile-write-conflicts-upstream",
+          "head_sha": "af1aefa9b227979418670f8bacca5657470a5378",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 7,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/7",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-02T13:12:36Z",
+          "draft": false,
+          "head_ref": "feat/ssh-automation-workflows",
+          "head_sha": "62a30f6c2346b9e23747a219bc6fd06fa9f0bcfb",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 6,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/6",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-02T12:59:58Z",
+          "draft": false,
+          "head_ref": "fix/sftp-dock-toggle",
+          "head_sha": "33dec491f6c752624f0421faced446f664523c81",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 2,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/2",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-02T12:52:24Z",
+          "draft": false,
+          "head_ref": "fix/linux-install-prefix",
+          "head_sha": "2a3cd3af25a3783749b60185a09af8aa73e2ca91",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "aggregate_integration",
+      "basis": [
+        "These two branches have identical SHA 8139182360f4f90c30e97790a8e1ca999d07cee4.",
+        "Direct tree and commit comparison with upstream d641af3b924757fc26806ffbb68e82217033c41f finds no additional unsubmitted product feature. Remaining unique material is integration/test wiring, one migration transport regression, fork workflow/history context, and older upstream dependency versions."
+      ],
+      "aggregate_peer": "sync/user-latest-20261008"
+    },
+    {
+      "name": "fix/cli-exec-status-and-options",
+      "ref": "refs/heads/fix/cli-exec-status-and-options",
+      "type": "branch",
+      "old_sha": "0ff2f530b3647a8e511c894ab522c002fd3164b0",
+      "live_sha_at_verification": "0ff2f530b3647a8e511c894ab522c002fd3164b0",
+      "prs": [
+        {
+          "number": 15,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/15",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:35:44Z",
+          "draft": true,
+          "head_ref": "fix/cli-exec-status-and-options",
+          "head_sha": "0ff2f530b3647a8e511c894ab522c002fd3164b0",
+          "relationship": "direct_head_branch"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "merged_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly."
+      ]
+    },
+    {
+      "name": "fix/linux-install-prefix",
+      "ref": "refs/heads/fix/linux-install-prefix",
+      "type": "branch",
+      "old_sha": "2a3cd3af25a3783749b60185a09af8aa73e2ca91",
+      "live_sha_at_verification": "2a3cd3af25a3783749b60185a09af8aa73e2ca91",
+      "prs": [
+        {
+          "number": 2,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/2",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-02T12:52:24Z",
+          "draft": false,
+          "head_ref": "fix/linux-install-prefix",
+          "head_sha": "2a3cd3af25a3783749b60185a09af8aa73e2ca91",
+          "relationship": "direct_head_branch"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "merged_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly."
+      ]
+    },
+    {
+      "name": "fix/portable-export-marker-warning-20261011",
+      "ref": "refs/heads/fix/portable-export-marker-warning-20261011",
+      "type": "branch",
+      "old_sha": "7ab9c04cda49fd24843a7a4d884e71b3a6a3f522",
+      "live_sha_at_verification": "7ab9c04cda49fd24843a7a4d884e71b3a6a3f522",
+      "prs": [
+        {
+          "number": 92,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/92",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T11:27:35Z",
+          "draft": false,
+          "head_ref": "test/portable-export-marker-regression-20261011",
+          "head_sha": "432a161ec868deb0dfa1564dc31caa4c0c0caafd",
+          "relationship": "equivalent_regression_coverage"
+        },
+        {
+          "number": 86,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/86",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T09:07:46Z",
+          "draft": true,
+          "head_ref": "feat/cli-stable-id-migration",
+          "head_sha": "15cddba606ce2c184003a84048e47f73bb7bac3d",
+          "relationship": "original_feature_followup"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "semantic_duplicate_fix",
+      "basis": [
+        "Marker-warning behavior was independently fixed by upstream c54c9d0ab3f16a39326c1c119061e6eb54fb76a9. Regression assertions are present in merged PR #92. Remaining branch differences are shared marker constant refactoring and formatting."
+      ],
+      "semantic_fix_upstream_sha": "c54c9d0ab3f16a39326c1c119061e6eb54fb76a9"
+    },
+    {
+      "name": "fix/profile-write-conflicts",
+      "ref": "refs/heads/fix/profile-write-conflicts",
+      "type": "branch",
+      "old_sha": "594faaac6938ad885ebfb3b3cc1dbd54e6c95063",
+      "live_sha_at_verification": "594faaac6938ad885ebfb3b3cc1dbd54e6c95063",
+      "prs": [
+        {
+          "number": 8,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/8",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-03T04:10:31Z",
+          "draft": false,
+          "head_ref": "fix/profile-write-conflicts-upstream",
+          "head_sha": "af1aefa9b227979418670f8bacca5657470a5378",
+          "relationship": "identical_source_implementation"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "duplicate_implementation",
+      "basis": [
+        "All src paths are byte-for-byte identical to fix/profile-write-conflicts-upstream, merged in PR #8. Only docs/FORK.md and the installer-check workflow differ between those branch trees."
+      ]
+    },
+    {
+      "name": "fix/profile-write-conflicts-upstream",
+      "ref": "refs/heads/fix/profile-write-conflicts-upstream",
+      "type": "branch",
+      "old_sha": "af1aefa9b227979418670f8bacca5657470a5378",
+      "live_sha_at_verification": "af1aefa9b227979418670f8bacca5657470a5378",
+      "prs": [
+        {
+          "number": 8,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/8",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-03T04:10:31Z",
+          "draft": false,
+          "head_ref": "fix/profile-write-conflicts-upstream",
+          "head_sha": "af1aefa9b227979418670f8bacca5657470a5378",
+          "relationship": "direct_head_branch"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "merged_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly."
+      ]
+    },
+    {
+      "name": "fix/sftp-dock-toggle",
+      "ref": "refs/heads/fix/sftp-dock-toggle",
+      "type": "branch",
+      "old_sha": "33dec491f6c752624f0421faced446f664523c81",
+      "live_sha_at_verification": "33dec491f6c752624f0421faced446f664523c81",
+      "prs": [
+        {
+          "number": 6,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/6",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-02T12:59:58Z",
+          "draft": false,
+          "head_ref": "fix/sftp-dock-toggle",
+          "head_sha": "33dec491f6c752624f0421faced446f664523c81",
+          "relationship": "direct_head_branch"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "merged_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly."
+      ]
+    },
+    {
+      "name": "fix/ssh-command-stack",
+      "ref": "refs/heads/fix/ssh-command-stack",
+      "type": "branch",
+      "old_sha": "26026ed8296240a07d27f58b39d592cb91412e52",
+      "live_sha_at_verification": "26026ed8296240a07d27f58b39d592cb91412e52",
+      "prs": [
+        {
+          "number": 17,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/17",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:34:41Z",
+          "draft": true,
+          "head_ref": "fix/ssh-command-stack",
+          "head_sha": "26026ed8296240a07d27f58b39d592cb91412e52",
+          "relationship": "direct_head_branch"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "merged_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly."
+      ]
+    },
+    {
+      "name": "fix/ui-bastion-layout",
+      "ref": "refs/heads/fix/ui-bastion-layout",
+      "type": "branch",
+      "old_sha": "d9925157167105d28636535fa4d75ae1cc67b854",
+      "live_sha_at_verification": "d9925157167105d28636535fa4d75ae1cc67b854",
+      "prs": [
+        {
+          "number": 19,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/19",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-07T11:06:35Z",
+          "draft": false,
+          "head_ref": "fix/ui-bastion-layout",
+          "head_sha": "d9925157167105d28636535fa4d75ae1cc67b854",
+          "relationship": "direct_head_branch"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "merged_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly."
+      ]
+    },
+    {
+      "name": "fix/ui-chevron-signed-rotation",
+      "ref": "refs/heads/fix/ui-chevron-signed-rotation",
+      "type": "branch",
+      "old_sha": "b31b0fcd8338ab8df5213feab808164ecbfe86e0",
+      "live_sha_at_verification": "b31b0fcd8338ab8df5213feab808164ecbfe86e0",
+      "prs": [
+        {
+          "number": 65,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/65",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:42:14Z",
+          "draft": true,
+          "head_ref": "fix/ui-chevron-signed-rotation",
+          "head_sha": "b31b0fcd8338ab8df5213feab808164ecbfe86e0",
+          "relationship": "direct_head_branch"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "merged_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly."
+      ]
+    },
+    {
+      "name": "fix/ui-command-palette-borrow",
+      "ref": "refs/heads/fix/ui-command-palette-borrow",
+      "type": "branch",
+      "old_sha": "036305d5a6a61987745370af461ee72c37cf1954",
+      "live_sha_at_verification": "036305d5a6a61987745370af461ee72c37cf1954",
+      "prs": [
+        {
+          "number": 21,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/21",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-07T11:07:09Z",
+          "draft": false,
+          "head_ref": "fix/ui-command-palette-borrow",
+          "head_sha": "036305d5a6a61987745370af461ee72c37cf1954",
+          "relationship": "direct_head_branch"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "merged_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly."
+      ]
+    },
+    {
+      "name": "fix/ui-command-palette-scroll",
+      "ref": "refs/heads/fix/ui-command-palette-scroll",
+      "type": "branch",
+      "old_sha": "5101978909aae3ecac390d7d099d2ee87fd26de4",
+      "live_sha_at_verification": "5101978909aae3ecac390d7d099d2ee87fd26de4",
+      "prs": [
+        {
+          "number": 31,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/31",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-07T11:46:45Z",
+          "draft": false,
+          "head_ref": "fix/ui-command-palette-scroll",
+          "head_sha": "5101978909aae3ecac390d7d099d2ee87fd26de4",
+          "relationship": "direct_head_branch"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "merged_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly."
+      ]
+    },
+    {
+      "name": "fix/ui-directory-copy-path",
+      "ref": "refs/heads/fix/ui-directory-copy-path",
+      "type": "branch",
+      "old_sha": "4c0d801e807998df064b648e6e61134f628f1cba",
+      "live_sha_at_verification": "4c0d801e807998df064b648e6e61134f628f1cba",
+      "prs": [
+        {
+          "number": 49,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/49",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:37:08Z",
+          "draft": false,
+          "head_ref": "fix/ui-directory-copy-path",
+          "head_sha": "4c0d801e807998df064b648e6e61134f628f1cba",
+          "relationship": "direct_head_branch"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "merged_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly."
+      ]
+    },
+    {
+      "name": "fix/ui-file-dialog-dismissal",
+      "ref": "refs/heads/fix/ui-file-dialog-dismissal",
+      "type": "branch",
+      "old_sha": "fe977c30271add8a9eb7cdb8eb49e168822b27e5",
+      "live_sha_at_verification": "fe977c30271add8a9eb7cdb8eb49e168822b27e5",
+      "prs": [
+        {
+          "number": 43,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/43",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T05:11:02Z",
+          "draft": false,
+          "head_ref": "fix/ui-file-dialog-dismissal",
+          "head_sha": "fe977c30271add8a9eb7cdb8eb49e168822b27e5",
+          "relationship": "direct_head_branch"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "merged_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly."
+      ]
+    },
+    {
+      "name": "fix/ui-file-viewer-layout-readonly",
+      "ref": "refs/heads/fix/ui-file-viewer-layout-readonly",
+      "type": "branch",
+      "old_sha": "dbd22b601434734022642b25a366a7d09df5fab8",
+      "live_sha_at_verification": "dbd22b601434734022642b25a366a7d09df5fab8",
+      "prs": [
+        {
+          "number": 41,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/41",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T05:10:32Z",
+          "draft": false,
+          "head_ref": "fix/ui-file-viewer-layout-readonly",
+          "head_sha": "dbd22b601434734022642b25a366a7d09df5fab8",
+          "relationship": "direct_head_branch"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "merged_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly."
+      ]
+    },
+    {
+      "name": "fix/ui-findbar-contrast",
+      "ref": "refs/heads/fix/ui-findbar-contrast",
+      "type": "branch",
+      "old_sha": "1192ad12d4910f725fd534ee80ca7deddc423f92",
+      "live_sha_at_verification": "1192ad12d4910f725fd534ee80ca7deddc423f92",
+      "prs": [
+        {
+          "number": 37,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/37",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T05:09:44Z",
+          "draft": false,
+          "head_ref": "fix/ui-findbar-contrast",
+          "head_sha": "1192ad12d4910f725fd534ee80ca7deddc423f92",
+          "relationship": "direct_head_branch"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "merged_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly."
+      ]
+    },
+    {
+      "name": "fix/ui-group-inline-focus",
+      "ref": "refs/heads/fix/ui-group-inline-focus",
+      "type": "branch",
+      "old_sha": "2b8672c2e514b6b4066ccf8e36e6c43a65e081e1",
+      "live_sha_at_verification": "2b8672c2e514b6b4066ccf8e36e6c43a65e081e1",
+      "prs": [
+        {
+          "number": 51,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/51",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:37:40Z",
+          "draft": false,
+          "head_ref": "fix/ui-group-inline-focus",
+          "head_sha": "2b8672c2e514b6b4066ccf8e36e6c43a65e081e1",
+          "relationship": "direct_head_branch"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "merged_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly."
+      ]
+    },
+    {
+      "name": "fix/ui-insert-fallback",
+      "ref": "refs/heads/fix/ui-insert-fallback",
+      "type": "branch",
+      "old_sha": "e385ab463b5f73d9e785cae5bbb7daf000128e55",
+      "live_sha_at_verification": "e385ab463b5f73d9e785cae5bbb7daf000128e55",
+      "prs": [
+        {
+          "number": 84,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/84",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:58:08Z",
+          "draft": true,
+          "head_ref": "fix/ui-insert-fallback",
+          "head_sha": "e385ab463b5f73d9e785cae5bbb7daf000128e55",
+          "relationship": "direct_head_branch"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "merged_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly."
+      ]
+    },
+    {
+      "name": "fix/ui-overlay-height-budget",
+      "ref": "refs/heads/fix/ui-overlay-height-budget",
+      "type": "branch",
+      "old_sha": "01ff0d7a73707416de7f459f7dc17c2f2e71f106",
+      "live_sha_at_verification": "01ff0d7a73707416de7f459f7dc17c2f2e71f106",
+      "prs": [
+        {
+          "number": 39,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/39",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T05:10:12Z",
+          "draft": false,
+          "head_ref": "fix/ui-overlay-height-budget",
+          "head_sha": "01ff0d7a73707416de7f459f7dc17c2f2e71f106",
+          "relationship": "direct_head_branch"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "merged_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly."
+      ]
+    },
+    {
+      "name": "fix/ui-pane-cycle-focus",
+      "ref": "refs/heads/fix/ui-pane-cycle-focus",
+      "type": "branch",
+      "old_sha": "5cafc58ccf74207ceeb6cbde2cd20f2c54976818",
+      "live_sha_at_verification": "5cafc58ccf74207ceeb6cbde2cd20f2c54976818",
+      "prs": [
+        {
+          "number": 73,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/73",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:47:28Z",
+          "draft": true,
+          "head_ref": "fix/ui-pane-cycle-focus",
+          "head_sha": "5cafc58ccf74207ceeb6cbde2cd20f2c54976818",
+          "relationship": "direct_head_branch"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "merged_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly."
+      ]
+    },
+    {
+      "name": "fix/ui-quick-group-count",
+      "ref": "refs/heads/fix/ui-quick-group-count",
+      "type": "branch",
+      "old_sha": "61288971169800466775045590ea31c960fee710",
+      "live_sha_at_verification": "61288971169800466775045590ea31c960fee710",
+      "prs": [
+        {
+          "number": 81,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/81",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:57:49Z",
+          "draft": true,
+          "head_ref": "fix/ui-quick-group-count",
+          "head_sha": "61288971169800466775045590ea31c960fee710",
+          "relationship": "direct_head_branch"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "merged_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly."
+      ]
+    },
+    {
+      "name": "fix/ui-quick-popover-dismiss",
+      "ref": "refs/heads/fix/ui-quick-popover-dismiss",
+      "type": "branch",
+      "old_sha": "d206bce4a6966e3781830f8015992edcb21b08ba",
+      "live_sha_at_verification": "d206bce4a6966e3781830f8015992edcb21b08ba",
+      "prs": [
+        {
+          "number": 53,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/53",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:38:25Z",
+          "draft": true,
+          "head_ref": "fix/ui-quick-popover-dismiss",
+          "head_sha": "d206bce4a6966e3781830f8015992edcb21b08ba",
+          "relationship": "direct_head_branch"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "merged_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly."
+      ]
+    },
+    {
+      "name": "fix/ui-quick-row-actions",
+      "ref": "refs/heads/fix/ui-quick-row-actions",
+      "type": "branch",
+      "old_sha": "11a3f5e46a5fe8b08b5ff47f0a8a5569a037f112",
+      "live_sha_at_verification": "11a3f5e46a5fe8b08b5ff47f0a8a5569a037f112",
+      "prs": [
+        {
+          "number": 67,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/67",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:42:31Z",
+          "draft": true,
+          "head_ref": "fix/ui-quick-row-actions",
+          "head_sha": "11a3f5e46a5fe8b08b5ff47f0a8a5569a037f112",
+          "relationship": "direct_head_branch"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "merged_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly."
+      ]
+    },
+    {
+      "name": "fix/ui-resource-sample-state",
+      "ref": "refs/heads/fix/ui-resource-sample-state",
+      "type": "branch",
+      "old_sha": "2610ad8463e361c630ea245ef9f5452ceede4124",
+      "live_sha_at_verification": "2610ad8463e361c630ea245ef9f5452ceede4124",
+      "prs": [
+        {
+          "number": 61,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/61",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:41:20Z",
+          "draft": true,
+          "head_ref": "fix/ui-resource-sample-state",
+          "head_sha": "2610ad8463e361c630ea245ef9f5452ceede4124",
+          "relationship": "direct_head_branch"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "merged_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly."
+      ]
+    },
+    {
+      "name": "fix/ui-rule-dialog-save-close",
+      "ref": "refs/heads/fix/ui-rule-dialog-save-close",
+      "type": "branch",
+      "old_sha": "f14aed54469853004e2aa4e3b13daf36047c1da3",
+      "live_sha_at_verification": "f14aed54469853004e2aa4e3b13daf36047c1da3",
+      "prs": [
+        {
+          "number": 55,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/55",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:39:11Z",
+          "draft": true,
+          "head_ref": "fix/ui-rule-dialog-save-close",
+          "head_sha": "f14aed54469853004e2aa4e3b13daf36047c1da3",
+          "relationship": "direct_head_branch"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "merged_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly."
+      ]
+    },
+    {
+      "name": "fix/ui-session-editor-validation",
+      "ref": "refs/heads/fix/ui-session-editor-validation",
+      "type": "branch",
+      "old_sha": "c4753ef1b01fa545277ce7c29e9a118daca4b817",
+      "live_sha_at_verification": "c4753ef1b01fa545277ce7c29e9a118daca4b817",
+      "prs": [
+        {
+          "number": 25,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/25",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-07T11:45:12Z",
+          "draft": false,
+          "head_ref": "fix/ui-session-editor-validation",
+          "head_sha": "c4753ef1b01fa545277ce7c29e9a118daca4b817",
+          "relationship": "direct_head_branch"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "merged_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly."
+      ]
+    },
+    {
+      "name": "fix/ui-session-list-refresh",
+      "ref": "refs/heads/fix/ui-session-list-refresh",
+      "type": "branch",
+      "old_sha": "2ae55493628bc12fb1474ae1ff0c0cfbbfbdb0f6",
+      "live_sha_at_verification": "2ae55493628bc12fb1474ae1ff0c0cfbbfbdb0f6",
+      "prs": [
+        {
+          "number": 27,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/27",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-07T11:45:37Z",
+          "draft": false,
+          "head_ref": "fix/ui-session-list-refresh",
+          "head_sha": "2ae55493628bc12fb1474ae1ff0c0cfbbfbdb0f6",
+          "relationship": "direct_head_branch"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "merged_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly."
+      ]
+    },
+    {
+      "name": "fix/ui-session-reconnect",
+      "ref": "refs/heads/fix/ui-session-reconnect",
+      "type": "branch",
+      "old_sha": "69841e61cc37268703760a422b12d464a15a5dcb",
+      "live_sha_at_verification": "69841e61cc37268703760a422b12d464a15a5dcb",
+      "prs": [
+        {
+          "number": 29,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/29",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-07T11:46:03Z",
+          "draft": false,
+          "head_ref": "fix/ui-session-reconnect",
+          "head_sha": "69841e61cc37268703760a422b12d464a15a5dcb",
+          "relationship": "direct_head_branch"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "merged_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly."
+      ]
+    },
+    {
+      "name": "fix/ui-session-row-context-menu",
+      "ref": "refs/heads/fix/ui-session-row-context-menu",
+      "type": "branch",
+      "old_sha": "8fffb510bca6c2eef1027bd6fa283d2211045777",
+      "live_sha_at_verification": "8fffb510bca6c2eef1027bd6fa283d2211045777",
+      "prs": [
+        {
+          "number": 35,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/35",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-07T11:48:24Z",
+          "draft": false,
+          "head_ref": "fix/ui-session-row-context-menu",
+          "head_sha": "8fffb510bca6c2eef1027bd6fa283d2211045777",
+          "relationship": "direct_head_branch"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "merged_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly."
+      ]
+    },
+    {
+      "name": "fix/ui-settings-input-state",
+      "ref": "refs/heads/fix/ui-settings-input-state",
+      "type": "branch",
+      "old_sha": "d21c7ccf9ca148fb9352d6eea014f2f9862728cd",
+      "live_sha_at_verification": "d21c7ccf9ca148fb9352d6eea014f2f9862728cd",
+      "prs": [
+        {
+          "number": 23,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/23",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-07T11:08:48Z",
+          "draft": false,
+          "head_ref": "fix/ui-settings-input-state",
+          "head_sha": "d21c7ccf9ca148fb9352d6eea014f2f9862728cd",
+          "relationship": "direct_head_branch"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "merged_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly."
+      ]
+    },
+    {
+      "name": "fix/ui-settings-numeric-drafts",
+      "ref": "refs/heads/fix/ui-settings-numeric-drafts",
+      "type": "branch",
+      "old_sha": "16c6ba5f2a0d67628b39c4dca53fcb312f184f07",
+      "live_sha_at_verification": "16c6ba5f2a0d67628b39c4dca53fcb312f184f07",
+      "prs": [
+        {
+          "number": 59,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/59",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:40:53Z",
+          "draft": true,
+          "head_ref": "fix/ui-settings-numeric-drafts",
+          "head_sha": "16c6ba5f2a0d67628b39c4dca53fcb312f184f07",
+          "relationship": "direct_head_branch"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "merged_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly."
+      ]
+    },
+    {
+      "name": "fix/ui-sftp-column-language",
+      "ref": "refs/heads/fix/ui-sftp-column-language",
+      "type": "branch",
+      "old_sha": "180b90bcc3af8868f99889c4af28d8dd6b0d2d73",
+      "live_sha_at_verification": "180b90bcc3af8868f99889c4af28d8dd6b0d2d73",
+      "prs": [
+        {
+          "number": 75,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/75",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:48:30Z",
+          "draft": true,
+          "head_ref": "fix/ui-sftp-column-language",
+          "head_sha": "180b90bcc3af8868f99889c4af28d8dd6b0d2d73",
+          "relationship": "direct_head_branch"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "merged_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly."
+      ]
+    },
+    {
+      "name": "fix/ui-sftp-delete-confirmation",
+      "ref": "refs/heads/fix/ui-sftp-delete-confirmation",
+      "type": "branch",
+      "old_sha": "8c7f05b0553bc80551d05ba91ee069c43b0b1640",
+      "live_sha_at_verification": "8c7f05b0553bc80551d05ba91ee069c43b0b1640",
+      "prs": [
+        {
+          "number": 69,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/69",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:43:14Z",
+          "draft": true,
+          "head_ref": "fix/ui-sftp-delete-confirmation",
+          "head_sha": "8c7f05b0553bc80551d05ba91ee069c43b0b1640",
+          "relationship": "direct_head_branch"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "merged_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly."
+      ]
+    },
+    {
+      "name": "fix/ui-sftp-file-actions",
+      "ref": "refs/heads/fix/ui-sftp-file-actions",
+      "type": "branch",
+      "old_sha": "f3d025ad19d154e43b9250e25855228ba58f8e62",
+      "live_sha_at_verification": "f3d025ad19d154e43b9250e25855228ba58f8e62",
+      "prs": [
+        {
+          "number": 33,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/33",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-07T11:47:38Z",
+          "draft": false,
+          "head_ref": "fix/ui-sftp-file-actions",
+          "head_sha": "f3d025ad19d154e43b9250e25855228ba58f8e62",
+          "relationship": "direct_head_branch"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "merged_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly."
+      ]
+    },
+    {
+      "name": "fix/ui-startup-language",
+      "ref": "refs/heads/fix/ui-startup-language",
+      "type": "branch",
+      "old_sha": "556b3001c431ac9a82fda08d7766942ce4bd0f12",
+      "live_sha_at_verification": "556b3001c431ac9a82fda08d7766942ce4bd0f12",
+      "prs": [
+        {
+          "number": 77,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/77",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:48:30Z",
+          "draft": true,
+          "head_ref": "fix/ui-startup-language",
+          "head_sha": "556b3001c431ac9a82fda08d7766942ce4bd0f12",
+          "relationship": "direct_head_branch"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "merged_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly."
+      ]
+    },
+    {
+      "name": "fix/ui-tab-cycle-focus",
+      "ref": "refs/heads/fix/ui-tab-cycle-focus",
+      "type": "branch",
+      "old_sha": "b0f780696629ee2d62f4fbe5d95fcc015e3f2ec9",
+      "live_sha_at_verification": "b0f780696629ee2d62f4fbe5d95fcc015e3f2ec9",
+      "prs": [
+        {
+          "number": 71,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/71",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:43:52Z",
+          "draft": true,
+          "head_ref": "fix/ui-tab-cycle-focus",
+          "head_sha": "b0f780696629ee2d62f4fbe5d95fcc015e3f2ec9",
+          "relationship": "direct_head_branch"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "merged_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly."
+      ]
+    },
+    {
+      "name": "fix/ui-terminal-close-focus",
+      "ref": "refs/heads/fix/ui-terminal-close-focus",
+      "type": "branch",
+      "old_sha": "aeb1e81a76c23662e1efd2d0a7c868af6c2dbe39",
+      "live_sha_at_verification": "aeb1e81a76c23662e1efd2d0a7c868af6c2dbe39",
+      "prs": [
+        {
+          "number": 45,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/45",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T05:11:26Z",
+          "draft": false,
+          "head_ref": "fix/ui-terminal-close-focus",
+          "head_sha": "aeb1e81a76c23662e1efd2d0a7c868af6c2dbe39",
+          "relationship": "direct_head_branch"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "merged_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly."
+      ]
+    },
+    {
+      "name": "fix/ui-terminal-entry-focus",
+      "ref": "refs/heads/fix/ui-terminal-entry-focus",
+      "type": "branch",
+      "old_sha": "af7880e2e5912423bd5b7e3f4adbd423222bada9",
+      "live_sha_at_verification": "af7880e2e5912423bd5b7e3f4adbd423222bada9",
+      "prs": [
+        {
+          "number": 57,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/57",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:40:17Z",
+          "draft": true,
+          "head_ref": "fix/ui-terminal-entry-focus",
+          "head_sha": "af7880e2e5912423bd5b7e3f4adbd423222bada9",
+          "relationship": "direct_head_branch"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "merged_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly."
+      ]
+    },
+    {
+      "name": "fix/ui-transfer-progress-fairness",
+      "ref": "refs/heads/fix/ui-transfer-progress-fairness",
+      "type": "branch",
+      "old_sha": "c09056c1bedb6bfac804b94da9f6bc3ce76f2d58",
+      "live_sha_at_verification": "c09056c1bedb6bfac804b94da9f6bc3ce76f2d58",
+      "prs": [
+        {
+          "number": 47,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/47",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T05:11:54Z",
+          "draft": false,
+          "head_ref": "fix/ui-transfer-progress-fairness",
+          "head_sha": "c09056c1bedb6bfac804b94da9f6bc3ce76f2d58",
+          "relationship": "direct_head_branch"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "merged_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly."
+      ]
+    },
+    {
+      "name": "main",
+      "ref": "refs/heads/main",
+      "type": "branch",
+      "old_sha": "17e8b35d22a3f2c82758107ee56ba98c4f3b2e1e",
+      "live_sha_at_verification": "17e8b35d22a3f2c82758107ee56ba98c4f3b2e1e",
+      "prs": [],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "upstream_ancestor",
+      "basis": [
+        "Exact commit is an ancestor of upstream d641af3b924757fc26806ffbb68e82217033c41f; no unique commits."
+      ]
+    },
+    {
+      "name": "migration/meatshell-cli-to-xenterm",
+      "ref": "refs/heads/migration/meatshell-cli-to-xenterm",
+      "type": "branch",
+      "old_sha": "562a893403a63090a8c3b9d276b3ccb1ada8d776",
+      "live_sha_at_verification": "562a893403a63090a8c3b9d276b3ccb1ada8d776",
+      "prs": [
+        {
+          "number": 93,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/93",
+          "state": "open",
+          "merged": false,
+          "merged_at": null,
+          "draft": false,
+          "head_ref": "migration/meatshell-cli-to-xenterm",
+          "head_sha": "562a893403a63090a8c3b9d276b3ccb1ada8d776",
+          "relationship": "direct_head_branch"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "open_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly."
+      ]
+    },
+    {
+      "name": "sync/user-latest-20261008",
+      "ref": "refs/heads/sync/user-latest-20261008",
+      "type": "branch",
+      "old_sha": "8139182360f4f90c30e97790a8e1ca999d07cee4",
+      "live_sha_at_verification": "8139182360f4f90c30e97790a8e1ca999d07cee4",
+      "prs": [
+        {
+          "number": 86,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/86",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T09:07:46Z",
+          "draft": true,
+          "head_ref": "feat/cli-stable-id-migration",
+          "head_sha": "15cddba606ce2c184003a84048e47f73bb7bac3d",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 84,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/84",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:58:08Z",
+          "draft": true,
+          "head_ref": "fix/ui-insert-fallback",
+          "head_sha": "e385ab463b5f73d9e785cae5bbb7daf000128e55",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 81,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/81",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:57:49Z",
+          "draft": true,
+          "head_ref": "fix/ui-quick-group-count",
+          "head_sha": "61288971169800466775045590ea31c960fee710",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 79,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/79",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:57:04Z",
+          "draft": true,
+          "head_ref": "chore/gpui-kit-071",
+          "head_sha": "ab21b8884aabbab9f0472d7091ca22764254bb3b",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 77,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/77",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:48:30Z",
+          "draft": true,
+          "head_ref": "fix/ui-startup-language",
+          "head_sha": "556b3001c431ac9a82fda08d7766942ce4bd0f12",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 75,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/75",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:48:30Z",
+          "draft": true,
+          "head_ref": "fix/ui-sftp-column-language",
+          "head_sha": "180b90bcc3af8868f99889c4af28d8dd6b0d2d73",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 73,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/73",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:47:28Z",
+          "draft": true,
+          "head_ref": "fix/ui-pane-cycle-focus",
+          "head_sha": "5cafc58ccf74207ceeb6cbde2cd20f2c54976818",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 71,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/71",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:43:52Z",
+          "draft": true,
+          "head_ref": "fix/ui-tab-cycle-focus",
+          "head_sha": "b0f780696629ee2d62f4fbe5d95fcc015e3f2ec9",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 69,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/69",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:43:14Z",
+          "draft": true,
+          "head_ref": "fix/ui-sftp-delete-confirmation",
+          "head_sha": "8c7f05b0553bc80551d05ba91ee069c43b0b1640",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 67,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/67",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:42:31Z",
+          "draft": true,
+          "head_ref": "fix/ui-quick-row-actions",
+          "head_sha": "11a3f5e46a5fe8b08b5ff47f0a8a5569a037f112",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 65,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/65",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:42:14Z",
+          "draft": true,
+          "head_ref": "fix/ui-chevron-signed-rotation",
+          "head_sha": "b31b0fcd8338ab8df5213feab808164ecbfe86e0",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 63,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/63",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:41:55Z",
+          "draft": true,
+          "head_ref": "feat/ui-cursor-color-picker",
+          "head_sha": "310cb055fcba694dc481932bc4ebd9aa4a4b7971",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 61,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/61",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:41:20Z",
+          "draft": true,
+          "head_ref": "fix/ui-resource-sample-state",
+          "head_sha": "2610ad8463e361c630ea245ef9f5452ceede4124",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 59,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/59",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:40:53Z",
+          "draft": true,
+          "head_ref": "fix/ui-settings-numeric-drafts",
+          "head_sha": "16c6ba5f2a0d67628b39c4dca53fcb312f184f07",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 57,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/57",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:40:17Z",
+          "draft": true,
+          "head_ref": "fix/ui-terminal-entry-focus",
+          "head_sha": "af7880e2e5912423bd5b7e3f4adbd423222bada9",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 55,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/55",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:39:11Z",
+          "draft": true,
+          "head_ref": "fix/ui-rule-dialog-save-close",
+          "head_sha": "f14aed54469853004e2aa4e3b13daf36047c1da3",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 53,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/53",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:38:25Z",
+          "draft": true,
+          "head_ref": "fix/ui-quick-popover-dismiss",
+          "head_sha": "d206bce4a6966e3781830f8015992edcb21b08ba",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 51,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/51",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:37:40Z",
+          "draft": false,
+          "head_ref": "fix/ui-group-inline-focus",
+          "head_sha": "2b8672c2e514b6b4066ccf8e36e6c43a65e081e1",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 49,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/49",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:37:08Z",
+          "draft": false,
+          "head_ref": "fix/ui-directory-copy-path",
+          "head_sha": "4c0d801e807998df064b648e6e61134f628f1cba",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 47,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/47",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T05:11:54Z",
+          "draft": false,
+          "head_ref": "fix/ui-transfer-progress-fairness",
+          "head_sha": "c09056c1bedb6bfac804b94da9f6bc3ce76f2d58",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 45,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/45",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T05:11:26Z",
+          "draft": false,
+          "head_ref": "fix/ui-terminal-close-focus",
+          "head_sha": "aeb1e81a76c23662e1efd2d0a7c868af6c2dbe39",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 43,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/43",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T05:11:02Z",
+          "draft": false,
+          "head_ref": "fix/ui-file-dialog-dismissal",
+          "head_sha": "fe977c30271add8a9eb7cdb8eb49e168822b27e5",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 41,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/41",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T05:10:32Z",
+          "draft": false,
+          "head_ref": "fix/ui-file-viewer-layout-readonly",
+          "head_sha": "dbd22b601434734022642b25a366a7d09df5fab8",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 39,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/39",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T05:10:12Z",
+          "draft": false,
+          "head_ref": "fix/ui-overlay-height-budget",
+          "head_sha": "01ff0d7a73707416de7f459f7dc17c2f2e71f106",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 37,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/37",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T05:09:44Z",
+          "draft": false,
+          "head_ref": "fix/ui-findbar-contrast",
+          "head_sha": "1192ad12d4910f725fd534ee80ca7deddc423f92",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 35,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/35",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-07T11:48:24Z",
+          "draft": false,
+          "head_ref": "fix/ui-session-row-context-menu",
+          "head_sha": "8fffb510bca6c2eef1027bd6fa283d2211045777",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 33,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/33",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-07T11:47:38Z",
+          "draft": false,
+          "head_ref": "fix/ui-sftp-file-actions",
+          "head_sha": "f3d025ad19d154e43b9250e25855228ba58f8e62",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 31,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/31",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-07T11:46:45Z",
+          "draft": false,
+          "head_ref": "fix/ui-command-palette-scroll",
+          "head_sha": "5101978909aae3ecac390d7d099d2ee87fd26de4",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 29,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/29",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-07T11:46:03Z",
+          "draft": false,
+          "head_ref": "fix/ui-session-reconnect",
+          "head_sha": "69841e61cc37268703760a422b12d464a15a5dcb",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 27,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/27",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-07T11:45:37Z",
+          "draft": false,
+          "head_ref": "fix/ui-session-list-refresh",
+          "head_sha": "2ae55493628bc12fb1474ae1ff0c0cfbbfbdb0f6",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 25,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/25",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-07T11:45:12Z",
+          "draft": false,
+          "head_ref": "fix/ui-session-editor-validation",
+          "head_sha": "c4753ef1b01fa545277ce7c29e9a118daca4b817",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 23,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/23",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-07T11:08:48Z",
+          "draft": false,
+          "head_ref": "fix/ui-settings-input-state",
+          "head_sha": "d21c7ccf9ca148fb9352d6eea014f2f9862728cd",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 21,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/21",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-07T11:07:09Z",
+          "draft": false,
+          "head_ref": "fix/ui-command-palette-borrow",
+          "head_sha": "036305d5a6a61987745370af461ee72c37cf1954",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 19,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/19",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-07T11:06:35Z",
+          "draft": false,
+          "head_ref": "fix/ui-bastion-layout",
+          "head_sha": "d9925157167105d28636535fa4d75ae1cc67b854",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 17,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/17",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:34:41Z",
+          "draft": true,
+          "head_ref": "fix/ssh-command-stack",
+          "head_sha": "26026ed8296240a07d27f58b39d592cb91412e52",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 15,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/15",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:35:44Z",
+          "draft": true,
+          "head_ref": "fix/cli-exec-status-and-options",
+          "head_sha": "0ff2f530b3647a8e511c894ab522c002fd3164b0",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 13,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/13",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T08:34:41Z",
+          "draft": true,
+          "head_ref": "feat/cli-portable-export",
+          "head_sha": "8070ea7af20f98a0d69201546dcb66e8795ed789",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 11,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/11",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-05T08:47:22Z",
+          "draft": false,
+          "head_ref": "feat/gui-secret-reveal",
+          "head_sha": "9af8ad34fd2a43b11236c0f22bd352379b18a14c",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 8,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/8",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-03T04:10:31Z",
+          "draft": false,
+          "head_ref": "fix/profile-write-conflicts-upstream",
+          "head_sha": "af1aefa9b227979418670f8bacca5657470a5378",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 7,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/7",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-02T13:12:36Z",
+          "draft": false,
+          "head_ref": "feat/ssh-automation-workflows",
+          "head_sha": "62a30f6c2346b9e23747a219bc6fd06fa9f0bcfb",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 6,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/6",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-02T12:59:58Z",
+          "draft": false,
+          "head_ref": "fix/sftp-dock-toggle",
+          "head_sha": "33dec491f6c752624f0421faced446f664523c81",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        },
+        {
+          "number": 2,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/2",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-02T12:52:24Z",
+          "draft": false,
+          "head_ref": "fix/linux-install-prefix",
+          "head_sha": "2a3cd3af25a3783749b60185a09af8aa73e2ca91",
+          "relationship": "constituent_contribution_in_aggregate_history"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "aggregate_integration",
+      "basis": [
+        "These two branches have identical SHA 8139182360f4f90c30e97790a8e1ca999d07cee4.",
+        "Direct tree and commit comparison with upstream d641af3b924757fc26806ffbb68e82217033c41f finds no additional unsubmitted product feature. Remaining unique material is integration/test wiring, one migration transport regression, fork workflow/history context, and older upstream dependency versions."
+      ],
+      "aggregate_peer": "feat/xenterm-user-workflows"
+    },
+    {
+      "name": "test/portable-export-marker-regression-20261011",
+      "ref": "refs/heads/test/portable-export-marker-regression-20261011",
+      "type": "branch",
+      "old_sha": "432a161ec868deb0dfa1564dc31caa4c0c0caafd",
+      "live_sha_at_verification": "432a161ec868deb0dfa1564dc31caa4c0c0caafd",
+      "prs": [
+        {
+          "number": 92,
+          "url": "https://github.com/ixbaicn/XenTerm/pull/92",
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-10-11T11:27:35Z",
+          "draft": false,
+          "head_ref": "test/portable-export-marker-regression-20261011",
+          "head_sha": "432a161ec868deb0dfa1564dc31caa4c0c0caafd",
+          "relationship": "direct_head_branch"
+        }
+      ],
+      "cleanup_action": "not_determined_no_deletion_authorization",
+      "new_candidate_sha": null,
+      "classification": "merged_contribution",
+      "basis": [
+        "GitHub pull-request head repository and branch match exactly."
+      ]
+    }
+  ],
+  "special_residuals": [
+    {
+      "kind": "optional_test_enhancement",
+      "source_sha": "8139182360f4f90c30e97790a8e1ca999d07cee4",
+      "path": "tests/migration_transport_e2e.py",
+      "finding": "Core migration assertions duplicate current migration_modes_e2e.py; export/import transport assertions partly duplicate config_export_e2e.py. Unique combined coverage is preserved-ID import plus native sync followed by real two-hop MCP/CLI execution and runtime rejection/restoration of a missing external key file.",
+      "recommendation": "Optional test-only PR with only unique scenarios wired into current ci.yml. Do not revive superseded workflow files.",
+      "executed_during_this_audit": false,
+      "new_product_feature": false
+    },
+    {
+      "kind": "test_isolation_cleanup",
+      "path": "src/ui/impls/shell.rs",
+      "modules": [
+        "sftp_copy_path_tests",
+        "group_dialog_tests",
+        "quick_popover_tests",
+        "rule_dialog_tests",
+        "sftp_delete_tests",
+        "startup_language_tests"
+      ],
+      "finding": "Aggregate source retains cfg(test) guards missing in current upstream. Guards were already present in previously submitted contribution commits, so this is not an unsubmitted feature. Current normal dependencies enable gpui-kit/test-support and include tempfile, so missing guards do not prove build failure.",
+      "original_source_shas": [
+        "acd2b3661b9fb028d4499b2cab85124b3cc1ad54",
+        "e4bd6784947d64b40a87686773232b74dbdfc8e7",
+        "01d98f123c9dd47ff2d7550f5fc3c3ed9d073ef9",
+        "a47460d7640c4585b1577379ca8fc35dd08095e3",
+        "8c7f05b0553bc80551d05ba91ee069c43b0b1640",
+        "556b3001c431ac9a82fda08d7766942ce4bd0f12"
+      ],
+      "related_pr_numbers": [
+        49,
+        51,
+        53,
+        55,
+        69,
+        77
+      ],
+      "correction": "c65ed9c231ce0fc71db85e34cf3f98777f3219fa is not the source of these shell guards; it removes inner test-file cfg attributes and adapts test root hosting.",
+      "new_product_feature": false
+    }
+  ],
+  "method": [
+    "GitHub live branches/tags API snapshot and all-state upstream pull-request API.",
+    "Bare clone refs matched to live exact SHAs; all 84 original SHAs unchanged at verification.",
+    "Direct branch-to-PR head matching; evidence branch/tip references verified in PR bodies.",
+    "Direct tree diffs and commit/ancestry checks for all non-directly-mapped production branches."
+  ],
+  "limitations": [
+    "This inventory does not determine replacement SHAs or authorize deletion/rewrite.",
+    "No source tests or CI jobs were run by this read-only audit.",
+    "Published links may also appear in issue comments or review comments; only PR-body evidence associations were enumerated here."
+  ]
+}
