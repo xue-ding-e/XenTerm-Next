@@ -15,8 +15,8 @@
 mod actions;
 #[path = "impls/auth_dialogs.rs"]
 mod auth_dialogs;
-#[path = "impls/audit_window.rs"]
-mod audit_window;
+#[path = "impls/execution_log_window.rs"]
+mod execution_log_window;
 // The folding chevron every group list shares: one icon rotated, not two swapped.
 #[path = "impls/chevron.rs"]
 mod chevron;
@@ -95,7 +95,7 @@ mod toolkit_regression_tests;
 #[path = "../../tests/app/ui_animations/mod.rs"]
 mod ui_animation_probes;
 
-pub(crate) use audit_window::AuditWindowHandle;
+pub(crate) use execution_log_window::ExecutionLogWindowHandle;
 // The keyboard surface: every action and every chord, and the one `bind_keys`.
 pub(crate) use actions::{
     CloseTab, CommandPalette, CopySelection, CyclePane, Find, NextTab, Paste,

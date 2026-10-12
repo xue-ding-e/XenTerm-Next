@@ -201,6 +201,17 @@ pub(crate) fn run(args: &[String]) -> Result<()> {
                 }),
             ))?
         }
+        CliCommand::Permissions => {
+            let mode = permissions_mode(&args[3..])?;
+            let mut store = crate::config::ConfigStore::load()?;
+            if let Some(mode) = mode {
+                store.set_mcp_access_mode(mode);
+                store.save()?;
+            }
+            let mut policy = crate::automation::access_policy(&store);
+            policy["data_dir"] = json!(crate::config::data_dir());
+            policy
+        }
         CliCommand::Help => {
             print_help();
             return Ok(());
@@ -217,6 +228,23 @@ pub(crate) fn run(args: &[String]) -> Result<()> {
         ensure_remote_success(&value)?;
     }
     Ok(())
+}
+
+fn permissions_mode(args: &[String]) -> Result<Option<crate::config::McpAccessMode>> {
+    let positional: Vec<&str> = args
+        .iter()
+        .filter(|arg| arg.as_str() != "--json")
+        .map(String::as_str)
+        .collect();
+    match positional.as_slice() {
+        [] => Ok(None),
+        [value] => crate::config::McpAccessMode::parse(value)
+            .map(Some)
+            .ok_or_else(|| anyhow!("unknown access mode: {value}; expected restricted or full")),
+        _ => Err(anyhow!(
+            "usage: xenterm cli permissions [restricted|full] [--json]"
+        )),
+    }
 }
 
 /// A remote program's flags after `--` must never change local CLI behavior.
@@ -318,7 +346,7 @@ fn print_human(command: CliCommand, value: &Value) {
                 }
             }
         }
-        CliCommand::Session => println!(
+        CliCommand::Permissions | CliCommand::Session => println!(
             "{}",
             serde_json::to_string_pretty(value).unwrap_or_default()
         ),
@@ -372,6 +400,7 @@ fn print_help() {
            xenterm cli export <new-file.json> --include-credentials [--json]\n\
            xenterm cli import <export.json> [--dry-run] [--preserve-ids] [--json]\n\
            xenterm cli sync-native <sessions.json> [--dry-run] [--json]\n\
+           xenterm cli permissions [restricted|full] [--json]\n\
            xenterm cli sessions [--group <name>] [--json]\n\
            xenterm cli session <session-id> [--json]\n\
            xenterm cli exec <session-id> [--timeout <seconds>] [--json] -- <command>\n\
@@ -385,6 +414,26 @@ fn print_help() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn permissions_arguments_reject_unknown_or_ambiguous_modes() {
+        assert_eq!(permissions_mode(&[]).unwrap(), None);
+        assert_eq!(permissions_mode(&["--json".into()]).unwrap(), None);
+        assert_eq!(
+            permissions_mode(&["full".into(), "--json".into()]).unwrap(),
+            Some(crate::config::McpAccessMode::Full)
+        );
+        assert_eq!(
+            permissions_mode(&["restricted".into()]).unwrap(),
+            Some(crate::config::McpAccessMode::Restricted)
+        );
+        assert!(permissions_mode(&["anything".into()]).is_err());
+        assert!(permissions_mode(&["full".into(), "restricted".into()]).is_err());
+        assert_eq!(
+            CliCommand::parse(Some("permissions")),
+            Some(CliCommand::Permissions)
+        );
+    }
 
     #[test]
     fn parses_option_values() {

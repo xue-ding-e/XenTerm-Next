@@ -302,6 +302,9 @@ fn fresh_config() -> ConfigFile {
         sidebar_dock: "right".to_string(),
         wallpaper_overlay: DEFAULT_WALLPAPER_OVERLAY,
         defaults_rev: DEFAULTS_REV,
+        // Rust Default does not apply serde field defaults. Keep new profiles
+        // consistent with existing profiles that predate execution history.
+        mcp_execution_log_retention_days: default_execution_log_retention(),
         ..ConfigFile::default()
     }
 }
@@ -1693,61 +1696,54 @@ impl ConfigStore {
     pub fn set_mcp_enabled(&mut self, enabled: bool) {
         self.cache.mcp_enabled = enabled;
     }
+    /// Legacy profiles with every capability enabled already grant full access.
+    /// Other combinations retain their exact capability gates.
+    pub fn mcp_access_mode(&self) -> McpAccessMode {
+        self.cache.mcp_access_mode.unwrap_or_else(|| {
+            if self.cache.mcp_use_saved_credentials
+                && self.cache.mcp_allow_commands
+                && self.cache.mcp_allow_file_transfers
+            {
+                McpAccessMode::Full
+            } else {
+                McpAccessMode::Restricted
+            }
+        })
+    }
+
+    pub fn set_mcp_access_mode(&mut self, mode: McpAccessMode) {
+        self.cache.mcp_access_mode = Some(mode);
+    }
+
     pub fn mcp_use_saved_credentials(&self) -> bool {
-        self.cache.mcp_use_saved_credentials
+        self.mcp_access_mode() == McpAccessMode::Full || self.cache.mcp_use_saved_credentials
     }
     pub fn set_mcp_use_saved_credentials(&mut self, enabled: bool) {
         self.cache.mcp_use_saved_credentials = enabled;
     }
     pub fn mcp_allow_commands(&self) -> bool {
-        self.cache.mcp_allow_commands
+        self.mcp_access_mode() == McpAccessMode::Full || self.cache.mcp_allow_commands
     }
     pub fn set_mcp_allow_commands(&mut self, enabled: bool) {
         self.cache.mcp_allow_commands = enabled;
     }
     pub fn mcp_allow_file_transfers(&self) -> bool {
-        self.cache.mcp_allow_file_transfers
+        self.mcp_access_mode() == McpAccessMode::Full || self.cache.mcp_allow_file_transfers
     }
     pub fn set_mcp_allow_file_transfers(&mut self, enabled: bool) {
         self.cache.mcp_allow_file_transfers = enabled;
     }
-    /// Whether risky MCP commands need a human's approval at the main window
-    /// before they run. On by default; the setter exists for the settings page.
-    pub fn mcp_approval_enabled(&self) -> bool {
-        self.cache.mcp_approval_enabled
+    pub fn mcp_execution_log_enabled(&self) -> bool {
+        self.cache.mcp_execution_log_enabled
     }
-    pub fn set_mcp_approval_enabled(&mut self, enabled: bool) {
-        self.cache.mcp_approval_enabled = enabled;
+    pub fn set_mcp_execution_log_enabled(&mut self, enabled: bool) {
+        self.cache.mcp_execution_log_enabled = enabled;
     }
-    /// Seconds an approval request waits before the command is refused.
-    pub fn mcp_approval_timeout_secs(&self) -> u64 {
-        let v = self.cache.mcp_approval_timeout_secs;
-        // 0 would mean "never approvable"; clamp to something a human can win.
-        v.clamp(10, 600)
+    pub fn mcp_execution_log_retention_days(&self) -> u64 {
+        self.cache.mcp_execution_log_retention_days.clamp(1, 365)
     }
-    pub fn set_mcp_approval_timeout_secs(&mut self, secs: u64) {
-        self.cache.mcp_approval_timeout_secs = secs.clamp(10, 600);
-    }
-    /// The command patterns the approval gate matches, case-insensitively.
-    pub fn mcp_risky_patterns(&self) -> Vec<String> {
-        self.cache.mcp_risky_patterns.clone()
-    }
-    pub fn set_mcp_risky_patterns(&mut self, patterns: Vec<String>) {
-        self.cache.mcp_risky_patterns = patterns;
-    }
-    /// The path prefixes the approval gate watches.
-    pub fn mcp_risky_dirs(&self) -> Vec<String> {
-        self.cache.mcp_risky_dirs.clone()
-    }
-    pub fn set_mcp_risky_dirs(&mut self, dirs: Vec<String>) {
-        self.cache.mcp_risky_dirs = dirs;
-    }
-    /// Audit-journal retention, in whole days (7-365; 30 by default).
-    pub fn mcp_audit_retention_days(&self) -> u64 {
-        self.cache.mcp_audit_retention_days.clamp(7, 365)
-    }
-    pub fn set_mcp_audit_retention_days(&mut self, days: u64) {
-        self.cache.mcp_audit_retention_days = days.clamp(7, 365);
+    pub fn set_mcp_execution_log_retention_days(&mut self, days: u64) {
+        self.cache.mcp_execution_log_retention_days = days.clamp(1, 365);
     }
     pub fn wallpaper_overlay(&self) -> f32 {
         let a = self.cache.wallpaper_overlay;
@@ -4383,3 +4379,7 @@ mod log_path_tests {
         assert_eq!(user_log_dir_from_config(config, false), config.join("log"));
     }
 }
+
+#[cfg(test)]
+#[path = "mcp_access_mode_tests.rs"]
+mod mcp_access_mode_tests;

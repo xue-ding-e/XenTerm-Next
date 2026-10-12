@@ -13,11 +13,17 @@ const DEFAULT_MAX_OUTPUT_BYTES: usize = 1024 * 1024;
 const MAX_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 
 pub(crate) async fn call(name: &str, arguments: &Value, frontend: Frontend) -> Result<Value> {
-    crate::ssh::connection::with_automation_cancellation(call_inner(name, arguments, frontend)).await
+    let mut record = crate::automation::execution_log::ExecutionGuard::begin(name, arguments, frontend);
+    let result = crate::ssh::connection::with_automation_cancellation(call_inner(name, arguments, frontend)).await;
+    if let Some(record) = &mut record {
+        record.finish(&result);
+    }
+    result
 }
 
 async fn call_inner(name: &str, arguments: &Value, frontend: Frontend) -> Result<Value> {
     match name {
+        "get_access_policy" => get_access_policy(arguments, frontend),
         "list_sessions" => list_sessions(arguments, frontend),
         "get_session" => get_session(arguments, frontend),
         "import_sessions" => import_sessions(arguments, frontend),
@@ -28,6 +34,29 @@ async fn call_inner(name: &str, arguments: &Value, frontend: Frontend) -> Result
         "download_file" => download_file(arguments, frontend).await,
         _ => Err(anyhow!("unknown tool: {name}")),
     }
+}
+
+pub(crate) fn access_policy(store: &ConfigStore) -> Value {
+    json!({
+        "mode": store.mcp_access_mode(),
+        "mcp_enabled": store.mcp_enabled(),
+        "use_saved_credentials": store.mcp_use_saved_credentials(),
+        "allow_commands": store.mcp_allow_commands(),
+        "allow_file_transfers": store.mcp_allow_file_transfers(),
+        "execution_log_enabled": store.mcp_execution_log_enabled(),
+        "execution_log_retention_days": store.mcp_execution_log_retention_days(),
+    })
+}
+
+fn get_access_policy(arguments: &Value, frontend: Frontend) -> Result<Value> {
+    let object = arguments
+        .as_object()
+        .ok_or_else(|| anyhow!("access policy arguments must be an object"))?;
+    if !object.is_empty() {
+        return Err(anyhow!("get_access_policy is read-only and accepts no arguments"));
+    }
+    let store = load_store(frontend)?;
+    Ok(access_policy(&store))
 }
 
 /// Import is append-only, preview-by-default for protocol callers, and requires
@@ -129,7 +158,7 @@ async fn download_file(arguments: &Value, frontend: Frontend) -> Result<Value> {
 fn enforce_transfer_permissions(store: &ConfigStore, frontend: Frontend) -> Result<()> {
     if frontend.is_unattended() && !store.mcp_allow_file_transfers() {
         return Err(anyhow!(
-            "file transfers are disabled in Settings > Interface > MCP"
+            "file transfers are disabled in Settings > MCP & permissions"
         ));
     }
     Ok(())
@@ -144,51 +173,6 @@ async fn list_remote_files(arguments: &Value, frontend: Frontend) -> Result<Valu
     let path = optional_string(arguments, "path")?
         .unwrap_or(".")
         .to_string();
-    // The list side of the risk gate: a watched directory held for a human's
-    // yes/no, same as the other file tools.
-    if frontend.is_unattended() && store.mcp_approval_enabled() {
-        let dirs = store.mcp_risky_dirs();
-        let verdict = crate::automation::risk::assess_path(&path, &dirs);
-        if verdict.is_risky() {
-            let timeout = std::time::Duration::from_secs(store.mcp_approval_timeout_secs());
-            let description = format!("{} ({})", session.name, session.host);
-            let outcome = crate::automation::approval::request_approval(
-                description,
-                path.clone(),
-                &verdict,
-                timeout,
-            )
-            .await;
-            let refusal = match outcome {
-                crate::automation::approval::ApprovalOutcome::Approved => None,
-                crate::automation::approval::ApprovalOutcome::DeniedByUser => {
-                    Some((crate::i18n::t("用户拒绝", "denied by the user"), "denied-by-user"))
-                }
-                crate::automation::approval::ApprovalOutcome::DeniedByTimeout => Some((
-                    crate::i18n::t("无人审批,超时自动拒绝", "auto-denied: nobody approved in time"),
-                    "denied-by-timeout",
-                )),
-                crate::automation::approval::ApprovalOutcome::DeniedByLimit => Some((
-                    crate::i18n::t("审批队列已满,自动拒绝", "auto-denied: the approval queue is full"),
-                    "denied-by-limit",
-                )),
-                crate::automation::approval::ApprovalOutcome::DeniedUnreachable => Some((
-                    crate::i18n::t("审批不可达,自动拒绝", "auto-denied: the approval flow was unreachable"),
-                    "denied-unreachable",
-                )),
-            };
-            if let Some((_who, code)) = refusal {
-                return Err(anyhow!(
-                    "file operation blocked by the risk-approval gate [{code}]: {path}. {}. {}",
-                    verdict.summary(),
-                    crate::i18n::t(
-                        "不要重试该操作,不要尝试绕过审批,也不要代替用户做审批决定;是否继续由用户确认后另行发起。",
-                        "Do not retry it, do not try to route around the approval, and do                          not approve on the user's behalf; continuing is the user's call."
-                    )
-                ));
-            }
-        }
-    }
     super::sftp::list(session, jump, path, timeout).await
 }
 
@@ -202,59 +186,6 @@ async fn read_remote_text_file(arguments: &Value, frontend: Frontend) -> Result<
     if path.trim().is_empty() {
         return Err(anyhow!("path must not be empty"));
     }
-    let display_path = path.to_string();
-
-    // The file tools' side of the risk gate: a path the user watches (the
-    // same directory list run_command's approval uses) is held for a human's
-    // yes/no before it is read, listed, written to or pulled from. Without
-    // this, `read_remote_text_file /etc/shadow` would be the unapproved twin
-    // of `cat /etc/shadow`.
-    if frontend.is_unattended() && store.mcp_approval_enabled() {
-        let dirs = store.mcp_risky_dirs();
-        let verdict = crate::automation::risk::assess_path(
-            &display_path,
-            &dirs,
-        );
-        if verdict.is_risky() {
-            let timeout = std::time::Duration::from_secs(store.mcp_approval_timeout_secs());
-            let description = format!("{} ({})", session.name, session.host);
-            let outcome = crate::automation::approval::request_approval(
-                description,
-                display_path.clone(),
-                &verdict,
-                timeout,
-            )
-            .await;
-            let refusal = match outcome {
-                crate::automation::approval::ApprovalOutcome::Approved => None,
-                crate::automation::approval::ApprovalOutcome::DeniedByUser => {
-                    Some((crate::i18n::t("用户拒绝", "denied by the user"), "denied-by-user"))
-                }
-                crate::automation::approval::ApprovalOutcome::DeniedByTimeout => Some((
-                    crate::i18n::t("无人审批,超时自动拒绝", "auto-denied: nobody approved in time"),
-                    "denied-by-timeout",
-                )),
-                crate::automation::approval::ApprovalOutcome::DeniedByLimit => Some((
-                    crate::i18n::t("审批队列已满,自动拒绝", "auto-denied: the approval queue is full"),
-                    "denied-by-limit",
-                )),
-                crate::automation::approval::ApprovalOutcome::DeniedUnreachable => Some((
-                    crate::i18n::t("审批不可达,自动拒绝", "auto-denied: the approval flow was unreachable"),
-                    "denied-unreachable",
-                )),
-            };
-            if let Some((_who, code)) = refusal {
-                return Err(anyhow!(
-                    "file operation blocked by the risk-approval gate [{code}]: {display_path}. {}. {}",
-                    verdict.summary(),
-                    crate::i18n::t(
-                        "不要重试该操作,不要尝试绕过审批,也不要代替用户做审批决定;是否继续由用户确认后另行发起。",
-                        "Do not retry it, do not try to route around the approval, and do                          not approve on the user's behalf; continuing is the user's call."
-                    ),
-                ));
-            }
-        }
-    }
     super::sftp::read_text(session, jump, path.to_string(), timeout).await
 }
 
@@ -265,7 +196,7 @@ fn sftp_context(
     let store = load_store(frontend)?;
     if frontend.is_unattended() && !store.mcp_use_saved_credentials() {
         return Err(anyhow!(
-            "using saved credentials is disabled in Settings > Interface > MCP"
+            "using saved credentials is disabled in Settings > MCP & permissions"
         ));
     }
     let id = required_string(arguments, "session_id")?;
@@ -290,7 +221,7 @@ fn load_store(frontend: Frontend) -> Result<ConfigStore> {
     // is the MCP server's own on-switch: turning the server off must stop MCP
     // clients and must leave everything else working, including a plugin.
     if frontend.is_mcp() && !store.mcp_enabled() {
-        return Err(anyhow!("MCP is disabled in Settings > Interface > MCP"));
+        return Err(anyhow!("MCP is disabled in Settings > MCP & permissions"));
     }
     Ok(store)
 }
@@ -302,7 +233,7 @@ fn list_sessions(arguments: &Value, frontend: Frontend) -> Result<Value> {
     // together with everything else that reaches the sessions (audit L-12).
     if frontend.is_unattended() && !store.mcp_use_saved_credentials() {
         return Err(anyhow!(
-            "listing sessions is disabled in Settings > Interface > MCP"
+            "listing sessions is disabled in Settings > MCP & permissions"
         ));
     }
     let group = optional_string(arguments, "group")?;
@@ -319,7 +250,7 @@ fn get_session(arguments: &Value, frontend: Frontend) -> Result<Value> {
     let store = load_store(frontend)?;
     if frontend.is_unattended() && !store.mcp_use_saved_credentials() {
         return Err(anyhow!(
-            "listing sessions is disabled in Settings > Interface > MCP"
+            "listing sessions is disabled in Settings > MCP & permissions"
         ));
     }
     let id = required_string(arguments, "session_id")?;
@@ -333,12 +264,12 @@ async fn run_command(arguments: &Value, frontend: Frontend) -> Result<Value> {
     let store = load_store(frontend)?;
     if frontend.is_unattended() && !store.mcp_use_saved_credentials() {
         return Err(anyhow!(
-            "using saved credentials is disabled in Settings > Interface > MCP"
+            "using saved credentials is disabled in Settings > MCP & permissions"
         ));
     }
     if frontend.is_unattended() && !store.mcp_allow_commands() {
         return Err(anyhow!(
-            "arbitrary command execution is disabled in Settings > Interface > MCP"
+            "arbitrary command execution is disabled in Settings > MCP & permissions"
         ));
     }
 
@@ -362,62 +293,6 @@ async fn run_command(arguments: &Value, frontend: Frontend) -> Result<Value> {
         return Err(anyhow!("run_command only supports SSH sessions"));
     }
     let jump = store.resolve_jump_chain(&session)?;
-
-    // The human gate. A caller nobody is watching decided to run this; if the
-    // command trips the risk lists, someone at the main window gets to say so
-    // before it runs — and if nobody is there, the answer is no.
-    if frontend.is_unattended() && store.mcp_approval_enabled() {
-        let verdict = crate::automation::risk::assess(
-            &command,
-            &store.mcp_risky_patterns(),
-            &store.mcp_risky_dirs(),
-        );
-        if verdict.is_risky() {
-            let timeout = std::time::Duration::from_secs(store.mcp_approval_timeout_secs());
-            let description = format!("{} ({})", session.name, session.host);
-            let outcome = crate::automation::approval::request_approval(
-                description,
-                command.to_string(),
-                &verdict,
-                timeout,
-            )
-            .await;
-            // Each denial says who said no, because the caller is expected to
-            // treat them differently: a user's denial is a decision to hand
-            // back, a timeout is an absence to report — and neither is an
-            // invitation to retry, sneak the command through another path, or
-            // answer the approval prompt on the user's behalf.
-            let refusal = match outcome {
-                crate::automation::approval::ApprovalOutcome::Approved => None,
-                crate::automation::approval::ApprovalOutcome::DeniedByUser => {
-                    Some((crate::i18n::t("用户拒绝", "denied by the user"), "denied-by-user"))
-                }
-                crate::automation::approval::ApprovalOutcome::DeniedByTimeout => Some((
-                    crate::i18n::t("无人审批,超时自动拒绝", "auto-denied: nobody approved in time"),
-                    "denied-by-timeout",
-                )),
-                crate::automation::approval::ApprovalOutcome::DeniedByLimit => Some((
-                    crate::i18n::t("审批队列已满,自动拒绝", "auto-denied: the approval queue is full"),
-                    "denied-by-limit",
-                )),
-                crate::automation::approval::ApprovalOutcome::DeniedUnreachable => Some((
-                    crate::i18n::t("审批不可达,自动拒绝", "auto-denied: the approval flow was unreachable"),
-                    "denied-unreachable",
-                )),
-            };
-            if let Some((who, code)) = refusal {
-                return Err(anyhow!(
-                    "command blocked by the risk-approval gate [{code}]: {}. {}. {}",
-                    verdict.summary(),
-                    who,
-                    crate::i18n::t(
-                        "不要重试该命令,不要尝试绕过审批,也不要代替用户做审批决定;是否继续由用户确认后另行发起。",
-                        "Do not retry it, do not try to route around the approval, and do                          not approve on the user's behalf; continuing is the user's call, made                          from the terminal themselves."
-                    ),
-                ));
-            }
-        }
-    }
 
     let result = crate::ssh::execute_command(
         session,

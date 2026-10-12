@@ -117,7 +117,7 @@ async fn handle_with_import(
         return Some(error_response(
             id,
             -32001,
-            "MCP is disabled in Settings > Interface > MCP",
+            "MCP is disabled in Settings > MCP & permissions",
         ));
     }
     let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
@@ -257,6 +257,8 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(response["result"]["tools"].as_array().unwrap().len(), 8);
+        let tools = response["result"]["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), super::super::tools::definitions().as_array().unwrap().len());
+        assert!(tools.iter().any(|tool| tool["name"] == "get_access_policy"));
     }
 }

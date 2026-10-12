@@ -32,7 +32,7 @@ use tokio_util::sync::CancellationToken;
 
 const MAX_BODY: usize = 1024 * 1024;
 const SESSION_TTL: u64 = 15 * 60;
-const MAX_SESSIONS: usize = 64;
+const DEFAULT_MAX_SESSIONS: usize = 64;
 // This adapter deliberately implements the stateful 2025 lifecycle. The SDK
 // knows a newer stateless revision too; do not accidentally negotiate it while
 // retaining our session ownership/cancellation contract.
@@ -52,9 +52,18 @@ struct HttpConfig {
     oauth: OAuthConfig,
     #[serde(default)]
     allowed_origins: Vec<String>,
+    #[serde(default = "default_max_sessions")]
+    max_sessions: usize,
 }
 fn default_bind() -> SocketAddr {
     "127.0.0.1:8765".parse().unwrap()
+}
+fn default_max_sessions() -> usize {
+    DEFAULT_MAX_SESSIONS
+}
+fn validate_max_sessions(value: usize) -> Result<()> {
+    ensure!((1..=1024).contains(&value), "max_sessions must be within 1..=1024");
+    Ok(())
 }
 
 struct SessionOwner {
@@ -75,6 +84,7 @@ struct Boundary {
     owners: Mutex<HashMap<String, SessionOwner>>,
     initialize_lock: Mutex<()>,
     sessions: Arc<LocalSessionManager>,
+    max_sessions: usize,
     requests: Semaphore,
     streams: Arc<Semaphore>,
 }
@@ -486,7 +496,7 @@ async fn authenticated_guard(state: Arc<Boundary>, request: Request, next: Next)
             return failure(StatusCode::BAD_REQUEST, "initialize first");
         }
         let lock = state.initialize_lock.lock().await;
-        if state.sessions.sessions.read().await.len() >= MAX_SESSIONS {
+        if state.sessions.sessions.read().await.len() >= state.max_sessions {
             return failure(
                 StatusCode::TOO_MANY_REQUESTS,
                 "session limit reached; retry after closing a session",
@@ -594,6 +604,7 @@ pub(super) fn run(path: &str, allow_config_import: bool) -> Result<()> {
     let config: HttpConfig =
         serde_json::from_slice(&std::fs::read(path).context("read HTTP config")?)
             .context("parse HTTP config")?;
+    validate_max_sessions(config.max_sessions)?;
     ensure!(config.bind.ip().is_loopback(), "HTTP listener must use a loopback address; terminate HTTPS at a reverse proxy on this host");
     let base = Path::new(path).parent().unwrap_or_else(|| Path::new("."));
     let oauth = OAuth::load(config.oauth, base)?;
@@ -621,7 +632,7 @@ pub(super) fn run(path: &str, allow_config_import: bool) -> Result<()> {
         manager.session_config.completed_cache_ttl = Duration::ZERO;
         let sessions = Arc::new(manager);
         let state = Arc::new(Boundary { oauth, origins: config.allowed_origins, owners: Mutex::new(HashMap::new()),
-            initialize_lock: Mutex::new(()), sessions: sessions.clone(), requests: Semaphore::new(32), streams: Arc::new(Semaphore::new(16)) });
+            initialize_lock: Mutex::new(()), sessions: sessions.clone(), max_sessions: config.max_sessions, requests: Semaphore::new(32), streams: Arc::new(Semaphore::new(16)) });
         let shutdown = CancellationToken::new();
         let tools = HttpTools { allow_config_import, scope: state.oauth.config.required_scope.clone(), calls: Arc::new(Semaphore::new(16)) };
         let service = StreamableHttpService::new(move || Ok(HttpService(tools.clone())), sessions,
@@ -661,4 +672,46 @@ pub(super) fn run(path: &str, allow_config_import: bool) -> Result<()> {
         cleanup(&state, true).await;
         result.context("serve authenticated MCP")
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_config() -> Value {
+        json!({"oauth": {
+            "issuer": "https://issuer.example.test",
+            "resource": "https://resource.example.test/mcp",
+            "jwks_file": "missing-public-jwks.json",
+            "required_scope": "xenterm",
+            "allowed_subjects": ["synthetic"]
+        }})
+    }
+
+    #[test]
+    fn max_sessions_defaults_and_accepts_configured_values() {
+        let config: HttpConfig = serde_json::from_value(sample_config()).unwrap();
+        assert_eq!(config.max_sessions, DEFAULT_MAX_SESSIONS);
+        validate_max_sessions(config.max_sessions).unwrap();
+        for value in [1, 100, 128, 1000, 1024] {
+            let mut data = sample_config();
+            data["max_sessions"] = json!(value);
+            let config: HttpConfig = serde_json::from_value(data).unwrap();
+            assert_eq!(config.max_sessions, value);
+            validate_max_sessions(config.max_sessions).unwrap();
+        }
+    }
+
+    #[test]
+    fn max_sessions_out_of_bounds_fails_before_oauth_load_or_bind() {
+        for value in [0, 1025] {
+            let mut data = sample_config();
+            data["max_sessions"] = json!(value);
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("http.json");
+            std::fs::write(&path, data.to_string()).unwrap();
+            let error = run(path.to_str().unwrap(), false).unwrap_err();
+            assert_eq!(error.to_string(), "max_sessions must be within 1..=1024");
+        }
+    }
 }

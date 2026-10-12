@@ -45,9 +45,9 @@ Existing profile settings remain authoritative:
   below before using SSH/SFTP through the headless service; never bypass this check
 
 The command permission permits arbitrary non-interactive commands on saved SSH
-sessions, under each session's remote account. Existing risky-command approval
-rules still apply; without an operator approving through the authorized workflow,
-headless requests time out or are denied. OAuth never approves those prompts.
+sessions, under each session's remote account. XenTerm does not add a per-operation
+risk approval gate. Optional personal execution history is off by default and can
+be enabled in Settings > MCP & permissions; enabling history never grants access.
 
 The file permission is broad: clients may read/write remote paths accessible to
 the saved SSH account, upload local files readable by the service OS account, and
