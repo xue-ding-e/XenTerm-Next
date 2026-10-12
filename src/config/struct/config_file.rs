@@ -159,6 +159,10 @@ pub struct ConfigFile {
     /// wallpaper + tinted theme. Defaults to the "幻想 3048" built-in.
     #[serde(default = "default_wallpaper")]
     pub wallpaper: String,
+    /// Opt-in desktop terminal imagery. Kept separate from retired immersive settings
+    /// so an old built-in wallpaper never becomes enabled during an upgrade.
+    #[serde(default)]
+    pub wallpaper_settings: crate::wallpaper::WallpaperSettings,
     /// Explicit session groups/folders (#41), including empty ones so a folder
     /// can exist before any session is moved into it. "default" is implicit and
     /// not stored here.

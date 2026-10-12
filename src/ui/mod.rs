@@ -218,3 +218,8 @@ mod tests {
         );
     }
 }
+
+#[path = "impls/wallpaper_layer.rs"]
+pub(crate) mod wallpaper_layer;
+#[path = "impls/wallpaper_editor.rs"]
+mod wallpaper_editor;

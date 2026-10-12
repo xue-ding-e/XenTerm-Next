@@ -112,6 +112,49 @@ panels, so they stay attached to the window whose sessions they belong to.
 - **Font and cursor** — any installed monospace family plus a bundled one, size, line
   spacing, bold, and block / bar / underline cursors with a custom colour.
 
+### Static terminal wallpaper (opt-in)
+
+Open **Settings → Wallpaper**, import a PNG, JPEG, WebP or BMP, and enable the
+preview. **Apply** saves the complete draft; **Cancel changes** restores the saved
+settings, and **Reset draft to defaults** does not save. Profiles upgrading from
+before this feature start disabled, even with choices from the retired interface.
+
+- Cover, Contain, Stretch, Original and Tile; nine anchor presets, offsets and zoom.
+- Non-destructive crop, arbitrary rotation, quarter-turn shortcuts and both flips;
+  EXIF orientation is applied before editing.
+- Separate image opacity and dark readability overlay, brightness, saturation and
+  blur. These effects do not change text, explicit cell backgrounds, selections or
+  cursor rendering.
+- **Each terminal pane** repeats the layout independently. **Continuous terminal
+  canvas** aligns terminal images in window coordinates across split panes; it does
+  not make toolbars, sidebars, settings or dialogs transparent. The editor previews
+  one canvas. There is no automatic theme recolouring.
+
+Imports are local, immutable content-hash copies in the profile's `wallpapers/`
+folder. Original bytes, including metadata, are preserved; cancelling a draft may
+leave its imported original there. When moving a complete profile, carry this
+folder alongside `sessions.db`; session exports and WebDAV do not bundle images.
+Missing or invalid assets fall back to the terminal colour and report an error in
+the editor. No remote image URLs, animated backgrounds, SVG or video are supported.
+
+Limits: 32 MiB per imported file, 33,554,432 decoded pixels and 16,384 pixels per
+source edge. Processed textures are limited to 4,194,304 pixels and a 4,096-pixel
+edge; Original layout retains the logical source dimensions after downsampling.
+Decode/transform work is debounced, serialized off the UI thread and cached;
+these per-image limits are not a total application-memory cap.
+
+The control vocabulary draws on the official documentation for
+[Windows Terminal](https://learn.microsoft.com/en-us/windows/terminal/customize-settings/profile-appearance#background-images-and-icons),
+[IntelliJ IDEA](https://www.jetbrains.com/help/idea/setting-background-image.html)
+and [WezTerm](https://wezterm.org/config/lua/config/background.html).
+No wallpaper artwork or implementation code is copied from these projects.
+
+Verification commands: `cargo check --locked`, `cargo test --locked wallpaper`,
+`cargo test --locked`, and
+`cargo test --locked --no-default-features --features headless`.
+The implementation has Linux native GUI coverage; Windows and macOS native GUI
+behaviour still require platform testing.
+
 ### Files
 
 - **SFTP panel** that follows the terminal's `cd`, with a lazy-loading directory tree.

@@ -1359,6 +1359,32 @@ impl ConfigStore {
         self.cache.ui_scale = percent.clamp(80, 200);
     }
 
+    /// Managed wallpaper files live beside this profile's database.
+    pub fn wallpaper_asset_dir(&self) -> PathBuf {
+        self.path.parent().unwrap_or_else(|| std::path::Path::new(".")).join("wallpapers")
+    }
+
+    /// The desktop background is opt-in and does not affect terminal protocol data.
+    pub fn wallpaper_settings(&self) -> crate::wallpaper::WallpaperSettings {
+        self.cache.wallpaper_settings.normalized()
+    }
+
+    pub fn set_wallpaper_settings(&mut self, settings: crate::wallpaper::WallpaperSettings) {
+        self.cache.wallpaper_settings = settings.normalized();
+    }
+
+    /// Commit the complete editor draft once. A persistence conflict or failure
+    /// leaves both the saved preference and the live renderer on the old value.
+    pub fn save_wallpaper_settings(&mut self, settings: crate::wallpaper::WallpaperSettings) -> Result<()> {
+        let previous = self.cache.wallpaper_settings.clone();
+        self.set_wallpaper_settings(settings);
+        if let Err(error) = self.save() {
+            self.cache.wallpaper_settings = previous;
+            return Err(error);
+        }
+        Ok(())
+    }
+
     /// Immersive wallpaper id ("" = none).
     pub fn wallpaper(&self) -> &str {
         &self.cache.wallpaper
@@ -4383,3 +4409,58 @@ mod log_path_tests {
 #[cfg(test)]
 #[path = "mcp_access_mode_tests.rs"]
 mod mcp_access_mode_tests;
+
+#[cfg(test)]
+mod wallpaper_settings_tests {
+    use super::*;
+    use crate::wallpaper::WallpaperSettings;
+
+    fn fixture(path: PathBuf) -> ConfigStore {
+        let cache = ConfigFile::default();
+        ConfigStore {
+            path, backup_dir: None,
+            saved_state: std::sync::Mutex::new(SavedState::of_cache(&cache)).into(),
+            cache, key: [7; 32], keyring_enabled: false,
+        }
+    }
+
+    #[test]
+    fn wallpaper_legacy_configs_never_enable_new_renderer() {
+        for json in [r#"{}"#, r#"{"wallpaper":"builtin:ms","wallpaper_overlay":0.85}"#,
+            r#"{"wallpaper":"/old/custom.png"}"#] {
+            let config: ConfigFile = serde_json::from_str(json).unwrap();
+            assert!(!config.wallpaper_settings.enabled);
+            assert!(config.wallpaper_settings.source.is_empty());
+        }
+        assert!(!fresh_config().wallpaper_settings.enabled);
+    }
+
+    #[test]
+    fn wallpaper_settings_roundtrip_without_changing_legacy_preferences() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = fixture(dir.path().join("sessions.db"));
+        let legacy = store.wallpaper().to_owned();
+        let mut settings = WallpaperSettings::default();
+        settings.enabled = true; settings.rotation = 34.; settings.zoom = 1.25;
+        settings.source = format!("{}.png", "a".repeat(64));
+        settings.crop = [0.1, 0.2, 0.6, 0.5];
+        store.save_wallpaper_settings(settings.clone()).unwrap();
+        let (loaded, _) = ConfigStore::read_cache_snapshot(&store.path, &store.key).unwrap();
+        assert_eq!(loaded.wallpaper_settings, settings);
+        assert_eq!(loaded.wallpaper, legacy);
+        assert_eq!(store.wallpaper_asset_dir(), dir.path().join("wallpapers"));
+    }
+
+    #[test]
+    fn wallpaper_save_failure_rolls_back_live_preference() {
+        let dir = tempfile::tempdir().unwrap();
+        let blocked = dir.path().join("not-a-directory");
+        std::fs::write(&blocked, b"keep").unwrap();
+        let mut store = fixture(blocked.join("sessions.db"));
+        let before = store.wallpaper_settings();
+        let mut changed = before.clone(); changed.enabled = true; changed.zoom = 2.;
+        assert!(store.save_wallpaper_settings(changed).is_err());
+        assert_eq!(store.wallpaper_settings(), before);
+        assert_eq!(std::fs::read(blocked).unwrap(), b"keep");
+    }
+}

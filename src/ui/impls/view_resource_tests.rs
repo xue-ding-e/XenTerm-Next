@@ -27,6 +27,8 @@ fn fixture(
         TerminalView::new(
             "resource-tab".into(),
             TerminalSettings {
+                    wallpaper: Default::default(),
+                    wallpaper_asset_dir: Default::default(),
                 family: "test".into(),
                 font_size: 13,
                 bold: false,

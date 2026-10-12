@@ -101,6 +101,38 @@ XenTerm 是一个原生桌面终端客户端。它保留了大家喜欢 FinalShe
 - **字体与光标** —— 任意已安装的等宽字体，另有一款内置字体；字号、行距、粗体，
   以及方块 / 竖线 / 下划线光标和自定义光标颜色。
 
+### 静态终端壁纸（默认关闭）
+
+打开 **设置 → 壁纸**，导入 PNG、JPEG、WebP 或 BMP 并启用预览。
+**应用**才会保存完整草稿；**取消修改**恢复已保存设置，**恢复默认草稿**不会保存。
+升级前的配置默认保持关闭，包括曾使用旧界面背景选项的配置。
+
+- 覆盖、适应、拉伸、原尺寸、平铺；九宫格锚点、偏移和缩放。
+- 非破坏性裁剪、任意角度旋转、直角旋转快捷键和水平/垂直翻转；先应用 EXIF 方向。
+- 图片不透明度与黑色可读性遮罩分别控制，支持亮度、饱和度和模糊；
+  不改变文字、显式单元格背景、选区和光标。
+- **各终端面板**分别布局；**连续终端画布**按窗口坐标对齐分屏中的背景，
+  不会使工具栏、侧栏、设置或对话框透明。编辑器仅预览一个画布，不自动按主题重新着色。
+
+图片仅导入到当前配置的 `wallpapers/` 目录，按内容哈希保存不可变副本，保留原始字节与元数据。
+取消草稿可能留下已导入的原图。迁移完整配置时，请把该目录和 `sessions.db` 一起迁移；
+会话导出和 WebDAV 同步不打包图片。资源缺失或无效时回退为终端底色，并在编辑器显示错误。
+不支持远程图片 URL、动态背景、SVG 或视频。
+
+单文件上限 32 MiB，解码上限 33,554,432 像素且单边不超过 16,384 像素；
+处理后纹理上限 4,194,304 像素且单边不超过 4,096 像素。
+原尺寸模式在降采样后仍保留逻辑原图尺寸。解码/变换在后台防抖、串行执行并缓存；
+这些是单图片限制，不是整个应用的内存硬上限。
+
+控件概念参考 [Windows Terminal](https://learn.microsoft.com/en-us/windows/terminal/customize-settings/profile-appearance#background-images-and-icons)、
+[IntelliJ IDEA](https://www.jetbrains.com/help/idea/setting-background-image.html) 和
+[WezTerm](https://wezterm.org/config/lua/config/background.html) 的官方文档；
+未复制这些项目的壁纸素材或实现代码。
+
+验证命令：`cargo check --locked`、`cargo test --locked wallpaper`、
+`cargo test --locked` 和 `cargo test --locked --no-default-features --features headless`。
+Linux 原生界面的验证不能代替 Windows、macOS 原生交互验证；请以对应提交的 PR 验证记录为准。
+
 ### 文件
 
 - **SFTP 面板** —— 跟随终端的 `cd` 切换目录，带懒加载目录树。

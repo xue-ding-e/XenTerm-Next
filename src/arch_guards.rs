@@ -197,7 +197,7 @@ fn assert_no_ui_dependency_mention(module: &str) {
 /// is a build that needs a UI to compile.
 const TOOLKIT_FREE: &[&str] = &[
     "config", "core", "layout", "logging", "resource", "session", "sftp", "ssh", "terminal",
-    "tunnel",
+    "tunnel", "wallpaper",
 ];
 
 /// No toolkit in the framework-agnostic layers.
