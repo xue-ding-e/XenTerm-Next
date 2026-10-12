@@ -14,7 +14,9 @@ latest requirements prevail.
 
 This guide supplements the existing [Chinese README](README.zh.md), the
 [app test instructions](tests/app/README.md) and the per-feature documents; it
-neither replaces nor removes them.
+neither replaces nor removes them. AI-assisted contributors should start with the
+repository-root [AGENTS.md](AGENTS.md); it links back here rather than defining a
+second set of collaboration rules.
 
 ## Communication language
 
@@ -42,9 +44,10 @@ PRs with merge conflicts cannot be merged. Before requesting review, sync the ta
 branch, resolve conflicts, and re-check the affected code and tests. While the
 target branch keeps moving during review, please handle new conflicts promptly.
 
-What matters is that the post-resolution result is correct, the diff is clear, and
-the PR is mergeable. This guide does not promote anyone's personal rebase-only habit
-into a community rule, and it does not mandate rebase or merge.
+Correct conflict resolution, a clear diff and a mergeable result remain essential.
+New history recommendations are described separately in the
+[proposed linear-history and migration policy](#proposed-linear-history-and-migration-policy);
+their status is distinct from the maintainer-established requirements.
 
 ### Batch frequent, similar changes
 
@@ -88,6 +91,71 @@ Base your work on the target branch's current `Cargo.toml`, `Cargo.lock`, the
 actually enabled features, and the corresponding version's source code or
 documentation; do not copy interfaces straight from old branches, old tutorials or
 model memory.
+
+## Proposed linear-history and migration policy
+
+**Status: a policy proposal awaiting upstream maintainer acceptance.** The existing
+mainline contains merge commits, and the existing guide did not mandate rebase or
+merge. Do not present the new policy below as a previously established rule. Forks
+may adopt it within their own collaboration scope; upstream adoption, its effective
+date and exceptions require an explicit maintainer decision. Keep this section and
+its Chinese translation aligned. AI entry points and the PR template reference
+these sections rather than maintain another history policy.
+
+### Keep routine development history linear
+
+- Use short-lived branches for ordinary fixes and development on the same mainline.
+  Rebase onto the current target before review and organize coherent, verifiable
+  commits; avoid repeatedly merging main back into a topic branch.
+- Prefer **Squash and merge** for one reviewed topic. Use **Rebase and merge** when
+  several individually complete logical commits deserve preservation. Neither adds
+  an ordinary PR merge node to the mainline. There is no requirement to squash the
+  work branch into one commit after every PR update.
+- Group related fixes, listing each change, without combining unrelated features
+  merely to simplify the graph. After squash merging, start the next task from the
+  updated mainline rather than reusing the old topic history.
+- A merge commit is an exception for a substantial, independently evolving,
+  long-lived feature whose integration ancestry is important. Explain the reason
+  and obtain maintainer agreement first. Coming from a fork alone is not a reason.
+- Coordinate before rewriting a shared or published work branch. Keep a verified
+  recovery backup, reread the full remote SHA and use an explicit ref and expected
+  old SHA with `--force-with-lease` when replacement is needed. Never use bare
+  `--force`; stop if the remote changed.
+- Rerun affected checks after rebase, squash or conflict resolution. Green checks
+  on an old SHA are not validation of the rewritten SHA.
+
+### Review and execute history migration separately
+
+- Ordinary PR squash/rebase merging appends contributions to the target history;
+  it does not replace the target branch's existing ancestors. Full-history cleanup
+  requires a coordinated maintenance window and explicit ref cutover. Feature PR
+  approval does not implicitly authorize rewriting shared history.
+- Create and verify a restorable Git bundle, and back up all affected refs, Git
+  objects, release tags and assets (release assets require a separate backup; they
+  are not in the bundle). Keep old → new mappings and genuine contributor
+  attribution. When linearizing merges,
+  preserve the actual integrated snapshot, including conflict resolutions, rather
+  than blindly replaying side commits. Verify every mainline snapshot's tree.
+- Do not incorporate unapproved feature PRs into main as part of a historical
+  rewrite. Document PR dependencies, branch restacking, archival, tag migration
+  and release rebuilding separately.
+- Inspect automation side effects first: in the current
+  [release.yml](.github/workflows/release.yml), an upstream `main` push triggers
+  rolling beta publication, deleting and recreating the beta release and tag.
+  Coordinate a release freeze, asset backup, rebuild verification and resumption;
+  do not rely solely on
+  skip-CI commit messages.
+- Check permissions, branch rules and exact expected ref SHAs before cutover.
+  Replacement updates require explicit `--force-with-lease=<ref>:<expected-old-sha>`;
+  a lease without the expected SHA or bare force is not a substitute. Never bypass
+  protection or overwrite concurrent work. Read back target and unaffected refs,
+  and retain CI, release rebuild and acceptance evidence for the new SHAs. Rollback
+  also requires exact expected SHAs so it cannot erase work added after cutover.
+  If access is insufficient, explain the action, target and required permission
+  and obtain authorization before expanding access.
+- GitHub-managed historical `refs/pull/*` are not ordinary writable branches. Old
+  PR pages and commit links are not guaranteed to disappear. Collaborators should
+  obtain the new development branches without pushing the archived old graph back.
 
 ## Communication conventions
 
