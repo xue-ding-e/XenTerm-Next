@@ -51,6 +51,8 @@ fn fixture(cx: &mut TestAppContext) -> (Fixture, &mut VisualTestContext) {
             TerminalView::new(
                 "insert-fixture".into(),
                 TerminalSettings {
+                    wallpaper: Default::default(),
+                    wallpaper_asset_dir: Default::default(),
                     family: "test".into(),
                     font_size: 13,
                     bold: false,

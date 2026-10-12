@@ -34,6 +34,7 @@ mod tunnel;
 #[cfg(feature = "desktop")]
 mod ui;
 mod webdav;
+mod wallpaper;
 
 enum StartMode {
     Mcp,

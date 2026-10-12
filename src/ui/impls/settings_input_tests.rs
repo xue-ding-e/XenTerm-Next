@@ -845,3 +845,16 @@ fn colour_recent_palette_adds_only_successfully_applied_values(cx: &mut TestAppC
     click_colour("cursor-color-cancel", cx);
     assert_eq!(fixture.store.borrow().terminal_cursor_color(), "#00FF00");
 }
+
+#[gpui_kit::gpui::test]
+fn wallpaper_editor_entity_survives_settings_navigation(cx: &mut TestAppContext) {
+    let fixture = Fixture::new();
+    let (view, cx) = open(cx, &fixture, SettingsPageId::Wallpaper);
+    let original = view.read_with(cx, |view, _| view.wallpaper_editor.as_ref().unwrap().entity_id());
+    page(&view, SettingsPageId::Interface, cx);
+    page(&view, SettingsPageId::Wallpaper, cx);
+    let returned = view.read_with(cx, |view, _| view.wallpaper_editor.as_ref().unwrap().entity_id());
+    assert_eq!(original, returned, "navigation must preserve the uncommitted wallpaper editor");
+    assert!(!fixture.store.borrow().wallpaper_settings().enabled);
+    assert!(!fixture.directory.join("sessions.db").exists(), "navigation must not save a draft");
+}

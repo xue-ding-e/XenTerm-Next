@@ -102,6 +102,7 @@ pub(crate) enum SettingsAction {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SettingsPageId {
     Interface,
+    Wallpaper,
     TermFont,
     TermCursor,
     TermInput,
@@ -137,6 +138,7 @@ const NAV_SECTIONS: &[(&str, &str, &[SettingsPageId])] = &[
 const NAV_DIRECT: &[(SettingsPageId, &str, &str, IconName)] = &[
     // Single-page subject, kept direct like 界面 and 文件: a fold header over
     // one row is navigation noise.
+    (SettingsPageId::Wallpaper, "壁纸", "Wallpaper", IconName::Image),
     (SettingsPageId::Connections, "连接", "Connections", IconName::Plug),
     (SettingsPageId::McpPermissions, "MCP 与权限", "MCP & permissions", IconName::ShieldCheck),
     (SettingsPageId::Files, "文件", "Files", IconName::FolderOpen),
@@ -171,6 +173,7 @@ pub(crate) struct SettingsView {
     /// boundary, not after each character of a colour, URL or number.
     text_drafts: std::collections::HashMap<TextSetting, TextDraft>,
     color_editor: Option<CursorColorEditor>,
+    wallpaper_editor: Option<Entity<super::wallpaper_editor::WallpaperEditor>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -328,6 +331,7 @@ impl SettingsView {
             _webdav_password_subscription: None,
             text_drafts: std::collections::HashMap::new(),
             color_editor: None,
+            wallpaper_editor: None,
         }
     }
 
@@ -771,7 +775,18 @@ impl Render for SettingsView {
                 entry(self, *page, zh, en, *icon, cx)
             }));
 
+        if self.selected == SettingsPageId::Wallpaper {
+            let editor = self.wallpaper_editor.get_or_insert_with(|| {
+                let store = self.store.clone();
+                cx.new(|cx| super::wallpaper_editor::WallpaperEditor::new(store, window, cx))
+            }).clone();
+            return h_flex().size_full().min_w_0().child(sidebar)
+                .child(div().flex_1().min_w_0().h_full().overflow_hidden().child(editor))
+                .into_any_element();
+        }
+
         let page = match self.selected {
+            SettingsPageId::Wallpaper => unreachable!("wallpaper owns its isolated editor"),
             SettingsPageId::Interface => {
                 SettingPage::new(crate::i18n::t("界面", "Interface"))
                     .group(self.appearance_group(window, cx))
@@ -2300,6 +2315,7 @@ mod tests {
     fn every_page_appears_in_the_nav_tables_exactly_once() {
         let all = [
             SettingsPageId::Interface,
+            SettingsPageId::Wallpaper,
             SettingsPageId::TermFont,
             SettingsPageId::TermCursor,
             SettingsPageId::TermInput,
