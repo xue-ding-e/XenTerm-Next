@@ -2,7 +2,7 @@
 //! and paint only consumes a cached image. No terminal text or shell protocol changes.
 use std::{
     cell::RefCell,
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     path::PathBuf,
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -12,8 +12,8 @@ use std::{
 
 use crate::wallpaper::{Scope, WallpaperSettings};
 use gpui_kit::{
-    canvas, div, fill, point, prelude::*, px, size, Bounds, Context, IntoElement, Render,
-    RenderImage, Task, Window,
+    canvas, div, fill, point, prelude::*, px, size, App, Bounds, Context, Global, ImageId,
+    IntoElement, Render, RenderImage, Task, Window,
 };
 
 /// One bounded decode/transform operation across previews and native imports.
@@ -23,6 +23,38 @@ thread_local! {
     // A small shared cache lets split panes reuse one GPU image. Entities retain
     // their active image; old editor variations do not accumulate indefinitely.
     static IMAGES: RefCell<VecDeque<(String, CachedImage)>> = const { RefCell::new(VecDeque::new()) };
+}
+
+/// CPU cache references do not own GPU atlas entries. GPUI does not release a
+/// raw RenderImage's texture when its Arc is dropped, so track the live layers
+/// separately and release an image only after its last pane/preview lets go.
+#[derive(Default)]
+struct ImageOwners(HashMap<ImageId, usize>);
+impl Global for ImageOwners {}
+
+fn retain_image(image: &RenderImage, cx: &mut App) {
+    *cx.default_global::<ImageOwners>()
+        .0
+        .entry(image.id)
+        .or_default() += 1;
+}
+
+fn release_image(image: Arc<RenderImage>, cx: &mut App) {
+    let owners = &mut cx.default_global::<ImageOwners>().0;
+    let count = owners.get_mut(&image.id).expect("wallpaper image owner");
+    *count -= 1;
+    if *count != 0 {
+        return;
+    }
+    owners.remove(&image.id);
+    // Settings and release callbacks may run while their window is borrowed out
+    // of App. Defer until it is returned so drop_image reaches every window.
+    // A cached image can be reacquired before then; preserve its live texture.
+    cx.defer(move |cx| {
+        if !cx.default_global::<ImageOwners>().0.contains_key(&image.id) {
+            cx.drop_image(image, None);
+        }
+    });
 }
 
 #[derive(Clone)]
@@ -70,6 +102,8 @@ impl WallpaperLayer {
         asset_dir: PathBuf,
         cx: &mut Context<Self>,
     ) -> Self {
+        cx.on_release(|layer, cx| layer.replace_image(None, cx))
+            .detach();
         let mut layer = Self {
             settings: WallpaperSettings::default(),
             asset_dir,
@@ -86,6 +120,15 @@ impl WallpaperLayer {
         };
         layer.set_settings(settings, cx);
         layer
+    }
+
+    fn replace_image(&mut self, image: Option<Arc<RenderImage>>, cx: &mut App) {
+        if let Some(image) = &image {
+            retain_image(image, cx);
+        }
+        if let Some(previous) = std::mem::replace(&mut self.image, image) {
+            release_image(previous, cx);
+        }
     }
 
     pub(crate) fn error(&self) -> Option<&str> {
@@ -123,7 +166,7 @@ impl WallpaperLayer {
         self.processing_key = key.clone();
         self.task = None;
         self.error = None;
-        self.image = None;
+        self.replace_image(None, cx);
         self.loading = false;
         self.painted = false;
         if !self.settings.enabled || self.settings.source.is_empty() {
@@ -139,7 +182,7 @@ impl WallpaperLayer {
         }) {
             self.dimensions = image.logical_size;
             self.repeats = image.repeats;
-            self.image = Some(image.image);
+            self.replace_image(Some(image.image), cx);
             cx.notify();
             return;
         }
@@ -213,7 +256,7 @@ impl WallpaperLayer {
                     Ok(cached) => {
                         this.dimensions = cached.logical_size;
                         this.repeats = cached.repeats;
-                        this.image = Some(cached.image.clone());
+                        this.replace_image(Some(cached.image.clone()), cx);
                         IMAGES.with(|cache| {
                             let mut cache = cache.borrow_mut();
                             cache.retain(|(k, _)| k != &key);
@@ -223,7 +266,12 @@ impl WallpaperLayer {
                             }
                         });
                     }
-                    Err(error) => this.error = Some(format!("{error:#}")),
+                    Err(error) => {
+                        this.error = Some(format!(
+                            "{}: {error:#}",
+                            crate::i18n::t("壁纸加载失败", "Wallpaper loading failed")
+                        ));
+                    }
                 }
                 cx.notify();
             });
@@ -336,21 +384,31 @@ impl Render for WallpaperLayer {
                                 // the worker. Repetition preserves anchor phase and avoids
                                 // changing Tile into Stretch under an extreme zoom.
                                 if xs.len().saturating_mul(ys.len()) > 4096 {
-                                    failure = Some("Wallpaper tile layout exceeds the rendering budget; increase zoom".into());
+                                    failure = Some(
+                                        crate::i18n::t(
+                                            "壁纸平铺超出渲染预算，请增大缩放倍数。",
+                                            "Wallpaper tile layout exceeds the rendering budget; increase zoom.",
+                                        )
+                                        .into(),
+                                    );
                                 } else {
-                                'tiles: for y in ys {
-                                    for &x in &xs {
-                                        if let Err(error) = draw(x, y, window) {
-                                            failure =
-                                                Some(format!("Wallpaper upload failed: {error:#}"));
-                                            break 'tiles;
+                                    'tiles: for y in ys {
+                                        for &x in &xs {
+                                            if let Err(error) = draw(x, y, window) {
+                                                failure = Some(format!(
+                                                    "{}: {error:#}",
+                                                    crate::i18n::t("壁纸上传失败", "Wallpaper upload failed")
+                                                ));
+                                                break 'tiles;
+                                            }
                                         }
                                     }
                                 }
-                                }
-
                             } else if let Err(error) = draw(layout.x, layout.y, window) {
-                                failure = Some(format!("Wallpaper upload failed: {error:#}"));
+                                failure = Some(format!(
+                                    "{}: {error:#}",
+                                    crate::i18n::t("壁纸上传失败", "Wallpaper upload failed")
+                                ));
                             }
                             // A decoded image is not yet a usable GPU image. Make upload
                             // failure visible to the editor before Apply becomes available.
@@ -389,6 +447,128 @@ impl Render for WallpaperLayer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui_kit::gpui::{TestAppContext, VisualTestContext};
+
+    fn test_image() -> Arc<RenderImage> {
+        Arc::new(RenderImage::new([image::Frame::new(
+            image::RgbaImage::from_pixel(2, 2, image::Rgba([0, 0, 255, 255])),
+        )]))
+    }
+
+    fn test_layer(
+        image: Arc<RenderImage>,
+        cx: &mut TestAppContext,
+    ) -> gpui_kit::Entity<WallpaperLayer> {
+        cx.new(|cx| {
+            // Empty source avoids background decoding; this fixture supplies the
+            // same RenderImage that a successful worker/cache lookup would use.
+            let mut settings = WallpaperSettings::default();
+            settings.enabled = true;
+            let mut layer = WallpaperLayer::new_in(settings, PathBuf::new(), cx);
+            layer.replace_image(Some(image), cx);
+            layer
+        })
+    }
+
+    fn paint_test_image(image: Arc<RenderImage>, cx: &mut VisualTestContext) {
+        cx.draw(point(px(0.), px(0.)), size(px(20.), px(20.)), |_, _| {
+            canvas(
+                |bounds, _, _| bounds,
+                move |bounds, _, window, _| {
+                    window
+                        .paint_image(bounds, bounds, (0.).into(), image, 0, false)
+                        .unwrap();
+                },
+            )
+            .size_full()
+        });
+    }
+
+    #[gpui_kit::gpui::test]
+    fn wallpaper_atlas_release_preserves_shared_panes_and_cleans_all_windows(
+        cx: &mut TestAppContext,
+    ) {
+        let mut first_window = cx.add_empty_window().clone();
+        let mut second_window = cx.add_empty_window().clone();
+        // Keeping these Arcs also models pixels retained by the bounded caches.
+        let original = test_image();
+        let replacement = test_image();
+        let first = test_layer(original.clone(), cx);
+        let second = test_layer(original.clone(), cx);
+        paint_test_image(original.clone(), &mut first_window);
+        paint_test_image(original.clone(), &mut second_window);
+        paint_test_image(replacement.clone(), &mut first_window);
+
+        first_window.update(|_, cx| {
+            first.update(cx, |layer, cx| {
+                layer.replace_image(Some(replacement.clone()), cx)
+            });
+        });
+        assert!(first_window.update(|window, _| window.has_image_atlas_entry(&original)));
+        assert!(second_window.update(|window, _| window.has_image_atlas_entry(&original)));
+
+        drop(second);
+        cx.update(|_| {});
+        cx.run_until_parked();
+        assert!(!first_window.update(|window, _| window.has_image_atlas_entry(&original)));
+        assert!(!second_window.update(|window, _| window.has_image_atlas_entry(&original)));
+        assert!(first_window.update(|window, _| window.has_image_atlas_entry(&replacement)));
+
+        drop(first);
+        cx.update(|_| {});
+        cx.run_until_parked();
+        assert!(!first_window.update(|window, _| window.has_image_atlas_entry(&replacement)));
+    }
+
+    #[gpui_kit::gpui::test]
+    fn wallpaper_disable_releases_gpu_texture_but_cached_pixels_can_be_reused(
+        cx: &mut TestAppContext,
+    ) {
+        let mut window = cx.add_empty_window().clone();
+        let cached = test_image();
+        let layer = test_layer(cached.clone(), cx);
+        paint_test_image(cached.clone(), &mut window);
+        window.update(|_, cx| {
+            layer.update(cx, |layer, cx| {
+                layer.set_settings(WallpaperSettings::default(), cx)
+            });
+        });
+        assert!(!window.update(|window, _| window.has_image_atlas_entry(&cached)));
+
+        window.update(|_, cx| {
+            layer.update(cx, |layer, cx| {
+                layer.replace_image(Some(cached.clone()), cx)
+            });
+        });
+        paint_test_image(cached.clone(), &mut window);
+        assert!(window.update(|window, _| window.has_image_atlas_entry(&cached)));
+        drop(layer);
+        cx.update(|_| {});
+        cx.run_until_parked();
+        assert!(!window.update(|window, _| window.has_image_atlas_entry(&cached)));
+    }
+
+    #[gpui_kit::gpui::test]
+    fn wallpaper_deferred_release_keeps_an_image_reacquired_in_the_same_update(
+        cx: &mut TestAppContext,
+    ) {
+        let mut window = cx.add_empty_window().clone();
+        let cached = test_image();
+        let layer = test_layer(cached.clone(), cx);
+        paint_test_image(cached.clone(), &mut window);
+        window.update(|_, cx| {
+            layer.update(cx, |layer, cx| {
+                layer.replace_image(None, cx);
+                layer.replace_image(Some(cached.clone()), cx);
+            });
+        });
+        assert!(window.update(|window, _| window.has_image_atlas_entry(&cached)));
+        drop(layer);
+        cx.update(|_| {});
+        cx.run_until_parked();
+        assert!(!window.update(|window, _| window.has_image_atlas_entry(&cached)));
+    }
+
     #[test]
     fn tiny_tile_supertile_preserves_exact_pattern_with_bounded_memory() {
         let source =
