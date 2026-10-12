@@ -71,7 +71,7 @@ impl ExecutionGuard {
             "upload_file" => format!(
                 "{} → {}",
                 text_argument(arguments, "local_path"),
-                text_argument(arguments, "remote_path")
+                text_argument(arguments, "remote_directory")
             ),
             "download_file" => format!(
                 "{} → {}",

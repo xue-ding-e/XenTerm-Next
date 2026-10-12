@@ -24,7 +24,7 @@ def settings(profile, **values):
 
 
 def records(profile):
-    return [json.loads(line) for day in (profile / 'mcp-executions').glob('executions-*.jsonl')
+    return [json.loads(line) for day in sorted((profile / 'mcp-executions').glob('executions-*.jsonl'))
             for line in day.read_text(encoding='utf-8').splitlines()]
 
 
@@ -150,6 +150,18 @@ async def verify(executable):
                     assert 'synthetic-output-never-recorded' not in raw
                     assert 'synthetic-stderr-never-recorded' not in raw
                     assert 'synthetic-policy-secret' not in raw
+
+                    # Rejected uploads still record both endpoints using the public tool schema.
+                    # A missing local file prevents any transfer or remote filesystem change.
+                    missing_file = str(Path(temporary) / 'missing-upload.txt')
+                    upload = await asyncio.wait_for(client.call_tool('upload_file', {
+                        'session_id': 'fixture', 'local_path': missing_file,
+                        'remote_directory': '/fixture-upload-target'}), timeout=8)
+                    assert upload.is_error, 'missing local upload unexpectedly succeeded'
+                    saved = records(profile)
+                    assert len(saved) == 2 and saved[-1]['operation'] == 'upload_file'
+                    assert saved[-1]['command'] == f'{missing_file} → /fixture-upload-target'
+                    assert saved[-1]['outcome'] == 'failed'
 
                     # Opting out while an operation is running also stops its final write.
                     running = asyncio.create_task(execute('fixture-delay'))
