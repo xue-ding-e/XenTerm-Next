@@ -107,3 +107,17 @@ fn execution_history_defaults_off_and_old_approval_settings_are_ignored() {
     assert!(saved.get("mcp_approval_enabled").is_none());
     assert!(saved.get("mcp_audit_retention_days").is_none());
 }
+
+#[test]
+fn fresh_execution_history_matches_missing_field_defaults() {
+    let store = policy_store(fresh_config());
+    let deserialized: ConfigFile = serde_json::from_str("{}").unwrap();
+    assert!(!store.mcp_execution_log_enabled());
+    assert_eq!(store.cache.mcp_execution_log_retention_days, 7);
+    assert_eq!(store.mcp_execution_log_retention_days(), 7);
+    assert_eq!(store.cache.mcp_execution_log_retention_days,
+        deserialized.mcp_execution_log_retention_days);
+    let restored: ConfigFile = serde_json::from_value(
+        serde_json::to_value(&store.cache).unwrap()).unwrap();
+    assert_eq!(policy_store(restored).mcp_execution_log_retention_days(), 7);
+}

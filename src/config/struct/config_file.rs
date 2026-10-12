@@ -29,7 +29,7 @@ fn default_true() -> bool {
     true
 }
 
-fn default_execution_log_retention() -> u64 {
+pub(crate) fn default_execution_log_retention() -> u64 {
     7
 }
 

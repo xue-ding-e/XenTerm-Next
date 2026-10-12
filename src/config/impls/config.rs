@@ -302,6 +302,9 @@ fn fresh_config() -> ConfigFile {
         sidebar_dock: "right".to_string(),
         wallpaper_overlay: DEFAULT_WALLPAPER_OVERLAY,
         defaults_rev: DEFAULTS_REV,
+        // Rust Default does not apply serde field defaults. Keep new profiles
+        // consistent with existing profiles that predate execution history.
+        mcp_execution_log_retention_days: default_execution_log_retention(),
         ..ConfigFile::default()
     }
 }
