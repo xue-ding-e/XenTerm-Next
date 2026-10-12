@@ -1693,28 +1693,52 @@ impl ConfigStore {
     pub fn set_mcp_enabled(&mut self, enabled: bool) {
         self.cache.mcp_enabled = enabled;
     }
+    /// The legacy all-capabilities/no-approval combination already grants
+    /// full access. Other legacy combinations retain their exact gates.
+    pub fn mcp_access_mode(&self) -> McpAccessMode {
+        self.cache.mcp_access_mode.unwrap_or_else(|| {
+            if self.cache.mcp_use_saved_credentials
+                && self.cache.mcp_allow_commands
+                && self.cache.mcp_allow_file_transfers
+                && !self.cache.mcp_approval_enabled
+            {
+                McpAccessMode::Full
+            } else {
+                McpAccessMode::Restricted
+            }
+        })
+    }
+
+    pub fn set_mcp_access_mode(&mut self, mode: McpAccessMode) {
+        self.cache.mcp_access_mode = Some(mode);
+    }
+
     pub fn mcp_use_saved_credentials(&self) -> bool {
-        self.cache.mcp_use_saved_credentials
+        self.mcp_access_mode() == McpAccessMode::Full || self.cache.mcp_use_saved_credentials
     }
     pub fn set_mcp_use_saved_credentials(&mut self, enabled: bool) {
         self.cache.mcp_use_saved_credentials = enabled;
     }
     pub fn mcp_allow_commands(&self) -> bool {
-        self.cache.mcp_allow_commands
+        self.mcp_access_mode() == McpAccessMode::Full || self.cache.mcp_allow_commands
     }
     pub fn set_mcp_allow_commands(&mut self, enabled: bool) {
         self.cache.mcp_allow_commands = enabled;
     }
     pub fn mcp_allow_file_transfers(&self) -> bool {
-        self.cache.mcp_allow_file_transfers
+        self.mcp_access_mode() == McpAccessMode::Full || self.cache.mcp_allow_file_transfers
     }
     pub fn set_mcp_allow_file_transfers(&mut self, enabled: bool) {
         self.cache.mcp_allow_file_transfers = enabled;
     }
-    /// Whether risky MCP commands need a human's approval at the main window
-    /// before they run. On by default; the setter exists for the settings page.
+    /// The effective risk gate: full access disables it, restricted access
+    /// requires it, and a legacy profile retains its stored approval choice.
     pub fn mcp_approval_enabled(&self) -> bool {
-        self.cache.mcp_approval_enabled
+        match self.cache.mcp_access_mode {
+            Some(McpAccessMode::Full) => false,
+            Some(McpAccessMode::Restricted) => true,
+            None => self.cache.mcp_approval_enabled,
+        }
     }
     pub fn set_mcp_approval_enabled(&mut self, enabled: bool) {
         self.cache.mcp_approval_enabled = enabled;
@@ -4383,3 +4407,7 @@ mod log_path_tests {
         assert_eq!(user_log_dir_from_config(config, false), config.join("log"));
     }
 }
+
+#[cfg(test)]
+#[path = "mcp_access_mode_tests.rs"]
+mod mcp_access_mode_tests;

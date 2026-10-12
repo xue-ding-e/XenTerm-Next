@@ -1,7 +1,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{OutputHighlightRule, QuickCommand, Secret, Session};
+use super::{McpAccessMode, OutputHighlightRule, QuickCommand, Secret, Session};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WslProfile {
@@ -30,14 +30,14 @@ fn default_true() -> bool {
 }
 
 fn default_approval_timeout() -> u64 {
-    120
+    60
 }
 
 /// The serde twin of [`default_approval_timeout`], used by fields that outlive
 /// the config struct itself — the approval request files carry their asker's
 /// deadline, and an old file without the field still parses.
 pub fn default_approval_timeout_value() -> u64 {
-    120
+    default_approval_timeout()
 }
 
 fn default_risky_patterns() -> Vec<String> {
@@ -361,6 +361,10 @@ pub struct ConfigFile {
     /// Enable the local stdio MCP server (`xenterm mcp serve`).
     #[serde(default = "default_mcp_preview_enabled")]
     pub mcp_enabled: bool,
+    /// Explicit access policy. Missing preserves the legacy capability and
+    /// approval switches; selecting Full never overwrites those preferences.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_access_mode: Option<McpAccessMode>,
     /// Allow MCP tools to use credentials already stored by XenTerm. Secrets
     /// remain internal and are never included in protocol responses.
     #[serde(default = "default_mcp_preview_enabled")]

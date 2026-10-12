@@ -14,4 +14,4 @@ pub(crate) use structs::Frontend;
 pub(crate) use structs::approval;
 pub(crate) use structs::risk;
 
-pub(crate) use tools::call;
+pub(crate) use tools::{access_policy, call};

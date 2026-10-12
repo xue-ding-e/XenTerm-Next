@@ -957,9 +957,46 @@ impl SettingsView {
         appearance
     }
 
-    /// The MCP server's own switches.
+    /// The MCP server switch and its saved access policy.
     fn mcp_permissions_groups(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Vec<SettingGroup> {
         let store = self.store.clone();
+        let mode = store.borrow().mcp_access_mode();
+        let current_mode = SharedString::from(mode.as_str());
+        let store_for_mode = store.clone();
+        let view = cx.entity().downgrade();
+        let access_mode = SettingField::dropdown(
+            vec![
+                (
+                    SharedString::from("restricted"),
+                    SharedString::from(crate::i18n::t("受限访问", "Restricted access")),
+                ),
+                (
+                    SharedString::from("full"),
+                    SharedString::from(crate::i18n::t("完全访问", "Full access")),
+                ),
+            ],
+            move |_| current_mode.clone(),
+            move |value, cx| {
+                if let Some(mode) = crate::config::McpAccessMode::parse(value.as_ref()) {
+                    persist(
+                        &store_for_mode,
+                        |s| s.set_mcp_access_mode(mode),
+                        "the MCP access mode",
+                    );
+                    if let Some(view) = view.upgrade() {
+                        let _ = view.update(cx, |_, cx| cx.notify());
+                    }
+                }
+            },
+        );
+
+        let access_group = SettingGroup::new()
+            .title(crate::i18n::t("访问模式", "Access mode"))
+            .item(SettingItem::new(crate::i18n::t("MCP 访问模式", "MCP access mode"), access_mode)
+                .description(crate::i18n::t(
+                    "受限访问按权限规则运行；完全访问允许 SSH 命令和文件操作，无需人工审批。实际权限由 SSH 账号和服务器决定。",
+                    "Restricted access follows permission rules. Full access allows SSH commands and file operations without approval. The SSH account and server determine the actual permissions.",
+                )));
 
         // ---- MCP server ---------------------------------------------------
         let store_for_mcp = store.clone();
@@ -1088,20 +1125,6 @@ impl SettingsView {
         // The risk-approval gate. A caller nobody watches can already ask for
         // anything it has permission for; these fields decide which of those
         // asks a human at the main window gets to veto first.
-        let store_for_approval = store.clone();
-        let approval_enabled = {
-            let current = store.borrow().mcp_approval_enabled();
-            SettingField::switch(
-                move |_| current,
-                move |value, _| {
-                    persist(
-                        &store_for_approval,
-                        |s| s.set_mcp_approval_enabled(value),
-                        "the risky-command approval switch",
-                    )
-                },
-            )
-        };
         let store_for_timeout = store.clone();
         let approval_timeout = {
             let current = store.borrow().mcp_approval_timeout_secs() as f64;
@@ -1195,23 +1218,20 @@ impl SettingsView {
                     .into_any_element()
             },
         );
+        let approval_description = if store.borrow().mcp_approval_enabled() {
+            crate::i18n::t(
+                "命中下列模式或目录的命令和文件操作需人工确认；无人确认或超时则拒绝。",
+                "Commands and file operations matching a pattern or directory require confirmation. No answer or a timeout refuses the operation.",
+            )
+        } else {
+            crate::i18n::t(
+                "风险审批目前已关闭。切换到受限访问可启用审批；完全访问用于无需审批的自动化。",
+                "Risk approval is currently off. Select restricted access to enable approval, or full access for unattended automation.",
+            )
+        };
         let approval_group = SettingGroup::new()
             .title(crate::i18n::t("风险命令审批", "Risky command approval"))
-            .description(crate::i18n::t(
-                "MCP 执行命中下列模式或目录的命令时,先在主窗口弹出人工审批;无人确认或超时一律拒绝。",
-                "When an MCP command hits a pattern or directory below, the main window asks \
-                 a human first. No answer or a timeout means no.",
-            ))
-            .item(
-                SettingItem::new(
-                    crate::i18n::t("启用风险审批", "Require approval"),
-                    approval_enabled,
-                )
-                .description(crate::i18n::t(
-                    "对下面命中的命令,先等人工批准再执行;关闭后所有命令直接执行。",
-                    "Hold matching commands for approval; off runs everything at once.",
-                )),
-            )
+            .description(approval_description)
             .item(
                 SettingItem::new(crate::i18n::t("审批超时(秒)", "Approval timeout (s)"), approval_timeout)
                     .description(crate::i18n::t(
@@ -1254,7 +1274,11 @@ impl SettingsView {
                 )),
             );
 
-        vec![mcp_server, unattended, approval_group]
+        if mode == crate::config::McpAccessMode::Full {
+            vec![access_group, mcp_server]
+        } else {
+            vec![access_group, mcp_server, unattended, approval_group]
+        }
     }
 
     /// The 字体 and 光标 pages' groups, built together: the cursor's fields read

@@ -18,6 +18,7 @@ pub(crate) async fn call(name: &str, arguments: &Value, frontend: Frontend) -> R
 
 async fn call_inner(name: &str, arguments: &Value, frontend: Frontend) -> Result<Value> {
     match name {
+        "get_access_policy" => get_access_policy(arguments, frontend),
         "list_sessions" => list_sessions(arguments, frontend),
         "get_session" => get_session(arguments, frontend),
         "import_sessions" => import_sessions(arguments, frontend),
@@ -28,6 +29,29 @@ async fn call_inner(name: &str, arguments: &Value, frontend: Frontend) -> Result
         "download_file" => download_file(arguments, frontend).await,
         _ => Err(anyhow!("unknown tool: {name}")),
     }
+}
+
+pub(crate) fn access_policy(store: &ConfigStore) -> Value {
+    json!({
+        "mode": store.mcp_access_mode(),
+        "mcp_enabled": store.mcp_enabled(),
+        "use_saved_credentials": store.mcp_use_saved_credentials(),
+        "allow_commands": store.mcp_allow_commands(),
+        "allow_file_transfers": store.mcp_allow_file_transfers(),
+        "approval_enabled": store.mcp_approval_enabled(),
+        "approval_timeout_seconds": store.mcp_approval_timeout_secs(),
+    })
+}
+
+fn get_access_policy(arguments: &Value, frontend: Frontend) -> Result<Value> {
+    let object = arguments
+        .as_object()
+        .ok_or_else(|| anyhow!("access policy arguments must be an object"))?;
+    if !object.is_empty() {
+        return Err(anyhow!("get_access_policy is read-only and accepts no arguments"));
+    }
+    let store = load_store(frontend)?;
+    Ok(access_policy(&store))
 }
 
 /// Import is append-only, preview-by-default for protocol callers, and requires
@@ -129,7 +153,7 @@ async fn download_file(arguments: &Value, frontend: Frontend) -> Result<Value> {
 fn enforce_transfer_permissions(store: &ConfigStore, frontend: Frontend) -> Result<()> {
     if frontend.is_unattended() && !store.mcp_allow_file_transfers() {
         return Err(anyhow!(
-            "file transfers are disabled in Settings > Interface > MCP"
+            "file transfers are disabled in Settings > MCP & permissions"
         ));
     }
     Ok(())
@@ -265,7 +289,7 @@ fn sftp_context(
     let store = load_store(frontend)?;
     if frontend.is_unattended() && !store.mcp_use_saved_credentials() {
         return Err(anyhow!(
-            "using saved credentials is disabled in Settings > Interface > MCP"
+            "using saved credentials is disabled in Settings > MCP & permissions"
         ));
     }
     let id = required_string(arguments, "session_id")?;
@@ -290,7 +314,7 @@ fn load_store(frontend: Frontend) -> Result<ConfigStore> {
     // is the MCP server's own on-switch: turning the server off must stop MCP
     // clients and must leave everything else working, including a plugin.
     if frontend.is_mcp() && !store.mcp_enabled() {
-        return Err(anyhow!("MCP is disabled in Settings > Interface > MCP"));
+        return Err(anyhow!("MCP is disabled in Settings > MCP & permissions"));
     }
     Ok(store)
 }
@@ -302,7 +326,7 @@ fn list_sessions(arguments: &Value, frontend: Frontend) -> Result<Value> {
     // together with everything else that reaches the sessions (audit L-12).
     if frontend.is_unattended() && !store.mcp_use_saved_credentials() {
         return Err(anyhow!(
-            "listing sessions is disabled in Settings > Interface > MCP"
+            "listing sessions is disabled in Settings > MCP & permissions"
         ));
     }
     let group = optional_string(arguments, "group")?;
@@ -319,7 +343,7 @@ fn get_session(arguments: &Value, frontend: Frontend) -> Result<Value> {
     let store = load_store(frontend)?;
     if frontend.is_unattended() && !store.mcp_use_saved_credentials() {
         return Err(anyhow!(
-            "listing sessions is disabled in Settings > Interface > MCP"
+            "listing sessions is disabled in Settings > MCP & permissions"
         ));
     }
     let id = required_string(arguments, "session_id")?;
@@ -333,12 +357,12 @@ async fn run_command(arguments: &Value, frontend: Frontend) -> Result<Value> {
     let store = load_store(frontend)?;
     if frontend.is_unattended() && !store.mcp_use_saved_credentials() {
         return Err(anyhow!(
-            "using saved credentials is disabled in Settings > Interface > MCP"
+            "using saved credentials is disabled in Settings > MCP & permissions"
         ));
     }
     if frontend.is_unattended() && !store.mcp_allow_commands() {
         return Err(anyhow!(
-            "arbitrary command execution is disabled in Settings > Interface > MCP"
+            "arbitrary command execution is disabled in Settings > MCP & permissions"
         ));
     }
 
