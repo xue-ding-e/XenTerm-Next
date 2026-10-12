@@ -248,3 +248,87 @@ fn printable_text_and_existing_control_keys_are_unchanged(cx: &mut TestAppContex
         assert_eq!(raw_input(&mut fixture), expected, "{chord}");
     }
 }
+
+#[gpui_kit::gpui::test]
+fn wallpaper_bounds_follow_the_grid_and_exclude_status_and_find_bars(cx: &mut TestAppContext) {
+    use crate::wallpaper::{Scope, WallpaperSettings};
+    let (fixture, cx) = fixture(cx);
+    cx.simulate_resize(gpui_kit::size(px(800.), px(500.)));
+    for scope in [Scope::TerminalPane, Scope::ContinuousTerminalCanvas] {
+        for padding in [false, true] {
+            for (status_open, find_open) in
+                [(false, false), (true, false), (false, true), (true, true)]
+            {
+                fixture.view.update(cx, |view, cx| {
+                    // Geometry must be correct before an image finishes loading too.
+                    let settings = WallpaperSettings {
+                        enabled: true,
+                        scope,
+                        ..Default::default()
+                    };
+                    view.wallpaper = Some(cx.new(|cx| {
+                        super::super::wallpaper_layer::WallpaperLayer::new_in(
+                            settings,
+                            Default::default(),
+                            cx,
+                        )
+                    }));
+                    view.wallpaper_enabled = true;
+                    view.padding = padding;
+                    view.conn_state = 1;
+                    view.status = status_open.then(|| "Connected to test host".into());
+                    view.find_open = find_open;
+                    view.find_height = if find_open { FIND_BAR_HEIGHT } else { 0. };
+                    view.find_query = "test".into();
+                    cx.notify();
+                });
+                draw(cx);
+                let wallpaper = cx
+                    .debug_bounds("terminal-wallpaper")
+                    .expect("wallpaper host");
+                let container = cx
+                    .debug_bounds("terminal-grid-container")
+                    .expect("grid container");
+                let grid = fixture
+                    .view
+                    .read_with(cx, |view, _| view.grid_bounds.get().unwrap());
+                assert_eq!(wallpaper, container,
+                    "wallpaper must use grid bounds: scope={scope:?}, padding={padding}, status={status_open}, find={find_open}");
+                if !padding {
+                    assert_eq!(
+                        wallpaper, grid,
+                        "unpadded wallpaper and terminal cells share bounds"
+                    );
+                } else {
+                    assert!(
+                        grid.origin.x > wallpaper.origin.x && grid.origin.y > wallpaper.origin.y
+                    );
+                    assert!(grid.bottom_right().x < wallpaper.bottom_right().x);
+                    assert!(grid.bottom_right().y < wallpaper.bottom_right().y);
+                }
+                for (selector, visible) in [
+                    ("terminal-status-line", status_open),
+                    ("terminal-find-bar", find_open),
+                ] {
+                    let bar = cx.debug_bounds(selector);
+                    assert_eq!(bar.is_some(), visible, "{selector}");
+                    if let Some(bar) = bar {
+                        assert!(bar.size.height > px(0.));
+                        assert!(bar.bottom_right().y <= wallpaper.origin.y,
+                            "{selector} must remain above the wallpaper, even while both bars are open");
+                    }
+                }
+            }
+        }
+    }
+    fixture.view.update(cx, |view, cx| {
+        view.wallpaper = None;
+        view.wallpaper_enabled = false;
+        cx.notify();
+    });
+    draw(cx);
+    assert!(
+        cx.debug_bounds("terminal-wallpaper").is_none(),
+        "disabled wallpaper adds no layer"
+    );
+}

@@ -1510,7 +1510,6 @@ impl Render for TerminalView {
             .flex()
             .flex_col()
             .bg(background)
-            .when_some(self.wallpaper.clone(), |this, layer| this.child(div().absolute().inset_0().child(layer)))
             .track_focus(&self.focus)
             // The role, and the reason this line exists: `track_focus` alone registers a
             // focus handle, and an accessibility client that asks what has focus is told
@@ -1608,6 +1607,7 @@ impl Render for TerminalView {
                 // is also in phase 0, and "Not connected" must not spin.
                 this.child(
                     h_flex()
+                        .debug_selector(|| "terminal-status-line".into())
                         .w_full()
                         .gap_2()
                         .px_2()
@@ -1640,6 +1640,7 @@ impl Render for TerminalView {
                 let height = px(self.find_height);
                 this.child(
                     div()
+                        .debug_selector(|| "terminal-find-bar".into())
                         .w_full()
                         .flex_shrink_0()
                         .h(height)
@@ -1683,7 +1684,10 @@ impl Render for TerminalView {
             // rather than a padded wrapper, because padding does not offset an
             // absolutely positioned child, and a wrapper that only holds one is
             // a box of zero height.
-            .child(div().flex_1().relative().child(
+            .child(div().debug_selector(|| "terminal-grid-container".into()).flex_1().relative()
+                // Keep terminal imagery below the status/find bars, including their animations.
+                .when_some(self.wallpaper.clone(), |this, layer| this.child(div().debug_selector(|| "terminal-wallpaper".into()).absolute().inset_0().child(layer)))
+                .child(
                 div()
                     .absolute()
                     .when(self.padding, |this| {
