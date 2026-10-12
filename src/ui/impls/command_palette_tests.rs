@@ -35,6 +35,7 @@ fn fixture(cx: &mut TestAppContext) -> (Entity<Shell>, &mut VisualTestContext) {
                 pages: Pages::new(terminal),
                 window_width,
                 webdav_task: None,
+                persistence_poll: None,
                 process_window: Detached::new(process_window_title),
                 execution_log_window: crate::ui::ExecutionLogWindowHandle::new(),
                 system_info_window: Detached::new(system_info_window_title),
