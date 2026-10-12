@@ -43,7 +43,7 @@ pub(crate) enum CommandId {
     Tunnels,
     Processes,
     SystemInfo,
-    AuditLog,
+    ExecutionLog,
     SplitRight,
     SplitDown,
     CloseTab,

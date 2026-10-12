@@ -15,10 +15,8 @@
 mod actions;
 #[path = "impls/auth_dialogs.rs"]
 mod auth_dialogs;
-#[path = "impls/approval_window.rs"]
-mod approval_window;
-#[path = "impls/audit_window.rs"]
-mod audit_window;
+#[path = "impls/execution_log_window.rs"]
+mod execution_log_window;
 // The folding chevron every group list shares: one icon rotated, not two swapped.
 #[path = "impls/chevron.rs"]
 mod chevron;
@@ -97,7 +95,7 @@ mod toolkit_regression_tests;
 #[path = "../../tests/app/ui_animations/mod.rs"]
 mod ui_animation_probes;
 
-pub(crate) use audit_window::AuditWindowHandle;
+pub(crate) use execution_log_window::ExecutionLogWindowHandle;
 // The keyboard surface: every action and every chord, and the one `bind_keys`.
 pub(crate) use actions::{
     CloseTab, CommandPalette, CopySelection, CyclePane, Find, NextTab, Paste,
@@ -105,7 +103,6 @@ pub(crate) use actions::{
     Reconnect, SplitDown, SplitRight, ZoomIn, ZoomOut, ZoomReset,
 };
 pub(crate) use shell::run;
-pub(crate) use approval_window::run as run_approval;
 // What a detached window — the process monitor, the system-information window — has to be
 // able to do for the shell to open it, focus it and point it at a tab.
 pub(crate) use shell::TabFollower;

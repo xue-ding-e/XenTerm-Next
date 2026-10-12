@@ -29,65 +29,9 @@ fn default_true() -> bool {
     true
 }
 
-fn default_approval_timeout() -> u64 {
-    60
+fn default_execution_log_retention() -> u64 {
+    7
 }
-
-/// The serde twin of [`default_approval_timeout`], used by fields that outlive
-/// the config struct itself — the approval request files carry their asker's
-/// deadline, and an old file without the field still parses.
-pub fn default_approval_timeout_value() -> u64 {
-    default_approval_timeout()
-}
-
-fn default_risky_patterns() -> Vec<String> {
-    DEFAULT_RISKY_PATTERNS.iter().map(|s| s.to_string()).collect()
-}
-
-fn default_risky_dirs() -> Vec<String> {
-    DEFAULT_RISKY_DIRS.iter().map(|s| s.to_string()).collect()
-}
-
-fn default_audit_retention() -> u64 {
-    30
-}
-
-/// The risky-command patterns a fresh config ships with, matched
-/// case-insensitively as substrings of the command. Published here because
-/// this layer owns the defaults; the risk assessor reads them from the config.
-pub const DEFAULT_RISKY_PATTERNS: &[&str] = &[
-    "rm -rf",
-    "rm -fr",
-    "mkfs",
-    "dd if=",
-    "dd of=/dev/",
-    ":(){:|:&};:",
-    "shutdown",
-    "reboot",
-    "poweroff",
-    "halt",
-    "init 0",
-    "init 6",
-    "> /dev/sd",
-    "> /dev/nvme",
-    "chmod -r 777 /",
-    "chown -r ",
-    "userdel",
-    "groupdel",
-    "passwd root",
-    "crontab -r",
-    "iptables -f",
-    "ufw disable",
-    "systemctl disable",
-];
-
-/// The filesystem prefixes a fresh config treats as high risk. The trees the
-/// system lives in; a recursive delete or an overwrite aimed here is the
-/// classic automation accident.
-pub const DEFAULT_RISKY_DIRS: &[&str] = &[
-    "/etc", "/boot", "/bin", "/sbin", "/usr", "/lib", "/lib64", "/var", "/sys", "/proc", "/dev",
-    "/root", r"C:\Windows", r"C:\Program Files",
-];
 
 /// Ships with the "幻想 3048" sci-fi wallpaper on by default (a dark theme). New
 /// installs and users upgrading from before the wallpaper feature get it; once
@@ -361,8 +305,8 @@ pub struct ConfigFile {
     /// Enable the local stdio MCP server (`xenterm mcp serve`).
     #[serde(default = "default_mcp_preview_enabled")]
     pub mcp_enabled: bool,
-    /// Explicit access policy. Missing preserves the legacy capability and
-    /// approval switches; selecting Full never overwrites those preferences.
+    /// Explicit access policy. Missing preserves legacy capability switches;
+    /// selecting Full never overwrites the restricted preferences.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp_access_mode: Option<McpAccessMode>,
     /// Allow MCP tools to use credentials already stored by XenTerm. Secrets
@@ -375,28 +319,13 @@ pub struct ConfigFile {
     /// Allow MCP clients to upload local files and download remote files.
     #[serde(default = "default_mcp_preview_enabled")]
     pub mcp_allow_file_transfers: bool,
-    /// Require a human at the main window to approve risky commands before an
-    /// MCP client may run them. On by default: approval is the safe default
-    /// and the whole point of the feature.
-    #[serde(default = "default_true")]
-    pub mcp_approval_enabled: bool,
-    /// Seconds an approval request waits for a human before the command is
-    /// refused. A window that is closed counts the same as a timeout.
-    #[serde(default = "default_approval_timeout")]
-    pub mcp_approval_timeout_secs: u64,
-    /// Command patterns (case-insensitive substrings) that trip the approval
-    /// gate. Empty disables pattern matching entirely; an old config without
-    /// the field deserializes to the published defaults.
-    #[serde(default = "default_risky_patterns")]
-    pub mcp_risky_patterns: Vec<String>,
-    /// Path prefixes whose appearance in a command trips the approval gate.
-    /// Empty disables directory matching; old configs default as above.
-    #[serde(default = "default_risky_dirs")]
-    pub mcp_risky_dirs: Vec<String>,
-    /// Audit-journal retention in whole days. The sweep drops entire day
-    /// files past this age; there is no single-record deletion.
-    #[serde(default = "default_audit_retention")]
-    pub mcp_audit_retention_days: u64,
+    /// Optional personal history of CLI/MCP remote operations; off by default.
+    /// No command output or credentials are written to this log.
+    #[serde(default)]
+    pub mcp_execution_log_enabled: bool,
+    /// Whole-day retention for opt-in execution records (1–365; 7 by default).
+    #[serde(default = "default_execution_log_retention")]
+    pub mcp_execution_log_retention_days: u64,
     /// One-time default-layout migration marker (#new-user-defaults). 0 = config
     /// predates the migration. `migrate_defaults` bumps it to `DEFAULTS_REV` after
     /// pushing the new look (default wallpaper / welcome-as-sidebar / right-docked

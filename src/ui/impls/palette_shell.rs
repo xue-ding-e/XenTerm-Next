@@ -34,7 +34,7 @@ impl Shell {
             Command { label: t("端口转发", "Port forwarding").into(), id: CommandId::Tunnels },
             Command { label: t("进程监视器", "Process monitor").into(), id: CommandId::Processes },
             Command { label: t("系统信息", "System information").into(), id: CommandId::SystemInfo },
-            Command { label: t("审批记录", "Approval audit").into(), id: CommandId::AuditLog },
+            Command { label: t("执行记录", "Execution history").into(), id: CommandId::ExecutionLog },
             Command { label: t("向右分屏", "Split right").into(), id: CommandId::SplitRight },
             Command { label: t("向下分屏", "Split down").into(), id: CommandId::SplitDown },
             Command { label: t("关闭标签", "Close tab").into(), id: CommandId::CloseTab },
@@ -139,7 +139,7 @@ impl Shell {
             }
             CommandId::Processes => self.open_process_window(cx),
             CommandId::SystemInfo => self.open_system_info_window(cx),
-            CommandId::AuditLog => self.open_audit_viewer(cx),
+            CommandId::ExecutionLog => self.open_execution_log(cx),
             CommandId::SplitRight => {
                 self.pages
                     .terminal

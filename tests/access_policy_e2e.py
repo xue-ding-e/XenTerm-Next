@@ -58,7 +58,8 @@ async def verify(executable):
         cli(executable, profile, 'invalid', succeeds=False)
         assert profile_settings(profile) == before
         full = cli(executable, profile, 'full')
-        assert full['mode'] == 'full' and not full['approval_enabled']
+        assert full['mode'] == 'full' and not full['execution_log_enabled']
+        assert 'approval_enabled' not in full and 'approval_timeout_seconds' not in full
         assert all(full[key] for key in ['use_saved_credentials', 'allow_commands', 'allow_file_transfers'])
         persisted = profile_settings(profile)
         assert persisted['mcp_access_mode'] == 'full'
@@ -81,9 +82,10 @@ async def verify(executable):
                     outcome = json.loads(command_result)
                     assert outcome.get('exit_code') != 0, outcome
                 assert 'risk-approval' not in command_result
-                assert not (profile / 'mcp-approvals').exists(), 'full access created an approval request'
+                assert not (profile / 'mcp-approvals').exists(), 'approval feature is still active'
+                assert not (profile / 'mcp-executions').exists(), 'disabled history created files'
                 restricted = cli(executable, profile, 'restricted')
-                assert restricted['mode'] == 'restricted' and restricted['approval_enabled']
+                assert restricted['mode'] == 'restricted' and not restricted['execution_log_enabled']
                 assert not restricted['allow_commands'] and not restricted['allow_file_transfers']
                 policy = await client.call_tool('get_access_policy', {})
                 assert json.loads(payload(policy))['mode'] == 'restricted', 'running MCP did not reload policy'
@@ -105,7 +107,7 @@ async def verify(executable):
                     assert 'disabled' in str(error), str(error)
                 else:
                     raise AssertionError('full access bypassed the MCP server switch')
-        print('PASS: CLI persistence, MCP policy discovery, full access without approval, live restricted restoration, read-only policy and disabled-server gate; no real servers used')
+        print('PASS: CLI persistence, MCP policy discovery, full access without approval or default logging, live restricted restoration, read-only policy and disabled-server gate; no real servers used')
 
 
 if __name__ == '__main__':

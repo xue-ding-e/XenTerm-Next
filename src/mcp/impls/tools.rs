@@ -5,7 +5,7 @@ pub(super) fn definitions() -> Value {
     json!([
         {
             "name": "get_access_policy",
-            "description": "Read the configured MCP access mode and effective permissions without changing them. Full access permits SSH commands and file operations without XenTerm risk approval; restricted access follows configured capability rules. SSH account and server permissions always apply. Contains no credentials. Access mode can only be changed locally in Settings > MCP & permissions or with xenterm cli permissions.",
+            "description": "Read the configured MCP access mode and effective permissions without changing them. Full access permits SSH commands and file operations; restricted access follows configured capability rules. Execution history is optional and off by default. SSH account and server permissions always apply. Contains no credentials. Access mode can only be changed locally in Settings > MCP & permissions or with xenterm cli permissions.",
             "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
             "annotations": {"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
         },
@@ -48,7 +48,7 @@ pub(super) fn definitions() -> Value {
         },
         {
             "name": "run_command",
-            "description": "Execute one non-interactive command on a saved SSH session. Requires the MCP saved-credentials and arbitrary-command permissions. Use get_access_policy to inspect the current mode. When approval_enabled is true, commands flagged as risky (destructive patterns or system directories) are held for human approval in a XenTerm confirmation window: the call returns an error [denied-by-user] when the user refuses or [denied-by-timeout]/[denied-by-limit] when nobody answers. On any of those errors, stop and report the refusal to the user - do NOT retry the command, do NOT try to route around the approval, do NOT approve on the user's behalf, and do NOT assume a later call will be treated differently.",
+            "description": "Execute one non-interactive command on a saved SSH session. Requires the MCP saved-credentials and arbitrary-command permissions. Use get_access_policy to inspect the configured capabilities and optional execution history. SSH account and server permissions apply. XenTerm does not request per-operation risk approval.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

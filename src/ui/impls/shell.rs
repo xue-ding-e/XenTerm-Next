@@ -248,18 +248,12 @@ pub(crate) fn run() -> Result<()> {
                         )
                     });
 
-                    let mut shell = Shell {
+                    let shell = Shell {
                         pages: Pages::new(terminal),
                         window_width,
                         webdav_task: None,
-                        approval_queue: Vec::new(),
-                        active_approval: None,
-                        approval_reported: std::collections::HashSet::new(),
-                        approval_shown: std::collections::HashSet::new(),
-                        audit_last_prune_day: None,
-                        approval_poll: None,
                         process_window: Detached::new(process_window_title),
-                        audit_window: crate::ui::AuditWindowHandle::new(),
+                        execution_log_window: crate::ui::ExecutionLogWindowHandle::new(),
                         system_info_window: Detached::new(system_info_window_title),
                         open_file: None,
                         state,
@@ -271,9 +265,6 @@ pub(crate) fn run() -> Result<()> {
                         quick_connect_pick: None,
                         _quick_connect_subscription: None,
                     };
-                    // The approval poll owns no window and needs none: it only
-                    // fills the queue, and render shows the dialogs.
-                    shell.start_approval_poll(cx);
                     shell
                 });
                 // `Root` has to be the window's first view. It is what the
@@ -389,38 +380,13 @@ pub(crate) struct Shell {
     window_width: Rc<Cell<f32>>,
     /// The WebDAV sync in flight, if any. Kept because dropping a Task cancels it.
     webdav_task: Option<gpui_kit::Task<()>>,
-    /// Risky MCP commands waiting for a human at this window. Filled by the
-    /// approval poll; each head-of-queue entry is shown once as a dialog and
-    /// resolved by whichever button the human presses.
-    approval_queue: Vec<crate::automation::approval::ApprovalRequest>,
-    /// The single approval modal owned by this shell. A finished request may
-    /// remain here while a different modal is above it in the Root stack.
-    active_approval: Option<crate::ui::dialogs::ApprovalDialogHandle>,
-    /// Requests whose completion has already been reported on the status
-    /// line, so the poll reports a decision once, not once per second.
-    approval_reported: std::collections::HashSet<String>,
-    /// The UTC day the audit retention sweep last ran, "YYYY-MM-DD". The
-    /// sweep runs when the day turns, not on every poll tick.
-    audit_last_prune_day: Option<String>,
-    /// Requests a dialog has already been shown for. The drain runs every
-    /// frame and the poll re-reads the same pending file every second; the
-    /// set is what keeps those two loops from stacking one dialog per frame
-    /// on top of the last. Entries leave when the request resolves (its file
-    /// disappears, so it is never re-queued).
-    approval_shown: std::collections::HashSet<String>,
-    /// How long the approval poll has been running — a task started once at
-    /// construction, kept so dropping it would stop the window ever seeing
-    /// approval requests.
-    approval_poll: Option<gpui_kit::Task<()>>,
     /// The process monitor, while it is open.
     ///
     /// Detached rather than a panel: a table you keep beside the terminal. See
     /// [`Detached`] for what that means for opening, focusing and following a tab.
     process_window: Detached<ProcessWindowView>,
-    /// The approval-audit journal viewer, in its own window. Opened from the
-    /// settings page's 查看审批记录 button; the journal is a record to browse,
-    /// and a browse needs a surface that does not fight the form's scroll.
-    audit_window: crate::ui::AuditWindowHandle,
+    /// Optional personal execution history, viewed independently of settings.
+    execution_log_window: crate::ui::ExecutionLogWindowHandle,
     /// The system-information window, on the same terms.
     system_info_window: Detached<SystemInfoWindowView>,
     /// The remote file the session's SftpFileText opened, if any. Its actions are
@@ -583,7 +549,7 @@ mod persistence_warning_tests {
     const STORAGE_FAILURE: &str = "Configuration could not be saved. Keep pending edits before closing XenTerm.";
 
     /// A minimal host exercises the shell's actual banner without starting
-    /// terminals, resource samplers, approval scans, or database workers.
+    /// terminals, resource samplers, or database workers.
     struct WarningHost {
         warning: PersistenceWarning,
     }
@@ -677,7 +643,6 @@ impl Render for Shell {
         self.drain_editor(window, cx);
         self.drain_group_manager(window, cx);
         self.drain_rule_editor(window, cx);
-        self.drain_approval_queue(window, cx);
         // A synchronous save can fail during a drain. Display it in this frame
         // without closing or recreating the editor that still owns the draft.
         self.refresh_persistence_warning();
@@ -704,208 +669,6 @@ impl Shell {
     fn refresh_persistence_warning(&mut self) -> bool {
         let error = self.state.store.borrow().persistence_error();
         self.persistence_warning.refresh(error)
-    }
-
-    /// Start the approval poll: once a second, sweep the approval queue.
-    /// Three jobs in one pass — new pending requests join the dialog queue,
-    /// finished requests (the human answered, or a timer did) are reported
-    /// once on the status line and removed, and the audit journal's retention
-    /// sweep runs when the day turns. The same tick observes background-save
-    /// failures without a second timer or a busy repaint loop. Started once,
-    /// at construction.
-    fn start_approval_poll(&mut self, cx: &mut Context<Self>) {
-        self.approval_poll = Some(cx.spawn(async move |this, cx| loop {
-            cx.background_executor()
-                .timer(std::time::Duration::from_secs(1))
-                .await;
-            // The sweep is filesystem work, so it belongs on the background
-            // executor — this task runs outside any tokio runtime, which is
-            // what the main window's process is.
-            let requests = cx
-                .background_executor()
-                .spawn(async {
-                    let dir = crate::automation::approval::queue_dir();
-                    crate::automation::approval::scan_in(&dir)
-                })
-                .await;
-            let alive = this.update(cx, |shell, cx| {
-                if shell.refresh_persistence_warning() {
-                    cx.notify();
-                }
-                let queue_root = crate::automation::approval::queue_dir();
-                let pending_ids: std::collections::HashSet<_> = requests
-                    .iter()
-                    .filter(|request| request.status == "pending")
-                    .map(|request| request.id.clone())
-                    .collect();
-                let mut repaint = false;
-                for request in requests {
-                    match request.status.as_str() {
-                        "pending" => {
-                            if crate::automation::approval::past_deadline(&request) {
-                                crate::automation::approval::resolve_timeout_in(
-                                    &queue_root,
-                                    &request.id,
-                                );
-                                if let Some(active) = &shell.active_approval {
-                                    if active.request_id == request.id {
-                                        active.finished.set(true);
-                                        repaint = true;
-                                    }
-                                }
-                                continue;
-                            }
-                            if !shell.approval_shown.contains(&request.id)
-                                && !shell
-                                    .approval_queue
-                                    .iter()
-                                    .any(|q| q.id == request.id)
-                            {
-                                shell.approval_queue.push(request);
-                                repaint = true;
-                            }
-                        }
-                        "approved" | "denied" => {
-                            // One line on the status line per finished
-                            // decision. The requester owns file consumption.
-                            if shell.approval_reported.insert(request.id.clone()) {
-                                let outcome = if request.status == "approved" {
-                                    crate::i18n::t("已批准", "Approved")
-                                } else {
-                                    crate::i18n::t("已拒绝", "Denied")
-                                };
-                                shell.say(
-                                    format!(
-                                        "{}: {} — {}",
-                                        outcome,
-                                        request.command,
-                                        crate::i18n::t(
-                                            "已记入审批记录",
-                                            "recorded in the audit log"
-                                        )
-                                    ),
-                                    cx,
-                                );
-                            }
-                            if let Some(active) = &shell.active_approval {
-                                if active.request_id == request.id {
-                                    active.finished.set(true);
-                                    repaint = true;
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                shell.approval_queue.retain(|request| pending_ids.contains(&request.id));
-                if let Some(active) = &shell.active_approval {
-                    if !pending_ids.contains(&active.request_id) {
-                        active.finished.set(true);
-                        repaint = true;
-                    }
-                }
-                // A dialog with a live countdown repaints once a second, so
-                // the deny button's timer actually counts down.
-                if repaint || shell.active_approval.as_ref().is_some_and(|a| !a.closed.get() && !a.finished.get()) {
-                    cx.notify();
-                }
-                // The audit sweep runs when the day turns — a daily job has no
-                // business running on every tick.
-                let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
-                if shell.audit_last_prune_day.as_deref() != Some(today.as_str()) {
-                    let retention = shell.state.store.borrow().mcp_audit_retention_days();
-                    crate::automation::approval::prune_audit_in(&queue_root, retention);
-                    shell.audit_last_prune_day = Some(today);
-                }
-            });
-            if alive.is_err() {
-                break;
-            }
-        }));
-    }
-
-    /// Show the head of the approval queue as a dialog, if the frame is ready
-    /// for one. Called from render, which has the window the dialog needs.
-    ///
-    /// Built to be read: the session and the command each get their own
-    /// labelled row, the command in the mono family on its own block, the
-    /// risk reasons as a list. The deny button carries the countdown — the
-    /// number is the promise the timeout makes, visible where the action is.
-    fn drain_approval_queue(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(active) = &self.active_approval {
-            if active.closed.get() {
-                self.active_approval = None;
-            } else {
-                // Root only exposes a stack pop. The handle checks focus so
-                // a different modal above this approval remains untouched.
-                if active.close_if_finished(window, cx) {
-                    self.active_approval = None;
-                }
-                return;
-            }
-        }
-        if window.has_active_dialog(cx) {
-            return;
-        }
-        // One dialog per request, ever: the first frame this request is at
-        // the head of the queue marks it shown and opens the dialog, and the
-        // frames after that skip it. Without the mark, a dialog opened from
-        // render would be re-opened by the next frame — a stack of dialogs,
-        // each new one blocking the clicks aimed at the last.
-        let Some(request) = self
-            .approval_queue
-            .iter()
-            .find(|request| !self.approval_shown.contains(&request.id))
-            .cloned()
-        else {
-            return;
-        };
-
-        // A request can expire while it waits behind another modal.
-        if crate::automation::approval::past_deadline(&request) {
-            self.approval_shown.insert(request.id.clone());
-            self.approval_queue.retain(|q| q.id != request.id);
-            crate::automation::approval::resolve_timeout_in(
-                &crate::automation::approval::queue_dir(),
-                &request.id,
-            );
-            // The status line is the receipt the user actually sees — the
-            // audit journal keeps the durable copy.
-            self.say(
-                format!(
-                    "{}: {}",
-                    crate::i18n::t("已自动拒绝（超时）", "Auto-denied (timeout)"),
-                    request.command
-                ),
-                cx,
-            );
-            cx.notify();
-            return;
-        }
-
-        self.approval_shown.insert(request.id.clone());
-        self.approval_queue.retain(|queued| queued.id != request.id);
-
-        // The dialog body is rebuilt every frame — which is what makes the
-        // deny button's countdown tick: the label is computed from the
-        // request's own deadline each time the builder runs.
-        let request_for_body = request.clone();
-        let reasons_for_body = request.reasons.clone();
-        let id_for_ok = request.id.clone();
-        let id_for_cancel = request.id.clone();
-
-        self.active_approval = Some(crate::ui::dialogs::approval_dialog(
-            window,
-            cx,
-            request_for_body,
-            reasons_for_body,
-            move |_, _| {
-                crate::automation::approval::resolve_manual(&id_for_ok, true)
-            },
-            move |_, _| {
-                crate::automation::approval::resolve_manual(&id_for_cancel, false)
-            },
-        ));
     }
 
     /// Say something on the status line: readable for a few seconds, then it
@@ -1664,7 +1427,7 @@ impl Shell {
                 SettingsAction::WebdavDownload => self.webdav_sync(false, cx),
                 SettingsAction::ImportFont => self.import_fonts(cx),
                 SettingsAction::OpenFontFolder => self.open_font_folder(cx),
-                SettingsAction::OpenAuditFolder => self.open_audit_viewer(cx),
+                SettingsAction::OpenExecutionLog => self.open_execution_log(cx),
             }
         }
     }
@@ -1762,10 +1525,9 @@ impl Shell {
         .detach();
     }
 
-    /// Open the approval-audit viewer: a dedicated, read-only window over
-    /// the journal. The raw day files stay reachable from its toolbar.
-    pub(crate) fn open_audit_viewer(&mut self, cx: &mut Context<Self>) {
-        self.audit_window.show(cx);
+    /// Open personal execution history without enabling or modifying it.
+    pub(crate) fn open_execution_log(&mut self, cx: &mut Context<Self>) {
+        self.execution_log_window.show(cx);
     }
 
     /// Open the font import folder in the OS file manager, best effort — a

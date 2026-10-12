@@ -92,9 +92,8 @@ pub(crate) enum SettingsAction {
     /// Open the import directory in the OS file manager, so imported fonts can
     /// be inspected or removed by deleting files.
     OpenFontFolder,
-    /// Open the audit journal folder. The records themselves are not editable
-    /// from here — they expire by whole days — but the folder is where they are.
-    OpenAuditFolder,
+    /// View optional personal execution history in its own window.
+    OpenExecutionLog,
 }
 
 /// The settings view.
@@ -111,7 +110,7 @@ enum SettingsPageId {
     Files,
     Sync,
     /// The former 权限 and MCP 服务器 pages, merged: one feature's switches,
-    /// its server, and its approval gate belong on one page.
+    /// its server, and optional execution history belong on one page.
     McpPermissions,
 }
 
@@ -825,7 +824,9 @@ impl Render for SettingsView {
                     // Every leaf is rendered as toolkit page 0. Separate its
                     // keyed field state so an input cannot retain another
                     // page's cached setter at the same group/row position.
-                    .id(SharedString::from(format!("settings-content-{:?}", self.selected)))
+                    .id(SharedString::from(format!("settings-content-{:?}-{:?}", self.selected,
+                        (self.selected == SettingsPageId::McpPermissions)
+                            .then(|| self.store.borrow().mcp_access_mode()))))
                     .flex_1()
                     .min_w_0()
                     .h_full()
@@ -994,8 +995,8 @@ impl SettingsView {
             .title(crate::i18n::t("访问模式", "Access mode"))
             .item(SettingItem::new(crate::i18n::t("MCP 访问模式", "MCP access mode"), access_mode)
                 .description(crate::i18n::t(
-                    "受限访问按权限规则运行；完全访问允许 SSH 命令和文件操作，无需人工审批。实际权限由 SSH 账号和服务器决定。",
-                    "Restricted access follows permission rules. Full access allows SSH commands and file operations without approval. The SSH account and server determine the actual permissions.",
+                    "受限访问按已配置的能力运行；完全访问允许 SSH 命令和文件操作。实际权限由 SSH 账号和服务器决定。",
+                    "Restricted access follows configured capabilities. Full access allows SSH commands and file operations. The SSH account and server determine the actual permissions.",
                 )));
 
         // ---- MCP server ---------------------------------------------------
@@ -1122,163 +1123,63 @@ impl SettingsView {
                 )),
             );
 
-        // The risk-approval gate. A caller nobody watches can already ask for
-        // anything it has permission for; these fields decide which of those
-        // asks a human at the main window gets to veto first.
-        let store_for_timeout = store.clone();
-        let approval_timeout = {
-            let current = store.borrow().mcp_approval_timeout_secs() as f64;
-            SettingField::number_input(
-                Default::default(),
-                move |_| current,
-                move |value, _| {
-                    persist(
-                        &store_for_timeout,
-                        |s| s.set_mcp_approval_timeout_secs(value as u64),
-                        "the approval timeout",
-                    )
-                },
-            )
-        };
-        // The pattern and directory lists are single-line inputs holding
-        // comma-separated entries: a settings field framework built around
-        // rows has no place for a list editor, and commas are what the
-        // defaults read like anyway. Parsed on every read; stored verbatim.
-        let store_for_patterns = store.clone();
-        let risky_patterns = {
-            let current = store.borrow().mcp_risky_patterns().join(", ");
-            SettingField::input(
-                move |_| SharedString::from(current.clone()),
-                move |value, _| {
-                    let patterns: Vec<String> = value
-                        .split(|c| c == ',' || c == '，' || c == '\n')
-                        .map(|p| p.trim().to_string())
-                        .filter(|p| !p.is_empty())
-                        .collect();
-                    persist(
-                        &store_for_patterns,
-                        |s| s.set_mcp_risky_patterns(patterns),
-                        "the risky command patterns",
-                    )
-                },
-            )
-        };
-        let store_for_dirs = store.clone();
-        let risky_dirs = {
-            let current = store.borrow().mcp_risky_dirs().join(", ");
-            SettingField::input(
-                move |_| SharedString::from(current.clone()),
-                move |value, _| {
-                    let dirs: Vec<String> = value
-                        .split(|c| c == ',' || c == '，' || c == '\n')
-                        .map(|p| p.trim().to_string())
-                        .filter(|p| !p.is_empty())
-                        .collect();
-                    persist(
-                        &store_for_dirs,
-                        |s| s.set_mcp_risky_dirs(dirs),
-                        "the high-risk directories",
-                    )
-                },
-            )
-        };
-        let store_for_retention = store.clone();
-        let audit_retention = {
-            let current =
-                f64::from(u32::try_from(store.borrow().mcp_audit_retention_days()).unwrap_or(30));
-            SettingField::number_input(
-                Default::default(),
-                move |_| current,
-                move |value, _| {
-                    persist(
-                        &store_for_retention,
-                        |s| s.set_mcp_audit_retention_days(value as u64),
-                        "the audit retention",
-                    )
-                },
-            )
-        };
-        let for_audit_folder = cx.entity();
-        let audit_folder_field = SettingField::element(
-            move |_: &gpui_kit::component::setting::RenderOptions,
-                  _: &mut Window,
-                  _: &mut gpui_kit::App| {
-                let settings = for_audit_folder.clone();
-                Button::new("settings-open-audit-folder")
-                    .icon(Icon::new(IconName::FolderOpen))
-                    .label(crate::i18n::t("查看审批记录", "View audit records"))
-                    .small()
-                    .outline()
-                    .on_click(move |_, _, cx| {
-                        let _ = settings.update(cx, |view, cx| {
-                            view.pending = Some(SettingsAction::OpenAuditFolder);
-                            cx.notify();
-                        });
-                    })
-                    .into_any_element()
-            },
-        );
-        let approval_description = if store.borrow().mcp_approval_enabled() {
-            crate::i18n::t(
-                "命中下列模式或目录的命令和文件操作需人工确认；无人确认或超时则拒绝。",
-                "Commands and file operations matching a pattern or directory require confirmation. No answer or a timeout refuses the operation.",
-            )
-        } else {
-            crate::i18n::t(
-                "风险审批目前已关闭。切换到受限访问可启用审批；完全访问用于无需审批的自动化。",
-                "Risk approval is currently off. Select restricted access to enable approval, or full access for unattended automation.",
-            )
-        };
-        let approval_group = SettingGroup::new()
-            .title(crate::i18n::t("风险命令审批", "Risky command approval"))
-            .description(approval_description)
-            .item(
-                SettingItem::new(crate::i18n::t("审批超时(秒)", "Approval timeout (s)"), approval_timeout)
-                    .description(crate::i18n::t(
-                        "等待人工确认的秒数(10–600),超时视为拒绝。",
-                        "Seconds to wait for a human (10-600); a timeout refuses.",
-                    )),
-            )
-            .item(
-                SettingItem::new(crate::i18n::t("高危命令模式", "Risky patterns"), risky_patterns)
-                    .description(crate::i18n::t(
-                        "逗号分隔,大小写不敏感的子串匹配,如 rm -rf, mkfs, shutdown。",
-                        "Comma-separated, case-insensitive substrings: rm -rf, mkfs, shutdown.",
-                    )),
-            )
-            .item(
-                SettingItem::new(crate::i18n::t("高风险目录", "High-risk dirs"), risky_dirs)
-                    .description(crate::i18n::t(
-                        "逗号分隔的路径前缀,命令中出现即触发,如 /etc, C:\\Windows。",
-                        "Comma-separated path prefixes: /etc, C:\\Windows.",
-                    )),
-            )
-            .item(
-                SettingItem::new(
-                    crate::i18n::t("审批记录保留(天)", "Audit retention (days)"),
-                    audit_retention,
-                )
-                .description(crate::i18n::t(
-                    "每次审批(时间、命令、结果、人工或自动)按天记入审计,到期整日删除。",
-                    "Every approval — time, command, outcome, human or automatic — is                      journaled by day and whole days expire.",
-                )),
-            )
-            .item(
-                SettingItem::new(
-                    crate::i18n::t("审批记录", "Audit records"),
-                    audit_folder_field,
-                )
-                .description(crate::i18n::t(
-                    "在独立窗口中浏览每次审批的时间、命令、结果与方式。",
-                    "Browse every approval's time, command, outcome and how it was                      decided, in a dedicated window.",
-                )),
-            );
-
+        let history = self.execution_log_group(window, cx);
         if mode == crate::config::McpAccessMode::Full {
-            vec![access_group, mcp_server]
+            vec![access_group, mcp_server, history]
         } else {
-            vec![access_group, mcp_server, unattended, approval_group]
+            vec![access_group, mcp_server, unattended, history]
         }
+    }
+
+    fn execution_log_group(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> SettingGroup {
+        let store = self.store.clone();
+        let enabled = store.borrow().mcp_execution_log_enabled();
+        let toggle_store = store.clone();
+        let toggle = SettingField::switch(
+            move |_| enabled,
+            move |value, _| persist(&toggle_store,
+                |s| s.set_mcp_execution_log_enabled(value), "execution history"),
+        );
+        let days = store.borrow().mcp_execution_log_retention_days() as f64;
+        let retention_store = store.clone();
+        let retention = SettingField::number_input(
+            Default::default(), move |_| days,
+            move |value, _| persist(&retention_store,
+                |s| s.set_mcp_execution_log_retention_days(value as u64), "execution history retention"),
+        );
+        let view = cx.entity();
+        let viewer = SettingField::element(move |_: &gpui_kit::component::setting::RenderOptions,
+                                                   _: &mut Window,
+                                                   _: &mut gpui_kit::App| {
+            let settings = view.clone();
+            Button::new("settings-open-execution-log")
+                .icon(Icon::new(gpui_kit::assets::IconName::BookOpen))
+                .label(crate::i18n::t("查看执行记录", "View execution history"))
+                .ghost().small()
+                .on_click(move |_, _, cx| {
+                    settings.update(cx, |view, cx| {
+                        view.pending = Some(SettingsAction::OpenExecutionLog);
+                        cx.notify();
+                    });
+                }).into_any_element()
+        });
+        SettingGroup::new()
+            .title(crate::i18n::t("执行记录", "Execution history"))
+            .description(crate::i18n::t(
+                "供自己查阅的本地记录。默认关闭，不影响操作权限。",
+                "Optional local history for your own reference. Off by default; independent of permissions.",
+            ))
+            .item(SettingItem::new(crate::i18n::t("记录执行操作", "Record operations"), toggle)
+                .description(crate::i18n::t(
+                    "开启后记录 CLI/MCP 的远程操作、目标、时间和结果，不保存输出。",
+                    "Record remote CLI/MCP attempts, targets, times and results without saving output.",
+                )))
+            .item(SettingItem::new(crate::i18n::t("记录保留(天)", "Retention (days)"), retention)
+                .description(crate::i18n::t(
+                    "1–365 天，默认 7 天。每日最多 4 MiB，到达上限后次日继续记录。",
+                    "1–365 days; 7 by default. Up to 4 MiB daily; resumes the next day at the limit.",
+                )))
+            .item(SettingItem::new(crate::i18n::t("浏览记录", "Browse history"), viewer))
     }
 
     /// The 字体 and 光标 pages' groups, built together: the cursor's fields read

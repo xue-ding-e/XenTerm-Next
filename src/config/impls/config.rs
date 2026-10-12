@@ -1693,14 +1693,13 @@ impl ConfigStore {
     pub fn set_mcp_enabled(&mut self, enabled: bool) {
         self.cache.mcp_enabled = enabled;
     }
-    /// The legacy all-capabilities/no-approval combination already grants
-    /// full access. Other legacy combinations retain their exact gates.
+    /// Legacy profiles with every capability enabled already grant full access.
+    /// Other combinations retain their exact capability gates.
     pub fn mcp_access_mode(&self) -> McpAccessMode {
         self.cache.mcp_access_mode.unwrap_or_else(|| {
             if self.cache.mcp_use_saved_credentials
                 && self.cache.mcp_allow_commands
                 && self.cache.mcp_allow_file_transfers
-                && !self.cache.mcp_approval_enabled
             {
                 McpAccessMode::Full
             } else {
@@ -1731,47 +1730,17 @@ impl ConfigStore {
     pub fn set_mcp_allow_file_transfers(&mut self, enabled: bool) {
         self.cache.mcp_allow_file_transfers = enabled;
     }
-    /// The effective risk gate: full access disables it, restricted access
-    /// requires it, and a legacy profile retains its stored approval choice.
-    pub fn mcp_approval_enabled(&self) -> bool {
-        match self.cache.mcp_access_mode {
-            Some(McpAccessMode::Full) => false,
-            Some(McpAccessMode::Restricted) => true,
-            None => self.cache.mcp_approval_enabled,
-        }
+    pub fn mcp_execution_log_enabled(&self) -> bool {
+        self.cache.mcp_execution_log_enabled
     }
-    pub fn set_mcp_approval_enabled(&mut self, enabled: bool) {
-        self.cache.mcp_approval_enabled = enabled;
+    pub fn set_mcp_execution_log_enabled(&mut self, enabled: bool) {
+        self.cache.mcp_execution_log_enabled = enabled;
     }
-    /// Seconds an approval request waits before the command is refused.
-    pub fn mcp_approval_timeout_secs(&self) -> u64 {
-        let v = self.cache.mcp_approval_timeout_secs;
-        // 0 would mean "never approvable"; clamp to something a human can win.
-        v.clamp(10, 600)
+    pub fn mcp_execution_log_retention_days(&self) -> u64 {
+        self.cache.mcp_execution_log_retention_days.clamp(1, 365)
     }
-    pub fn set_mcp_approval_timeout_secs(&mut self, secs: u64) {
-        self.cache.mcp_approval_timeout_secs = secs.clamp(10, 600);
-    }
-    /// The command patterns the approval gate matches, case-insensitively.
-    pub fn mcp_risky_patterns(&self) -> Vec<String> {
-        self.cache.mcp_risky_patterns.clone()
-    }
-    pub fn set_mcp_risky_patterns(&mut self, patterns: Vec<String>) {
-        self.cache.mcp_risky_patterns = patterns;
-    }
-    /// The path prefixes the approval gate watches.
-    pub fn mcp_risky_dirs(&self) -> Vec<String> {
-        self.cache.mcp_risky_dirs.clone()
-    }
-    pub fn set_mcp_risky_dirs(&mut self, dirs: Vec<String>) {
-        self.cache.mcp_risky_dirs = dirs;
-    }
-    /// Audit-journal retention, in whole days (7-365; 30 by default).
-    pub fn mcp_audit_retention_days(&self) -> u64 {
-        self.cache.mcp_audit_retention_days.clamp(7, 365)
-    }
-    pub fn set_mcp_audit_retention_days(&mut self, days: u64) {
-        self.cache.mcp_audit_retention_days = days.clamp(7, 365);
+    pub fn set_mcp_execution_log_retention_days(&mut self, days: u64) {
+        self.cache.mcp_execution_log_retention_days = days.clamp(1, 365);
     }
     pub fn wallpaper_overlay(&self) -> f32 {
         let a = self.cache.wallpaper_overlay;

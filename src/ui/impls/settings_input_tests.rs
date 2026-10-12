@@ -369,6 +369,45 @@ fn url_validation_waits_for_commit_and_never_changes_sync_permissions(cx: &mut T
     assert!(view.update(cx, |view, _| view.take_action()).is_none());
 }
 
+#[gpui_kit::gpui::test]
+fn execution_history_toggle_is_explicit_and_independent_of_access_mode(cx: &mut TestAppContext) {
+    use gpui_kit::test::TestWindowExt as _;
+    let fixture = Fixture::new();
+    fixture.store.borrow_mut().set_mcp_access_mode(crate::config::McpAccessMode::Full);
+    let (view, cx) = open(cx, &fixture, SettingsPageId::McpPermissions);
+    assert!(!fixture.store.borrow().mcp_execution_log_enabled());
+    cx.update(|window, cx| window.within("group-2").within("item-0").click("check", cx));
+    draw(cx);
+    assert!(fixture.store.borrow().mcp_execution_log_enabled());
+    let db = rusqlite::Connection::open(fixture.directory.join("sessions.db")).unwrap();
+    let saved: String = db.query_row("SELECT value FROM meta WHERE key='settings'", [],
+        |row| row.get(0)).unwrap();
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&saved).unwrap()["mcp_execution_log_enabled"], true);
+    drop(db);
+
+    fixture.store.borrow_mut().set_mcp_access_mode(crate::config::McpAccessMode::Restricted);
+    view.update(cx, |_, cx| cx.notify());
+    draw(cx);
+    assert!(fixture.store.borrow().mcp_execution_log_enabled());
+    cx.update(|window, cx| window.within("group-3").within("item-0").click("check", cx));
+    draw(cx);
+    assert!(!fixture.store.borrow().mcp_execution_log_enabled());
+    assert!(!fixture.store.borrow().mcp_use_saved_credentials());
+    assert!(!fixture.store.borrow().mcp_enabled());
+}
+
+#[gpui_kit::gpui::test]
+fn execution_history_viewer_is_available_without_enabling_recording(cx: &mut TestAppContext) {
+    use gpui_kit::test::TestWindowExt as _;
+    let fixture = Fixture::new();
+    let (view, cx) = open(cx, &fixture, SettingsPageId::McpPermissions);
+    cx.update(|window, cx| window.click("settings-open-execution-log", cx));
+    draw(cx);
+    assert!(matches!(view.update(cx, |view, _| view.take_action()),
+        Some(SettingsAction::OpenExecutionLog)));
+    assert!(!fixture.store.borrow().mcp_execution_log_enabled());
+}
+
 fn check_numeric_typing(
     cx: &mut TestAppContext,
     selected: SettingsPageId,
