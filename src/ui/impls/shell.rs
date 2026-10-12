@@ -432,6 +432,23 @@ pub(crate) struct Shell {
     _quick_connect_subscription: Option<Subscription>,
 }
 
+/// Kept separate from rendering so an idle window observes background saves.
+fn poll_persistence_feedback<T: 'static>(
+    cx: &mut Context<T>,
+    refresh: impl Fn(&mut T) -> bool + 'static,
+) -> gpui_kit::Task<()> {
+    cx.spawn(async move |this, cx| loop {
+        cx.background_executor().timer(std::time::Duration::from_secs(1)).await;
+        if this.update(cx, |view, cx| {
+            if refresh(view) {
+                cx.notify();
+            }
+        }).is_err() {
+            break;
+        }
+    })
+}
+
 /// An overlay drawn over the whole window, as a dialog.
 ///
 /// One at a time, because they are all modal-ish: a form half filled in with another
@@ -564,6 +581,46 @@ mod persistence_warning_tests {
         }
     }
 
+    #[gpui_kit::gpui::test]
+    fn background_feedback_poll_notifies_without_any_render_or_input(cx: &mut TestAppContext) {
+        struct Feedback {
+            source: Rc<std::cell::RefCell<Option<String>>>,
+            warning: PersistenceWarning,
+            _poll: Option<gpui_kit::Task<()>>,
+        }
+        let source = Rc::new(std::cell::RefCell::new(None));
+        let view = cx.new(|cx| {
+            let mut view = Feedback {
+                source: source.clone(),
+                warning: PersistenceWarning::default(),
+                _poll: None,
+            };
+            view._poll = Some(poll_persistence_feedback(cx, |view: &mut Feedback| {
+                view.warning.refresh(view.source.borrow().clone())
+            }));
+            view
+        });
+        let notifications = Rc::new(Cell::new(0));
+        let count = notifications.clone();
+        let _subscription = cx.update(|cx| cx.observe(&view, move |_, _| {
+            count.set(count.get() + 1);
+        }));
+        cx.run_until_parked();
+        *source.borrow_mut() = Some(CONFLICT.into());
+        cx.executor().advance_clock(std::time::Duration::from_secs(1));
+        cx.run_until_parked();
+        assert_eq!(notifications.get(), 1);
+        assert_eq!(view.read_with(cx, |view, _| view.warning.message.clone()), Some(CONFLICT.into()));
+        cx.executor().advance_clock(std::time::Duration::from_secs(1));
+        cx.run_until_parked();
+        assert_eq!(notifications.get(), 1, "unchanged outcomes must not repaint");
+        *source.borrow_mut() = None;
+        cx.executor().advance_clock(std::time::Duration::from_secs(1));
+        cx.run_until_parked();
+        assert_eq!(notifications.get(), 2);
+        assert!(view.read_with(cx, |view, _| view.warning.message.is_none()));
+    }
+
     #[test]
     fn only_changed_save_feedback_requests_a_repaint() {
         let mut warning = PersistenceWarning::default();
@@ -679,16 +736,7 @@ impl Shell {
     /// sanitized outcome once per second and repaint only when it changes.
     /// This timer does not scan files or make approval/permission decisions.
     fn start_persistence_poll(&mut self, cx: &mut Context<Self>) {
-        self.persistence_poll = Some(cx.spawn(async move |this, cx| loop {
-            cx.background_executor().timer(std::time::Duration::from_secs(1)).await;
-            if this.update(cx, |shell, cx| {
-                if shell.refresh_persistence_warning() {
-                    cx.notify();
-                }
-            }).is_err() {
-                break;
-            }
-        }));
+        self.persistence_poll = Some(poll_persistence_feedback(cx, Self::refresh_persistence_warning));
     }
 
     /// Say something on the status line: readable for a few seconds, then it

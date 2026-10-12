@@ -129,7 +129,7 @@ async def verify(executable):
                         result = await asyncio.wait_for(client.call_tool('run_command', {
                             'session_id': 'fixture', 'command': command,
                             'timeout_seconds': 5}), timeout=8)
-                        assert not result.isError, payload(result)
+                        assert not result.is_error, payload(result)
                         return json.loads(payload(result))
 
                     policy = json.loads(payload(await client.call_tool('get_access_policy', {})))

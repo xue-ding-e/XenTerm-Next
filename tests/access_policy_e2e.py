@@ -72,13 +72,13 @@ async def verify(executable):
                 discovered = await client.list_tools()
                 assert 'get_access_policy' in {tool.name for tool in discovered.tools}
                 policy = await client.call_tool('get_access_policy', {})
-                assert not policy.isError and json.loads(payload(policy))['mode'] == 'full'
+                assert not policy.is_error and json.loads(payload(policy))['mode'] == 'full'
                 sessions = await client.call_tool('list_sessions', {})
-                assert not sessions.isError and 'Policy fixture' in payload(sessions)
+                assert not sessions.is_error and 'Policy fixture' in payload(sessions)
                 result = await asyncio.wait_for(client.call_tool('run_command', {
                     'session_id': 'fixture', 'command': 'printf /root', 'timeout_seconds': 1}), timeout=6)
                 command_result = payload(result)
-                if not result.isError:
+                if not result.is_error:
                     outcome = json.loads(command_result)
                     assert outcome.get('exit_code') != 0, outcome
                 assert 'risk-approval' not in command_result
@@ -90,9 +90,9 @@ async def verify(executable):
                 policy = await client.call_tool('get_access_policy', {})
                 assert json.loads(payload(policy))['mode'] == 'restricted', 'running MCP did not reload policy'
                 blocked = await client.call_tool('list_sessions', {})
-                assert blocked.isError and 'disabled' in payload(blocked)
+                assert blocked.is_error and 'disabled' in payload(blocked)
                 mutation = await client.call_tool('get_access_policy', {'mode': 'full'})
-                assert mutation.isError
+                assert mutation.is_error
                 assert profile_settings(profile)['mcp_access_mode'] == 'restricted'
         disabled = Path(temporary) / 'disabled'
         create_profile(disabled, enabled=False)
