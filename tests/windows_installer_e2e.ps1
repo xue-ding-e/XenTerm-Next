@@ -54,6 +54,30 @@ function Run-Msi([string[]]$Arguments) {
     }
 }
 function Path-Entries { @(([Environment]::GetEnvironmentVariable('PATH', 'Machine') -split ';') | ForEach-Object { $_.TrimEnd('\') }) }
+# WScript.Shell exposes legacy ANSI TargetPath on some Windows builds. Read the
+# actual Shell link with the Unicode COM interface, as Explorer does.
+# https://learn.microsoft.com/windows/win32/api/shobjidl_core/nn-shobjidl_core-ishelllinkw
+Add-Type -TypeDefinition @'
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.ComTypes;
+public static class UnicodeShellLink {
+    [ComImport, Guid("000214F9-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IShellLinkW {
+        void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int count, IntPtr findData, uint flags);
+    }
+    public static string Target(string file) {
+        object link = Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid("00021401-0000-0000-C000-000000000046")));
+        try {
+            ((IPersistFile)link).Load(file, 0);
+            var result = new StringBuilder(32768);
+            ((IShellLinkW)link).GetPath(result, result.Capacity, IntPtr.Zero, 4);
+            return result.ToString();
+        } finally { Marshal.FinalReleaseComObject(link); }
+    }
+}
+'@
 function Assert-State([bool]$Path, [bool]$Desktop, [bool]$Menu) {
     $entries = @(Path-Entries)
     $count = @($entries | Where-Object { $_ -ieq $installDir.TrimEnd('\') }).Count
@@ -65,8 +89,9 @@ function Assert-State([bool]$Path, [bool]$Desktop, [bool]$Menu) {
     if ((Test-Path $menuLink) -ne $Menu) { throw 'Start menu shortcut state differs from selection.' }
     foreach ($link in @($desktopLink, $menuLink)) {
         if (Test-Path $link) {
-            $actual = (New-Object -ComObject WScript.Shell).CreateShortcut($link).TargetPath
-            if ($actual -ine (Join-Path $installDir 'xenterm.exe')) { throw "Wrong shortcut target: $actual" }
+            $actual = [UnicodeShellLink]::Target($link)
+            if ($actual -ine (Join-Path $installDir 'xenterm.exe')) { throw "Wrong Unicode shortcut target: $actual" }
+            if (-not (Test-Path -LiteralPath $actual -PathType Leaf)) { throw "Shortcut target does not exist: $actual" }
         }
     }
 }
