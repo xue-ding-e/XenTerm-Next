@@ -1,11 +1,11 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex};
 
 use crate::terminal::charset::CharsetTracker;
 
 /// Per-terminal state used by normal and alternate-screen rendering.
 pub(crate) struct TermBuffer {
-    pub(crate) parser: vt100::Parser,
+    pub(crate) parser: crate::terminal::TerminalEngine,
     pub(crate) find_query: String,
     pub(crate) is_dark: bool,
     pub(crate) output_highlight: OutputHighlightPreset,
@@ -19,13 +19,11 @@ pub(crate) struct TermBuffer {
     pub(crate) sel_anchor: Option<(usize, u16)>,
     pub(crate) sel_focus: Option<(usize, u16)>,
     pub(crate) sel_ranges: Vec<((usize, u16), (usize, u16))>,
-    /// Whether the remote application is tracking the mouse (vt100
-    /// `mouse_protocol_mode() != None`). When true, clicks and drags are
+    /// Whether the remote application is tracking the mouse. When true, clicks
+    /// and drags are
     /// forwarded to the PTY instead of starting a local drag-selection, so
     /// btop/htop/mc can be operated with the mouse (#terminal-mouse).
     pub(crate) mouse_tracked: bool,
-    pub(crate) history: VecDeque<Line>,
-    pub(crate) prev: Vec<Line>,
     pub(crate) view_offset: usize,
     /// Fractional scrollback rows not yet applied. Wheel deltas arrive as
     /// pixel fractions of a row (trackpad + macOS momentum decay); keeping
@@ -35,13 +33,8 @@ pub(crate) struct TermBuffer {
     pub(crate) displayed_text: Vec<String>,
     pub(crate) csi_state: CsiState,
     pub(crate) csi_pending: Vec<u8>,
-    /// Retained post-rewrite byte stream, capped at RAW_CAP, replayed through a
-    /// fresh parser to reflow already-printed output on resize (#169).
-    ///
-    /// A `Vec` rather than a `VecDeque`: appending is the hot operation, and a
-    /// deque needs `make_contiguous()` (a memmove) before the stream can be
-    /// scanned. Dropping from the front only happens once the cap is crossed.
-    pub(crate) raw: Vec<u8>,
+    // Screen and scrollback belong to the native grid. Resize reflows that grid
+    // directly rather than replaying a bounded raw stream (#169).
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -162,8 +155,8 @@ pub(crate) struct BuiltScreen {
 #[derive(Clone)]
 pub(crate) struct HistSpan {
     pub(crate) text: String,
-    pub(crate) fg: vt100::Color,
-    pub(crate) bg: vt100::Color,
+    pub(crate) fg: crate::terminal::TerminalColor,
+    pub(crate) bg: crate::terminal::TerminalColor,
     pub(crate) bold: bool,
     pub(crate) inverse: bool,
     pub(crate) col: i32,

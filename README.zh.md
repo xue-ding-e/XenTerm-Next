@@ -419,7 +419,7 @@ tar 包），所有数据都放在那里。否则回退到系统的用户配置�
 | 界面 | [GPUI](https://gpui.rs)，通过 `gpui-kit` —— GPU 渲染的 Rust 界面，编译进二进制 |
 | 异步运行时 | [`tokio`](https://tokio.rs) |
 | SSH / SFTP | [`russh`](https://crates.io/crates/russh) + [`russh-sftp`](https://crates.io/crates/russh-sftp)，纯 Rust，不依赖 libssh |
-| 终端模拟 | [`vt100`](https://crates.io/crates/vt100) 配合自定义缓冲区 |
+| 终端模拟 | [`rio-vt`](https://crates.io/crates/rio-vt) 原生网格、滚动历史与缩放重排 |
 | 本地 PTY | [`portable-pty`](https://crates.io/crates/portable-pty) |
 | 串口 | [`serialport`](https://crates.io/crates/serialport) |
 | 系统指标 | [`sysinfo`](https://crates.io/crates/sysinfo) |

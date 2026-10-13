@@ -76,12 +76,12 @@ pub(crate) fn encode_mouse_event(
     row: i32,
     cols: u16,
     rows: u16,
-    encoding: vt100::MouseProtocolEncoding,
+    encoding: crate::terminal::MouseProtocolEncoding,
 ) -> Vec<u8> {
     let c = (col.clamp(0, cols.saturating_sub(1) as i32) as u16 + 1).clamp(1, 223);
     let r = (row.clamp(0, rows.saturating_sub(1) as i32) as u16 + 1).clamp(1, 223);
     match encoding {
-        vt100::MouseProtocolEncoding::Sgr => {
+        crate::terminal::MouseProtocolEncoding::Sgr => {
             let final_byte = if release { b'm' } else { b'M' };
             format!("\x1b[<{btn};{c};{r}{}", final_byte as char).into_bytes()
         }
@@ -414,7 +414,7 @@ mod mouse_encoding_tests {
             0,
             80,
             24,
-            vt100::MouseProtocolEncoding::Default,
+            crate::terminal::MouseProtocolEncoding::Default,
         );
         assert_eq!(bytes, vec![0x1b, b'[', b'M', 32, 33, 33]);
     }
@@ -423,7 +423,7 @@ mod mouse_encoding_tests {
     fn x10_left_release() {
         // Release adds 3 to the button code → Cb=32+3=35.
         let bytes =
-            encode_mouse_event(0, true, 0, 0, 80, 24, vt100::MouseProtocolEncoding::Default);
+            encode_mouse_event(0, true, 0, 0, 80, 24, crate::terminal::MouseProtocolEncoding::Default);
         assert_eq!(bytes, vec![0x1b, b'[', b'M', 35, 33, 33]);
     }
 
@@ -437,20 +437,20 @@ mod mouse_encoding_tests {
             0,
             80,
             24,
-            vt100::MouseProtocolEncoding::Default,
+            crate::terminal::MouseProtocolEncoding::Default,
         );
         assert_eq!(bytes, vec![0x1b, b'[', b'M', 32, 34, 33]);
     }
 
     #[test]
     fn sgr_left_press() {
-        let bytes = encode_mouse_event(0, false, 0, 0, 80, 24, vt100::MouseProtocolEncoding::Sgr);
+        let bytes = encode_mouse_event(0, false, 0, 0, 80, 24, crate::terminal::MouseProtocolEncoding::Sgr);
         assert_eq!(bytes, b"\x1b[<0;1;1M");
     }
 
     #[test]
     fn sgr_left_release_uses_lowercase_m() {
-        let bytes = encode_mouse_event(0, true, 0, 0, 80, 24, vt100::MouseProtocolEncoding::Sgr);
+        let bytes = encode_mouse_event(0, true, 0, 0, 80, 24, crate::terminal::MouseProtocolEncoding::Sgr);
         assert_eq!(bytes, b"\x1b[<0;1;1m");
     }
 
@@ -463,7 +463,7 @@ mod mouse_encoding_tests {
             3,
             80,
             24,
-            vt100::MouseProtocolEncoding::Default,
+            crate::terminal::MouseProtocolEncoding::Default,
         );
         assert_eq!(
             bytes,
@@ -473,7 +473,7 @@ mod mouse_encoding_tests {
 
     #[test]
     fn sgr_wheel() {
-        let bytes = encode_mouse_event(64, false, 5, 3, 80, 24, vt100::MouseProtocolEncoding::Sgr);
+        let bytes = encode_mouse_event(64, false, 5, 3, 80, 24, crate::terminal::MouseProtocolEncoding::Sgr);
         assert_eq!(bytes, b"\x1b[<64;6;4M");
     }
 
@@ -481,7 +481,7 @@ mod mouse_encoding_tests {
     fn coordinates_clamped_to_screen() {
         // Negative / out-of-range columns clamp into the grid.
         let bytes =
-            encode_mouse_event(0, false, -5, 999, 80, 24, vt100::MouseProtocolEncoding::Sgr);
+            encode_mouse_event(0, false, -5, 999, 80, 24, crate::terminal::MouseProtocolEncoding::Sgr);
         assert_eq!(bytes, b"\x1b[<0;1;24M");
     }
 
@@ -494,7 +494,7 @@ mod mouse_encoding_tests {
             2,
             80,
             24,
-            vt100::MouseProtocolEncoding::Default,
+            crate::terminal::MouseProtocolEncoding::Default,
         );
         assert_eq!(
             bytes,

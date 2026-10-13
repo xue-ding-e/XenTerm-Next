@@ -7,12 +7,10 @@ fn esc_paren_zero_draws_box_lines_even_in_utf8_mode() {
     buffer.render();
 
     assert_eq!(buffer.displayed_text[0], "┌──┐");
-    // The reflow replay ring stores the already-translated UTF-8, so a resize
-    // re-renders the same glyphs without charset state.
-    assert_eq!(
-        buffer.raw.iter().copied().collect::<Vec<_>>(),
-        "\x1b(0┌──┐\x1b(B".as_bytes()
-    );
+    // The native grid retains translated glyphs across resize.
+    buffer.reflow(4, 20);
+    buffer.render();
+    assert_eq!(buffer.displayed_text[0], "┌──┐");
 }
 
 #[test]

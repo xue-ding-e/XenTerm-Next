@@ -1,22 +1,10 @@
 use crate::terminal::{
-    build_row, cell_prefix, char_after_cell_end, char_at_cell_start, detect_scroll,
+    build_row, cell_prefix, char_after_cell_end, char_at_cell_start,
     highlight_plain_output, render_term_span, BuiltScreen, CsiState, Line, TermBuffer, TermMatch,
-    MAX_HISTORY, RAW_CAP,
+    MAX_HISTORY, TerminalEngine, MouseProtocolMode,
 };
 
-/// Lines of scrollback the `vt100::Parser` itself retains: none.
-///
-/// The parser's scrollback is a `rows + scrollback` grid of `Cell`s that nothing
-/// here reads: scrolling, selection and find all work off this module's own
-/// `history` deque (capped at [`MAX_HISTORY`]), and resize reflow replays `raw`
-/// through a fresh parser rather than asking the parser to retain anything. At
-/// 5000 lines that was a large dead allocation per tab — a `Cell` is a `Vec`
-/// plus attributes, so 5000 lines x 200 columns is on the order of 40 MB — and
-/// `0` is what `vt100`'s own `Default` uses.
-///
-/// The two buffers stay separate on purpose: the deque stores runs, which is
-/// cheaper per line than a cell grid, and it is the one the UI scrolls through.
-pub(crate) const PARSER_SCROLLBACK: usize = 0;
+// Rio owns the grid and its scrollback; history is read lazily by the frontend.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TerminalQuery {
@@ -35,14 +23,10 @@ fn terminal_query(sequence: &[u8]) -> Option<TerminalQuery> {
     }
 }
 
-/// `CSI 3 J` — "erase saved lines".
-const ERASE_SAVED: [u8; 4] = [0x1b, b'[', b'3', b'J'];
-
 /// Longest OSC payload buffered before the rest of the sequence is dropped.
 ///
-/// `vte` caps its own OSC buffer at 1024 bytes, so a longer one could not survive
-/// the parser anyway; dropping it keeps a truncated sequence out of the replay
-/// ring, which a resize would otherwise feed back through the parser.
+/// Buffering a bounded complete OSC keeps payload bytes out of the text grid
+/// and avoids allocations controlled by an untrusted remote stream.
 pub(crate) const OSC_CAP: usize = 4096;
 
 /// Longest CSI parameter string buffered before it is handed to the parser.
@@ -53,43 +37,18 @@ pub(crate) const OSC_CAP: usize = 4096;
 /// the parser is for.
 const CSI_CAP: usize = 1024;
 
-/// Byte index just past the last `CSI 3 J` in `tail` followed by `bytes`.
-///
-/// `tail` is the tail of the already-retained replay stream, so a sequence split
-/// across two reads is still found. The two slices are read as one window
-/// instead of being concatenated, so the search allocates nothing.
-pub(crate) fn find_last_erase_saved(tail: &[u8], bytes: &[u8]) -> Option<usize> {
-    let merged = tail.len() + bytes.len();
-    if merged < ERASE_SAVED.len() {
-        return None;
-    }
-    let byte_at = |index: usize| {
-        if index < tail.len() {
-            tail[index]
-        } else {
-            bytes[index - tail.len()]
-        }
-    };
-    (0..=merged - ERASE_SAVED.len())
-        .rev()
-        .find(|&start| {
-            (0..ERASE_SAVED.len()).all(|offset| byte_at(start + offset) == ERASE_SAVED[offset])
-        })
-        .map(|start| start + ERASE_SAVED.len())
-}
-
 impl TermBuffer {
     /// A fresh buffer with an empty screen of the given size.
     ///
     /// A constructor rather than a struct literal at each call site because there
-    /// are twenty fields and three of them are state machines that must start in a
-    /// particular state: a `charset` mid-designation, a `csi_state` that is not
-    /// `Normal` or a non-empty `raw` queue would all be a buffer that mis-renders
+    /// are several fields and state machines that must start in a particular
+    /// state: a `charset` mid-designation or a `csi_state` that is not
+    /// `Normal` would both be a buffer that mis-renders
     /// its first byte. Callers go through this rather than building the literal
     /// inline, so the initialisation has one place to get wrong instead of many.
     pub(crate) fn new(rows: u16, cols: u16) -> Self {
         Self {
-            parser: vt100::Parser::new(rows, cols, PARSER_SCROLLBACK),
+            parser: TerminalEngine::new(rows, cols, MAX_HISTORY),
             find_query: String::new(),
             is_dark: false,
             output_highlight: crate::terminal::OutputHighlightPreset::Off,
@@ -102,14 +61,11 @@ impl TermBuffer {
             sel_focus: None,
             sel_ranges: Vec::new(),
             mouse_tracked: false,
-            history: std::collections::VecDeque::new(),
-            prev: Vec::new(),
             view_offset: 0,
             scroll_accum: 0.0,
             displayed_text: Vec::new(),
             csi_state: CsiState::Normal,
             csi_pending: Vec::new(),
-            raw: Vec::new(),
         }
     }
 
@@ -119,10 +75,8 @@ impl TermBuffer {
     /// scrollback allocation alive until it is closed.
     pub(crate) fn release_scrollback(&mut self) {
         let (rows, cols) = self.parser.screen().size();
-        self.parser = vt100::Parser::new(rows, cols, PARSER_SCROLLBACK);
+        self.parser = TerminalEngine::new(rows, cols, MAX_HISTORY);
         self.find_query.clear();
-        self.history = std::collections::VecDeque::new();
-        self.prev = Vec::new();
         self.view_offset = 0;
         self.sel_anchor = None;
         self.sel_focus = None;
@@ -130,9 +84,17 @@ impl TermBuffer {
         self.displayed_text = Vec::new();
         self.csi_state = CsiState::Normal;
         self.csi_pending = Vec::new();
-        self.raw = Vec::new();
         self.charset = crate::terminal::CharsetTracker::default();
         self.mouse_tracked = false;
+    }
+
+    /// Native scrollback size, preserving the normal-screen count while in a TUI.
+    pub(crate) fn history_len(&self) -> usize { self.parser.history_len() }
+
+    /// Oldest-first scrollback rows, materialized only when selection/find need them.
+    pub(crate) fn history_lines(&self) -> impl Iterator<Item = Line> + '_ {
+        let count = if self.parser.alternate_screen() { 0 } else { self.history_len() };
+        (0..count).filter_map(|index| self.parser.line_at_abs(index))
     }
 
     // ---- Absolute-coordinate selection helpers (#18 follow-up) -------------
@@ -156,8 +118,9 @@ impl TermBuffer {
 
     /// Absolute combined-row index of the top visible row for the current view.
     fn view_top_abs(&self) -> usize {
+        if self.parser.alternate_screen() { return 0; }
         let rows = self.parser.screen().size().0 as usize;
-        let hist_len = self.history.len();
+        let hist_len = self.history_len();
         if self.view_offset == 0 {
             // Live view: visible row 0 is live screen row 0 = combined[hist_len].
             hist_len
@@ -308,13 +271,11 @@ impl TermBuffer {
         let q = query.to_lowercase();
         let (live, _) = self.live_rows();
         let rows = self.parser.screen().size().0 as usize;
-        let hist_len = self.history.len();
+        let hist_len = self.history_len();
         let combined_len = hist_len + live.len();
-        let Some(match_idx) = self
-            .history
-            .iter()
-            .map(|line| &line.0)
-            .chain(live.iter().map(|line| &line.0))
+        let Some(match_idx) = (0..hist_len)
+            .filter_map(|index| self.parser.text_line_at_abs(index).map(|line| line.0))
+            .chain(live.iter().map(|line| line.0.clone()))
             .position(|line| line.to_lowercase().contains(&q))
         else {
             return false;
@@ -513,7 +474,7 @@ impl TermBuffer {
         }
         const STEP: usize = 2;
         let rows = self.parser.screen().size().0;
-        let max_off = self.history.len();
+        let max_off = self.history_len();
         // Keep the column the user last dragged to; only the row follows the edge.
         let focus_col = self.sel_focus.map(|focus| focus.1).unwrap_or(0);
         let edge_vis = if dir < 0 {
@@ -575,20 +536,18 @@ impl TermBuffer {
             (fr, fc, ar, ac)
         };
         let (live, live_used) = self.live_rows();
-        let hist_len = self.history.len();
+        let hist_len = if self.parser.alternate_screen() { 0 } else { self.history_len() };
         let combined_len = hist_len + live_used;
         // Clamp into real content so a focus parked on a blank row below the
         // prompt doesn't emit trailing empty lines.
         let hi_r = hi_r.min(combined_len.saturating_sub(1));
         let mut out = String::new();
         for r in lo_r..=hi_r {
-            let line: &str = if r < hist_len {
-                &self.history[r].0
-            } else if r - hist_len < live.len() {
-                &live[r - hist_len].0
-            } else {
-                ""
-            };
+            let historical = (r < hist_len).then(|| self.parser.text_line_at_abs(r)).flatten();
+            let live_row = live.get(r.saturating_sub(hist_len));
+            let line = if r < hist_len {
+                historical.as_ref().map(|line| line.0.as_str()).unwrap_or("")
+            } else { live_row.map(|line| line.0.as_str()).unwrap_or("") };
             let chars: Vec<char> = line.chars().collect();
             // `c0`/`c1` are GRID COLUMNS (inclusive). The plain text keeps one
             // char per glyph, so wide (CJK) glyphs make char index != column;
@@ -613,12 +572,8 @@ impl TermBuffer {
             };
             out.push_str(seg.trim_end());
             let wrapped = if r < hist_len {
-                self.history[r].2
-            } else if r - hist_len < live.len() {
-                live[r - hist_len].2
-            } else {
-                false
-            };
+                historical.as_ref().is_some_and(|line| line.1)
+            } else { live_row.is_some_and(|line| line.2) };
             if r != hi_r && !wrapped {
                 out.push('\n');
             }
@@ -651,15 +606,9 @@ impl TermBuffer {
         true
     }
 
-    /// Feed bytes to vt100 and capture scrolled-off lines into history.
-    ///
-    /// We detect scroll by diffing the screen before/after a `process`, which
-    /// can only recover up to one screen of shift per call.  A single large
-    /// burst can scroll many screens at once, so we split the input at newline
-    /// boundaries into batches of at most ~half a screen of lines and capture
-    /// after each — that way no batch ever scrolls more than the diff can see,
-    /// and nothing is lost.  (Splitting only on `\n` is safe: VT escape
-    /// sequences never contain a newline.)
+    /// Feed bytes into the native grid, which records scrolling directly.
+    /// XenTerm keeps its bounded OSC scanner and explicitly answers the
+    /// protocol queries it advertises, including across split reads.
     /// The returned bytes are terminal-query replies that must be written back
     /// to the PTY immediately (DSR/CPR and primary device attributes, #328).
     pub(crate) fn ingest(&mut self, input: &[u8]) -> Vec<u8> {
@@ -686,13 +635,13 @@ impl TermBuffer {
                         self.csi_pending.clear();
                         self.csi_pending.push(byte);
                         self.csi_state = CsiState::Esc;
-                    } else if self.vt100_drawing && byte == 0x0e {
-                        // SO: shift output to G1 (#376). Swallowed before the
-                        // parser, which has no charset support.
-                        self.charset.shift_out();
-                    } else if self.vt100_drawing && byte == 0x0f {
+                    } else if byte == 0x0e {
+                        // The session's DEC drawing option owns charset shifts
+                        // (#376); do not let the engine bypass that option.
+                        if self.vt100_drawing { self.charset.shift_out(); }
+                    } else if byte == 0x0f {
                         // SI: back to G0.
-                        self.charset.shift_in();
+                        if self.vt100_drawing { self.charset.shift_in(); }
                     } else if self.vt100_drawing {
                         // DEC Special Graphics maps 0x60–0x7e (always standalone
                         // ASCII in a UTF-8 stream) to box-drawing Unicode (#376).
@@ -733,9 +682,10 @@ impl TermBuffer {
                 }
                 CsiState::Designate(set) => {
                     if byte == 0x1b {
-                        // Malformed: a new escape interrupts the designator.
-                        // Pass the buffered bytes through and start over.
-                        display.extend(self.csi_pending.drain(..));
+                        // SCS is owned by this scanner. Drop the interrupted
+                        // prefix so the native parser cannot remain inside a
+                        // designation whose replacement was consumed here.
+                        self.csi_pending.clear();
                         self.csi_pending.push(byte);
                         self.csi_state = CsiState::Esc;
                     } else {
@@ -743,7 +693,10 @@ impl TermBuffer {
                         if self.vt100_drawing {
                             self.charset.designate(set, byte);
                         }
-                        display.extend(self.csi_pending.drain(..));
+                        // Output is already translated when drawing is enabled;
+                        // swallow SCS so native charset support cannot translate
+                        // again or enable drawing for a disabled session option.
+                        self.csi_pending.clear();
                         self.csi_state = CsiState::Normal;
                     }
                 }
@@ -755,7 +708,7 @@ impl TermBuffer {
                     } else if byte == 0x18 || byte == 0x1a {
                         // CAN/SUB abort an OSC from anywhere (the parser's
                         // Anywhere rule). The buffered bytes are forwarded so
-                        // vt100 sees the same abort it would execute itself.
+                        // the native engine sees the same abort it would execute.
                         display.extend(self.csi_pending.drain(..));
                         self.csi_state = CsiState::Normal;
                     } else if byte == 0x1b {
@@ -763,7 +716,7 @@ impl TermBuffer {
                     } else if self.csi_pending.len() > OSC_CAP {
                         // Unbounded OSC: drop what was buffered and keep dropping
                         // until the terminator, so no half-parsed sequence reaches
-                        // the parser or the replay ring.
+                        // the native parser.
                         self.csi_pending.clear();
                         self.csi_state = CsiState::OscDiscard;
                     }
@@ -837,12 +790,9 @@ impl TermBuffer {
                                 }
                             }
                         } else {
-                            // Rewrite HVP (`CSI … f`) to CUP (`CSI … H`) because
-                            // vt100 implements only the latter.
-                            if byte == b'f' {
-                                if let Some(final_byte) = self.csi_pending.last_mut() {
-                                    *final_byte = b'H';
-                                }
+                            if self.csi_pending == b"\x1b[3J" {
+                                self.clear_selection();
+                                self.view_offset = 0;
                             }
                             display.extend(self.csi_pending.drain(..));
                         }
@@ -869,93 +819,33 @@ impl TermBuffer {
     }
 
     fn ingest_display_bytes(&mut self, bytes: &[u8]) {
-        if bytes.is_empty() {
-            return;
-        }
-        // CSI 3 J means "erase saved lines". The vt100 crate clears its own
-        // scrollback, but XenTerm maintains a separate rendered history and a
-        // raw replay stream for resize reflow. Drop both sides of that history,
-        // including when the CSI sequence was split across SSH reads (#319).
-        //
-        // Searched for in the last three retained bytes plus this chunk only:
-        // every older occurrence was already drained through when it arrived, so
-        // rescanning the whole retained stream — up to RAW_CAP, 2 MB — on every
-        // chunk was work that grew with the buffer for no new information.
-        let mut tail = [0u8; ERASE_SAVED.len() - 1];
-        let tail_len = self.raw.len().min(tail.len());
-        tail[..tail_len].copy_from_slice(&self.raw[self.raw.len() - tail_len..]);
-        let erase_saved_through = find_last_erase_saved(&tail[..tail_len], bytes)
-            .map(|position| self.raw.len() - tail_len + position);
-        // Retain the (post-rewrite) stream, capped, so a resize can replay it at
-        // the new width and reflow already-printed output (#169).
-        self.raw.extend_from_slice(bytes);
-        if let Some(end) = erase_saved_through {
-            self.raw.drain(..end);
-            self.history.clear();
-            self.prev.clear();
-            self.view_offset = 0;
-            self.sel_anchor = None;
-            self.sel_focus = None;
-            self.sel_ranges.clear();
-        }
-        self.cap_raw();
-        self.feed_batched(bytes);
+        if bytes.is_empty() { return; }
+        // Native scrolling records every row, including identical rows and
+        // arbitrarily long wrapped lines (#385), without screen comparisons.
+        let evicted = self.parser.lines_evicted();
+        let was_alt = self.parser.alternate_screen();
+        self.parser.set_display_offset(self.view_offset);
+        self.parser.process(bytes);
+        self.sync_mouse_tracked();
+        self.view_offset = if self.parser.alternate_screen() { 0 } else {
+            self.parser.display_offset().min(self.history_len())
+        };
+        // Selections use oldest-first indices. Shift retained endpoints when
+        // the ring drops old rows; discard only a selection whose text is gone.
+        let dropped = self.parser.lines_evicted().saturating_sub(evicted) as usize;
+        if was_alt != self.parser.alternate_screen() {
+            self.clear_selection();
+        } else if dropped > 0 { self.rebase_selection(dropped); }
     }
 
-    /// Feed a (already HVP-rewritten) byte slice to vt100 in bounded batches,
-    /// capturing scrolled-off lines into history after each (see the `ingest`
-    /// doc comment). Besides newlines, bound the approximate display width:
-    /// one very long physical line can wrap through many screens without ever
-    /// containing `\n` (#385). Does NOT touch `self.raw`, so it is reused by
-    /// both live ingest and resize-reflow replay.
-    fn feed_batched(&mut self, bytes: &[u8]) {
-        let (rows, cols) = self.parser.screen().size();
-        let rows = rows as usize;
-        let batch_lines = (rows / 2).max(1);
-        let cell_budget = batch_lines.saturating_mul(cols as usize).max(1);
-        let mut start = 0usize;
-        let mut nl = 0usize;
-        let mut cells = 0usize;
-        for i in 0..bytes.len() {
-            if bytes[i] == b'\n' {
-                nl += 1;
-            } else if bytes[i] == b'\t' {
-                // A tab can advance up to eight terminal cells.
-                cells = cells.saturating_add(8);
-            } else if bytes[i] >= 0x20 && bytes[i] & 0xc0 != 0x80 {
-                // Count ASCII and UTF-8 leading bytes. Wide Unicode occupies at
-                // most two cells, and the half-screen budget leaves that margin.
-                cells = cells.saturating_add(1);
-            }
-            if nl >= batch_lines || cells >= cell_budget {
-                self.ingest_chunk(&bytes[start..=i]);
-                start = i + 1;
-                nl = 0;
-                cells = 0;
-            }
-        }
-        if start < bytes.len() {
-            self.ingest_chunk(&bytes[start..]);
-        }
-    }
-
-    /// Trim the retained stream to `RAW_CAP`, dropping from the front up to the
-    /// next line boundary so a replay never starts mid-escape / mid-wrapped-line.
-    fn cap_raw(&mut self) {
-        if self.raw.len() <= RAW_CAP {
-            return;
-        }
-        let overflow = self.raw.len() - RAW_CAP;
-        self.raw.drain(0..overflow);
-        // Drop up to and including the next line boundary, so a replay never
-        // starts mid-escape or mid-wrapped-line. No boundary left means what is
-        // retained is one unfinished line, which cannot be replayed at all.
-        match self.raw.iter().position(|&byte| byte == b'\n') {
-            Some(position) => {
-                self.raw.drain(..=position);
-            }
-            None => self.raw.clear(),
-        }
+    fn rebase_selection(&mut self, dropped: usize) {
+        let adjust = |point: &mut (usize, u16)| {
+            if let Some(row) = point.0.checked_sub(dropped) { point.0 = row; true } else { false }
+        };
+        let anchor_ok = self.sel_anchor.as_mut().is_none_or(&adjust);
+        let focus_ok = self.sel_focus.as_mut().is_none_or(&adjust);
+        let ranges_ok = self.sel_ranges.iter_mut().all(|(anchor, focus)| adjust(anchor) && adjust(focus));
+        if !anchor_ok || !focus_ok || !ranges_ok { self.clear_selection(); }
     }
 
     /// Scroll the scrollback by `delta` lines, which may be fractional.
@@ -972,7 +862,7 @@ impl TermBuffer {
     /// Returns whether the offset moved, so a caller can skip an expensive repaint
     /// when scrolling at a boundary changed nothing.
     pub(crate) fn scroll_by_lines(&mut self, delta: f32) -> bool {
-        let max_off = self.history.len() as i64;
+        let max_off = self.history_len() as i64;
         self.scroll_accum += delta.clamp(-24.0, 24.0);
         let whole = self.scroll_accum.trunc();
         if whole != 0.0 {
@@ -999,7 +889,7 @@ impl TermBuffer {
     /// No accumulation: a drag names a position, so the fractional machinery above
     /// would fight it. Returns whether the offset moved.
     pub(crate) fn scroll_to_offset(&mut self, offset: usize) -> bool {
-        let clamped = offset.min(self.history.len());
+        let clamped = offset.min(self.history_len());
         if clamped == self.view_offset {
             return false;
         }
@@ -1018,47 +908,20 @@ impl TermBuffer {
     /// caller that has to know how the offset is measured.
     // Its callers are the terminal view's paging-key handler and the scroll tests.
     pub(crate) fn scroll_to_boundary(&mut self, bottom: bool) -> bool {
-        let target = if bottom { 0 } else { self.history.len() };
+        let target = if bottom { 0 } else { self.history_len() };
         self.scroll_to_offset(target)
     }
 
-    /// Resize-reflow (#169): rebuild the screen + scrollback at a new width by
-    /// replaying the retained byte stream through a fresh parser. vt100 itself
-    /// can't reflow (`set_size` just truncates/pads each row), and we only keep
-    /// rendered grid rows in `history`, so replaying the raw stream is what lets
-    /// long lines rewrap to the new width like FinalShell.
-    ///
-    /// Alt-screen programs (tmux/vim) are the exception this always claimed to
-    /// make: they own the canvas and redraw on SIGWINCH, so there is nothing to
-    /// rewrap. Resizing the grid in place is not only cheaper than replaying up to
-    /// RAW_CAP bytes, it is the only path that keeps `history` — a replay on the
-    /// alt screen captures no rows at all (`ingest_chunk` refuses to), so the
-    /// cleared history stayed empty and a resize in vim threw the scrollback away.
+    /// Reflow native screen and scrollback at the new width (#169). Ordinary
+    /// and alternate screens keep their own grids; neither replays raw output.
     pub(crate) fn reflow(&mut self, new_rows: u16, new_cols: u16) {
-        if self.parser.screen().alternate_screen() {
-            self.parser.set_size(new_rows, new_cols);
-            self.prev.clear();
-            self.view_offset = 0;
-            // The grid changed size under them, so nothing anchored to a cell is
-            // meaningful any more.
-            self.sel_anchor = None;
-            self.sel_focus = None;
-            self.sel_ranges.clear();
-            return;
-        }
-        // Taken rather than cloned: the stream is up to RAW_CAP (2 MB) and the
-        // replay below never reads `raw`.
-        let stream = std::mem::take(&mut self.raw);
-        self.parser = vt100::Parser::new(new_rows, new_cols, PARSER_SCROLLBACK);
-        self.history.clear();
-        self.prev.clear();
+        self.parser.resize(new_rows, new_cols);
+        self.parser.set_display_offset(0);
         self.view_offset = 0;
-        // Scrollback line count changes, so absolute selection coords no longer map.
-        self.sel_anchor = None;
-        self.sel_focus = None;
-        self.sel_ranges.clear();
-        self.feed_batched(&stream);
-        self.raw = stream;
+        self.scroll_accum = 0.0;
+        // Grid coordinates changed; old selection endpoints no longer name
+        // the same cells, even though all retained text is still in the grid.
+        self.clear_selection();
     }
 
     /// Refresh the cached `mouse_tracked` flag from the parser's current mouse
@@ -1067,67 +930,7 @@ impl TermBuffer {
     /// to lock the parser to decide how a click behaves.
     fn sync_mouse_tracked(&mut self) {
         self.mouse_tracked =
-            self.parser.screen().mouse_protocol_mode() != vt100::MouseProtocolMode::None;
-    }
-
-    /// Process one bounded batch and capture any lines that scrolled off the top
-    /// (skipped for alt-screen programs like vim/nano).
-    fn ingest_chunk(&mut self, bytes: &[u8]) {
-        // Detect full-screen-clear sequences *before* processing so we can
-        // suppress history for programs that redraw without alt-screen (e.g.
-        // btop configured with `alt-screen = false`).
-        // We look for \033[H (cursor-home) and \033[2J / \033[J (erase display)
-        // as indicators that the program is doing a full-screen refresh.
-        let has_cursor_home = bytes.windows(3).any(|w| w == b"\x1b[H");
-        let has_erase_display =
-            bytes.windows(4).any(|w| w == b"\x1b[2J") || bytes.windows(3).any(|w| w == b"\x1b[J");
-        let is_fullscreen_refresh = has_cursor_home && has_erase_display;
-
-        self.parser.process(bytes);
-        self.sync_mouse_tracked();
-        let (is_alt, rows, cols) = {
-            let s = self.parser.screen();
-            let (r, c) = s.size();
-            (s.alternate_screen(), r, c)
-        };
-        if is_alt {
-            // Snap to live view whenever we're on the alt screen — this
-            // prevents old history (accumulated before alt-screen was entered)
-            // from mixing with the full-screen program's output after a scroll.
-            self.view_offset = 0;
-            self.prev.clear();
-            return;
-        }
-        if is_fullscreen_refresh {
-            // Non-alt-screen full-screen refresh (btop, htop with alt disabled…).
-            // Don't capture lines into history; they'd mix with the next frame.
-            self.view_offset = 0;
-            self.prev.clear();
-            return;
-        }
-        let curr: Vec<Line> = {
-            let s = self.parser.screen();
-            (0..rows).map(|r| build_row(s, r, cols)).collect()
-        };
-        if !self.prev.is_empty() {
-            let k = detect_scroll(&self.prev, &curr);
-            for line in self.prev.iter().take(k) {
-                self.history.push_back(line.clone());
-            }
-            while self.history.len() > MAX_HISTORY {
-                self.history.pop_front();
-            }
-            // `view_offset` is measured backwards from the live bottom.  If
-            // output scrolls while the user is reading history, keeping the
-            // same offset would move their viewport forward by `k` rows. Move
-            // the offset back by the number of newly captured rows instead so
-            // the content under the scrollbar stays anchored (#306). At the
-            // live bottom (`0`) output-following remains unchanged.
-            if self.view_offset > 0 && k > 0 {
-                self.view_offset = self.view_offset.saturating_add(k).min(self.history.len());
-            }
-        }
-        self.prev = curr;
+            self.parser.screen().mouse_protocol_mode() != MouseProtocolMode::None;
     }
 
     /// Render the terminal grid for the current scrollback `view_offset`
@@ -1178,7 +981,7 @@ impl TermBuffer {
                 rows_used,
                 is_alt,
                 mouse_tracked: self.mouse_tracked,
-                scroll_max: if is_alt { 0 } else { self.history.len() as i32 },
+                scroll_max: if is_alt { 0 } else { self.history_len() as i32 },
                 scroll_offset: 0,
             };
         }
@@ -1188,7 +991,7 @@ impl TermBuffer {
             let s = self.parser.screen();
             (0..rows).map(|r| build_row(s, r, cols)).collect()
         };
-        let hist_len = self.history.len();
+        let hist_len = self.history_len();
         // Include the screen's trailing blank rows in the scroll range so this
         // scrolled view stays continuous with the live view (view_offset 0).
         // Trimming to only the used rows made the two views misalign after a
@@ -1203,11 +1006,8 @@ impl TermBuffer {
         let mut spans = Vec::new();
         let mut displayed = Vec::with_capacity(win);
         for (d, idx) in (start..end).enumerate() {
-            let line: &Line = if idx < hist_len {
-                &self.history[idx]
-            } else {
-                &live[idx - hist_len]
-            };
+            let historical = (idx < hist_len).then(|| self.parser.line_at_abs(idx)).flatten();
+            let Some(line) = historical.as_ref().or_else(|| live.get(idx.saturating_sub(hist_len))) else { continue; };
             let runs = highlight_plain_output(
                 line.1.clone(),
                 self.output_highlight,
@@ -1229,7 +1029,7 @@ impl TermBuffer {
             rows_used: win as i32,
             is_alt: false,
             mouse_tracked: self.mouse_tracked,
-            scroll_max: self.history.len() as i32,
+            scroll_max: self.history_len() as i32,
             scroll_offset: self.view_offset as i32,
         }
     }

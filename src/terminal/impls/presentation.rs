@@ -23,8 +23,8 @@ pub(crate) fn highlight_plain_output(
     let mut out = Vec::with_capacity(runs.len() + 2);
     for run in runs {
         let eligible = run.col < SEARCH_COLS
-            && matches!(run.fg, vt100::Color::Default)
-            && matches!(run.bg, vt100::Color::Default)
+            && matches!(run.fg, crate::terminal::TerminalColor::Default)
+            && matches!(run.bg, crate::terminal::TerminalColor::Default)
             && !run.bold
             && !run.inverse;
         let max_chars = SEARCH_COLS.saturating_sub(run.col) as usize;
@@ -51,7 +51,7 @@ pub(crate) fn highlight_plain_output(
 
         let mut level = run.clone();
         level.text = marker;
-        level.fg = vt100::Color::Idx(ansi_index);
+        level.fg = crate::terminal::TerminalColor::Idx(ansi_index);
         level.bold = true;
         level.col += before_cells;
         level.cells = marker_cells;
@@ -77,7 +77,7 @@ fn highlight_custom_output(mut runs: Vec<HistSpan>, rules: &[CompiledOutputRule]
         {
             for run in &mut runs {
                 if custom_rule_eligible(run) {
-                    run.fg = vt100::Color::Idx(rule.ansi_index);
+                    run.fg = crate::terminal::TerminalColor::Idx(rule.ansi_index);
                     run.bold = true;
                 }
             }
@@ -108,8 +108,8 @@ fn highlight_custom_output(mut runs: Vec<HistSpan>, rules: &[CompiledOutputRule]
 }
 
 fn custom_rule_eligible(run: &HistSpan) -> bool {
-    matches!(run.fg, vt100::Color::Default)
-        && matches!(run.bg, vt100::Color::Default)
+    matches!(run.fg, crate::terminal::TerminalColor::Default)
+        && matches!(run.bg, crate::terminal::TerminalColor::Default)
         && !run.bold
         && !run.inverse
 }
@@ -141,7 +141,7 @@ fn style_custom_matches(
         let cells = text_cell_width(text);
         let mut hit = run.clone();
         hit.text = text.to_string();
-        hit.fg = vt100::Color::Idx(ansi_index);
+        hit.fg = crate::terminal::TerminalColor::Idx(ansi_index);
         hit.bold = true;
         hit.col = col;
         hit.cells = cells;
@@ -162,8 +162,27 @@ fn style_custom_matches(
 }
 
 pub(crate) fn text_cell_width(text: &str) -> i32 {
-    use unicode_width::UnicodeWidthChar;
-    text.chars().map(|ch| ch.width().unwrap_or(0) as i32).sum()
+    // Rendering asks this once per grapheme. Keep common text allocation-free
+    // while sharing the exact width table used by the native grid.
+    if text.bytes().all(|byte| (0x20..=0x7e).contains(&byte)) { return text.len() as i32; }
+    let mut small = [0u32; 32];
+    let mut large = Vec::new();
+    let mut count = 0;
+    for ch in text.chars() {
+        if count < small.len() { small[count] = ch as u32; } else {
+            if large.is_empty() { large.extend_from_slice(&small); }
+            large.push(ch as u32);
+        }
+        count += 1;
+    }
+    let codepoints = if count <= small.len() { &small[..count] } else { large.as_slice() };
+    let (mut index, mut width) = (0, 0);
+    while index < codepoints.len() {
+        let (consumed, cells) = rio_vt::grapheme_lut::cluster_width(&codepoints[index..]);
+        index += consumed.max(1);
+        width += cells as i32;
+    }
+    width
 }
 
 /// Return `(byte_start, byte_end, xterm_256_index)` for a log severity marker.
@@ -415,7 +434,6 @@ fn twemoji_image(grapheme: &str) -> Option<EmojiImage> {
 /// coloured. Columns still come from terminal cells, not image pixels.
 pub(crate) fn render_term_span(span: &HistSpan, row: i32, is_dark: bool) -> Vec<TermSpan> {
     use unicode_segmentation::UnicodeSegmentation as _;
-    use unicode_width::UnicodeWidthStr as _;
 
     let graphemes: Vec<&str> = span.text.graphemes(true).collect();
     if graphemes.is_empty() {
@@ -432,7 +450,7 @@ pub(crate) fn render_term_span(span: &HistSpan, row: i32, is_dark: bool) -> Vec<
 
     for (index, grapheme) in graphemes.iter().enumerate() {
         let following = (graphemes.len() - index - 1) as i32;
-        let desired = (*grapheme).width().clamp(1, 2) as i32;
+        let desired = text_cell_width(grapheme).clamp(1, 2);
         let cells = if following == 0 {
             remaining_cells.max(1)
         } else {
@@ -505,8 +523,8 @@ mod color_emoji_tests {
     fn run(text: &str, cells: i32) -> HistSpan {
         HistSpan {
             text: text.to_string(),
-            fg: vt100::Color::Default,
-            bg: vt100::Color::Default,
+            fg: crate::terminal::TerminalColor::Default,
+            bg: crate::terminal::TerminalColor::Default,
             bold: false,
             inverse: false,
             col: 4,
@@ -653,23 +671,23 @@ const ANSI16_LIGHT_BG: [(u8, u8, u8); 16] = [
     (0xff, 0xff, 0xff), // 15 bright white → white
 ];
 
-/// Convert a vt100 foreground colour (+ bold) to RGBA.
+/// Convert a terminal foreground colour (+ bold) to RGBA.
 /// Bold + a base colour (0–7) maps to the bright variant (8–15), matching
 /// how terminals render `ls --color` (bold-green executables, bold-blue dirs).
 ///
 /// In light mode, true-colour RGB foregrounds that are light (HSL lightness
 /// ≥ 0.55) are darkened so they remain readable on a near-white background.
-fn vt_fg_rgba(color: vt100::Color, bold: bool, is_dark: bool) -> Rgba {
+fn vt_fg_rgba(color: crate::terminal::TerminalColor, bold: bool, is_dark: bool) -> Rgba {
     let (r, g, b) = match color {
-        vt100::Color::Default => {
+        crate::terminal::TerminalColor::Default => {
             if is_dark {
                 (0xd4, 0xd4, 0xd4)
             } else {
                 (0x2d, 0x2d, 0x2f)
             }
         }
-        vt100::Color::Idx(i) => idx_to_rgb(i, bold, is_dark),
-        vt100::Color::Rgb(r, g, b) => {
+        crate::terminal::TerminalColor::Idx(i) => idx_to_rgb(i, bold, is_dark),
+        crate::terminal::TerminalColor::Rgb(r, g, b) => {
             if is_dark {
                 (r, g, b)
             } else {
@@ -724,8 +742,8 @@ fn vt_default_bg_rgb(is_dark: bool) -> (u8, u8, u8) {
 /// Returns RGBA rather than a toolkit colour, which is the only thing that changed
 /// here when the terminal layer stopped naming the toolkit's own types.
 pub(crate) fn vt_span_colors(
-    fg: vt100::Color,
-    bg: vt100::Color,
+    fg: crate::terminal::TerminalColor,
+    bg: crate::terminal::TerminalColor,
     bold: bool,
     inverse: bool,
     is_dark: bool,
@@ -735,14 +753,14 @@ pub(crate) fn vt_span_colors(
     }
 
     let fg_color = match bg {
-        vt100::Color::Default => {
+        crate::terminal::TerminalColor::Default => {
             let (r, g, b) = vt_default_bg_rgb(is_dark);
             Rgba::rgb(r, g, b)
         }
         _ => vt_fg_rgba(bg, false, is_dark),
     };
     let bg_color = match fg {
-        vt100::Color::Default => {
+        crate::terminal::TerminalColor::Default => {
             let (r, g, b) = vt_default_fg_rgb(is_dark);
             Rgba::rgb(r, g, b)
         }
@@ -764,7 +782,7 @@ fn darken_light_fg(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
     hsl_to_rgb(h, s, new_l)
 }
 
-/// Convert a vt100 *background* colour to RGBA.  The default background maps
+/// Convert a terminal *background* colour to RGBA.  The default background maps
 /// to fully transparent so we don't paint a fill over the terminal's own bg.
 /// Non-default backgrounds (btop/htop bars, selected rows) become opaque.
 ///
@@ -772,14 +790,14 @@ fn darken_light_fg(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
 /// - ANSI 16 colours use `ANSI16_LIGHT_BG` (light pastels).
 /// - True-colour RGB backgrounds that are dark (HSL lightness < 0.45) are
 ///   remapped to light pastels so programs like btop feel light-themed.
-fn vt_bg_rgba(color: vt100::Color, is_dark: bool) -> Rgba {
+fn vt_bg_rgba(color: crate::terminal::TerminalColor, is_dark: bool) -> Rgba {
     match color {
-        vt100::Color::Default => Rgba::transparent(),
-        vt100::Color::Idx(i) => {
+        crate::terminal::TerminalColor::Default => Rgba::transparent(),
+        crate::terminal::TerminalColor::Idx(i) => {
             let (r, g, b) = idx_to_rgb_bg(i, is_dark);
             Rgba::rgb(r, g, b)
         }
-        vt100::Color::Rgb(r, g, b) => {
+        crate::terminal::TerminalColor::Rgb(r, g, b) => {
             if is_dark {
                 Rgba::rgb(r, g, b)
             } else {

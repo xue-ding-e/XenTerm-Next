@@ -40,7 +40,7 @@ fn terminal_queries_reply_at_the_current_cursor_position() {
         buffer.ingest(b"\x1b[5n\x1b[c\x1b[0c"),
         b"\x1b[0n\x1b[?1;2c\x1b[?1;2c"
     );
-    assert_eq!(buffer.raw.iter().copied().collect::<Vec<_>>(), b"abc");
+    assert_eq!(buffer.parser.screen().contents().trim_end(), "abc");
 }
 
 #[test]
@@ -59,18 +59,17 @@ fn terminal_query_and_hvp_scanners_survive_split_output_chunks() {
 #[test]
 fn csi_3j_clears_xenterm_scrollback_even_when_split() {
     let mut buffer = make_buf(3, 20, &["old one", "old two"], &["current"], 2);
-    buffer.raw.extend(b"old one\nold two\n");
-    buffer.prev.push(hist_line("old two"));
+    assert_eq!(buffer.history_len(), 2);
     buffer.sel_anchor = Some((0, 0));
     buffer.sel_focus = Some((1, 2));
 
     let _ = buffer.ingest(b"\x1b[3");
-    assert_eq!(buffer.history.len(), 2);
+    assert_eq!(buffer.history_len(), 2);
     let _ = buffer.ingest(b"J");
 
-    assert!(buffer.history.is_empty());
+    assert_eq!(buffer.history_len(), 0);
     assert_eq!(buffer.view_offset, 0);
-    assert!(buffer.raw.is_empty());
+    assert!(!buffer.parser.screen().contents().contains("old one"));
     assert!(buffer.sel_anchor.is_none());
     assert!(buffer.sel_focus.is_none());
 }
@@ -79,7 +78,7 @@ fn csi_3j_clears_xenterm_scrollback_even_when_split() {
 fn incoming_output_keeps_a_scrolled_view_anchored() {
     let mut buffer = make_buf(3, 20, &[], &[], 0);
     let _ = buffer.ingest(b"one\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix");
-    assert!(!buffer.history.is_empty());
+    assert!(buffer.history_len() > 0);
 
     buffer.view_offset = 1;
     buffer.render();
@@ -102,14 +101,13 @@ fn long_unbroken_output_is_captured_before_it_wraps_off_screen() {
     buffer.render();
 
     assert!(
-        !buffer.history.is_empty(),
+        buffer.history_len() > 0,
         "wrapped rows must enter scrollback even without newline bytes"
     );
     let rendered = buffer
-        .history
-        .iter()
-        .map(|line| line.0.as_str())
-        .chain(buffer.displayed_text.iter().map(String::as_str))
+        .history_lines()
+        .map(|line| line.0.trim_end().to_string())
+        .chain(buffer.displayed_text.iter().cloned())
         .collect::<String>();
     assert_eq!(rendered, String::from_utf8_lossy(output));
 }
@@ -155,22 +153,23 @@ fn an_oversized_osc_is_dropped_rather_than_forwarded() {
     buffer.render();
 
     assert_eq!(buffer.displayed_text[0], "after");
-    // Not even the replay ring keeps it: a resize would feed a truncated OSC back
-    // through the parser, which is the failure this avoids.
-    assert_eq!(buffer.raw.iter().copied().collect::<Vec<_>>(), b"after");
+    // Resizing must not reveal an oversized OSC payload or hold the parser
+    // inside the discarded sequence.
+    buffer.reflow(5, 40);
+    assert_eq!(buffer.render().is_alt, false);
+    assert_eq!(buffer.displayed_text[0], "after");
 }
 
 #[test]
-fn a_short_osc_still_reaches_the_parser_untouched() {
+fn a_short_osc_preserves_following_text_across_resize() {
     let mut buffer = make_buf(4, 40, &[], &[], 0);
     let _ = buffer.ingest(b"\x1b]2;title\x07kept");
     buffer.render();
 
     assert_eq!(buffer.displayed_text[0], "kept");
-    assert_eq!(
-        buffer.raw.iter().copied().collect::<Vec<_>>(),
-        b"\x1b]2;title\x07kept"
-    );
+    buffer.reflow(5, 40);
+    buffer.render();
+    assert_eq!(buffer.displayed_text[0], "kept");
 }
 
 #[test]
@@ -210,7 +209,7 @@ fn can_also_terminates_a_short_osc_and_a_partial_csi() {
 fn a_resize_on_the_alternate_screen_keeps_the_scrollback_it_had() {
     let mut buffer = make_buf(4, 20, &[], &[], 0);
     let _ = buffer.ingest(b"one\r\ntwo\r\nthree\r\nfour\r\nfive\r\n");
-    let history_before = buffer.history.len();
+    let history_before = buffer.history_len();
     assert!(history_before > 0, "the normal screen scrolled rows into history");
 
     let _ = buffer.ingest(b"\x1b[?1049halt-screen");
@@ -224,7 +223,7 @@ fn a_resize_on_the_alternate_screen_keeps_the_scrollback_it_had() {
         "the resize must not drop the program off its own screen"
     );
     assert_eq!(
-        buffer.history.len(),
+        buffer.history_len(),
         history_before,
         "a resize while vim is open must not throw the scrollback away"
     );

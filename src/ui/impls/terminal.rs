@@ -1,8 +1,8 @@
 //! The terminal grid, drawn on GPUI primitives.
 //!
 //! The pipeline above this is `crate::terminal`'s and is not duplicated here:
-//! `vt100` parses the byte stream, `TermBuffer` holds the scrollback and the
-//! selection, and `render_term_span` turns cells into positioned coloured runs.
+//! `rio-vt` owns the native screen and scrollback, `TermBuffer` owns selection
+//! and presentation, and `render_term_span` turns cells into positioned runs.
 //! What this module owns is the last step — turning a [`BuiltScreen`] into paints —
 //! and the decision that shapes everything else in it is that the grid is a
 //! *monospace cell grid*, not a paragraph of text.

@@ -470,7 +470,7 @@ overwritten. Diagnostics go to a separate `log/` directory beside the config, wi
 | UI | [GPUI](https://gpui.rs) via `gpui-kit` — GPU-rendered Rust UI, compiled in |
 | Async runtime | [`tokio`](https://tokio.rs) |
 | SSH / SFTP | [`russh`](https://crates.io/crates/russh) + [`russh-sftp`](https://crates.io/crates/russh-sftp) — pure Rust, no libssh |
-| Terminal emulation | [`vt100`](https://crates.io/crates/vt100) under a custom buffer |
+| Terminal emulation | [`rio-vt`](https://crates.io/crates/rio-vt) native grid, scrollback and reflow |
 | Local PTY | [`portable-pty`](https://crates.io/crates/portable-pty) |
 | Serial ports | [`serialport`](https://crates.io/crates/serialport) |
 | System metrics | [`sysinfo`](https://crates.io/crates/sysinfo) |

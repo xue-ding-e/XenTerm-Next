@@ -154,7 +154,7 @@ pub(crate) fn start_session_in_tab(tab_id: &str, session: Session, ctx: &Connect
                 // Block for the first event, then sweep up everything else that's
                 // already queued. A burst — e.g. `tail -f` on a busy log (#171) —
                 // then collapses into ONE invoke_from_event_loop and (after merging
-                // adjacent Output below) ONE vt100 ingest + render, instead of one
+                // adjacent Output below) ONE native-grid ingest + render, instead of one
                 // UI task per chunk flooding the event loop and freezing the app.
                 match shell_rx.blocking_recv() {
                     None => break,
@@ -238,7 +238,7 @@ pub(crate) fn start_session_in_tab(tab_id: &str, session: Session, ctx: &Connect
                         }
                         SessionEvent::Output(chunk) => {
                             // Merge with the immediately preceding Output so the
-                            // whole run is one vt100 ingest + one render. Only
+                            // whole run is one native-grid ingest + one render. Only
                             // *adjacent* chunks merge, so byte order (and any
                             // interleaved event) is preserved exactly. Cap the
                             // merged size so one batch can't monopolize the UI
