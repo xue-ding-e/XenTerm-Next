@@ -68,6 +68,14 @@ jobs:
           XDG_DATA_HOME: ${{ runner.temp }}/xenterm-gui-data
           XDG_RUNTIME_DIR: ${{ runner.temp }}/xenterm-gui-runtime
         run: cargo test --locked --target ${{ matrix.target }} --jobs 2 ui::dialog_parity_tests
+      # Keep Enter/IME and dialog dismissal regressions on every desktop OS;
+      # this reuses the test binary above rather than adding another runner.
+      - name: Test group rename and dismissal interactions
+        env:
+          XDG_CONFIG_HOME: ${{ runner.temp }}/xenterm-group-config
+          XDG_DATA_HOME: ${{ runner.temp }}/xenterm-group-data
+          XDG_RUNTIME_DIR: ${{ runner.temp }}/xenterm-group-runtime
+        run: cargo test --locked --target ${{ matrix.target }} --jobs 2 ui::shell::group_dialog_tests -- --test-threads=1
       - name: Test complete desktop regression suite on Linux
         if: runner.os == 'Linux'
         env:

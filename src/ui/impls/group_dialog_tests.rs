@@ -1,6 +1,6 @@
 //! Real group-manager input and toolkit dialog dismissal, with an isolated store.
 use super::*;
-use gpui_kit::gpui::{TestAppContext, VisualTestContext};
+use gpui_kit::gpui::{EntityInputHandler as _, TestAppContext, VisualTestContext};
 use gpui_kit::test::TestWindowExt as _;
 use std::sync::{Arc, Mutex};
 
@@ -364,4 +364,367 @@ fn group_dialog_cancels_an_underlying_sidebar_resize(cx: &mut TestAppContext) {
     cx.simulate_mouse_up(end, gpui_kit::MouseButton::Left, Default::default());
     draw(cx);
     assert_eq!(shell.read_with(cx, |shell, _| shell.state.store.borrow().sessions_sidebar_width()), before);
+}
+
+#[gpui_kit::gpui::test]
+fn inline_rename_enter_saves_the_row_without_closing_the_group_manager(cx: &mut TestAppContext) {
+    let (shell, _directory, cx) = fixture(cx);
+    let manager = open_groups(&shell, cx);
+    focus_input_before("group-add", "", cx);
+    cx.simulate_input("QA-Enter-A");
+    draw(cx);
+    click("group-add", cx);
+    click("group-edit-QA-Enter-A", cx);
+    focus_input_before("group-save-QA-Enter-A", "QA-Enter-A", cx);
+    cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+        "cmd-a"
+    } else {
+        "ctrl-a"
+    });
+    cx.simulate_input("QA-Enter-B");
+    cx.simulate_keystrokes("enter");
+    draw(cx);
+    assert!(
+        cx.update(|window, cx| window.has_active_dialog(cx)),
+        "Enter in the inline rename must not confirm the outer dialog"
+    );
+    shell.read_with(cx, |shell, _| {
+        assert!(matches!(&shell.overlay, Overlay::Groups(view) if view.entity_id() == manager));
+        assert_eq!(
+            shell.state.store.borrow().groups(),
+            &["QA-Enter-B".to_string()]
+        );
+    });
+    // Each new inline input must get the same handler, including a no-op rename.
+    click("group-edit-QA-Enter-B", cx);
+    focus_input_before("group-save-QA-Enter-B", "QA-Enter-B", cx);
+    replace_focused_draft("QA-Enter-C", cx);
+    cx.simulate_keystrokes("enter");
+    draw(cx);
+    assert_same_group_dialog(&shell, manager, cx);
+    click("group-edit-QA-Enter-C", cx);
+    focus_input_before("group-save-QA-Enter-C", "QA-Enter-C", cx);
+    cx.simulate_keystrokes("enter");
+    draw(cx);
+    assert_same_group_dialog(&shell, manager, cx);
+    assert_eq!(
+        group_cache(&shell, cx)["groups"],
+        serde_json::json!(["QA-Enter-C"])
+    );
+    click("close", cx);
+    assert_closed(&shell, cx);
+}
+
+fn seed_rename_groups(shell: &Entity<Shell>, cx: &mut VisualTestContext) {
+    shell.read_with(cx, |shell, _| {
+        let mut store = shell.state.store.borrow_mut();
+        store.add_group("QA-Enter-A".into());
+        store.add_group("QA-Existing".into());
+        for (id, group) in [
+            ("rename-session", "QA-Enter-A"),
+            ("other-session", "QA-Existing"),
+        ] {
+            let mut session = crate::config::Session::new_empty();
+            session.id = id.into();
+            session.name = id.into();
+            session.group = group.into();
+            // Only synthetic records: no connection, secret, or keyring access.
+            store.cache.sessions.push(session);
+        }
+        store.cache.collapsed_session_groups = Some(vec!["QA-Enter-A".into(), "system".into()]);
+        store.save().unwrap();
+    });
+}
+
+fn begin_enter_rename(shell: &Entity<Shell>, cx: &mut VisualTestContext) -> gpui_kit::EntityId {
+    let manager = open_groups(shell, cx);
+    focus_input_before("group-add", "", cx);
+    cx.simulate_input("QA-Preserved-Draft");
+    draw(cx);
+    click("group-edit-QA-Enter-A", cx);
+    focus_input_before("group-save-QA-Enter-A", "QA-Enter-A", cx);
+    manager
+}
+
+fn replace_focused_draft(value: &str, cx: &mut VisualTestContext) {
+    cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+        "cmd-a backspace"
+    } else {
+        "ctrl-a backspace"
+    });
+    cx.simulate_input(value);
+    draw(cx);
+}
+
+fn group_cache(shell: &Entity<Shell>, cx: &VisualTestContext) -> serde_json::Value {
+    shell.read_with(cx, |shell, _| {
+        serde_json::to_value(&shell.state.store.borrow().cache).unwrap()
+    })
+}
+
+fn group_disk(directory: &tempfile::TempDir) -> serde_json::Value {
+    let connection =
+        rusqlite::Connection::open(directory.path().join("synthetic-groups.db")).unwrap();
+    let settings: String = connection
+        .query_row("SELECT value FROM meta WHERE key = 'settings'", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    let mut result: serde_json::Value = serde_json::from_str(&settings).unwrap();
+    let mut statement = connection
+        .prepare("SELECT data FROM sessions ORDER BY ordinal, id")
+        .unwrap();
+    result["sessions"] = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .map(|row| serde_json::from_str::<serde_json::Value>(&row.unwrap()).unwrap())
+        .collect::<Vec<_>>()
+        .into();
+    result
+}
+
+fn focused_group_input(
+    cx: &mut VisualTestContext,
+) -> Entity<gpui_kit::component::input::InputState> {
+    cx.update(|window, cx| {
+        window
+            .focused_input(cx)
+            .expect("focused group input")
+            .as_input()
+            .expect("single-line input")
+            .clone()
+    })
+}
+
+fn assert_same_group_dialog(
+    shell: &Entity<Shell>,
+    manager: gpui_kit::EntityId,
+    cx: &mut VisualTestContext,
+) {
+    assert!(
+        cx.update(|window, cx| window.has_active_dialog(cx)),
+        "the group manager must remain open"
+    );
+    assert!(shell.read_with(
+        cx,
+        |shell, _| matches!(&shell.overlay, Overlay::Groups(view) if view.entity_id() == manager)
+    ));
+}
+
+#[gpui_kit::gpui::test]
+fn inline_rename_enter_rejects_blank_duplicate_and_reserved_names_without_losing_the_draft(
+    cx: &mut TestAppContext,
+) {
+    let (shell, directory, cx) = fixture(cx);
+    seed_rename_groups(&shell, cx);
+    let manager = begin_enter_rename(&shell, cx);
+    let input = focused_group_input(cx);
+    let before = group_cache(&shell, cx);
+    let saved = group_disk(&directory);
+    for draft in [
+        "",
+        "   ",
+        "QA-Existing",
+        " qa-existing ",
+        "system",
+        "DEFAULT",
+    ] {
+        replace_focused_draft(draft, cx);
+        assert!(
+            cx.debug_bounds("group-rename-error").is_none(),
+            "editing clears a previous validation error"
+        );
+        for _ in 0..2 {
+            cx.simulate_keystrokes("enter");
+            draw(cx);
+            assert_same_group_dialog(&shell, manager, cx);
+            assert_eq!(focused_group_input(cx).entity_id(), input.entity_id());
+            assert_eq!(
+                input.read_with(cx, |input, _| input.value().to_string()),
+                draft
+            );
+            assert!(
+                cx.debug_bounds("group-rename-error").is_some(),
+                "invalid input needs visible feedback"
+            );
+            assert_eq!(group_cache(&shell, cx), before);
+            assert_eq!(group_disk(&directory), saved);
+        }
+    }
+    // A case-only self-rename is permitted by ConfigStore, unlike a collision.
+    replace_focused_draft("qa-enter-a", cx);
+    cx.simulate_keystrokes("enter");
+    draw(cx);
+    assert_same_group_dialog(&shell, manager, cx);
+    assert_eq!(
+        group_cache(&shell, cx)["sessions"][0]["group"],
+        "qa-enter-a"
+    );
+    assert_eq!(group_disk(&directory)["sessions"][0]["group"], "qa-enter-a");
+    assert_eq!(
+        focused_group_input(cx).read_with(cx, |input, _| input.value().to_string()),
+        "QA-Preserved-Draft"
+    );
+    cx.simulate_keystrokes("escape");
+    assert_closed(&shell, cx);
+}
+
+#[gpui_kit::gpui::test]
+fn inline_rename_enter_save_failure_restores_all_group_links_and_can_retry(
+    cx: &mut TestAppContext,
+) {
+    let (shell, directory, cx) = fixture(cx);
+    seed_rename_groups(&shell, cx);
+    let manager = begin_enter_rename(&shell, cx);
+    let input = focused_group_input(cx);
+    replace_focused_draft("QA-Enter-B", cx);
+    let saved = group_disk(&directory);
+    let blocker = directory.path().join("not-a-directory");
+    std::fs::write(&blocker, "synthetic save failure").unwrap();
+    let path = shell.read_with(cx, |shell, _| {
+        let mut store = shell.state.store.borrow_mut();
+        // An earlier, unrelated in-memory change must survive the rollback.
+        store.cache.language = "en".into();
+        std::mem::replace(&mut store.path, blocker.join("sessions.db"))
+    });
+    let before = group_cache(&shell, cx);
+    for keyboard in [true, false] {
+        if keyboard {
+            cx.simulate_keystrokes("enter");
+        } else {
+            click("group-save-QA-Enter-A", cx);
+        }
+        draw(cx);
+        assert_same_group_dialog(&shell, manager, cx);
+        assert_eq!(focused_group_input(cx).entity_id(), input.entity_id());
+        assert_eq!(
+            input.read_with(cx, |input, _| input.value().to_string()),
+            "QA-Enter-B"
+        );
+        assert!(cx.debug_bounds("group-rename-error").is_some());
+        assert_eq!(group_cache(&shell, cx), before);
+        assert_eq!(group_disk(&directory), saved);
+        assert!(shell.read_with(cx, |shell, _| shell
+            .state
+            .store
+            .borrow()
+            .persistence_error()
+            .is_some()));
+    }
+    shell.read_with(cx, |shell, _| shell.state.store.borrow_mut().path = path);
+    cx.simulate_keystrokes("enter");
+    draw(cx);
+    assert_same_group_dialog(&shell, manager, cx);
+    let after = group_cache(&shell, cx);
+    assert_eq!(
+        after["groups"],
+        serde_json::json!(["QA-Enter-B", "QA-Existing"])
+    );
+    assert_eq!(after["sessions"][0]["group"], "QA-Enter-B");
+    assert_eq!(after["sessions"][1]["group"], "QA-Existing");
+    assert_eq!(
+        after["collapsed_session_groups"],
+        serde_json::json!(["QA-Enter-B", "system"])
+    );
+    assert_eq!(after["language"], "en");
+    let persisted = group_disk(&directory);
+    for key in ["groups", "sessions", "collapsed_session_groups", "language"] {
+        assert_eq!(
+            persisted[key], after[key],
+            "successful retry persists {key}"
+        );
+    }
+    assert!(shell.read_with(cx, |shell, _| shell
+        .state
+        .store
+        .borrow()
+        .persistence_error()
+        .is_none()));
+    click("close", cx);
+    assert_closed(&shell, cx);
+}
+
+#[gpui_kit::gpui::test]
+fn inline_rename_enter_during_chinese_composition_waits_for_a_separate_submit(
+    cx: &mut TestAppContext,
+) {
+    let (shell, directory, cx) = fixture(cx);
+    seed_rename_groups(&shell, cx);
+    let manager = begin_enter_rename(&shell, cx);
+    let input = focused_group_input(cx);
+    let before = group_cache(&shell, cx);
+    let saved = group_disk(&directory);
+    cx.update(|window, cx| {
+        input.update(cx, |input, cx| {
+            input.replace_and_mark_text_in_range(Some(0..10), "中文分组", Some(4..4), window, cx);
+            assert_eq!(input.marked_text_range(window, cx), Some(0..4));
+        })
+    });
+    draw(cx);
+    cx.simulate_keystrokes("enter");
+    draw(cx);
+    assert_same_group_dialog(&shell, manager, cx);
+    assert_eq!(focused_group_input(cx).entity_id(), input.entity_id());
+    assert_eq!(group_cache(&shell, cx), before);
+    assert_eq!(group_disk(&directory), saved);
+    cx.update(|window, cx| {
+        input.update(cx, |input, cx| {
+            assert_eq!(input.marked_text_range(window, cx), Some(0..4));
+            // This is the native IME commit path, distinct from form submission.
+            input.replace_text_in_range(None, "中文分组", window, cx);
+            assert_eq!(input.marked_text_range(window, cx), None);
+        })
+    });
+    draw(cx);
+    assert_eq!(
+        group_cache(&shell, cx),
+        before,
+        "committing the candidate alone must not save"
+    );
+    cx.simulate_keystrokes("enter");
+    draw(cx);
+    assert_same_group_dialog(&shell, manager, cx);
+    assert_eq!(group_cache(&shell, cx)["sessions"][0]["group"], "中文分组");
+    assert_eq!(group_disk(&directory)["sessions"][0]["group"], "中文分组");
+    click("close", cx);
+    assert_closed(&shell, cx);
+}
+
+#[gpui_kit::gpui::test]
+fn inline_rename_enter_does_not_submit_a_row_when_the_creation_input_is_focused(
+    cx: &mut TestAppContext,
+) {
+    let (shell, directory, cx) = fixture(cx);
+    seed_rename_groups(&shell, cx);
+    begin_enter_rename(&shell, cx);
+    replace_focused_draft("QA-Not-Submitted", cx);
+    let before = group_cache(&shell, cx);
+    let saved = group_disk(&directory);
+    focus_input_before("group-add", "QA-Preserved-Draft", cx);
+    cx.simulate_keystrokes("enter");
+    draw(cx);
+    assert_eq!(group_cache(&shell, cx), before);
+    assert_eq!(group_disk(&directory), saved);
+}
+
+#[gpui_kit::gpui::test]
+fn inline_rename_enter_scope_preserves_escape_and_outer_close_for_unsaved_edits(
+    cx: &mut TestAppContext,
+) {
+    let (shell, directory, cx) = fixture(cx);
+    seed_rename_groups(&shell, cx);
+    let before = group_cache(&shell, cx);
+    let saved = group_disk(&directory);
+    for pointer in [false, true] {
+        begin_enter_rename(&shell, cx);
+        replace_focused_draft("QA-Not-Submitted", cx);
+        if pointer {
+            click("close", cx);
+        } else {
+            cx.simulate_keystrokes("escape");
+        }
+        assert_closed(&shell, cx);
+        assert_eq!(group_cache(&shell, cx), before);
+        assert_eq!(group_disk(&directory), saved);
+    }
 }

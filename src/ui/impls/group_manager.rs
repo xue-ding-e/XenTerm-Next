@@ -21,7 +21,7 @@ use gpui_kit::{
     component::{
         button::{Button, ButtonVariants},
         h_flex,
-        input::{Input, InputState},
+        input::{Enter, Input, InputEvent, InputState},
         v_flex, ActiveTheme as _, Disableable as _, Icon, Sizable as _,
     },
     div,
@@ -32,7 +32,7 @@ use gpui_kit::{
 
 // The full Lucide catalog rather than the component library's curated subset.
 use gpui_kit::assets::IconName;
-use gpui_kit::gpui::Focusable as _;
+use gpui_kit::gpui::{EntityInputHandler as _, Focusable as _};
 
 use crate::config::ConfigStore;
 
@@ -51,6 +51,7 @@ pub(crate) struct GroupManagerView {
     /// name there survives a rename elsewhere, and the old name never leaks
     /// into the "add" field.
     editing: Option<(String, Entity<InputState>, Subscription)>,
+    rename_error: Option<SharedString>,
     /// The always-present creation box at the top of the list.
     create: Entity<InputState>,
     pending: Option<GroupManagerAction>,
@@ -64,10 +65,7 @@ impl GroupManagerView {
         cx: &mut Context<Self>,
     ) -> Self {
         let create = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(crate::i18n::t(
-                "新分组名称",
-                "New group name",
-            ))
+            InputState::new(window, cx).placeholder(crate::i18n::t("新分组名称", "New group name"))
         });
         // The add button enables and disables with the box, so typing has to
         // repaint this view.
@@ -80,6 +78,7 @@ impl GroupManagerView {
         Self {
             store,
             editing: None,
+            rename_error: None,
             create,
             pending: None,
             _create_subscription,
@@ -120,7 +119,12 @@ impl GroupManagerView {
         let subscription = cx.subscribe_in(
             &input,
             window,
-            |_: &mut Self, _, _: &gpui_kit::component::input::InputEvent, _, cx| cx.notify(),
+            |this: &mut Self, _, event: &InputEvent, _, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.rename_error = None;
+                }
+                cx.notify();
+            },
         );
         // Switching rows also retires the previous input. Carry its focus to
         // the replacement without taking focus from another control.
@@ -132,6 +136,7 @@ impl GroupManagerView {
             window.focus(&input.read(cx).focus_handle(cx), cx);
         }
         self.editing = Some((group, input, subscription));
+        self.rename_error = None;
         cx.notify();
     }
 
@@ -148,7 +153,31 @@ impl GroupManagerView {
             window.focus(&focus, cx);
         }
         self.editing = None;
+        self.rename_error = None;
         cx.notify();
+    }
+
+    /// GPUI 0.7 single-line inputs emit PressEnter and propagate Enter.
+    /// Consume that action at this input's parent, before the dialog can turn
+    /// the same key into Confirm. An event subscription alone cannot stop it.
+    fn confirm_rename(&mut self, _: &Enter, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((_, input, _)) = self.editing.as_ref() else {
+            cx.propagate();
+            return;
+        };
+        if !input.read(cx).focus_handle(cx).is_focused(window) {
+            cx.propagate();
+            return;
+        }
+        // Native IMEs own candidate confirmation. If Enter reaches the action
+        // path while marked text is still active, keep both draft and dialog;
+        // never treat the unfinished composition as a group name.
+        if input.update(cx, |input, cx| {
+            input.marked_text_range(window, cx).is_some()
+        }) {
+            return;
+        }
+        self.save_rename(window, cx);
     }
 
     /// Add the group the creation box names, then clear the box.
@@ -181,15 +210,45 @@ impl GroupManagerView {
             return;
         };
         let name = input.read(cx).value().trim().to_string();
-        if name.is_empty() || name == old {
+        if name.is_empty() {
+            self.rename_error =
+                Some(crate::i18n::t("请输入分组名称。", "Enter a group name.").into());
+            cx.notify();
+            return;
+        }
+        if crate::config::is_reserved_session_group(&name) {
+            self.rename_error = Some(
+                crate::i18n::t("此分组名称由系统保留。", "This group name is reserved.").into(),
+            );
+            cx.notify();
+            return;
+        }
+        if name == old {
             self.finish_edit(window, cx);
             return;
         }
         {
             let mut store = self.store.borrow_mut();
+            if !name.eq_ignore_ascii_case(&old) && store.session_group_exists(&name) {
+                self.rename_error = Some(
+                    crate::i18n::t("此分组名称已存在。", "This group name already exists.").into(),
+                );
+                cx.notify();
+                return;
+            }
+            // Snapshot immediately before this synchronous change: a failed
+            // save must restore the group, its sessions and its folded state,
+            // without discarding any earlier edits elsewhere in the store.
+            let previous = store.cache.clone();
             store.rename_group(&old, name);
             if let Err(error) = store.save() {
+                store.cache = previous;
                 tracing::warn!("could not save the session groups: {error:#}");
+                self.rename_error = Some(
+                    crate::i18n::t("保存失败，请重试。", "Couldn't save. Please try again.").into(),
+                );
+                cx.notify();
+                return;
             }
         }
         self.pending = Some(GroupManagerAction::Saved);
@@ -283,30 +342,51 @@ impl GroupManagerView {
                 let Some((_, input, _)) = self.editing.as_ref() else {
                     return div().into_any_element();
                 };
-                h_flex()
+                v_flex()
                     .flex_1()
                     .min_w_0()
                     .gap_1()
-                    .child(div().flex_1().min_w_0().child(Input::new(input)))
                     .child(
-                        Button::new(SharedString::from(format!("group-save-{name}")))
-                            .icon(Icon::new(IconName::Check))
-                            .label(crate::i18n::t("保存", "Save"))
-                            .primary()
-                            .small()
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.save_rename(window, cx)
-                            })),
-                    )
-                    .child(
-                        Button::new(SharedString::from(format!("group-cancel-{name}")))
-                            .label(crate::i18n::t("取消", "Cancel"))
-                            .ghost()
-                            .small()
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.finish_edit(window, cx)),
+                        h_flex()
+                            .w_full()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .on_action(cx.listener(Self::confirm_rename))
+                                    .child(Input::new(input)),
+                            )
+                            .child(
+                                Button::new(SharedString::from(format!("group-save-{name}")))
+                                    .icon(Icon::new(IconName::Check))
+                                    .label(crate::i18n::t("保存", "Save"))
+                                    .primary()
+                                    .small()
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.save_rename(window, cx)
+                                    })),
+                            )
+                            .child(
+                                Button::new(SharedString::from(format!("group-cancel-{name}")))
+                                    .label(crate::i18n::t("取消", "Cancel"))
+                                    .ghost()
+                                    .small()
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.finish_edit(window, cx)
+                                    })),
                             ),
                     )
+                    .when_some(self.rename_error.clone(), |this, error| {
+                        this.child(
+                            div()
+                                .id("group-rename-error")
+                                .debug_selector(|| "group-rename-error".to_string())
+                                .text_xs()
+                                .text_color(theme.danger)
+                                .child(error),
+                        )
+                    })
                     .into_any_element()
             } else {
                 div()
