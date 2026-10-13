@@ -10,9 +10,9 @@ name: CI
 
 on:
   push:
-    paths: ["Cargo.toml", "Cargo.lock", "build.rs", "src/**", "tests/*_e2e.py", "tests/tls_proxy_fixture.py", "assets/install-linux.sh", "tests/install_linux_test.py", "wix/**", "packaging/macos/**", "tests/windows_installer*", "tests/macos_installer*", ".github/workflows/ci.yml", ".github/workflows/release.yml"]
+    paths: ["Cargo.toml", "Cargo.lock", "build.rs", "src/**", "tests/*_e2e.py", "tests/tls_proxy_fixture.py", "assets/install-linux.sh", "tests/install_linux_test.py", "wix/**", "packaging/macos/**", "tests/windows_installer*", "tests/macos_installer*", "tests/release_workflow_test.py", ".github/workflows/ci.yml", ".github/workflows/release.yml"]
   pull_request:
-    paths: ["Cargo.toml", "Cargo.lock", "build.rs", "src/**", "tests/*_e2e.py", "tests/tls_proxy_fixture.py", "assets/install-linux.sh", "tests/install_linux_test.py", "wix/**", "packaging/macos/**", "tests/windows_installer*", "tests/macos_installer*", ".github/workflows/ci.yml", ".github/workflows/release.yml"]
+    paths: ["Cargo.toml", "Cargo.lock", "build.rs", "src/**", "tests/*_e2e.py", "tests/tls_proxy_fixture.py", "assets/install-linux.sh", "tests/install_linux_test.py", "wix/**", "packaging/macos/**", "tests/windows_installer*", "tests/macos_installer*", "tests/release_workflow_test.py", ".github/workflows/ci.yml", ".github/workflows/release.yml"]
   workflow_dispatch:
 
 permissions:
@@ -172,6 +172,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y desktop-file-utils python3-gi gir1.2-glib-2.0
+      - run: python3 tests/release_workflow_test.py
       - name: Check installer syntax
         run: bash -n assets/install-linux.sh
       - name: Run isolated installer regressions

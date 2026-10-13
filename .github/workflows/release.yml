@@ -88,7 +88,8 @@ jobs:
             APP_VERSION="${VERSION#v}"
           elif [ "$INPUT_MODE" = "dry-run" ]; then
             MODE=dry-run
-            VERSION="${GITHUB_REF_NAME:-dev}"
+            # Feature refs contain slashes; they must never become artifact paths.
+            VERSION="dry-run-${GITHUB_SHA::12}"
             DEB_VERSION="$CARGO_VERSION"
             APP_VERSION="$CARGO_VERSION"
           else
