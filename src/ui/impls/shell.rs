@@ -1066,14 +1066,24 @@ impl Shell {
                     let store = self.state.store.clone();
                     let manager = cx.new(|cx| QuickManagerView::new(store, window, cx));
                     self.overlay = Overlay::QuickManager(manager.clone());
-                    Self::overlay_dialog(
+                    // Enter saves the entry being edited — the same action as the
+                    // footer's 保存, kept open afterwards by the manager itself.
+                    let manager_for_enter = manager.clone();
+                    let manager_for_focus = manager_for_enter.clone();
+                    Self::overlay_dialog_confirm(
                         manager,
                         crate::i18n::t("快速命令", "Quick commands").into(),
                         760.,
                         520.,
                         window,
                         cx,
+                        move |window, cx| {
+                            manager_for_enter.update(cx, |view, cx| view.save(window, cx));
+                            false
+                        },
+                        |_, _| {},
                     );
+                    manager_for_focus.update(cx, |view, cx| view.focus(window, cx));
                     cx.notify();
                 }
                 TerminalAction::OpenTunnels => {
@@ -1093,14 +1103,24 @@ impl Shell {
                         )
                     });
                     self.overlay = Overlay::Tunnels(panel.clone());
-                    Self::overlay_dialog(
+                    // Enter starts the tunnel being typed — the panel stays open
+                    // for the next entry, exactly as its 启动 button behaves.
+                    let panel_for_enter = panel.clone();
+                    let panel_for_focus = panel_for_enter.clone();
+                    Self::overlay_dialog_confirm(
                         panel,
                         crate::i18n::t("端口转发", "Port forwarding").into(),
                         720.,
                         480.,
                         window,
                         cx,
+                        move |window, cx| {
+                            panel_for_enter.update(cx, |view, cx| view.start(window, cx));
+                            false
+                        },
+                        |_, _| {},
                     );
+                    panel_for_focus.update(cx, |view, cx| view.focus(window, cx));
                     cx.notify();
                 }
                 TerminalAction::ShowProcesses => self.open_process_window(cx),
@@ -1316,14 +1336,23 @@ impl Shell {
                     let store = self.state.store.clone();
                     let manager = cx.new(|cx| GroupManagerView::new(store, window, cx));
                     self.overlay = Overlay::Groups(manager.clone());
-                    Self::overlay_dialog(
+                    // Enter commits what is being typed (a rename, then a new
+                    // group) and only closes the card when the box is empty.
+                    let manager_for_enter = manager.clone();
+                    let manager_for_focus = manager_for_enter.clone();
+                    Self::overlay_dialog_confirm(
                         manager,
                         crate::i18n::t("会话分组", "Session groups").into(),
                         620.,
                         520.,
                         window,
                         cx,
+                        move |window, cx| {
+                            manager_for_enter.update(cx, |view, cx| view.confirm(window, cx))
+                        },
+                        |_, _| {},
                     );
+                    manager_for_focus.update(cx, |view, cx| view.focus(window, cx));
                     cx.notify();
                 }
             }
@@ -1426,14 +1455,24 @@ impl Shell {
                     let store = self.state.store.clone();
                     let editor = cx.new(|cx| RuleEditorView::new(store, window, cx));
                     self.overlay = Overlay::RuleEditor(editor.clone());
-                    Self::overlay_dialog(
+                    // Enter adds the rule; the card's own drain closes it once the
+                    // rule has landed, which is what its 保存 button already does.
+                    let editor_for_enter = editor.clone();
+                    let editor_for_focus = editor_for_enter.clone();
+                    Self::overlay_dialog_confirm(
                         editor,
                         crate::i18n::t("输出高亮规则", "Highlight rule").into(),
                         620.,
                         480.,
                         window,
                         cx,
+                        move |_, cx| {
+                            editor_for_enter.update(cx, |view, cx| view.save(cx));
+                            false
+                        },
+                        |_, _| {},
                     );
+                    editor_for_focus.update(cx, |view, cx| view.focus(window, cx));
                     cx.notify();
                 }
                 // The connections page's two actions: the same doors the session list's
@@ -1759,11 +1798,14 @@ impl Shell {
                         move |name, _, _| {
                             let name = name.trim().to_string();
                             if name.is_empty() {
-                                return false;
+                                return super::dialogs::PromptAnswer::Refuse(
+                                    crate::i18n::t("名称不能为空。", "The name cannot be empty.")
+                                        .into(),
+                                );
                             }
                             let _ = commands
                                 .send(crate::sftp::SftpCommand::MkDir(join_remote(&dir, &name)));
-                            true
+                            super::dialogs::PromptAnswer::Accept
                         },
                     );
                 }
@@ -1781,12 +1823,15 @@ impl Shell {
                         move |name, _, _| {
                             let name = name.trim().to_string();
                             if name.is_empty() {
-                                return false;
+                                return super::dialogs::PromptAnswer::Refuse(
+                                    crate::i18n::t("名称不能为空。", "The name cannot be empty.")
+                                        .into(),
+                                );
                             }
                             let _ = commands.send(crate::sftp::SftpCommand::TouchFile(
                                 join_remote(&dir, &name),
                             ));
-                            true
+                            super::dialogs::PromptAnswer::Accept
                         },
                     );
                 }
@@ -1808,8 +1853,20 @@ impl Shell {
                             // would either fail at the server or land somewhere the user
                             // did not name.
                             let name = name.trim().to_string();
-                            if name.is_empty() || name.contains('/') {
-                                return false;
+                            if name.is_empty() {
+                                return super::dialogs::PromptAnswer::Refuse(
+                                    crate::i18n::t("名称不能为空。", "The name cannot be empty.")
+                                        .into(),
+                                );
+                            }
+                            if name.contains('/') {
+                                return super::dialogs::PromptAnswer::Refuse(
+                                    crate::i18n::t(
+                                        "名称不能包含 “/”。",
+                                        "The name cannot contain a '/'",
+                                    )
+                                    .into(),
+                                );
                             }
                             let parent = crate::core::parent_path(&from);
                             let to = join_remote(&parent, &name);
@@ -1817,7 +1874,7 @@ impl Shell {
                                 from: from.clone(),
                                 to,
                             });
-                            true
+                            super::dialogs::PromptAnswer::Accept
                         },
                     );
                 }
@@ -1836,7 +1893,13 @@ impl Shell {
                             // Octal, and only octal: a mode typed as decimal would be
                             // applied as a different mode without saying so.
                             let Ok(mode) = u32::from_str_radix(text.trim(), 8) else {
-                                return false;
+                                return super::dialogs::PromptAnswer::Refuse(
+                                    crate::i18n::t(
+                                        "请输入八进制权限，例如 644 或 755。",
+                                        "Enter an octal mode, such as 644 or 755.",
+                                    )
+                                    .into(),
+                                );
                             };
                             for path in &paths {
                                 let _ = commands.send(crate::sftp::SftpCommand::Chmod {
@@ -1844,7 +1907,7 @@ impl Shell {
                                     mode,
                                 });
                             }
-                            true
+                            super::dialogs::PromptAnswer::Accept
                         },
                     );
                 }
@@ -1890,6 +1953,29 @@ impl Shell {
                         .ok();
                     })
                     .detach();
+                }
+                PanelAction::DropUpload(locals) => {
+                    // The drop already named the files; there is no dialog to
+                    // wait for, only one upload per path into the directory the
+                    // panel is showing.
+                    let Some(commands) = handle.clone() else {
+                        return;
+                    };
+                    let remote_dir = panel.read(cx).path().to_string();
+                    let count = locals.len();
+                    for local in locals {
+                        let _ = commands.send(crate::sftp::SftpCommand::Upload {
+                            local,
+                            remote_dir: remote_dir.clone(),
+                            cleanup_after: None,
+                        });
+                    }
+                    if count > 0 {
+                        self.say(
+                            crate::i18n::t("已开始上传拖入的文件", "Uploading the dropped files"),
+                            cx,
+                        );
+                    }
                 }
                 PanelAction::Download(paths) => {
                     // The folder picker is async like the upload's (a blocking
@@ -2537,8 +2623,17 @@ impl Shell {
     pub(crate) fn editor_dialog(editor: Entity<SessionEditor>, window: &mut Window, cx: &mut gpui_kit::App) {
         let title = SharedString::from(editor.read(cx).heading());
         let weak_editor = editor.downgrade();
-        Self::overlay_dialog_with_close(
+        // Enter saves: the editor keeps the card open with its footer error when
+        // the draft does not validate, and the shell's drain closes it on Saved.
+        // The toolkit's default (dismiss on Enter) used to throw a half-filled
+        // session away, which no form should do.
+        let editor_for_enter = editor.clone();
+        Self::overlay_dialog_confirm(
             editor, title, 940., 560., window, cx,
+            move |_, cx| {
+                editor_for_enter.update(cx, |editor, cx| editor.save(cx));
+                false
+            },
             move |window, cx| {
                 if let Some(editor) = weak_editor.upgrade() {
                     editor.update(cx, |editor, cx| editor.clear_sensitive_inputs(window, cx));
@@ -2555,17 +2650,6 @@ impl Shell {
     ///
     /// `overlay_closable(false)` throughout: clicking away would throw out a half-filled form
     /// silently, and every one of these has a 取消 button that says so instead.
-    fn overlay_dialog<T: Render + 'static>(
-        view: Entity<T>,
-        title: SharedString,
-        width: f32,
-        height: f32,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        Self::overlay_dialog_with_close(view, title, width, height, window, cx, |_, _| {});
-    }
-
     /// Every toolkit dismissal path (Escape, platform cancel, or the close button)
     /// runs this callback before a hidden editor can retain sensitive input entities.
     fn overlay_dialog_with_close<T: Render + 'static>(
@@ -2576,6 +2660,53 @@ impl Shell {
         window: &mut Window,
         cx: &mut gpui_kit::App,
         on_close: impl Fn(&mut Window, &mut gpui_kit::App) + 'static,
+    ) {
+        // Enter keeps the toolkit's default reading (dismiss the card) for the
+        // callers that have no primary action of their own.
+        Self::overlay_dialog_base(view, title, width, height, window, cx, on_close, None);
+    }
+
+    /// [`overlay_dialog_with_close`] with a default button: Enter anywhere in the
+    /// card runs `on_ok`, and the card stays open unless it answers `true`.
+    ///
+    /// The form cards (session editor, groups, quick commands, tunnels, highlight
+    /// rule) all had the same defect: the toolkit's default `on_ok` dismisses the
+    /// dialog, so pressing Enter in a field threw away the draft being filled in.
+    /// Each card's `on_ok` is its own primary action — save, start, add — returning
+    /// `false` so the card's drain observes the outcome and closes on its own
+    /// schedule, exactly as the footer button already does.
+    #[allow(clippy::too_many_arguments)]
+    fn overlay_dialog_confirm<T: Render + 'static>(
+        view: Entity<T>,
+        title: SharedString,
+        width: f32,
+        height: f32,
+        window: &mut Window,
+        cx: &mut gpui_kit::App,
+        on_ok: impl Fn(&mut Window, &mut gpui_kit::App) -> bool + 'static,
+        on_close: impl Fn(&mut Window, &mut gpui_kit::App) + 'static,
+    ) {
+        Self::overlay_dialog_base(
+            view,
+            title,
+            width,
+            height,
+            window,
+            cx,
+            on_close,
+            Some(Rc::new(on_ok)),
+        );
+    }
+
+    fn overlay_dialog_base<T: Render + 'static>(
+        view: Entity<T>,
+        title: SharedString,
+        width: f32,
+        height: f32,
+        window: &mut Window,
+        cx: &mut gpui_kit::App,
+        on_close: impl Fn(&mut Window, &mut gpui_kit::App) + 'static,
+        on_ok: Option<Rc<dyn Fn(&mut Window, &mut gpui_kit::App) -> bool>>,
     ) {
         let on_close = Rc::new(on_close);
         // One card at a time. `open_dialog` pushes onto the layer's queue rather than
@@ -2606,7 +2737,8 @@ impl Shell {
             let height = height.min((window_height - MARGIN * 2.0 - CHROME).max(0.0));
             let margin_top = ((window_height - (height + CHROME)) / 2.0).max(24.0);
             let on_close = on_close.clone();
-            dialog
+            let on_ok = on_ok.clone();
+            let dialog = dialog
                 .on_close(move |_, window, cx| on_close(window, cx))
                 .title(title.clone())
                 .width(px(width))
@@ -2623,7 +2755,14 @@ impl Shell {
                         .min_h_0()
                         .overflow_hidden()
                         .child(view.clone().into_any_element()),
-                )
+                );
+            // Only a card with a primary action claims Enter; the rest keep the
+            // toolkit default (dismiss), which is what a plain informational
+            // card means by the key.
+            match on_ok {
+                Some(on_ok) => dialog.on_ok(move |_, window, cx| on_ok(window, cx)),
+                None => dialog,
+            }
         });
     }
 
@@ -2728,8 +2867,31 @@ impl Shell {
     }
 
     /// Write the export, and put the count on the status line.
+    ///
+    /// The hardened publisher goes first — private creation permissions,
+    /// atomic no-replace publication, and a refusal to write inside the
+    /// profile directory, the same guarantees the unattended CLI export gets.
+    /// The one refusal the dialog has already answered for is an existing
+    /// file: picking one in a save dialog is an explicit overwrite
+    /// confirmation, so that case alone falls back to the plain write.
     fn export_sessions_to(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
-        let line = match self.state.store.borrow().export_to(&path) {
+        let result = {
+            let store = self.state.store.borrow();
+            match store.export_to_new(&path) {
+                Ok(count) => Ok(count),
+                Err(hardened_error) => {
+                    if path.exists() {
+                        tracing::warn!(
+                            "hardened export refused ({hardened_error:#}); the save dialog                              confirmed the overwrite, writing plainly"
+                        );
+                        store.export_to(&path)
+                    } else {
+                        Err(hardened_error)
+                    }
+                }
+            }
+        };
+        let line = match result {
             Ok(count) => format!("{} {count}", crate::i18n::t("已导出连接", "exported")),
             Err(error) => format!("{}: {error}", crate::i18n::t("导出失败", "export failed")),
         };

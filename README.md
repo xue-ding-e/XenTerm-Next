@@ -413,6 +413,15 @@ xenterm cli files <session-id> /var/log
 xenterm cli read <session-id> /var/log/example.log
 xenterm cli upload <session-id> ./local.txt /tmp
 xenterm cli download <session-id> /tmp/result.txt ./downloads
+
+# Export / import the saved-session store as a portable private file
+xenterm cli export new-export.json --include-credentials
+xenterm cli import finalshell-export.json --dry-run
+xenterm cli sync-native snapshot.json --dry-run
+
+# Read or set the unattended-access mode (restricted | full)
+xenterm cli permissions
+xenterm cli permissions restricted
 ```
 
 Downloads require an existing local destination directory and will not overwrite a file of
@@ -438,10 +447,10 @@ Then register the stdio server in your MCP client:
 ```
 
 On Windows, `command` can be `C:\\path\\to\\xenterm.exe`. Restart or refresh the client and
-you should see an `xenterm` server exposing seven tools — `list_sessions`, `get_session`,
+you should see an `xenterm` server exposing nine tools — `list_sessions`, `get_session`,
 `run_command`, `list_remote_files`, `read_remote_text_file`, `upload_file`,
-`download_file`. MCP configuration files live in different places per client, so check that
-client's documentation.
+`download_file`, `get_access_policy`, `import_sessions`. MCP configuration files live in
+different places per client, so check that client's documentation.
 
 #### Debugging the stdio connection
 

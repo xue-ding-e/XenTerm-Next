@@ -746,10 +746,15 @@ impl Render for SettingsView {
         let muted_fg = theme.muted_foreground;
         let foreground = theme.foreground;
         let sidebar = v_flex()
+            .id("settings-nav")
             .w(px(170.))
             .h_full()
             .flex_shrink_0()
-            .overflow_hidden()
+            // Scrolled rather than clipped: the list grew past what a short
+            // window shows, and `overflow_hidden` made the entries below the
+            // fold — 同步, the last of them — unreachable rather than merely
+            // out of view.
+            .overflow_y_scroll()
             .bg(sidebar_bg)
             .border_r_1()
             .border_color(sidebar_border)

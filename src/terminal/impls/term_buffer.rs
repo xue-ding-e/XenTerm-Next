@@ -289,6 +289,66 @@ impl TermBuffer {
         true
     }
 
+    /// Jump to the next (`forward`) or previous row matching the active query.
+    ///
+    /// Enter in the find bar steps through the matches rather than only ever
+    /// showing the first one. The anchor is the row the view currently starts
+    /// at, and the scan is strictly past it (or strictly before it), wrapping at
+    /// the ends — so repeated steps march through the scrollback and a wrap
+    /// returns to the beginning rather than getting stuck. The target lands at
+    /// the top of the view, the same anchor [`Self::scroll_to_first_find_match`]
+    /// uses, so the two read as one motion.
+    pub(crate) fn step_find_match(&mut self, forward: bool) -> bool {
+        let query = self.find_query.clone();
+        if query.is_empty() || self.parser.screen().alternate_screen() {
+            return false;
+        }
+        let q = query.to_lowercase();
+        let (live, _) = self.live_rows();
+        let rows = self.parser.screen().size().0 as usize;
+        let hist_len = self.history_len();
+        let combined_len = hist_len + live.len();
+        if combined_len == 0 {
+            return false;
+        }
+        let line_matches = |index: usize| -> bool {
+            let line = if index < hist_len {
+                self.parser.text_line_at_abs(index).map(|line| line.0)
+            } else {
+                live.get(index - hist_len).map(|line| line.0.clone())
+            };
+            line.is_some_and(|line| line.to_lowercase().contains(&q))
+        };
+        let anchor = self.view_top_abs();
+        let mut probe = if forward {
+            (anchor + 1) % combined_len
+        } else {
+            (anchor + combined_len - 1) % combined_len
+        };
+        let mut target = None;
+        for _ in 0..combined_len {
+            if line_matches(probe) {
+                target = Some(probe);
+                break;
+            }
+            probe = if forward {
+                (probe + 1) % combined_len
+            } else {
+                (probe + combined_len - 1) % combined_len
+            };
+        }
+        let Some(target) = target else {
+            return false;
+        };
+        let top = target.min(combined_len.saturating_sub(rows));
+        let new_offset = combined_len.saturating_sub(rows + top);
+        if self.view_offset == new_offset {
+            return false;
+        }
+        self.view_offset = new_offset;
+        true
+    }
+
     /// Extract the selected text from the combined buffer (whole selection,
     /// even the parts currently scrolled out of view).
     pub(crate) fn selection_has_extent(&self) -> bool {
@@ -1032,5 +1092,66 @@ impl TermBuffer {
             scroll_max: self.history_len() as i32,
             scroll_offset: self.view_offset as i32,
         }
+    }
+}
+
+#[cfg(test)]
+mod step_find_tests {
+    use super::*;
+
+    /// A 4-row screen with several lines of history scrolled off the top.
+    fn buffer_with_history() -> TermBuffer {
+        let mut buffer = TermBuffer::new(4, 20);
+        for round in 0..4 {
+            let lines = format!(
+                "round-{} alpha
+round-{} beta
+round-{} gamma
+round-{} alpha
+",
+                round, round, round, round
+            );
+            buffer.ingest(lines.as_bytes());
+        }
+        buffer
+    }
+
+    #[test]
+    fn enter_steps_forward_through_matches_and_wraps() {
+        let mut buffer = buffer_with_history();
+        buffer.set_find_query("beta");
+        // The query's first scroll lands on the first match; a step from there
+        // must find the *next* one, not re-find the first.
+        let first = buffer.view_offset;
+        assert!(buffer.step_find_match(true), "a later beta exists");
+        assert!(buffer.view_offset < first, "stepping forward scrolls up");
+        for _ in 0..8 {
+            buffer.step_find_match(true);
+        }
+        // After more steps than matches the walk wraps rather than sticking.
+        assert!(buffer.view_offset <= first);
+    }
+
+    #[test]
+    fn shift_enter_steps_backwards() {
+        let mut buffer = buffer_with_history();
+        buffer.set_find_query("alpha");
+        // Walk forward to the top, then one step back must come down.
+        while buffer.step_find_match(true) && buffer.view_offset > 0 {}
+        let top = buffer.view_offset;
+        assert!(buffer.step_find_match(false));
+        assert!(buffer.view_offset > top, "stepping back scrolls down");
+    }
+
+    #[test]
+    fn an_empty_query_or_alt_screen_steps_nowhere() {
+        let mut buffer = buffer_with_history();
+        buffer.find_query.clear();
+        assert!(!buffer.step_find_match(true));
+        // The alt screen owns the view; stepping must refuse rather than
+        // scroll a full-screen program out from under the user.
+        buffer.ingest(b"[?1049h");
+        buffer.set_find_query("alpha");
+        assert!(!buffer.step_find_match(true));
     }
 }

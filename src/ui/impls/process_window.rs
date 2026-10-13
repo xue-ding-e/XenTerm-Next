@@ -239,6 +239,7 @@ impl ProcessWindowView {
             })
         });
 
+        let password_for_focus = password.clone();
         let weak: WeakEntity<Self> = cx.entity().downgrade();
         let row_for_ok = row.clone();
         let hook = self.pending.clone();
@@ -352,6 +353,11 @@ impl ProcessWindowView {
                     crate::i18n::t("取消", "Cancel").into(),
                 ))
         });
+        // The password is the one thing this dialog asks for, so the caret
+        // starts in it; Enter submits, exactly as the footer button does.
+        if let Some(password) = password_for_focus {
+            password.update(cx, |field, cx| field.focus(window, cx));
+        }
     }
 
     /// Signal the process, and report what came back.

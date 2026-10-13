@@ -334,7 +334,7 @@ impl SessionEditor {
     }
 
     /// Only finish the dialog after the store has accepted the change on disk.
-    fn save(&mut self, cx: &Context<Self>) {
+    pub(crate) fn save(&mut self, cx: &Context<Self>) {
         // The forwarding rows hold their own text, so it is copied into the draft first:
         // what the save reads is the draft, and a row typed into but never copied across
         // would be a rule the form showed and the file did not have.

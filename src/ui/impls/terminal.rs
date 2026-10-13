@@ -482,6 +482,21 @@ fn paint_selection(
 /// Nothing is drawn when there is no scrollback, which is most of the time — a terminal
 /// that has just opened shows no indicator at all rather than a full-height thumb that
 /// cannot move.
+/// The scrollbar's thumb geometry, in the one place both the painter (here)
+/// and the view's drag handler read it, so the thumb a drag moves is always
+/// the thumb that was drawn.
+pub(crate) fn scrollbar_geometry(
+    track_height: f32,
+    visible_rows: f32,
+    scroll_max: i32,
+) -> (f32, f32) {
+    const MIN_THUMB: f32 = 24.0;
+    let total_rows = visible_rows + scroll_max as f32;
+    // Proportional to what is on screen, but never so short it cannot be grabbed.
+    let thumb_height = (track_height * (visible_rows / total_rows)).max(MIN_THUMB);
+    (thumb_height, (track_height - thumb_height).max(0.0))
+}
+
 fn paint_scrollbar(
     snapshot: &GridSnapshot,
     bounds: Bounds<Pixels>,
@@ -493,17 +508,14 @@ fn paint_scrollbar(
         return;
     }
     const THICKNESS: f32 = 4.0;
-    const MIN_THUMB: f32 = 24.0;
 
     let visible_rows = f32::from(metrics.height);
-    let total_rows = visible_rows + snapshot.scroll_max as f32;
     let track_height = f32::from(bounds.size.height);
-    // Proportional to what is on screen, but never so short it cannot be grabbed.
-    let thumb_height = (track_height * (visible_rows / total_rows)).max(MIN_THUMB);
+    let (thumb_height, _) = scrollbar_geometry(track_height, visible_rows, snapshot.scroll_max);
     // `scroll_offset` counts backwards from the live bottom, so 0 is the bottom and
     // `scroll_max` is the top. The thumb follows the same convention: at the bottom
     // when the view is at the bottom.
-    let travel = (track_height - thumb_height).max(0.0);
+    let (_, travel) = scrollbar_geometry(track_height, visible_rows, snapshot.scroll_max);
     let progress = snapshot.scroll_offset as f32 / snapshot.scroll_max as f32;
     let thumb_top = f32::from(bounds.origin.y) + travel * progress;
 
@@ -779,5 +791,33 @@ mod tests {
         };
         assert_eq!(metrics.grid_size(size(px(0.), px(0.))), (1, 1));
         assert_eq!(metrics.grid_size(size(px(3.), px(3.))), (1, 1));
+    }
+}
+
+#[cfg(test)]
+mod scrollbar_geometry_tests {
+    use super::*;
+
+    #[test]
+    fn the_thumb_is_proportional_but_never_ungrippable() {
+        // A short history on a tall track: the thumb is most of the track.
+        let (thumb, travel) = scrollbar_geometry(400.0, 24.0, 10);
+        assert!((thumb - 400.0 * 24.0 / 34.0).abs() < 0.01);
+        assert!((travel - (400.0 - thumb)).abs() < 0.01);
+
+        // A huge history on a short track: the thumb clamps at the minimum a
+        // grab can hold, and the travel is the rest of the track.
+        let (thumb, travel) = scrollbar_geometry(100.0, 24.0, 100_000);
+        assert_eq!(thumb, 24.0);
+        assert!((travel - 76.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_full_view_covers_the_track() {
+        // scroll_max zero means no scrollbar is drawn; the geometry still has
+        // to answer something sane rather than divide by zero.
+        let (thumb, travel) = scrollbar_geometry(400.0, 24.0, 0);
+        assert_eq!(thumb, 400.0);
+        assert_eq!(travel, 0.0);
     }
 }

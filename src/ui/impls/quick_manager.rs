@@ -69,6 +69,11 @@ pub(crate) struct QuickManagerView {
     group_name: Entity<InputState>,
     send_enter: bool,
     pending: Option<QuickManagerAction>,
+    /// The row index whose delete is armed (first press). An entry carries the
+    /// command text itself, so deleting one is gone-for-gone; the row asks in
+    /// place rather than on a system dialog, which would sit on top of this
+    /// card's own dialog and fight it for focus.
+    confirming_delete: Option<usize>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -116,6 +121,7 @@ impl QuickManagerView {
             group_name,
             send_enter: true,
             pending: None,
+            confirming_delete: None,
             _subscriptions: subscriptions,
         }
     }
@@ -127,6 +133,7 @@ impl QuickManagerView {
 
     /// Load a row into the form, or clear the form when `index` is `None`.
     fn select(&mut self, index: Option<usize>, window: &mut Window, cx: &mut Context<Self>) {
+        self.stand_down_delete();
         let entry = index.and_then(|index| {
             self.store
                 .borrow()
@@ -160,7 +167,13 @@ impl QuickManagerView {
     }
 
     /// Write the form into the store: over the selected entry, or as a new one.
-    fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// The caret's first stop when the card opens: the entry's name.
+    pub(crate) fn focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.name.update(cx, |field, cx| field.focus(window, cx));
+    }
+
+    pub(crate) fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.stand_down_delete();
         let name = self.name.read(cx).value().to_string();
         let command = self.command.read(cx).value().to_string();
         // An entry with no name has no row to click in the dock, and one with no command
@@ -246,11 +259,24 @@ impl QuickManagerView {
         cx.notify();
     }
 
-    /// Delete the selected entry.
+    /// Delete the selected entry — on the second press.
+    ///
+    /// The first press arms the row; only a press on the armed row's own
+    /// confirm button removes anything. Anything else the user does in the
+    /// card stands the armed delete down.
     fn delete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(index) = self.editing else {
             return;
         };
+        // Armed for this row already? This is the confirming press. Not armed?
+        // Arm it — and note that arming a *different* row re-aims there, so a
+        // stray first press on one entry cannot later confirm another.
+        if self.confirming_delete != Some(index) {
+            self.confirming_delete = Some(index);
+            cx.notify();
+            return;
+        }
+        self.confirming_delete = None;
         {
             let mut store = self.store.borrow_mut();
             let mut commands = store.quick_commands().to_vec();
@@ -267,8 +293,15 @@ impl QuickManagerView {
         self.select(None, window, cx);
     }
 
+    /// Stand down an armed delete: acting elsewhere in the card is a
+    /// decision, and a live confirm button left behind one would be a trap.
+    fn stand_down_delete(&mut self) {
+        self.confirming_delete = None;
+    }
+
     /// Add a copy of the selected entry, right after it.
     fn duplicate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.stand_down_delete();
         let Some(index) = self.editing else {
             return;
         };
@@ -294,6 +327,7 @@ impl QuickManagerView {
 
     /// Move the selected entry within its group.
     fn move_entry(&mut self, move_up: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.stand_down_delete();
         let Some(index) = self.editing else {
             return;
         };
@@ -499,7 +533,32 @@ impl QuickManagerView {
                                 this.duplicate(window, cx);
                             })),
                     )
-                    .child(
+                    .child(if self.confirming_delete == index {
+                        // Armed: ask in place, beside the entry about to go.
+                        h_flex()
+                            .gap_1()
+                            .flex_shrink_0()
+                            .child(
+                                Button::new("quick-row-delete-confirm")
+                                    .label(crate::i18n::t("确认删除", "Confirm delete"))
+                                    .danger()
+                                    .small()
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.delete(window, cx)
+                                    })),
+                            )
+                            .child(
+                                Button::new("quick-row-delete-cancel")
+                                    .label(crate::i18n::t("取消", "Cancel"))
+                                    .ghost()
+                                    .small()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.stand_down_delete();
+                                        cx.notify();
+                                    })),
+                            )
+                            .into_any_element()
+                    } else {
                         Button::new("quick-row-delete")
                             .icon(Icon::new(IconName::Trash))
                             .ghost()
@@ -509,8 +568,9 @@ impl QuickManagerView {
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.select(index, window, cx);
                                 this.delete(window, cx);
-                            })),
-                    ),
+                            }))
+                            .into_any_element()
+                    }),
             )
             .into_any_element()
     }

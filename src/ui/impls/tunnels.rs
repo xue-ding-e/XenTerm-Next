@@ -32,7 +32,7 @@ use gpui_kit::{
         button::{Button, ButtonVariants},
         h_flex,
         input::{Input, InputState},
-        v_flex, ActiveTheme as _, Icon, Sizable as _,
+        v_flex, ActiveTheme as _, Disableable as _, Icon, Sizable as _,
     },
     div,
     prelude::*,
@@ -162,7 +162,12 @@ impl TunnelsView {
     }
 
     /// Start the rule the form describes.
-    fn start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// The caret's first stop when the card opens: the tunnel's name.
+    pub(crate) fn focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.name.update(cx, |field, cx| field.focus(window, cx));
+    }
+
+    pub(crate) fn start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let draft = self.draft(cx);
         let ok = !draft.bind_port.trim().is_empty()
             || !draft.host.trim().is_empty()
@@ -296,14 +301,23 @@ impl TunnelsView {
                             .child(div().w(px(140.)).child(Input::new(&self.host_port)))
                     })
                     .child(div().flex_1())
-                    .child(
+                    .child({
+                        // Disabled on the same emptiness `start` refuses, so the
+                        // button that exists to be pressed says so before the
+                        // press instead of after. Partial input stays enabled:
+                        // its verdict is `validate`'s to explain inline.
+                        let draft = self.draft(cx);
+                        let has_anything = !draft.bind_port.trim().is_empty()
+                            || !draft.host.trim().is_empty()
+                            || !draft.name.trim().is_empty();
                         Button::new("tunnel-start")
                             .icon(Icon::new(IconName::Play))
                             .label(crate::i18n::t("启动", "Start"))
                             .primary()
                             .small()
-                            .on_click(cx.listener(|this, _, window, cx| this.start(window, cx))),
-                    ),
+                            .disabled(!has_anything)
+                            .on_click(cx.listener(|this, _, window, cx| this.start(window, cx)))
+                    }),
             )
             .child(div().text_xs().text_color(muted).child(crate::i18n::t(
                 "监听地址固定为 127.0.0.1；动态隧道是本地 SOCKS5 代理，不需要目标。",

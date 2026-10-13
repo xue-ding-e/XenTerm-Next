@@ -116,7 +116,11 @@ fn duplicate_second_row_moves_up_and_down_without_targeting_its_neighbor(cx: &mu
         "A 2"
     );
     cancel(cx);
+    // Two presses: the first arms, the second confirms. The arming press
+    // must not change the list — that is the whole point of asking twice.
     row_click("quick-row-delete", "quick-manager-row-1", cx);
+    assert_eq!(names(&view, cx), ["A", "A 2", "B"], "arming keeps the row");
+    row_click("quick-row-delete-confirm", "quick-manager-row-1", cx);
     assert_eq!(names(&view, cx), ["A", "B"]);
 }
 
@@ -134,6 +138,8 @@ fn edit_duplicate_and_delete_on_later_rows_use_the_clicked_command(cx: &mut Test
     assert_eq!(names(&view, cx), ["A", "B", "B 2"]);
     cancel(cx);
     row_click("quick-row-delete", "quick-manager-row-1", cx);
+    assert_eq!(names(&view, cx), ["A", "B", "B 2"], "arming keeps the row");
+    row_click("quick-row-delete-confirm", "quick-manager-row-1", cx);
     assert_eq!(names(&view, cx), ["A", "B 2"]);
     row_click("quick-select", "quick-manager-row-1", cx);
     assert_eq!(
@@ -174,6 +180,8 @@ fn reordered_rows_in_sorted_groups_rebind_edit_and_delete_to_current_records(
     cancel(cx);
     // Delete B, the first displayed row, after a move in the other group.
     row_click("quick-row-delete", "quick-manager-row-1", cx);
+    assert_eq!(names(&view, cx), ["C", "B", "A"], "arming keeps the row");
+    row_click("quick-row-delete-confirm", "quick-manager-row-1", cx);
     assert_eq!(names(&view, cx), ["C", "A"]);
     row_click("quick-select", "quick-manager-row-1", cx);
     assert_eq!(

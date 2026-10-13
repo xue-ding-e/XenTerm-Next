@@ -200,3 +200,23 @@ fn command_palette_wheel_reaches_and_executes_the_last_unfiltered_command(cx: &m
     });
     assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
 }
+
+#[gpui_kit::gpui::test]
+fn arrows_move_the_selection_and_enter_runs_it(cx: &mut TestAppContext) {
+    let (shell, cx) = fixture(cx);
+    open_palette(&shell, cx);
+
+    cx.simulate_keystrokes("down down up");
+    draw(cx);
+    shell.read_with(cx, |shell, cx| match &shell.overlay {
+        Overlay::Commands(palette) => assert_eq!(palette.read(cx).selected_index(), 2),
+        other => panic!("palette overlay missing: {other:?}"),
+    });
+
+    // Enter runs the selected row — the third command, where the old Enter
+    // always took the first. The pick drains through the shell and the card
+    // goes with it.
+    cx.simulate_keystrokes("enter");
+    draw(cx);
+    assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+}

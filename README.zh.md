@@ -358,6 +358,15 @@ xenterm cli files <session-id> /var/log
 xenterm cli read <session-id> /var/log/example.log
 xenterm cli upload <session-id> ./local.txt /tmp
 xenterm cli download <session-id> /tmp/result.txt ./downloads
+
+# 将已保存会话导出/导入为便携私有文件
+xenterm cli export 新导出.json --include-credentials
+xenterm cli import finalshell导出.json --dry-run
+xenterm cli sync-native 快照.json --dry-run
+
+# 读取或设置无人值守访问模式（restricted | full）
+xenterm cli permissions
+xenterm cli permissions restricted
 ```
 
 下载要求本地目标目录已经存在，且不会覆盖同名文件。
@@ -382,7 +391,7 @@ xenterm cli download <session-id> /tmp/result.txt ./downloads
 ```
 
 Windows 下 `command` 可以填 `C:\\path\\to\\xenterm.exe`。重启或刷新客户端后，应当能看到名为
-`xenterm` 的服务，提供七个工具：`list_sessions`、`get_session`、`run_command`、
+`xenterm` 的服务，提供九个工具：`list_sessions`、`get_session`、`run_command`、`get_access_policy`、`import_sessions`、
 `list_remote_files`、`read_remote_text_file`、`upload_file`、`download_file`。
 不同 AI 客户端的 MCP 配置文件位置不同，请以对应客户端的文档为准。
 

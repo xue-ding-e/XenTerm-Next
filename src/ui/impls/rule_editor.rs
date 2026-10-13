@@ -113,7 +113,12 @@ impl RuleEditorView {
     }
 
     /// Validate and save the rule.
-    fn save(&mut self, cx: &mut Context<Self>) {
+    /// The caret's first stop when the card opens: the pattern to match.
+    pub(crate) fn focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.pattern.update(cx, |field, cx| field.focus(window, cx));
+    }
+
+    pub(crate) fn save(&mut self, cx: &mut Context<Self>) {
         let pattern = self.pattern.read(cx).value().trim().to_string();
         if let Err(message) =
             crate::core::highlight::validate(&pattern, self.regex, self.case_sensitive)

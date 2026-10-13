@@ -185,6 +185,14 @@ fn present_credential(window: &mut Window, cx: &mut App) {
     ));
     let user_field = user_input.clone();
     let password_field = password_input.clone();
+    // The keyboard is how these dialogs are answered (Enter submits), so it
+    // starts on the first field the prompt actually asks for: the username
+    // when it is wanted, otherwise the password.
+    let focus_first = if need_user {
+        user_input.clone()
+    } else {
+        password_input.clone()
+    };
     window.open_dialog(cx, move |dialog, _window, _cx| {
         // Cloned inside rather than moved: the build closure is `Fn`, so it may
         // be called more than once and cannot take the entities with it.
@@ -228,6 +236,7 @@ fn present_credential(window: &mut Window, cx: &mut App) {
                 crate::i18n::t("取消", "Cancel").into(),
             ))
     });
+    focus_first.update(cx, |input, cx| input.focus(window, cx));
 }
 
 /// Answer the current credential prompt and show the next one if there is one.
@@ -310,6 +319,7 @@ fn present_mfa(window: &mut Window, cx: &mut App) {
                 crate::i18n::t("取消", "Cancel").into(),
             ))
     });
+    answer_input.update(cx, |input, cx| input.focus(window, cx));
 }
 
 /// Answer the current MFA prompt and show the next one if there is one.

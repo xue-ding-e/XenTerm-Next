@@ -48,6 +48,7 @@ use gpui_kit::{
     component::{
         button::{Button, ButtonVariants, DropdownButton},
         h_flex,
+        input::{Input, InputState},
         menu::{ContextMenuExt, PopupMenuItem},
         spinner::Spinner,
         v_flex, ActiveTheme as _, Icon, Sizable as _, Size,
@@ -55,6 +56,9 @@ use gpui_kit::{
     div,
     prelude::*,
     px,
+    Div,
+    ExternalPaths,
+    Subscription,
     uniform_list, AnyElement, Context, Entity, FontWeight, Hsla, IntoElement, ListSizingBehavior,
     Point, Render, SharedString, TestSupportExt as _, UniformListScrollHandle, Window,
 };
@@ -92,6 +96,12 @@ pub(crate) enum PanelAction {
     Refresh,
     /// Ask the OS for a local file and upload it here.
     Upload,
+    /// Upload these local files here — the paths a drop carried in.
+    ///
+    /// The drag itself never touches SFTP: it arrives as platform paths, and
+    /// this action is the panel saying "these, to here", the same thing the
+    /// picker-based upload says after a dialog.
+    DropUpload(Vec<std::path::PathBuf>),
     /// Download these remote paths into a chosen local directory.
     Download(Vec<String>),
     /// Delete these remote paths.
@@ -138,6 +148,12 @@ pub(crate) enum PanelAction {
 
 /// The SFTP panel view.
 pub(crate) struct SftpPanelView {
+    /// A path being typed in place of the breadcrumb: the input, and the
+    /// subscription that watches it for Enter. Both live exactly as long as
+    /// the edit — Enter navigates and closes it, and navigating any other way
+    /// (a breadcrumb, a directory row, a refresh) closes it too, because the
+    /// question it was asking has been answered.
+    path_editing: Option<(Entity<InputState>, Subscription)>,
     /// The listing as of the last refresh, which is what the header and rows draw.
     listing: SftpListing,
     /// When the current listing request went out, which drives the spinner. A
@@ -178,6 +194,7 @@ pub(crate) struct SftpPanelView {
 impl SftpPanelView {
     pub(crate) fn new(_cx: &mut Context<Self>) -> Self {
         Self {
+            path_editing: None,
             listing: SftpListing::default(),
             loading_since: None,
             synced: None,
@@ -302,6 +319,7 @@ impl SftpPanelView {
     /// The path just changed, before its entries arrive.
     pub(crate) fn set_path(&mut self, path: String, cx: &mut Context<Self>) {
         self.listing.set_path(path);
+        self.path_editing = None;
         self.loading_since = Some(std::time::Instant::now());
         cx.notify();
     }
@@ -429,6 +447,42 @@ impl SftpPanelView {
             .into_any_element()
     }
 
+}
+
+/// One clickable breadcrumb segment: `label` is shown, `target` navigated to.
+fn breadcrumb_segment(label: &str, target: &str, cx: &mut Context<SftpPanelView>) -> AnyElement {
+    let target = target.to_string();
+    let id = SharedString::from(format!("sftp-crumb-{target}"));
+    div()
+        .id(id)
+        .cursor_pointer()
+        .hover(|this| this.underline())
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.path_editing = None;
+            this.pending = Some(PanelAction::Navigate(target.clone()));
+            cx.notify();
+        }))
+        .child(SharedString::from(label.to_string()))
+        .into_any_element()
+}
+
+/// The segments after the root: `/var/log` yields `var`, `log`, each carrying
+/// the path it jumps to, separated by "›" so the row reads as one path.
+fn breadcrumb_tail(path: &str, cx: &mut Context<SftpPanelView>) -> Vec<AnyElement> {
+    let mut out = Vec::new();
+    let mut accumulated = String::new();
+    for segment in path.split('/').filter(|segment| !segment.is_empty()) {
+        accumulated.push('/');
+        accumulated.push_str(segment);
+        out.push(
+            div()
+                .text_color(cx.theme().border)
+                .child("/")
+                .into_any_element(),
+        );
+        out.push(breadcrumb_segment(segment, &accumulated, cx).into_any_element());
+    }
+    out
 }
 
 impl Render for SftpPanelView {
@@ -628,6 +682,17 @@ impl Render for SftpPanelView {
                 }),
             )
             .size_full()
+            // A drop from the OS lands anywhere on the panel and means the same
+            // thing it means in every file manager: put these files here. The
+            // drag arrives as platform paths; the panel turns it into the same
+            // DropUpload action the picker flow ends in.
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
+                let locals = paths.paths().to_vec();
+                if !locals.is_empty() {
+                    this.pending = Some(PanelAction::DropUpload(locals));
+                    cx.notify();
+                }
+            }))
             // Stretched, not centred: an `h_flex` centres its items on the cross axis,
             // which is fine in a strip off the bottom and wrong in a column at the side,
             // where it left the toolbar, the headers and the rows floating in the middle
@@ -875,26 +940,101 @@ impl Render for SftpPanelView {
                                     })),
                             ),
                     )
-                    .child(
-                        // Where you are, with the icon that says this is a path rather than a
-                        // stray line of text above the table.
-                        h_flex()
+                    .child({
+                        // Where you are, as a breadcrumb you can act on rather
+                        // than a line you can only read. Every segment is a jump
+                        // to itself — the way every file manager works, and the
+                        // reason a deep path costs one click rather than N trips
+                        // through the parent button — and the pencil swaps the
+                        // segments for an input, for the paths a breadcrumb
+                        // cannot say: one to type, or one to paste.
+                        let bar = h_flex()
                             .w_full()
                             .gap_1()
                             .items_center()
                             .px_2()
                             .py_1()
-                            .child(Icon::new(IconName::FolderOpen).size_3().text_color(muted))
-                            .child(
+                            .child(Icon::new(IconName::FolderOpen).size_3().text_color(muted));
+                        if let Some((input, _)) = self.path_editing.as_ref() {
+                            let input = input.clone();
+                            bar.child(
                                 div()
                                     .flex_1()
                                     .min_w_0()
-                                    .truncate()
+                                    .text_xs()
+                                    .child(Input::new(&input)),
+                            )
+                            .child(
+                                Button::new("sftp-path-cancel")
+                                    .icon(Icon::new(IconName::X))
+                                    .ghost()
+                                    .small()
+                                    .tooltip(crate::i18n::t("取消", "Cancel"))
+                                    .accessibility_label(crate::i18n::t("取消", "Cancel"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.path_editing = None;
+                                        cx.notify();
+                                    })),
+                            )
+                        } else {
+                            bar.child(
+                                h_flex()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .gap_0p5()
+                                    .items_center()
                                     .text_xs()
                                     .text_color(muted)
-                                    .child(SharedString::from(path)),
-                            ),
-                    )
+                                    .child(breadcrumb_segment("/", "/", cx))
+                                    .children(breadcrumb_tail(&path, cx)),
+                            )
+                            .child(
+                                Button::new("sftp-path-edit")
+                                    .icon(Icon::new(IconName::Pencil))
+                                    .ghost()
+                                    .small()
+                                    .tooltip(crate::i18n::t("输入路径", "Type a path"))
+                                    .accessibility_label(crate::i18n::t(
+                                        "输入路径",
+                                        "Type a path",
+                                    ))
+                                    .on_click({
+                                        let path = path.clone();
+                                        cx.listener(move |this, _, window, cx| {
+                                            let input = cx.new(|cx| {
+                                                InputState::new(window, cx)
+                                                    .default_value(path.clone())
+                                                    .placeholder(crate::i18n::t(
+                                                        "/absolute/path",
+                                                        "/absolute/path",
+                                                    ))
+                                            });
+                                            let subscription = cx.subscribe_in(
+                                                &input,
+                                                window,
+                                                |this, _, event: &gpui_kit::component::input::InputEvent, _, cx| {
+                                                    if let gpui_kit::component::input::InputEvent::PressEnter { .. } = event {
+                                                        let typed = this
+                                                            .path_editing
+                                                            .as_ref()
+                                                            .map(|(input, _)| input.read(cx).value().trim().to_string())
+                                                            .unwrap_or_default();
+                                                        this.path_editing = None;
+                                                        if !typed.is_empty() {
+                                                            this.pending = Some(PanelAction::Navigate(typed));
+                                                        }
+                                                        cx.notify();
+                                                    }
+                                                },
+                                            );
+                                            this.path_editing = Some((input, subscription));
+                                            cx.notify();
+                                        })
+                                    }),
+                            )
+                        }
+                    })
                     .child(
                         // A hairline under the headings: what makes the row above the list read as
                         // a table's headings rather than as another row of the list.

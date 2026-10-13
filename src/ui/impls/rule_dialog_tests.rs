@@ -95,7 +95,22 @@ fn open_rule(shell: &Entity<Shell>, cx: &mut VisualTestContext) {
         shell.update(cx, |shell, cx| {
             let editor = cx.new(|cx| RuleEditorView::new(shell.state.store.clone(), window, cx));
             shell.overlay = Overlay::RuleEditor(editor.clone());
-            Shell::overlay_dialog(editor, "Highlight rule".into(), 620., 480., window, cx);
+            // Mounted the way the shell mounts it, Enter-as-save included, so
+            // the card the tests exercise is the card a user gets.
+            let editor_for_enter = editor.clone();
+            Shell::overlay_dialog_confirm(
+                editor,
+                "Highlight rule".into(),
+                620.,
+                480.,
+                window,
+                cx,
+                move |_, cx| {
+                    editor_for_enter.update(cx, |view, cx| view.save(cx));
+                    false
+                },
+                |_, _| {},
+            );
             cx.notify();
         });
     });
@@ -175,6 +190,21 @@ fn adding_a_rule_closes_the_dialog_and_cannot_repeat_the_old_save(cx: &mut TestA
     click("rule-save", cx);
     assert_closed(&shell, cx);
     assert_eq!(patterns(&shell, cx), vec!["QA_RULE_A", "QA_RULE_B"]);
+}
+
+#[gpui_kit::gpui::test]
+fn enter_in_the_pattern_saves_the_rule(cx: &mut TestAppContext) {
+    let (shell, _directory, cx) = fixture(cx);
+    open_rule(&shell, cx);
+    type_pattern("QA_RULE_ENTER", cx);
+    // Enter is the 保存 button's meaning: the rule lands and the card's own
+    // drain closes it — where the toolkit's old default closed it unsaved.
+    cx.simulate_keystrokes("enter");
+    for _ in 0..3 {
+        draw(cx);
+    }
+    assert_eq!(patterns(&shell, cx), vec!["QA_RULE_ENTER"]);
+    assert_closed(&shell, cx);
 }
 
 #[gpui_kit::gpui::test]

@@ -21,7 +21,7 @@ use gpui_kit::{
         dialog::{DialogAction, DialogButtonProps, DialogClose, DialogFooter},
         h_flex,
         input::{Input, InputState},
-        v_flex, WindowExt as _, Sizable as _,
+        v_flex, ActiveTheme as _, WindowExt as _, Sizable as _,
     },
     div,
     prelude::*,
@@ -77,6 +77,15 @@ pub(crate) fn answer_footer(
         .into_any_element()
 }
 
+/// What a prompt's confirm decided: take the text and close, or keep the
+/// dialog open and say why. The reason is part of the refusal — a prompt that
+/// silently refused (as these all once did) looks like a button that did
+/// nothing, and the user's next move is to click it again.
+pub(crate) enum PromptAnswer {
+    Accept,
+    Refuse(SharedString),
+}
+
 /// Ask for one line of text, and hand it to `on_ok` when it is confirmed.
 ///
 /// One field and two buttons, which is what every prompt in this shell needs: a new
@@ -86,21 +95,32 @@ pub(crate) fn answer_footer(
 ///
 /// `on_ok` is handed the text rather than the field, so a caller cannot keep an entity
 /// alive past the dialog that owns it.
+///
+/// The field takes focus when the dialog opens — a one-line prompt is answered
+/// with the keyboard or it is answered twice — and a refusal shows its reason
+/// under the field rather than doing nothing.
 pub(crate) fn prompt<T: Render + 'static>(
     window: &mut Window,
     cx: &mut Context<T>,
     title: SharedString,
     placeholder: SharedString,
     confirm: SharedString,
-    on_ok: impl Fn(String, &mut Window, &mut App) -> bool + 'static,
+    on_ok: impl Fn(String, &mut Window, &mut App) -> PromptAnswer + 'static,
 ) {
     let input: Entity<InputState> =
         cx.new(|cx| InputState::new(window, cx).placeholder(placeholder.clone()));
     let cancel = crate::i18n::t("取消", "Cancel");
+    // The refusal's explanation, shared between the confirm handler (writer)
+    // and the dialog body (reader) because the builder re-runs each frame.
+    let refusal: std::rc::Rc<std::cell::RefCell<Option<SharedString>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(None));
     // The handler is shared rather than moved: the dialog's builder is `Fn` and runs once
     // per frame, so a captured `impl Fn` cannot be moved out of it — only cloned.
     let on_ok = std::rc::Rc::new(on_ok);
+    let input_for_focus = input.clone();
     window.open_dialog(cx, move |dialog, _window, cx| {
+        let theme = cx.theme();
+        let reason = refusal.borrow().clone();
         dialog
             .title(title.clone())
             .button_props(
@@ -108,9 +128,24 @@ pub(crate) fn prompt<T: Render + 'static>(
                     .on_ok({
                         let field = input.clone();
                         let on_ok = on_ok.clone();
+                        let refusal = refusal.clone();
                         move |_, window, cx| {
                             let text = field.read(cx).value().to_string();
-                            on_ok(text, window, cx)
+                            match on_ok(text, window, cx) {
+                                PromptAnswer::Accept => {
+                                    *refusal.borrow_mut() = None;
+                                    true
+                                }
+                                PromptAnswer::Refuse(reason) => {
+                                    *refusal.borrow_mut() = Some(reason);
+                                    // The refusal line is read by the builder on
+                                    // its next run; the field's own repaint is
+                                    // what schedules that run, there being no
+                                    // shell entity here to notify.
+                                    field.update(cx, |_, cx| cx.notify());
+                                    false
+                                }
+                            }
                         }
                     })
                     // Cancel answers the dialog and lets it close, like the button
@@ -120,10 +155,23 @@ pub(crate) fn prompt<T: Render + 'static>(
             .child(
                 v_flex()
                     .w_full()
-                    .child(div().w_full().child(Input::new(&input))),
+                    .child(div().w_full().child(Input::new(&input)))
+                    .when_some(reason, |this, reason| {
+                        this.child(
+                            div()
+                                .w_full()
+                                .pt_1()
+                                .text_xs()
+                                .text_color(theme.danger)
+                                .child(reason),
+                        )
+                    }),
             )
             .footer(answer_footer(confirm.clone(), false, cancel.into()))
     });
+    // The same beat the quick-connect palette opens on: the layer mounts from
+    // Root's queue, and focus set after `open_dialog` lands once it has.
+    input_for_focus.update(cx, |input, cx| input.focus(window, cx));
 }
 
 #[cfg(test)]

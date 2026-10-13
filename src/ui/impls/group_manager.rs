@@ -54,6 +54,11 @@ pub(crate) struct GroupManagerView {
     /// The always-present creation box at the top of the list.
     create: Entity<InputState>,
     pending: Option<GroupManagerAction>,
+    /// The group whose delete button is armed (first press). Deleting a group
+    /// keeps its sessions but takes their grouping with it, and regrouping a
+    /// dozen sessions by hand is tedious enough that a stray click should not
+    /// start it. Every other destructive row in this window asks first too.
+    confirming_delete: Option<String>,
     _create_subscription: Subscription,
 }
 
@@ -82,6 +87,7 @@ impl GroupManagerView {
             editing: None,
             create,
             pending: None,
+            confirming_delete: None,
             _create_subscription,
         }
     }
@@ -113,9 +119,16 @@ impl GroupManagerView {
             .collect()
     }
 
+    /// Stand down an armed delete, if any: acting elsewhere in the card is a
+    /// decision, and leaving a live 确认按钮 behind one would be a trap.
+    fn stand_down_delete(&mut self) {
+        self.confirming_delete = None;
+    }
+
     /// Begin an inline rename: a fresh input seeded with the current name,
     /// living only for as long as the edit. The creation box is untouched.
     fn start_edit(&mut self, group: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.stand_down_delete();
         let input = cx.new(|cx| InputState::new(window, cx).default_value(group.clone()));
         let subscription = cx.subscribe_in(
             &input,
@@ -153,6 +166,7 @@ impl GroupManagerView {
 
     /// Add the group the creation box names, then clear the box.
     fn add_group(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.stand_down_delete();
         let name = self.create.read(cx).value().trim().to_string();
         if name.is_empty() {
             return;
@@ -170,9 +184,42 @@ impl GroupManagerView {
         cx.notify();
     }
 
+    /// The caret's first stop when the card opens: the creation box, which
+    /// is the one field this card always shows.
+    pub(crate) fn focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.create.update(cx, |field, cx| field.focus(window, cx));
+    }
+
+    /// What Enter means in this card: commit whatever is being typed, and close
+    /// only when nothing is.
+    ///
+    /// The order matters. An inline rename that holds focus owns the key first —
+    /// closing the card under an unfinished edit would lose it, while committing
+    /// it is what the key says. Then a non-empty creation box adds the group and
+    /// keeps the card open (adding several in a row is the normal flow). Only an
+    /// empty box closes, and that loses nothing: every other change here applied
+    /// the moment it was made.
+    pub(crate) fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let rename_focused = self
+            .editing
+            .as_ref()
+            .is_some_and(|(_, input, _)| input.read(cx).focus_handle(cx).is_focused(window));
+        if rename_focused {
+            self.stand_down_delete();
+            self.save_rename(window, cx);
+            return false;
+        }
+        if self.create.read(cx).value().trim().is_empty() {
+            return true;
+        }
+        self.add_group(window, cx);
+        false
+    }
+
     /// Write an inline rename through: the edited row's input names the new
     /// value; the row goes back to showing a plain name.
     fn save_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.stand_down_delete();
         let Some((old, input)) = self
             .editing
             .as_ref()
@@ -198,6 +245,14 @@ impl GroupManagerView {
 
     /// Delete a group, leaving its sessions ungrouped.
     fn delete(&mut self, group: &str, window: &mut Window, cx: &mut Context<Self>) {
+        // Two clicks: the first arms the row's confirm pair, the second (on the
+        // same group) removes it. A different group re-aims there instead.
+        if self.confirming_delete.as_deref() != Some(group) {
+            self.confirming_delete = Some(group.to_string());
+            cx.notify();
+            return;
+        }
+        self.stand_down_delete();
         {
             let mut store = self.store.borrow_mut();
             store.remove_group(group);
@@ -325,7 +380,37 @@ impl GroupManagerView {
                         .text_color(theme.muted_foreground)
                         .child(SharedString::from(sessions)),
                 )
-                .child(
+                .child(if self.confirming_delete.as_deref() == Some(name) {
+                    // Armed: the row asks for its own confirmation, in place,
+                    // where the name it is about to ungroup is still readable.
+                    h_flex()
+                        .gap_1()
+                        .flex_shrink_0()
+                        .child(
+                            Button::new(SharedString::from(format!(
+                                "group-delete-confirm-{name}"
+                            )))
+                            .label(crate::i18n::t("确认删除", "Confirm delete"))
+                            .danger()
+                            .small()
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.delete(&for_delete, window, cx)
+                            })),
+                        )
+                        .child(
+                            Button::new(SharedString::from(format!(
+                                "group-delete-cancel-{name}"
+                            )))
+                            .label(crate::i18n::t("取消", "Cancel"))
+                            .ghost()
+                            .small()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.stand_down_delete();
+                                cx.notify();
+                            })),
+                        )
+                        .into_any_element()
+                } else {
                     h_flex()
                         .gap_1()
                         .flex_shrink_0()
@@ -350,8 +435,9 @@ impl GroupManagerView {
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.delete(&for_delete, window, cx)
                                 })),
-                        ),
-                )
+                        )
+                        .into_any_element()
+                })
             })
             .into_any_element()
     }

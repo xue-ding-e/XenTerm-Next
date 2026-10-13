@@ -96,7 +96,19 @@ fn open_groups(shell: &Entity<Shell>, cx: &mut VisualTestContext) -> gpui_kit::E
             shell.open_page(PageId::Sessions, window, cx);
             let manager = cx.new(|cx| GroupManagerView::new(shell.state.store.clone(), window, cx));
             shell.overlay = Overlay::Groups(manager.clone());
-            Shell::overlay_dialog(manager, "Session groups".into(), 620., 520., window, cx);
+            // Mounted the way the shell mounts it, Enter-as-confirm included,
+            // so the card the tests exercise is the card a user gets.
+            let manager_for_enter = manager.clone();
+            Shell::overlay_dialog_confirm(
+                manager,
+                "Session groups".into(),
+                620.,
+                520.,
+                window,
+                cx,
+                move |window, cx| manager_for_enter.update(cx, |view, cx| view.confirm(window, cx)),
+                |_, _| {},
+            );
             cx.notify();
         })
     });
@@ -231,6 +243,56 @@ fn save_then_close(cx: &mut TestAppContext, pointer: bool) {
     focus_input_before("group-add", "", cx);
     click("close", cx);
     assert_closed(&shell, cx);
+}
+
+#[gpui_kit::gpui::test]
+fn enter_in_the_creation_box_adds_the_group_and_keeps_the_card_open(cx: &mut TestAppContext) {
+    let (shell, _directory, cx) = fixture(cx);
+    open_groups(&shell, cx);
+    focus_input_before("group-add", "", cx);
+    cx.simulate_input("QA-Enter-Group");
+    draw(cx);
+    cx.simulate_keystrokes("enter");
+    for _ in 0..3 {
+        draw(cx);
+    }
+    // Enter is the 添加 button's meaning, not the dialog's default dismissal:
+    // the group lands and the card stays for the next one.
+    assert!(shell.read_with(cx, |shell, _| shell
+        .state
+        .store
+        .borrow()
+        .groups()
+        .contains(&"QA-Enter-Group".to_string())));
+    assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+}
+
+#[gpui_kit::gpui::test]
+fn deleting_a_group_needs_the_confirm_press(cx: &mut TestAppContext) {
+    let (shell, _directory, cx) = fixture(cx);
+    open_groups(&shell, cx);
+    focus_input_before("group-add", "", cx);
+    cx.simulate_input("QA-Deletable");
+    draw(cx);
+    click("group-add", cx);
+
+    // The first press arms the row; the group must still be there.
+    click("group-delete-QA-Deletable", cx);
+    assert!(shell.read_with(cx, |shell, _| shell
+        .state
+        .store
+        .borrow()
+        .groups()
+        .contains(&"QA-Deletable".to_string())));
+
+    // The confirming press is the one that removes it.
+    click("group-delete-confirm-QA-Deletable", cx);
+    assert!(!shell.read_with(cx, |shell, _| shell
+        .state
+        .store
+        .borrow()
+        .groups()
+        .contains(&"QA-Deletable".to_string())));
 }
 
 #[gpui_kit::gpui::test]

@@ -34,7 +34,7 @@ use crate::session::protocol::{
 use crate::terminal::{self, TermBuffer};
 
 use super::event_sink::UiMessage;
-use super::terminal::{rgba_to_hsla, CursorStyle, GridStyle};
+use super::terminal::{rgba_to_hsla, scrollbar_geometry, CursorStyle, GridStyle};
 use super::{terminal_grid, CellMetrics, GridSnapshot};
 
 #[cfg(test)]
@@ -229,6 +229,11 @@ pub(crate) struct TerminalView {
     composition: Option<String>,
     /// Whether the find bar is showing.
     find_open: bool,
+    /// A scrollbar drag in flight: the offset the view was at when the thumb
+    /// was grabbed, and the y the grab happened at. The pointer's movement
+    /// maps through the same geometry the thumb is painted with, so the two
+    /// can never disagree.
+    scrollbar_drag: Option<(f32, i32)>,
     /// The find bar's animated height, while it slides open or closed. Held
     /// rather than derived from `find_open` because the bar leaves by the same
     /// slide it arrived by: closed-but-still-visible is a real state here, and
@@ -387,6 +392,7 @@ impl TerminalView {
             // and a change to the setting moves the base every tab measures from.
             zoom: crate::core::FontZoom::new(appearance.font_size as i32),
             grid_bounds: Rc::new(std::cell::Cell::new(None)),
+            scrollbar_drag: None,
             drag_anchor: None,
             family,
             font_size,
@@ -797,10 +803,27 @@ impl TerminalView {
                     }
                     return;
                 }
-                // Enter and Escape are the only keys that leave the bar; everything else
-                // is either text (through the input handler) or something the box has no
-                // use for. Named keys are dropped rather than forwarded so an arrow key
-                // does not move the session's cursor while the user is searching.
+                // Enter walks the matches: next for a plain press, previous with
+                // Shift, both wrapping at the ends. The bar stays open — closing
+                // it is Escape's job, and a search that ended on the first
+                // Enter would hide the count that says how much is left.
+                "enter" => {
+                    let forward = !keystroke.modifiers.shift;
+                    let moved = {
+                        let Ok(mut buffer) = self.buffer.lock() else {
+                            return;
+                        };
+                        buffer.step_find_match(forward)
+                    };
+                    if moved {
+                        self.refresh();
+                    }
+                    return;
+                }
+                // Everything else is either text (through the input handler) or
+                // something the box has no use for. Named keys are dropped rather
+                // than forwarded so an arrow key does not move the session's cursor
+                // while the user is searching.
                 _ => return,
             }
         }
@@ -1112,6 +1135,53 @@ impl TerminalView {
         let bytes = terminal::encode_pasted_text(&text, bracketed);
         self.send_bytes(&bytes);
     }
+}
+
+/// Whether a press at `position` is on the scrollbar's grab lane.
+///
+/// The lane is wider than the four pixels the thumb is painted with, because a
+/// grab target nobody can hit is decoration. Shift is the selection escape
+/// hatch and keeps the lane out of the way of a mouse-tracking program.
+fn on_scrollbar_lane(
+    bounds: Option<Bounds<Pixels>>,
+    scroll_max: i32,
+    position: gpui_kit::Point<Pixels>,
+    shift: bool,
+) -> bool {
+    let Some(bounds) = bounds else {
+        return false;
+    };
+    if shift || scroll_max <= 0 {
+        return false;
+    }
+    const GRAB_LANE: f32 = 10.0;
+    let right = f32::from(bounds.origin.x + bounds.size.width);
+    let x = f32::from(position.x);
+    x >= right - GRAB_LANE && x <= right + 2.0
+        && f32::from(position.y) >= f32::from(bounds.origin.y)
+        && f32::from(position.y) <= f32::from(bounds.origin.y + bounds.size.height)
+}
+
+/// Map a pointer y to a scroll offset, anchored at where the drag began.
+///
+/// The anchor is relative rather than absolute — the offset moves by the
+/// pointer's travel through the track — so grabbing the middle of a thumb
+/// never jumps it under the pointer first.
+fn scrollbar_offset_for(
+    bounds: Bounds<Pixels>,
+    metrics: Option<CellMetrics>,
+    scroll_max: i32,
+    drag: (f32, i32),
+    y: Pixels,
+) -> usize {
+    let visible_rows = metrics.map_or(16.0, |m| f32::from(m.height));
+    let track_height = f32::from(bounds.size.height);
+    let (_, travel) = scrollbar_geometry(track_height, visible_rows, scroll_max);
+    let (_, start_offset) = drag;
+    let start_y = drag.0;
+    let delta = (f32::from(y) - start_y) / travel.max(1.0);
+    let offset = start_offset as f32 + delta * scroll_max as f32;
+    offset.round().clamp(0.0, scroll_max as f32) as usize
 }
 
 /// Shared routing for a physical key and a disabled optional paste chord.
@@ -1671,6 +1741,18 @@ impl Render for TerminalView {
                                         // user how much is off screen, and "0" is the difference
                                         // between a wrong query and a scrolled view.
                                         .child(SharedString::from(format!("{hits}"))),
+                                )
+                                .child(div().flex_1())
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(muted)
+                                        // The same hint convention as the quick-connect
+                                        // panel: say what the keyboard does, once, quietly.
+                                        .child(SharedString::from(crate::i18n::t(
+                                            "Enter 下一处 · Shift+Enter 上一处 · Esc 关闭",
+                                            "Enter next · Shift+Enter previous · Esc close",
+                                        ))),
                                 ),
                         ),
                 )
@@ -1733,6 +1815,21 @@ impl Render for TerminalView {
                     if this.report_mouse(0, 0, event.position, event.modifiers.shift) {
                         return;
                     }
+                    // The scrollbar's lane, when there is one: the thumb was
+                    // painted, but a press on it used to start a selection
+                    // underneath instead of moving the view (#scrollbar-drag).
+                    if on_scrollbar_lane(
+                        this.grid_bounds.get(),
+                        this.snapshot.scroll_max,
+                        event.position,
+                        event.modifiers.shift,
+                    ) {
+                        this.scrollbar_drag = Some((
+                            f32::from(event.position.y),
+                            this.snapshot.scroll_offset,
+                        ));
+                        return;
+                    }
                     this.begin_selection_at(
                         event.position,
                         event.modifiers.control,
@@ -1756,6 +1853,29 @@ impl Render for TerminalView {
                 // Only while a button is held: a move with nothing pressed is the
                 // pointer crossing the grid, which is not a selection.
                 if event.pressed_button.is_some() {
+                    // The scrollbar drag, if that is what the press began.
+                    if let Some(drag) = this.scrollbar_drag {
+                        if let Some(bounds) = this.grid_bounds.get() {
+                            let offset = scrollbar_offset_for(
+                                bounds,
+                                this.metrics,
+                                this.snapshot.scroll_max,
+                                drag,
+                                event.position.y,
+                            );
+                            let moved = {
+                                let Ok(mut buffer) = this.buffer.lock() else {
+                                    return;
+                                };
+                                buffer.scroll_to_offset(offset)
+                            };
+                            if moved {
+                                this.refresh();
+                                cx.notify();
+                            }
+                        }
+                        return;
+                    }
                     // A drag inside a mouse-tracking program is the program's, and on
                     // the alternate screen there is no scrollback of ours to select
                     // from anyway.
@@ -1769,6 +1889,11 @@ impl Render for TerminalView {
                 MouseButton::Left,
                 cx.listener(|this, event: &MouseUpEvent, _, cx| {
                     if this.report_mouse(1, 0, event.position, event.modifiers.shift) {
+                        return;
+                    }
+                    // A scrollbar drag is not a selection, not even the
+                    // zero-length one a click would finish as.
+                    if this.scrollbar_drag.take().is_some() {
                         return;
                     }
                     match event.click_count {
