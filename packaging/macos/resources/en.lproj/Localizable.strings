@@ -1,0 +1,4 @@
+"appTitle" = "XenTerm application";
+"appDescription" = "Install in /Applications. Open from Finder or Launchpad. No Dock or desktop changes.";
+"cliTitle" = "Add xenterm command (recommended)";
+"cliDescription" = "Create /usr/local/bin/xenterm. Existing foreign commands are never overwritten. Deselection on upgrade leaves an existing entry unchanged; use uninstall-cli.sh to remove it. No shell profile changes.";

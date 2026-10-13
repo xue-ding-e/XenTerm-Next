@@ -1,0 +1,4 @@
+"appTitle" = "XenTerm 应用程序";
+"appDescription" = "安装到 /Applications，可从访达或启动台打开。不会更改 Dock 或桌面。";
+"cliTitle" = "添加 xenterm 命令（推荐）";
+"cliDescription" = "创建 /usr/local/bin/xenterm，不覆盖其他命令。升级时取消勾选不会删除已有入口；可用 uninstall-cli.sh 移除。不修改 Shell 配置。";

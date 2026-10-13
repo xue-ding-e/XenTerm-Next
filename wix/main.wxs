@@ -6,7 +6,8 @@
     $(var.Version)            crate version from Cargo.toml
     $(var.CargoTargetBinDir)  e.g. target\x86_64-pc-windows-msvc\release
 
-  The `WixUI_InstallDir` UI (bottom) gives the user a "Browse..." page. AppSearch
+  The `WixUI_FeatureTree` UI (bottom) provides optional integration features
+  and a "Browse..." button for the selected main feature. AppSearch
   restores the previous XenTerm location before that page is shown; a value
   pointing into a pre-rename "meatshell" folder is discarded (see
   IgnorePreRenameRestoreLocation below), so the wizard falls back to the
@@ -36,6 +37,7 @@
         <!-- Replace an older install in place instead of erroring out. -->
         <MajorUpgrade
             Schedule="afterInstallInitialize"
+            MigrateFeatures="yes"
             DowngradeErrorMessage="A newer version of xenterm is already installed. Setup will now exit."/>
 
         <Media Id="1" Cabinet="media1.cab" EmbedCab="yes" DiskPrompt="CD-ROM #1"/>
@@ -128,6 +130,17 @@
                               Source="$(var.CargoTargetBinDir)\xenterm.exe"
                               KeyPath="yes"/>
                     </Component>
+                    <!-- MSI edits only this PATH entry, leaving all other entries intact.
+                         The component also removes its own entry on uninstall. -->
+                    <Component Id="CommandLinePath"
+                               Guid="{8A3FD217-786F-4B11-8D96-7BA8965ACFE4}"
+                               Win64="yes">
+                        <Environment Id="CommandLinePathEntry" Name="PATH"
+                            Value="[APPLICATIONFOLDER]" Action="set" Part="last"
+                            System="yes" Permanent="no"/>
+                        <RegistryValue Root="HKLM" Key="Software\xenterm"
+                            Name="commandLinePath" Type="integer" Value="1" KeyPath="yes"/>
+                    </Component>
                     <Component Id="ThirdPartyNotices" Guid="*">
                         <File Id="thirdPartyNoticesFile"
                               Name="THIRD_PARTY_NOTICES.md"
@@ -182,12 +195,28 @@
             </Directory>
         </Directory>
 
-        <Feature Id="MainProgram" Title="xenterm" Level="1">
+        <!-- Stable feature IDs let MSI migrate user choices across major upgrades.
+             Silent installs can select only MainProgram with ADDLOCAL=MainProgram. -->
+        <Feature Id="MainProgram" Title="xenterm" Level="1"
+                 Description="Application files. Select this item to change the installation folder."
+                 ConfigurableDirectory="APPLICATIONFOLDER" Absent="disallow"
+                 AllowAdvertise="no" Display="expand">
             <ComponentRef Id="MainExecutable"/>
             <ComponentRef Id="ThirdPartyNotices"/>
             <ComponentRef Id="InstallLocationRegistry"/>
-            <ComponentRef Id="ApplicationShortcut"/>
-            <ComponentRef Id="DesktopShortcut"/>
+            <Feature Id="CommandLineIntegration" Title="Add XenTerm to PATH" Level="1"
+                     Description="Run xenterm from new terminals and CLI/MCP clients. Existing terminals may need to restart."
+                     AllowAdvertise="no">
+                <ComponentRef Id="CommandLinePath"/>
+            </Feature>
+            <Feature Id="StartMenuIntegration" Title="Create Start menu shortcut" Level="1"
+                     Description="Add XenTerm to the Windows Start menu." AllowAdvertise="no">
+                <ComponentRef Id="ApplicationShortcut"/>
+            </Feature>
+            <Feature Id="DesktopIntegration" Title="Create desktop shortcut" Level="1"
+                     Description="Add a XenTerm shortcut to the desktop." AllowAdvertise="no">
+                <ComponentRef Id="DesktopShortcut"/>
+            </Feature>
         </Feature>
 
         <!-- Populate Programs and Features -> InstallLocation as well. -->
@@ -199,9 +228,9 @@
             <Custom Action="SetARPInstallLocation" After="CostFinalize">NOT REMOVE</Custom>
         </InstallExecuteSequence>
 
-        <!-- "Choose install location" wizard page (needs WixUIExtension). -->
-        <Property Id="WIXUI_INSTALLDIR" Value="APPLICATIONFOLDER"/>
-        <UIRef Id="WixUI_InstallDir"/>
+        <!-- Native MSI feature selection: all integrations selected initially,
+             deselectable and repairable; MainProgram retains the Browse button. -->
+        <UIRef Id="WixUI_FeatureTree"/>
         <UIRef Id="WixUI_ErrorProgressText"/>
     </Product>
 </Wix>

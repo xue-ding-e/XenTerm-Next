@@ -1,0 +1,22 @@
+#!/bin/sh
+# Installer passes the selected target volume as argument 3.
+set -eu
+volume=${3:-/}
+case "$volume" in /*) ;; *) echo 'Invalid target volume' >&2; exit 1;; esac
+root=${volume%/}
+for path in "$root/usr" "$root/usr/local" "$root/usr/local/bin"; do
+    if [ -L "$path" ] || { [ -e "$path" ] && [ ! -d "$path" ]; }; then
+        echo "Refusing redirected CLI directory: $path" >&2; exit 1
+    fi
+done
+link="$root/usr/local/bin/xenterm"
+target=/Applications/xenterm.app/Contents/MacOS/xenterm
+if [ -L "$link" ]; then
+    [ "$(readlink "$link")" = "$target" ] || { echo 'Foreign xenterm link; not replaced' >&2; exit 1; }
+elif [ -e "$link" ]; then
+    echo 'Existing xenterm command; not replaced' >&2; exit 1
+else
+    mkdir -p "$root/usr/local/bin"
+    # ln without -f also rejects a concurrent replacement.
+    ln -s "$target" "$link"
+fi

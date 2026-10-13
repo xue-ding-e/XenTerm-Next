@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+root=${3:-/}; root=${root%/}
+app="$root/Applications/xenterm.app"
+for path in "$root/Applications" "$app" "$app/Contents" "$app/Contents/Info.plist"; do
+    [ ! -L "$path" ] || { echo "Refusing redirected app path: $path" >&2; exit 1; }
+done
+if [ -e "$app" ]; then
+    identifier=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist" 2>/dev/null) || exit 1
+    [ "$identifier" = dev.xenterm.xenterm ] || { echo 'Foreign application; not replaced' >&2; exit 1; }
+fi

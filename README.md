@@ -217,7 +217,20 @@ Every `v*` tag builds **Windows**, **macOS** (Apple Silicon and Intel) and **Lin
   location.
 - **Portable** — unzip `xenterm-<version>-windows-x86_64.zip` and run `xenterm.exe`.
 
+The MSI feature page initially selects PATH, desktop and Start menu integration;
+each can be disabled. Upgrades preserve feature selection. PATH is maintained by
+Windows Installer without replacing unrelated entries; reopen terminals afterward.
+
 ### macOS
+
+The packaging workflow also builds an Apple `.pkg`: required `/Applications`
+app plus an optional, initially selected CLI entry. It does not modify the Dock
+or guess a desktop user. Each installer run starts with CLI selected; deselection
+skips that component without removing an existing link, and does not yet remember
+an earlier opt-out. See the [installer notes](packaging/macos/README.zh-CN.md).
+Unsigned packages are not Developer ID signed or notarized; check the actual
+assets provided by the version you download.
+
 
 The download is a `.zip` containing `xenterm.app`:
 
@@ -238,6 +251,13 @@ If you did not move it, point both paths above at wherever the `.app` actually i
 Requires macOS 11 Big Sur or later.
 
 ### Linux
+
+User script installs offer PATH, desktop and application-menu integration;
+`--no-add-to-path`, `--no-desktop-shortcut` and `--no-start-menu` opt out, with
+choices preserved on repeat installs. `--uninstall` with the original prefix
+removes only unchanged managed files. A headless user without an XDG desktop gets
+no desktop shortcut. System installs do not edit user shell profiles. Debian
+packages keep package-manager semantics; Flatpak does not promise a host CLI.
 
 | Package | Command |
 | --- | --- |

@@ -184,10 +184,13 @@ Linux 原生界面的验证不能代替 Windows、macOS 原生交互验证；请
 
 ### Windows
 
-- **安装程序** —— 运行 `xenterm-<版本>-windows-x86_64.msi`，可自选安装位置。
+- **安装程序** —— 运行 `xenterm-<版本>-windows-x86_64.msi`，可自选安装位置。原生功能选择页默认选中「加入 PATH」「桌面快捷方式」「开始菜单」，可分别取消；后续升级保留所选功能。PATH 采用 Windows Installer 增量维护，卸载不覆盖其他 PATH 项；新终端才能读取更新。
 - **免安装** —— 解压 `xenterm-<版本>-windows-x86_64.zip`，双击 `xenterm.exe`。
 
 ### macOS
+
+除便携 ZIP 外，打包流水线新增 `.pkg` 安装器：安装应用到 `/Applications`，在“自定”中默认选中可取消的 CLI 入口。macOS 没有开始菜单，不自动修改 Dock 或猜测用户桌面。每次安装仍默认选中 CLI；取消只跳过本次组件，不删除既有入口，也尚未记忆上次取消偏好。未签名/未公证的包不能视为已通过系统安全认证。构建及安全卸载见 [macOS 安装器说明](packaging/macos/README.zh-CN.md)；以所下载版本实际包含的资产为准。
+
 
 下载得到的是包含 `xenterm.app` 的 `.zip`：
 
@@ -235,6 +238,8 @@ chmod +x install-linux.sh && ./install-linux.sh
 # 等价的环境变量写法；仍可传入可选的二进制文件路径
 PREFIX="$HOME/Apps/XenTerm" ./install-linux.sh /path/to/xenterm
 ```
+
+用户安装默认启用 shell PATH、桌面快捷方式及应用菜单；没有 XDG 桌面的服务器会跳过桌面。可用 `--no-add-to-path`、`--no-desktop-shortcut`、`--no-start-menu` 分别取消，后续安装保留选择。用同一前缀执行 `./install-linux.sh --user --uninstall` 仅清理未被修改的托管文件，用户配置不删除。系统安装不猜测登录用户，也不修改用户 shell；`/usr/local/bin` 是否在 PATH 中取决于系统环境。已有 `.deb` 继续由包管理器维护，Flatpak 不承诺宿主机 CLI 入口。
 
 默认安装前缀为 `/usr/local`。安装器会创建 `<prefix>/bin/xenterm`、
 `<prefix>/share/applications/xenterm.desktop` 和

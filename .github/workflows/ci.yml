@@ -10,9 +10,9 @@ name: CI
 
 on:
   push:
-    paths: ["Cargo.toml", "Cargo.lock", "build.rs", "src/**", "tests/*_e2e.py", "tests/tls_proxy_fixture.py", "assets/install-linux.sh", "tests/install_linux_test.py", ".github/workflows/ci.yml"]
+    paths: ["Cargo.toml", "Cargo.lock", "build.rs", "src/**", "tests/*_e2e.py", "tests/tls_proxy_fixture.py", "assets/install-linux.sh", "tests/install_linux_test.py", "wix/**", "packaging/macos/**", "tests/windows_installer*", "tests/macos_installer*", ".github/workflows/ci.yml", ".github/workflows/release.yml"]
   pull_request:
-    paths: ["Cargo.toml", "Cargo.lock", "build.rs", "src/**", "tests/*_e2e.py", "tests/tls_proxy_fixture.py", "assets/install-linux.sh", "tests/install_linux_test.py", ".github/workflows/ci.yml"]
+    paths: ["Cargo.toml", "Cargo.lock", "build.rs", "src/**", "tests/*_e2e.py", "tests/tls_proxy_fixture.py", "assets/install-linux.sh", "tests/install_linux_test.py", "wix/**", "packaging/macos/**", "tests/windows_installer*", "tests/macos_installer*", ".github/workflows/ci.yml", ".github/workflows/release.yml"]
   workflow_dispatch:
 
 permissions:
@@ -176,3 +176,37 @@ jobs:
         run: bash -n assets/install-linux.sh
       - name: Run isolated installer regressions
         run: /usr/bin/python3 tests/install_linux_test.py
+
+  installer-windows:
+    name: Windows MSI install upgrade uninstall
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python tests/windows_installer_test.py
+      - name: Install official WiX 3 toolset
+        shell: pwsh
+        run: choco install wixtoolset --version=3.14.1 -y --no-progress
+      - name: Verify isolated MSI lifecycle
+        shell: pwsh
+        run: ./tests/windows_installer_e2e.ps1
+      - name: Upload installer diagnostic logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-msi-diagnostics
+          path: ${{ runner.temp }}/xenterm-msi-*/msi-*.log
+
+  installer-macos:
+    name: macOS PKG choices and payload
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python tests/macos_installer_test.py
+      - name: Build and inspect genuine Apple Installer packages
+        run: bash tests/macos_installer_build.sh

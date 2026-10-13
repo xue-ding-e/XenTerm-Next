@@ -66,7 +66,7 @@ class InstallerTest(unittest.TestCase):
         self.tools = self.root / "tools"
         self.tools.mkdir()
         self.log = self.root / "commands.jsonl"
-        for command in ("cat", "dirname", "readlink", "mktemp", "rm", "grep", "cmp"):
+        for command in ("cat", "dirname", "readlink", "mktemp", "rm", "grep", "cmp", "sha256sum", "awk"):
             (self.tools / command).symlink_to(shutil.which(command))
         self.make_tool("id", "print(os.environ.get('FIXTURE_UID', '1000'))")
         self.make_tool("install", f"""
@@ -142,6 +142,172 @@ sys.exit(int(os.environ.get('FIXTURE_CACHE_EXIT', '0')))
             result = subprocess.run([VALIDATOR, str(desktop)], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return desktop
+
+    def test_disabled_xdg_desktop_is_valid_headless_install(self):
+        self.make_tool("xdg-user-dir", f"print({str(self.home)!r})")
+        self.run_installer("--user")
+        self.assertFalse((self.home / "xenterm.desktop").exists())
+        self.run_installer("--user", "--uninstall")
+
+    def test_modified_or_truncated_shell_block_preserves_all_files(self):
+        for mutation in ("edited", "truncated"):
+            with self.subTest(mutation=mutation):
+                self.run_installer("--user")
+                rc = self.home / ".bashrc"
+                original = rc.read_text()
+                if mutation == "edited":
+                    changed = original.replace("# <<< XenTerm", "export KEEP_ME=1\n# <<< XenTerm")
+                else:
+                    changed = original.replace("# <<< XenTerm", "# missing-end XenTerm") + "export KEEP_AFTER=1\n"
+                rc.write_text(changed)
+                target = self.home / ".local/bin/xenterm"
+                binary = target.read_bytes()
+                self.run_installer("--user", "--uninstall", success=False)
+                self.assertEqual(rc.read_text(), changed)
+                self.assertEqual(target.read_bytes(), binary)
+                self.run_installer("--user", success=False)
+                self.assertEqual(target.read_bytes(), binary)
+                rc.write_text(original)
+                self.run_installer("--user", "--uninstall")
+
+    def test_literal_backslash_prefix_repeat_and_uninstall(self):
+        prefix = self.home / r"literal\tpath"
+        self.run_installer("--user", "--prefix", prefix)
+        self.run_installer("--user", "--prefix", prefix)
+        self.assertEqual((self.home / ".bashrc").read_text().count("# >>> XenTerm"), 1)
+        self.run_installer("--user", "--prefix", prefix, "--uninstall")
+        self.assertNotIn("# >>> XenTerm", (self.home / ".bashrc").read_text())
+
+    def test_desktop_symlink_and_traversal_are_rejected(self):
+        outside = self.root / "outside-desktop"
+        outside.mkdir()
+        (self.home / "Desktop").symlink_to(outside, target_is_directory=True)
+        for target in (self.home / "Desktop", self.home / ".." / "outside-desktop"):
+            self.make_tool("xdg-user-dir", f"print({str(target)!r})")
+            self.run_installer("--user", success=False)
+            self.assertFalse((outside / "xenterm.desktop").exists())
+            self.assertFalse((self.home / ".local/bin/xenterm").exists())
+
+    def test_modified_manifest_cannot_delete_foreign_launcher(self):
+        import hashlib
+        self.run_installer("--user")
+        foreign = self.home / "unrelated" / "xenterm.desktop"
+        foreign.parent.mkdir()
+        foreign.write_text("keep unrelated launcher")
+        manifest = self.home / ".local/share/xenterm/installer/files.sha256"
+        with manifest.open("a") as output:
+            output.write(hashlib.sha256(foreign.read_bytes()).hexdigest() + "\t" + str(foreign) + "\n")
+        self.run_installer("--user", "--uninstall", success=False)
+        self.assertEqual(foreign.read_text(), "keep unrelated launcher")
+        self.assertTrue((self.home / ".local/bin/xenterm").exists())
+
+    def test_active_bash_login_and_zdotdir_are_used(self):
+        profile = self.home / ".bash_profile"
+        profile.write_text("export KEEP_LOGIN=1\n")
+        zdir = self.home / ".config/zsh"
+        zdir.mkdir(parents=True)
+        self.run_installer("--user", env={"ZDOTDIR": str(zdir)})
+        self.assertIn("# >>> XenTerm", profile.read_text())
+        self.assertIn("# >>> XenTerm", (zdir / ".zshrc").read_text())
+        self.assertFalse((self.home / ".zshrc").exists())
+        self.run_installer("--user", "--uninstall", env={"ZDOTDIR": str(zdir)})
+        self.assertIn("export KEEP_LOGIN=1", profile.read_text())
+        self.assertNotIn("# >>> XenTerm", profile.read_text())
+
+    def test_changed_shell_context_blocks_before_any_removal(self):
+        self.run_installer("--user")
+        zdir = self.home / "another-zsh"
+        zdir.mkdir()
+        binary = self.home / ".local/bin/xenterm"
+        rc = self.home / ".zshrc"
+        original = rc.read_text()
+        for args in (("--user",), ("--user", "--uninstall")):
+            self.run_installer(*args, env={"ZDOTDIR": str(zdir)}, success=False)
+            self.assertTrue(binary.exists())
+            self.assertEqual(rc.read_text(), original)
+        self.run_installer("--prefix", self.home / ".local", "--uninstall", success=False)
+        self.assertTrue(binary.exists())
+
+    def test_colon_prefix_rejected_only_when_path_enabled(self):
+        prefix = self.home / "colon:prefix"
+        self.run_installer("--user", "--prefix", prefix, success=False)
+        self.assertFalse(prefix.exists())
+        self.assertFalse((self.home / ".bashrc").exists())
+        self.run_installer("--user", "--prefix", prefix, "--no-add-to-path")
+        self.assertTrue((prefix / "bin/xenterm").exists())
+        self.run_installer("--user", "--prefix", prefix, "--uninstall")
+
+    def test_user_path_desktop_defaults_and_uninstall(self):
+        desktop = self.home / "桌面"
+        self.make_tool("xdg-user-dir", f"print({str(desktop)!r})")
+        self.run_installer("--user")
+        self.assertTrue((desktop / "xenterm.desktop").exists())
+        rc = self.home / ".bashrc"
+        self.assertIn("XenTerm installer PATH", rc.read_text())
+        result = subprocess.run(["/bin/bash", "-c", '. "$HOME/.bashrc"; command -v xenterm'],
+                                env=self.env, capture_output=True, text=True)
+        self.assertEqual(result.stdout.strip(), str(self.home / ".local/bin/xenterm"))
+        self.run_installer("--user", "--uninstall")
+        self.assertFalse((desktop / "xenterm.desktop").exists())
+        self.assertNotIn("XenTerm installer PATH", rc.read_text())
+        self.run_installer("--user", "--uninstall")
+
+    def test_user_opt_out_persists_upgrade(self):
+        self.run_installer("--user", "--no-add-to-path", "--no-desktop-shortcut", "--no-start-menu")
+        self.run_installer("--user")
+        self.assertFalse((self.home / ".bashrc").exists())
+        self.assertFalse((self.home / ".local/share/applications/xenterm.desktop").exists())
+        self.run_installer("--user", "--start-menu", "--add-to-path")
+        self.assertTrue((self.home / ".bashrc").exists())
+        self.assertTrue((self.home / ".local/share/applications/xenterm.desktop").exists())
+
+    def test_repeat_user_path_does_not_duplicate_or_drop_content(self):
+        rc = self.home / ".bashrc"
+        rc.write_text("export KEEP_ME=1\n")
+        self.run_installer("--user")
+        self.run_installer("--user")
+        self.assertEqual(rc.read_text().count("# >>> XenTerm"), 1)
+        self.assertIn("export KEEP_ME=1", rc.read_text())
+        self.run_installer("--user", "--uninstall")
+        self.assertIn("export KEEP_ME=1", rc.read_text())
+
+    def test_modified_binary_preserved_on_uninstall(self):
+        self.run_installer("--user")
+        target = self.home / ".local/bin/xenterm"
+        target.write_text("my replacement")
+        self.run_installer("--user", "--uninstall", success=False)
+        self.assertEqual(target.read_text(), "my replacement")
+
+    def test_foreign_binary_not_overwritten(self):
+        target = self.prefix / "bin/xenterm"
+        target.parent.mkdir(parents=True)
+        target.write_text("foreign")
+        self.run_installer("--prefix", self.prefix, success=False)
+        self.assertEqual(target.read_text(), "foreign")
+
+    def test_foreign_desktop_not_overwritten(self):
+        desktop = self.home / "Desktop"
+        desktop.mkdir()
+        shortcut = desktop / "xenterm.desktop"
+        shortcut.write_text("foreign")
+        self.make_tool("xdg-user-dir", f"print({str(desktop)!r})")
+        self.run_installer("--user", success=False)
+        self.assertEqual(shortcut.read_text(), "foreign")
+
+    def test_shell_symlink_not_followed(self):
+        foreign = self.root / "foreign-rc"
+        foreign.write_text("untouched")
+        (self.home / ".bashrc").symlink_to(foreign)
+        self.run_installer("--user", success=False)
+        self.assertEqual(foreign.read_text(), "untouched")
+
+    def test_path_quote_in_prefix_has_no_shell_execution(self):
+        prefix = self.home / "quote'\" $HOME `bad` prefix"
+        self.run_installer("--user", "--prefix", prefix)
+        result = subprocess.run(["/bin/bash", "-c", '. "$HOME/.bashrc"; command -v xenterm'],
+                                env=self.env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), str(prefix / "bin/xenterm"))
 
     def test_fresh_writable_prefix_needs_no_sudo(self):
         self.run_installer("--prefix", self.prefix)
