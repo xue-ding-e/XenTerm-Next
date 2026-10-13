@@ -1,3 +1,5 @@
+> 本 Fork 的自用功能维护在 `main`；`upstream-main` 仅跟踪官方，不会自动合入自用主线。开发与清理前请阅读[分支约定](CONTRIBUTING.zh-CN.md#本-fork-的分支约定xue-ding-exenterm)。
+
 <p align="center">
   <a href="README.md">English</a> · <b>简体中文</b>
 </p>

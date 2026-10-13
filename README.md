@@ -1,3 +1,5 @@
+> This fork maintains custom features on `main`; `upstream-main` only tracks upstream and never integrates automatically. Read the [fork branch policy](CONTRIBUTING.md#fork-branch-policy-xue-ding-exenterm) before development or cleanup.
+
 <p align="center">
   <b>English</b> · <a href="README.zh.md">简体中文</a>
 </p>

@@ -1,4 +1,17 @@
 <p align="center">
+
+## Fork branch policy (xue-ding-e/XenTerm)
+
+This section applies only to this fork, not to upstream's branch policy.
+
+- `main` is the maintained user branch and retains all verified custom features. New commits have one parent: use rebase for updates and squash or rebase for integration, never merge commits.
+- `upstream-main` mirrors the official `main` of `ixbaicn/XenTerm`, including its existing merge history. Do not develop or apply custom patches on this mirror.
+- `upstream` names the official remote. Fetching or updating the mirror never automatically changes our `main`. Update the mirror only with a verified mapping and a fast-forward; stop on rewritten history or concurrent changes.
+- Integrate upstream changes in an isolated temporary working copy, preserve custom behavior, resolve conflicts and run applicable checks. Then update `main` linearly. Do not replace custom features with an upstream tree or add merge commits.
+- Prefer isolated working copies of the main development line. Short-lived branches for upstream PRs are allowed. Retain heads/bases of unfinished PRs and branches whose unique changes have not been reviewed.
+- Clean up completed or duplicate temporary branches only after verifying their contributions and creating a recoverable backup with old refs and SHAs. Use normal pushes for development. A history replacement needs separate explicit authorization, a complete backup, an exact old-SHA lease, race checks and post-write verification; never use bare `--force`.
+- Fork cleanup does not imply upstream acceptance. Do not delete or rewrite upstream branches, tags or releases. Do not execute stale history-migration plans.
+
   <b>English</b> · <a href="CONTRIBUTING.zh-CN.md">简体中文</a>
 </p>
 
