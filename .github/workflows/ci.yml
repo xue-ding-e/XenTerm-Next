@@ -76,6 +76,12 @@ jobs:
           XDG_DATA_HOME: ${{ runner.temp }}/xenterm-group-data
           XDG_RUNTIME_DIR: ${{ runner.temp }}/xenterm-group-runtime
         run: cargo test --locked --target ${{ matrix.target }} --jobs 2 ui::shell::group_dialog_tests -- --test-threads=1
+      - name: Test execution history settings, viewer and revocation
+        env:
+          XDG_CONFIG_HOME: ${{ runner.temp }}/xenterm-history-config
+          XDG_DATA_HOME: ${{ runner.temp }}/xenterm-history-data
+          XDG_RUNTIME_DIR: ${{ runner.temp }}/xenterm-history-runtime
+        run: cargo test --locked --target ${{ matrix.target }} --jobs 2 execution_log -- --test-threads=1
       - name: Test complete desktop regression suite on Linux
         if: runner.os == 'Linux'
         env:

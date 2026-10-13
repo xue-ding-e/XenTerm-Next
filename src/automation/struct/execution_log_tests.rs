@@ -268,6 +268,48 @@ fn failed_history_io_never_changes_the_operation_result() {
     }
 }
 
+#[test]
+fn records_exclude_saved_credentials_unknown_arguments_and_outputs() {
+    let root = tempfile::tempdir().unwrap();
+    let mut store = history_store(root.path());
+    let mut session = crate::config::Session::new_empty();
+    session.id = "fixture".into();
+    session.name = "Synthetic session".into();
+    session.host = "fixture.invalid".into();
+    session.password = crate::config::Secret::new("synthetic-saved-secret");
+    store.upsert(session);
+    store.save().unwrap();
+    let mut pending = ExecutionGuard::begin_with_store(
+        "run_command",
+        &json!({
+            "session_id": "fixture", "command": "printf fixture",
+            "password": "synthetic-argument-secret", "token": "synthetic-token"
+        }),
+        Frontend::Cli,
+        &store,
+    )
+    .unwrap();
+    pending.finish(&Ok(json!({
+        "exit_code": 0, "stdout": "synthetic-stdout", "stderr": "synthetic-stderr"
+    })));
+    let records = read_records_in(&root.path().join("mcp-executions"));
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].command, "printf fixture");
+    let raw = serde_json::to_string(&records).unwrap();
+    for excluded in [
+        "synthetic-saved-secret",
+        "synthetic-argument-secret",
+        "synthetic-token",
+        "synthetic-stdout",
+        "synthetic-stderr",
+    ] {
+        assert!(
+            !raw.contains(excluded),
+            "unexpected data in history: {excluded}"
+        );
+    }
+}
+
 fn record(command: &str) -> ExecutionRecord {
     let now = now_ms();
     ExecutionRecord {

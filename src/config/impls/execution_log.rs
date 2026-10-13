@@ -87,6 +87,21 @@ mod tests {
     }
 
     #[test]
+    fn history_defaults_are_off_with_seven_day_retention() {
+        for cache in [
+            fresh_config(),
+            serde_json::from_str::<ConfigFile>("{}").unwrap(),
+        ] {
+            assert!(!cache.mcp_execution_log_enabled);
+            assert_eq!(cache.mcp_execution_log_retention_days, 7);
+            let restored: ConfigFile =
+                serde_json::from_str(&serde_json::to_string(&cache).unwrap()).unwrap();
+            assert!(!restored.mcp_execution_log_enabled);
+            assert_eq!(restored.mcp_execution_log_retention_days, 7);
+        }
+    }
+
+    #[test]
     fn epoch_changes_only_for_committed_opt_outs() {
         let root = tempfile::tempdir().unwrap();
         let mut store = store(root.path());
