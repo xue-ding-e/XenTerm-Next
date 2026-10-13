@@ -111,11 +111,12 @@ for managed in "$STATE_DIR" "$OPTIONS" "$MANIFEST" "$SHELL_CONTEXT"; do
     [ "$(readlink -m -- "$managed")" = "$managed" ] || die "installer state traverses symlinks: $managed"
     [ ! -L "$managed" ] || die "refusing symlink installer state: $managed"
 done
+PREVIOUS_PATH=0
 if [ -f "$OPTIONS" ]; then
     while IFS='=' read -r key value; do
         [[ "$value" == 0 || "$value" == 1 ]] || die "invalid installer options"
         case "$key" in
-            path) [ -n "$ADD_PATH" ] || ADD_PATH="$value" ;;
+            path) PREVIOUS_PATH="$value"; [ -n "$ADD_PATH" ] || ADD_PATH="$value" ;;
             desktop) [ -n "$DESKTOP_LINK" ] || DESKTOP_LINK="$value" ;;
             menu) [ -n "$MENU_LINK" ] || MENU_LINK="$value" ;;
             *) die "unknown installer option: $key" ;;
@@ -142,7 +143,7 @@ USER_DESKTOP_DIR=""
 if "$USER_INSTALL" && command -v xdg-user-dir >/dev/null 2>&1; then
     USER_DESKTOP_DIR="$(xdg-user-dir DESKTOP)"
 fi
-if [ "$USER_DESKTOP_DIR" = "$HOME" ] || [ "$USER_DESKTOP_DIR" = "$HOME/" ]; then
+if [ "$USER_DESKTOP_DIR" = "${HOME:-}" ] || [ "$USER_DESKTOP_DIR" = "${HOME:-}/" ]; then
     USER_DESKTOP_DIR=""
 fi
 if [ -n "$USER_DESKTOP_DIR" ]; then
@@ -215,6 +216,7 @@ elif [ -f "$SHELL_CONTEXT" ]; then
 fi
 path_blocks() {
     "$USER_INSTALL" || return 0
+    [ "$ADD_PATH" = 1 ] || [ "$PREVIOUS_PATH" = 1 ] || return 0
     local mode="$1" rc temporary quoted body
     quoted="${PATH_FRAGMENT//\'/\'\\\'\'}"
     body=". '$quoted'"
@@ -281,6 +283,12 @@ BIN_DIR="${PREFIX%/}/bin"
 ICON_DIR="${PREFIX%/}/share/icons/hicolor/512x512/apps"
 APP_DIR="${PREFIX%/}/share/applications"
 DESKTOP="$APP_DIR/xenterm.desktop"
+# The prefix itself is resolved above. Each child destination must still stay
+# inside that resolved layout; a redirected bin/icons directory is not ours.
+for target in "$BIN_DIR" "$ICON_DIR" "$APP_DIR"; do
+    [ "$(readlink -m -- "$target")" = "$target" ] || die "installation directory traverses a symlink: $target"
+    [ ! -e "$target" ] || [ -d "$target" ] || die "installation directory is not a directory: $target"
+done
 
 # Exact output of the original installer, before managed-launcher markers.
 # Keep this frozen: matching only Name/Exec would overwrite custom launchers.
@@ -331,6 +339,14 @@ if "$USER_INSTALL"; then
         fi
     fi
 fi
+
+# No package manager or hand-written icon is ours merely because its name matches.
+if { [ -e "$ICON_DIR/xenterm.png" ] || [ -L "$ICON_DIR/xenterm.png" ]; } && [ ! -f "$MANIFEST" ] && [ ! -f "$DESKTOP" ]; then
+    die "unmanaged icon already exists: $ICON_DIR/xenterm.png"
+fi
+for target in "$BIN_DIR/xenterm" "$ICON_DIR/xenterm.png" "$DESKTOP" "$PATH_FRAGMENT"; do
+    [ "$(readlink -m -- "$target")" = "$target" ] || die "installation file traverses a symlink: $target"
+done
 
 # A fresh prefix may not exist yet: check its nearest existing ancestor too.
 directory_writable() {

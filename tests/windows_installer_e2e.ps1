@@ -16,7 +16,7 @@ $repo = Split-Path $PSScriptRoot -Parent
 $id = [guid]::NewGuid().ToString('N')
 $root = Join-Path $env:RUNNER_TEMP "xenterm-msi-$id"
 New-Item -ItemType Directory $root | Out-Null
-$installDir = Join-Path $root 'Custom path with spaces'
+$installDir = Join-Path $root 'Custom 路径 with spaces'
 $sentinel = Join-Path $root 'Unrelated PATH entry'
 $shortcutName = "XenTerm Installer Test $id"
 $registryKey = "Software\XenTermInstallerTest\$id"
@@ -25,6 +25,7 @@ $candle = Join-Path $WixBin 'candle.exe'
 $light = Join-Path $WixBin 'light.exe'
 foreach ($tool in @($candle, $light)) { if (-not (Test-Path $tool)) { throw "Missing WiX 3 tool: $tool" } }
 Copy-Item "$env:SystemRoot\System32\cmd.exe" (Join-Path $root 'xenterm.exe')
+& (Join-Path $repo 'wix/build-custom-actions.ps1') -OutputDirectory $root
 [xml]$xml = Get-Content (Join-Path $repo 'wix/main.wxs') -Raw
 $ns = [Xml.XmlNamespaceManager]::new($xml.NameTable)
 $ns.AddNamespace('w', 'http://schemas.microsoft.com/wix/2006/wi')
@@ -32,6 +33,8 @@ $ns.AddNamespace('u', 'http://schemas.microsoft.com/wix/UtilExtension')
 $product = $xml.SelectSingleNode('//w:Product', $ns)
 $product.SetAttribute('Name', $shortcutName)
 $product.SetAttribute('UpgradeCode', [guid]::NewGuid().ToString('B'))
+$xml.SelectSingleNode('//w:Property[@Id="XenTermInstallerRegistryKey"]', $ns).SetAttribute('Value', $registryKey)
+$xml.SelectSingleNode('//w:Binary[@Id="PathOwnershipActions"]', $ns).SetAttribute('SourceFile', (Join-Path $root 'path_ownership.dll'))
 foreach ($node in $xml.SelectNodes('//w:Component', $ns)) { $node.SetAttribute('Guid', [guid]::NewGuid().ToString('B')) }
 foreach ($node in $xml.SelectNodes('//w:RegistryValue | //w:RegistrySearch', $ns)) { $node.SetAttribute('Key', $registryKey) }
 foreach ($node in $xml.SelectNodes('//w:Shortcut', $ns)) { $node.SetAttribute('Name', $shortcutName) }
@@ -105,6 +108,21 @@ try {
     Assert-State $false $false $false
     Run-Msi -Arguments @('/x', $products[1])
     Assert-State $false $false $false
+    # A matching entry predating MSI belongs to its original owner, including
+    # different casing/trailing slash. Empty segments must not stop the search.
+    $preexisting = $installDir.ToUpperInvariant().TrimEnd('\') + '\'
+    [Environment]::SetEnvironmentVariable('PATH', "$originalPath;$sentinel;;$preexisting", 'Machine')
+    Run-Msi -Arguments @('/i', "`"$($packages[0])`"", "APPLICATIONFOLDER=`"$installDir`"")
+    Assert-State $true $true $true
+    Run-Msi -Arguments @('/fa', $products[0])
+    Assert-State $true $true $true
+    Run-Msi -Arguments @('/i', "`"$($packages[1])`"")
+    Assert-State $true $true $true
+    Run-Msi -Arguments @('/x', $products[1])
+    Assert-State $true $false $false
+    if (-not ([Environment]::GetEnvironmentVariable('PATH', 'Machine').Contains($preexisting))) {
+        throw 'MSI changed the spelling of an externally owned PATH entry.'
+    }
     Write-Host 'PASS: MSI defaults, opt-out, directory restoration, repair, upgrade, shortcuts and additive PATH cleanup.'
 } finally {
     # Fixture-only recovery. Preserve logs for CI artifacts; never touch real XenTerm.

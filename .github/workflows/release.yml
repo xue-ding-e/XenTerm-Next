@@ -341,6 +341,10 @@ jobs:
       # MSI installer with native integration choices and installation-directory Browse.
       # Product/@Version comes from Cargo.toml via cargo-wix, so the packaged
       # version is the crate version regardless of the artifact version string.
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: matrix.name == 'windows-x86_64'
+        with:
+          arch: x64
       - name: Build MSI installer (Windows)
         if: matrix.name == 'windows-x86_64'
         continue-on-error: true
@@ -351,6 +355,7 @@ jobs:
           $candle = Get-ChildItem "C:\Program Files (x86)\WiX Toolset*\bin\candle.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($candle) { $env:PATH = "$($candle.DirectoryName);$env:PATH" }
           cargo install cargo-wix --locked
+          ./wix/build-custom-actions.ps1
           cargo wix --no-build --nocapture --target ${{ matrix.target }} --output "xenterm-$env:VERSION-windows-x86_64.msi"
           echo "MSI=xenterm-$env:VERSION-windows-x86_64.msi" >> $env:GITHUB_ENV
 

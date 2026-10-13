@@ -294,6 +294,14 @@ sys.exit(int(os.environ.get('FIXTURE_CACHE_EXIT', '0')))
         self.run_installer("--user", success=False)
         self.assertEqual(shortcut.read_text(), "foreign")
 
+    def test_path_opt_out_preserves_linked_shell_configuration(self):
+        foreign = self.root / "foreign-rc"
+        foreign.write_text("untouched")
+        (self.home / ".bashrc").symlink_to(foreign)
+        self.run_installer("--user", "--no-add-to-path")
+        self.run_installer("--user", "--uninstall")
+        self.assertEqual(foreign.read_text(), "untouched")
+
     def test_shell_symlink_not_followed(self):
         foreign = self.root / "foreign-rc"
         foreign.write_text("untouched")
@@ -308,6 +316,26 @@ sys.exit(int(os.environ.get('FIXTURE_CACHE_EXIT', '0')))
                                 env=self.env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), str(prefix / "bin/xenterm"))
+
+    def test_redirected_binary_directory_is_rejected(self):
+        outside = self.root / "outside"
+        outside.mkdir()
+        self.prefix.mkdir(parents=True)
+        (self.prefix / "bin").symlink_to(outside, target_is_directory=True)
+        self.run_installer("--prefix", self.prefix, success=False)
+        self.assertFalse((outside / "xenterm").exists())
+
+    def test_foreign_icon_is_not_overwritten(self):
+        icon = self.prefix / "share/icons/hicolor/512x512/apps/xenterm.png"
+        icon.parent.mkdir(parents=True)
+        icon.write_text("foreign icon")
+        self.run_installer("--prefix", self.prefix, success=False)
+        self.assertEqual(icon.read_text(), "foreign icon")
+
+    def test_system_prefix_works_without_home(self):
+        self.env.pop("HOME", None)
+        self.run_installer("--prefix", self.prefix)
+        self.assert_installed(self.prefix)
 
     def test_fresh_writable_prefix_needs_no_sudo(self):
         self.run_installer("--prefix", self.prefix)

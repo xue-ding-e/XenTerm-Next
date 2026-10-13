@@ -219,6 +219,17 @@
             </Feature>
         </Feature>
 
+        <!-- Do not claim a PATH entry created before this installer. The native
+             action adjusts the MSI component plan before InstallValidate; MSI
+             still performs all environment writes and rollback itself. -->
+        <Property Id="XenTermInstallerRegistryKey" Value="Software\xenterm"/>
+        <Binary Id="PathOwnershipActions" SourceFile="target\wix\path_ownership.dll"/>
+        <CustomAction Id="PreserveForeignPath" BinaryKey="PathOwnershipActions"
+            DllEntry="PreserveForeignPath" Execute="immediate" Return="check"/>
+        <InstallExecuteSequence>
+            <Custom Action="PreserveForeignPath" Before="InstallValidate">1</Custom>
+        </InstallExecuteSequence>
+
         <!-- Populate Programs and Features -> InstallLocation as well. -->
         <CustomAction Id="SetARPInstallLocation"
             Property="ARPINSTALLLOCATION"

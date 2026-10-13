@@ -188,7 +188,13 @@ jobs:
       - run: python tests/windows_installer_test.py
       - name: Install official WiX 3 toolset
         shell: pwsh
-        run: choco install wixtoolset --version=3.14.1 -y --no-progress
+        run: |
+          $wix = "${env:ProgramFiles(x86)}\WiX Toolset v3.14\bin\candle.exe"
+          if (-not (Test-Path $wix)) { choco install wixtoolset -y --no-progress }
+          if (-not (Test-Path $wix)) { throw 'WiX 3.14 candle.exe is required' }
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
       - name: Verify isolated MSI lifecycle
         shell: pwsh
         run: ./tests/windows_installer_e2e.ps1

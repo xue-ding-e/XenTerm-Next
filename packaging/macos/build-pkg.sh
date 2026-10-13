@@ -13,10 +13,11 @@ pkgbuild --root "$stage/payload" --component-plist "$stage/components.plist" \
     --version "$2" --install-location / "$stage/app.pkg"
 pkgbuild --nopayload --scripts "$stage/cli-scripts" --identifier dev.xenterm.installer.cli \
     --version "$2" "$stage/cli.pkg"
-args=()
+# Apple's /bin/bash is 3.2: under nounset, expanding an empty array fails.
+# Keep mandatory arguments in the array so the unsigned path is valid too.
+args=(--distribution "$stage/distribution.xml" --resources "$stage/resources" --package-path "$stage")
 if [[ -n ${XENTERM_INSTALLER_SIGN_IDENTITY:-} ]]; then
     args+=(--sign "$XENTERM_INSTALLER_SIGN_IDENTITY")
 fi
-productbuild --distribution "$stage/distribution.xml" --resources "$stage/resources" \
-    --package-path "$stage" "${args[@]}" "$3"
+productbuild "${args[@]}" "$3"
 echo "Built $3; installer signing identity: ${XENTERM_INSTALLER_SIGN_IDENTITY:-none (unsigned)}"

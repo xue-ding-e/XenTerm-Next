@@ -41,6 +41,19 @@ class WindowsInstallerContract(unittest.TestCase):
         self.assertIsNotNone(self.root.find('.//w:UIRef[@Id="WixUI_FeatureTree"]', NS))
         self.assertIsNotNone(self.root.find('.//w:RegistrySearch[@Id="PreviousInstallDirRegistry"]', NS))
 
+    def test_native_path_ownership_guard_precedes_install_validation(self):
+        action = self.root.find('.//w:CustomAction[@Id="PreserveForeignPath"]', NS)
+        self.assertIsNotNone(action)
+        self.assertEqual(action.get('Execute'), 'immediate')
+        self.assertEqual(action.get('Return'), 'check')
+        sequence = self.root.find('.//w:InstallExecuteSequence/w:Custom[@Action="PreserveForeignPath"]', NS)
+        self.assertEqual(sequence.get('Before'), 'InstallValidate')
+        self.assertEqual(sequence.text, '1')  # Partial feature removal must not bypass PATH protection.
+        source = (ROOT / 'wix/path_ownership.c').read_text()
+        self.assertIn('MsiSetComponentStateW', source)
+        self.assertNotIn('RegSetValue', source)
+        self.assertNotIn('SetEnvironmentVariable', source)
+
     def test_shortcuts_belong_only_to_optional_features(self):
         for component in ['ApplicationShortcut', 'DesktopShortcut']:
             owners = [f.get('Id') for f in self.root.findall('.//w:Feature', NS)
