@@ -193,19 +193,7 @@ impl Shell {
             store.set_theme_pref(pref.to_string());
             let _ = store.save();
         }
-        match pref {
-            "dark" => gpui_kit::component::Theme::change(
-                gpui_kit::component::ThemeMode::Dark,
-                Some(window),
-                cx,
-            ),
-            "light" => gpui_kit::component::Theme::change(
-                gpui_kit::component::ThemeMode::Light,
-                Some(window),
-                cx,
-            ),
-            _ => gpui_kit::component::Theme::sync_system_appearance(Some(window), cx),
-        }
+        super::theme_polish::set_mode(pref, Some(window), cx);
         window.refresh();
         cx.notify();
     }

@@ -72,6 +72,8 @@ mod sidebar;
 mod system_info_window;
 #[path = "impls/tab_strip.rs"]
 mod tab_strip;
+#[path = "impls/theme_polish.rs"]
+mod theme_polish;
 #[path = "impls/tokens.rs"]
 mod tokens;
 #[path = "impls/terminal.rs"]
