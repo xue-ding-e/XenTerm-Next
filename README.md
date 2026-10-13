@@ -218,7 +218,10 @@ Every `v*` tag builds **Windows**, **macOS** (Apple Silicon and Intel) and **Lin
 - **Portable** — unzip `xenterm-<version>-windows-x86_64.zip` and run `xenterm.exe`.
 
 The MSI feature page initially selects PATH, desktop and Start menu integration;
-each can be disabled. Upgrades preserve feature selection. PATH is maintained by
+each can be disabled. Upgrades between different numeric versions preserve feature
+selection. Rebuilt previews with the same version number are not seamless upgrades;
+uninstall the old package through Windows Installed apps before installing another
+build with that version. PATH is maintained by
 Windows Installer without replacing unrelated entries; reopen terminals afterward.
 
 ### macOS

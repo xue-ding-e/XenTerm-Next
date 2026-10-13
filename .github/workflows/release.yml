@@ -187,8 +187,8 @@ jobs:
           ACTUAL="$(target/${{ matrix.target }}/release/${{ matrix.bin }} --version)"
           test "$ACTUAL" = "xenterm ${EXPECTED}"
 
-      # AppImage/MSI stay best-effort: if the tooling hiccups it must not block
-      # the .tar.gz / .zip.
+      # AppImage stays best-effort so a tooling failure does not block the tarball.
+      # MSI and PKG are required outputs on their respective platforms.
       - name: Build AppImage
         if: matrix.name == 'linux-x86_64'
         continue-on-error: true           # don't block the .tar.gz if AppImage fails

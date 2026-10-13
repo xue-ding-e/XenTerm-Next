@@ -184,7 +184,7 @@ Linux 原生界面的验证不能代替 Windows、macOS 原生交互验证；请
 
 ### Windows
 
-- **安装程序** —— 运行 `xenterm-<版本>-windows-x86_64.msi`，可自选安装位置。原生功能选择页默认选中「加入 PATH」「桌面快捷方式」「开始菜单」，可分别取消；后续升级保留所选功能。PATH 采用 Windows Installer 增量维护，卸载不覆盖其他 PATH 项；新终端才能读取更新。
+- **安装程序** —— 运行 `xenterm-<版本>-windows-x86_64.msi`，可自选安装位置。原生功能选择页默认选中「加入 PATH」「桌面快捷方式」「开始菜单」，可分别取消；不同数字版本之间的升级保留所选功能。同一版本号的重复构建不视为无缝升级；安装新的同版本预览包前，请先通过 Windows「已安装的应用」卸载旧包。PATH 采用 Windows Installer 增量维护，卸载不覆盖其他 PATH 项；新终端才能读取更新。
 - **免安装** —— 解压 `xenterm-<版本>-windows-x86_64.zip`，双击 `xenterm.exe`。
 
 ### macOS
