@@ -9,12 +9,26 @@ use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
+use encoding_rs::{CoderResult, UTF_8};
 use portable_pty::{CommandBuilder, PtySize};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use crate::config::Session;
 use crate::i18n::t;
 use crate::session::protocol::{ProcessKillResult, SessionCommand, SessionEvent, SessionHandle};
+
+// ConPTY read boundaries need not align with UTF-8 code point boundaries.
+fn decode_local_output(decoder: &mut encoding_rs::Decoder, bytes: &[u8], last: bool) -> String {
+    let mut output = String::with_capacity(bytes.len() + 8);
+    let mut unread = bytes;
+    loop {
+        let (result, read, _) = decoder.decode_to_string(unread, &mut output, last);
+        unread = &unread[read..];
+        if result == CoderResult::InputEmpty { break; }
+        output.reserve(unread.len().max(8));
+    }
+    output
+}
 
 #[cfg(windows)]
 const WSL_LOGIN_SHELL: &str = "shell=$(getent passwd \"$(id -un)\" 2>/dev/null | cut -d: -f7); \
@@ -112,17 +126,24 @@ async fn run_local(
         let reader_events = events.clone();
         std::thread::spawn(move || {
             let mut buf = [0u8; 4096];
+            let mut decoder = UTF_8.new_decoder_without_bom_handling();
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => {
+                        let tail = decode_local_output(&mut decoder, b"", true);
+                        if !tail.is_empty() {
+                            let _ = reader_events.send(SessionEvent::Output(tail));
+                        }
                         let _ = reader_events.send(SessionEvent::Closed(
                             t("本地终端已退出", "local terminal exited").into(),
                         ));
                         break;
                     }
                     Ok(n) => {
-                        let text = String::from_utf8_lossy(&buf[..n]).into_owned();
-                        if reader_events.send(SessionEvent::Output(text)).is_err() {
+                        let text = decode_local_output(&mut decoder, &buf[..n], false);
+                        if !text.is_empty()
+                            && reader_events.send(SessionEvent::Output(text)).is_err()
+                        {
                             break;
                         }
                     }
@@ -280,8 +301,20 @@ fn local_program(session: &Session) -> (String, Vec<String>) {
 
 #[cfg(all(test, windows))]
 mod tests {
-    use super::{local_program, WSL_LOGIN_SHELL};
+    use super::{decode_local_output, local_program, WSL_LOGIN_SHELL};
     use crate::config::Session;
+
+    #[test]
+    fn conpty_read_boundary_keeps_utf8_codepoints() {
+        let mut input = vec![b'A'; 4095];
+        input.extend_from_slice("中文😀".as_bytes());
+        let mut decoder = encoding_rs::UTF_8.new_decoder_without_bom_handling();
+        let mut output = decode_local_output(&mut decoder, &input[..4096], false);
+        output.push_str(&decode_local_output(&mut decoder, &input[4096..], false));
+        output.push_str(&decode_local_output(&mut decoder, b"", true));
+        assert_eq!(output, format!("{}中文😀", "A".repeat(4095)));
+        assert!(!output.contains('\u{fffd}'));
+    }
 
     #[cfg(windows)]
     #[test]

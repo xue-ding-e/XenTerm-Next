@@ -1,6 +1,10 @@
 #[path = "struct/state.rs"]
 mod state;
 
+#[path = "impls/engine.rs"]
+mod engine;
+pub(crate) use engine::{MouseProtocolEncoding, MouseProtocolMode, TerminalColor, TerminalEngine};
+
 #[path = "impls/charset.rs"]
 mod charset;
 #[path = "impls/encoding.rs"]
@@ -30,16 +34,14 @@ mod term_buffer;
 pub(crate) mod zmodem;
 
 pub(crate) use charset::CharsetTracker;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(test)]
 pub(crate) use term_buffer::find_matches_in_rows;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(test)]
 pub(crate) use term_buffer::OSC_CAP;
-#[cfg(all(test, feature = "desktop"))]
-use std::collections::VecDeque;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(test)]
 pub(crate) use input::terminal_uses_bracketed_paste;
 pub(crate) use encoding::TerminalEncoding;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(test)]
 pub(crate) use input::normalize_pasted_newlines;
 pub(crate) use input::{
     encode_command_bar_input, encode_mouse_event,
@@ -55,27 +57,34 @@ pub(crate) use output_highlight::compile_output_rules;
 pub(crate) use presentation::{highlight_plain_output, render_term_span};
 // The terminal view paints its pane with this; the grid paints its own text over it.
 pub(crate) use presentation::{terminal_background, terminal_foreground};
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(test)]
 pub(crate) use presentation::{log_level_marker, text_cell_width, vt_span_colors};
 
-#[cfg(all(test, feature = "desktop"))]
-use crate::app::term_buf;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(test)]
+fn term_buf(bufs: &TermBuffers, id: &str) -> Option<TermBufferHandle> {
+    bufs.lock().unwrap().get(id).cloned()
+}
+#[cfg(test)]
 use crate::config::OutputHighlightRule;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(test)]
 use std::sync::{Arc, Mutex};
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(test)]
 #[path = "../../tests/app/output_highlighting/mod.rs"]
 mod log_highlight_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(test)]
 #[path = "../../tests/app/terminal_rendering/mod.rs"]
 mod selection_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(test)]
 #[path = "../../tests/app/terminal_bench/mod.rs"]
 mod terminal_bench;
+#[cfg(test)]
+#[path = "../../tests/terminal_core/mod.rs"]
+mod core_tests;
+#[cfg(all(test, windows))]
+#[path = "../../tests/terminal_windows/mod.rs"]
+mod terminal_windows_tests;
 pub(crate) use render::{
-    build_row, cell_prefix, char_after_cell_end, char_at_cell_start, detect_scroll, MAX_HISTORY,
-    RAW_CAP,
+    build_row, cell_prefix, char_after_cell_end, char_at_cell_start, MAX_HISTORY,
 };
 pub(crate) use state::{
     BuiltScreen, CompiledOutputRule, CsiState, EmojiImage, HistSpan, Line, OutputHighlightPreset,

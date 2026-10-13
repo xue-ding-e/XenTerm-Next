@@ -1,9 +1,9 @@
 //! VT100 character-set (SCS) support (#376): tracks G0/G1 designations
 //! (`ESC ( X`, `ESC ) X`) and SO/SI shifts, and maps DEC Special Graphics
 //! codes to their Unicode box-drawing equivalents. This mirrors PuTTY's
-//! "Enable VT100 line drawing even in UTF-8 mode": the `vt100` crate has no
-//! charset support, so designated bytes are translated to Unicode *before*
-//! they reach the parser, which also keeps the reflow replay ring correct.
+//! "Enable VT100 line drawing even in UTF-8 mode": the session option controls
+//! whether designated bytes are translated to Unicode before they enter the
+//! native grid. SCS is consumed here so the engine cannot bypass that option.
 
 /// Character sets selectable through an SCS designator.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,8 +45,8 @@ impl CharsetTracker {
         match set {
             b'(' => self.g0 = charset,
             b')' => self.g1 = charset,
-            // G2/G3 (`*`, `+`) need single-shift (SS2/SS3) support; nothing in
-            // the vt100 crate consumes those, so the designation is ignored.
+            // G2/G3 (`*`, `+`) need single-shift (SS2/SS3) support; the session
+            // drawing option currently implements only G0/G1.
             _ => {}
         }
     }

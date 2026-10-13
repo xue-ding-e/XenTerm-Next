@@ -3,8 +3,8 @@ use super::*;
 fn plain_run(text: &str, col: i32) -> HistSpan {
     HistSpan {
         text: text.to_string(),
-        fg: vt100::Color::Default,
-        bg: vt100::Color::Default,
+        fg: crate::terminal::TerminalColor::Default,
+        bg: crate::terminal::TerminalColor::Default,
         bold: false,
         inverse: false,
         col,
@@ -43,7 +43,7 @@ fn highlights_uppercase_level_and_preserves_columns() {
     assert_eq!(runs[1].col, 21);
     assert_eq!(runs[1].cells, 5);
     assert!(runs[1].bold);
-    assert!(matches!(runs[1].fg, vt100::Color::Idx(9)));
+    assert!(matches!(runs[1].fg, crate::terminal::TerminalColor::Idx(9)));
     assert_eq!(runs[2].col, 26);
 }
 
@@ -55,7 +55,7 @@ fn highlights_structured_lowercase_level_only() {
         .iter()
         .find(|run| run.text == "warn")
         .expect("structured level should be highlighted");
-    assert!(matches!(level.fg, vt100::Color::Idx(11)));
+    assert!(matches!(level.fg, crate::terminal::TerminalColor::Idx(11)));
 
     assert!(log_level_marker("an error occurred", 96).is_none());
     assert!(log_level_marker("ERROR_CODE=5", 96).is_none());
@@ -64,16 +64,16 @@ fn highlights_structured_lowercase_level_only() {
 #[test]
 fn preserves_existing_ansi_styles() {
     let mut coloured = plain_run("ERROR", 0);
-    coloured.fg = vt100::Color::Idx(2);
+    coloured.fg = crate::terminal::TerminalColor::Idx(2);
     let runs = highlight_plain_output(vec![coloured], OutputHighlightPreset::Log, &[]);
     assert_eq!(runs.len(), 1);
-    assert!(matches!(runs[0].fg, vt100::Color::Idx(2)));
+    assert!(matches!(runs[0].fg, crate::terminal::TerminalColor::Idx(2)));
     assert!(!runs[0].bold);
 }
 
 #[test]
 fn alternate_screen_does_not_add_log_colours() {
-    let mut parser = vt100::Parser::new(3, 30, 0);
+    let mut parser = crate::terminal::TerminalEngine::new(3, 30, 0);
     parser.process(b"\x1b[?1049hERROR");
     assert!(parser.screen().alternate_screen());
     let (_plain, runs, _wrapped) = build_row(parser.screen(), 0, 30);
@@ -81,7 +81,7 @@ fn alternate_screen_does_not_add_log_colours() {
         .iter()
         .find(|run| run.text.contains("ERROR"))
         .expect("alternate-screen text should still render");
-    assert!(matches!(level.fg, vt100::Color::Default));
+    assert!(matches!(level.fg, crate::terminal::TerminalColor::Default));
     assert!(!level.bold);
 }
 
@@ -93,7 +93,7 @@ fn off_preset_leaves_plain_levels_untouched() {
         &[],
     );
     assert_eq!(runs.len(), 1);
-    assert!(matches!(runs[0].fg, vt100::Color::Default));
+    assert!(matches!(runs[0].fg, crate::terminal::TerminalColor::Default));
     assert!(!runs[0].bold);
 }
 
@@ -108,7 +108,7 @@ fn devops_preset_adds_deployment_and_structured_states() {
         .iter()
         .find(|run| run.text == "SUCCESS")
         .expect("DevOps success should be highlighted");
-    assert!(matches!(token.fg, vt100::Color::Idx(10)));
+    assert!(matches!(token.fg, crate::terminal::TerminalColor::Idx(10)));
 
     let json = highlight_plain_output(
         vec![plain_run(r#"{"status":"failed"}"#, 0)],
@@ -119,7 +119,7 @@ fn devops_preset_adds_deployment_and_structured_states() {
         .iter()
         .find(|run| run.text == "failed")
         .expect("structured DevOps state should be highlighted");
-    assert!(matches!(token.fg, vt100::Color::Idx(9)));
+    assert!(matches!(token.fg, crate::terminal::TerminalColor::Idx(9)));
 
     let conservative = highlight_plain_output(
         vec![plain_run("deploy SUCCESS", 0)],
@@ -139,29 +139,29 @@ fn custom_literal_is_case_insensitive_and_overrides_builtin_colour() {
     );
     let hits: Vec<_> = runs
         .iter()
-        .filter(|run| matches!(run.fg, vt100::Color::Idx(10)))
+        .filter(|run| matches!(run.fg, crate::terminal::TerminalColor::Idx(10)))
         .collect();
     assert_eq!(hits.len(), 2);
     assert_eq!(hits[0].text, "ERROR");
     assert_eq!(hits[1].text, "error");
     assert!(!runs
         .iter()
-        .any(|run| matches!(run.fg, vt100::Color::Idx(9))));
+        .any(|run| matches!(run.fg, crate::terminal::TerminalColor::Idx(9))));
 }
 
 #[test]
 fn custom_regex_can_highlight_whole_line_without_overwriting_ansi() {
     let rule = custom_rule(r"timeout|denied", true, false, true, "magenta");
     let mut ansi = plain_run(" ANSI", 18);
-    ansi.fg = vt100::Color::Idx(2);
+    ansi.fg = crate::terminal::TerminalColor::Idx(2);
     let runs = highlight_plain_output(
         vec![plain_run("request timeout   ", 0), ansi],
         OutputHighlightPreset::Log,
         &[rule],
     );
-    assert!(matches!(runs[0].fg, vt100::Color::Idx(13)));
+    assert!(matches!(runs[0].fg, crate::terminal::TerminalColor::Idx(13)));
     assert!(runs[0].bold);
-    assert!(matches!(runs[1].fg, vt100::Color::Idx(2)));
+    assert!(matches!(runs[1].fg, crate::terminal::TerminalColor::Idx(2)));
 }
 
 #[test]

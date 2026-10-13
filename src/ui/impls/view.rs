@@ -830,7 +830,9 @@ impl TerminalView {
             }
         }
 
-        let bytes = gpui_key_bytes(&keystroke.key, ctrl, alt, shift);
+        let app_cursor = self.buffer.lock().ok()
+            .is_some_and(|buffer| buffer.parser.screen().application_cursor());
+        let bytes = gpui_key_bytes(&keystroke.key, ctrl, alt, shift, app_cursor);
         self.send_bytes(&bytes);
     }
 
@@ -1068,9 +1070,9 @@ impl TerminalView {
             return;
         }
         let bytes = if action.insert {
-            gpui_key_bytes("insert", false, false, true)
+            gpui_key_bytes("insert", false, false, true, false)
         } else {
-            gpui_key_bytes("v", true, true, false)
+            gpui_key_bytes("v", true, true, false, false)
         };
         self.send_bytes(&bytes);
         cx.notify();
@@ -1114,10 +1116,10 @@ impl TerminalView {
 
 /// Shared routing for a physical key and a disabled optional paste chord.
 /// Printable text still belongs to the input handler and must not be sent twice.
-fn gpui_key_bytes(key: &str, ctrl: bool, alt: bool, shift: bool) -> Vec<u8> {
+fn gpui_key_bytes(key: &str, ctrl: bool, alt: bool, shift: bool, app_cursor: bool) -> Vec<u8> {
     match gpui_key_name(key) {
         // A named key, translated into the encoding the shared encoder speaks.
-        Some(named) => terminal::key_to_pty_bytes_with_shift(named, ctrl, alt, shift, false),
+        Some(named) => terminal::key_to_pty_bytes_with_shift(named, ctrl, alt, shift, app_cursor),
         // Printable text, which is what `key_char` carries: it is the character
         // the layout would have typed, so on a layout where the key is labelled
         // differently it is still what the user meant. Ctrl+C and the rest go
@@ -2505,6 +2507,52 @@ mod tests {
             crate::terminal::OutputHighlightPreset::Off
         );
         assert!(buffer.custom_highlight_rules.is_empty());
+    }
+
+    #[gpui_kit::gpui::test]
+    fn application_cursor_keys_follow_rio_mode_in_the_gpui_view(cx: &mut TestAppContext) {
+        let (fixture, cx) = progress_fixture(cx);
+        let terminal = fixture.harness.read_with(cx, |harness, _| harness.terminal.clone());
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let (commands, mut input) = tokio::sync::mpsc::unbounded_channel();
+        terminal.update(cx, |view, _| {
+            view.handles.borrow_mut().insert("synthetic-transfer-tab".into(), SessionHandle {
+                tab_id: "synthetic-transfer-tab".into(),
+                commands,
+                join: runtime.spawn(std::future::pending::<()>()),
+            });
+        });
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            let focus = terminal.read(cx).focus_handle(cx);
+            window.focus(&focus, cx);
+            window.draw(cx).clear(cx);
+        });
+        cx.run_until_parked();
+        // Test the actual GPUI key path while the alternate screen forwards Home/End.
+        terminal.update(cx, |view, _| {
+            view.buffer.lock().unwrap().parser.process(b"\x1b[?1049h");
+            view.refresh();
+        });
+        for (mode, up, home, end) in [
+            (&b"\x1b[?1l"[..], &b"\x1b[A"[..], &b"\x1b[H"[..], &b"\x1b[F"[..]),
+            (&b"\x1b[?1h"[..], &b"\x1bOA"[..], &b"\x1bOH"[..], &b"\x1bOF"[..]),
+            (&b"\x1b[?1l"[..], &b"\x1b[A"[..], &b"\x1b[H"[..], &b"\x1b[F"[..]),
+        ] {
+            terminal.update(cx, |view, _| {
+                view.buffer.lock().unwrap().parser.process(mode);
+            });
+            for (key, expected) in [("up", up), ("home", home), ("end", end)] {
+                cx.simulate_keystrokes(key);
+                let bytes = loop {
+                    match input.try_recv().expect("GPUI key reaches the session") {
+                        SessionCommand::RawInput(bytes) => break bytes,
+                        _ => continue,
+                    }
+                };
+                assert_eq!(bytes, expected, "key={key}, mode={mode:?}");
+            }
+        }
     }
 
     struct ProgressHarness {

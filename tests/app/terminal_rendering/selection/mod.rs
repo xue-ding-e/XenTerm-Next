@@ -71,7 +71,7 @@ fn extract_is_view_independent() {
 #[test]
 fn extract_joins_soft_wrapped_rows() {
     let mut buf = make_buf(5, 10, &[], &["x"], 0);
-    buf.history = VecDeque::from([
+    buf.parser.seed_history(&[
         wrapped_hist_line("0123456789"),
         wrapped_hist_line("abcdefghij"),
         hist_line("klmnop"),
