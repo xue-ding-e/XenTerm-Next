@@ -1,0 +1,133 @@
+{
+  "scope": "纯GPUI0.6.1最小分支的实际原生确认，截图为原始完整桌面图",
+  "phases": [
+    {
+      "name": "pure-focus",
+      "source": "7646c1165cdfeb227161791d516c6ff1e36dea2d",
+      "sha256": "5f0c5bd3dd5479021d2ab0b57a1e6b6865a36c3c47bfc20922a206119f921fdc",
+      "UTC": [
+        "2026-10-07T10:32:48Z",
+        "2026-10-07T10:38:07Z"
+      ],
+      "passed": [
+        "冷首窗无应用鼠标动作CtrlK打开",
+        "Esc关闭后CtrlShiftP打开",
+        "Settings连接文本输入qa-focus，CtrlK不打开弹窗，继续-kept形成qa-focus-kept",
+        "点击全局终端导航返回空终端，CtrlK与CtrlShiftP分别正常",
+        "本地唯一bash标签X关闭后CtrlK仍可打开",
+        "正常窗口X退出且窗口从库存消失"
+      ],
+      "limits": [
+        "独立0.6.1依赖分支；未把首窗面板入口称为另一次冷启动首个动作",
+        "未重跑全部211清单；原0.7 main profile未载入"
+      ],
+      "environment": "dot cloud Debian13 / Xfce X11 / llvmpipe LLVM19.1.7 OpenGL",
+      "window": "1180x812",
+      "desktop": "1364x1024",
+      "scale": "100%",
+      "theme": "Light",
+      "snapshots": [
+        {
+          "file": "recovered-pure-focus-01-cold-ctrl-k.jpg",
+          "sha256": "465406aaf3b4eccb8d6514f6c71827574cfbfb160cd186c9db706574887d0d84",
+          "format": "JPEG",
+          "mime": "image/jpeg"
+        },
+        {
+          "file": "recovered-pure-focus-02-empty-palette.jpg",
+          "sha256": "5c8e88b028e191e85cd3d606ec63427f14659d5d7b948a915d1fe6635f80edd6",
+          "format": "JPEG",
+          "mime": "image/jpeg"
+        },
+        {
+          "file": "recovered-pure-focus-03-input-not-stolen.jpg",
+          "sha256": "7bc16a0013b01349cc7b23cde49b00c4bd88500843b23c5336cb7288d03b3e25",
+          "format": "JPEG",
+          "mime": "image/jpeg"
+        },
+        {
+          "file": "recovered-pure-focus-04-settings-return.jpg",
+          "sha256": "40b79bf61149095dc18106cc540a9fa142d6453a692f210cb895c032c48846c9",
+          "format": "JPEG",
+          "mime": "image/jpeg"
+        },
+        {
+          "file": "recovered-pure-focus-05-return-palette.jpg",
+          "sha256": "010ec9d803d7b92ca55c7c04632eb1e2221e21b6b9bedb8f561cd092ff9296e3",
+          "format": "JPEG",
+          "mime": "image/jpeg"
+        },
+        {
+          "file": "recovered-pure-focus-06-last-tab-reopen.jpg",
+          "sha256": "ac5be609117c69af7a9a5b40566109bbd927900290ac6ae5902d73913283bbde",
+          "format": "JPEG",
+          "mime": "image/jpeg"
+        }
+      ]
+    },
+    {
+      "name": "pure-insert",
+      "source": "e385ab463b5f73d9e785cae5bbb7daf000128e55",
+      "sha256": "819bae0bd6f2bf1067b11966b660e083114f8f23cc9b4059c1d18f69656780da",
+      "UTC": [
+        "2026-10-07T10:38:28Z",
+        "2026-10-07T10:44:17Z"
+      ],
+      "passed": [
+        "可见欢迎按钮打开本地bash；主动点击正文聚焦，不测试未包含的Focus修复",
+        "命令栏复制未发送echo qa-insert-proof；Extra ON ShiftInsert只粘贴一次",
+        "Extra OFF后本地PTY实际ShiftInsert字节1b5b323b327e、Insert字节1b5b327e",
+        "Extra OFF时CtrlV与CtrlShiftV仍各只粘贴一次相同文本，均未执行"
+      ],
+      "limits": [
+        "此次短复验不重做中键/CtrlAltV及多行全矩阵；已有0.7记录保持独立",
+        "真实序列不保证接收端bash默认绑定；已有普通bash留下2~现象未改成全面兼容结论",
+        "窗口X后确实消失，但保留活动bash时进程退出触发TerminalView leaked handle panic；此纯main0.6候选不含Kit升级修复，不能宣称生命周期通过。"
+      ],
+      "environment": "dot cloud Debian13 / Xfce X11 / llvmpipe LLVM19.1.7 OpenGL",
+      "window": "1180x812",
+      "desktop": "1364x1024",
+      "scale": "100%",
+      "theme": "Light",
+      "snapshots": [
+        {
+          "file": "recovered-pure-insert-01-enabled-paste.jpg",
+          "sha256": "3ab19afb985677637a7e99381f9d8c42d116368e297ed9862d2e76a1a1fa82b0",
+          "format": "JPEG",
+          "mime": "image/jpeg"
+        },
+        {
+          "file": "recovered-pure-insert-02-extra-disabled.jpg",
+          "sha256": "47ce42631d7a7ca2aac44d7582e91877021a22144859a013d229272be8e42469",
+          "format": "JPEG",
+          "mime": "image/jpeg"
+        },
+        {
+          "file": "recovered-pure-insert-03-shift-raw.jpg",
+          "sha256": "f3db8adf6299f2edb421d5b6551cd51c06038e372fab964881b5b003e40a6ebb",
+          "format": "JPEG",
+          "mime": "image/jpeg"
+        },
+        {
+          "file": "recovered-pure-insert-04-insert-raw.jpg",
+          "sha256": "022d5abce029d3a03dec4b95a1cb42c2682547feaa6c20e469d75a6ffc8bd695",
+          "format": "JPEG",
+          "mime": "image/jpeg"
+        },
+        {
+          "file": "recovered-pure-insert-05-basic-paste.jpg",
+          "sha256": "978936a33d4001e643ecb75fbfc858dc805df09e2ce34e853d5fe8b04902f864",
+          "format": "JPEG",
+          "mime": "image/jpeg"
+        },
+        {
+          "file": "recovered-pure-insert-06-basic-shift-paste.jpg",
+          "sha256": "3379756d173ae660c10d24443aba67eaaf67164fef56ae9b533be62618699ea0",
+          "format": "JPEG",
+          "mime": "image/jpeg"
+        }
+      ],
+      "exit_observation": "活动bash仍存在时关闭整个窗口，调试产物在退出检查发现TerminalView leaked handle；按键主链通过，退出生命周期未通过，本次未据此归因。"
+    }
+  ]
+}

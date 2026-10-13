@@ -1,0 +1,47 @@
+{
+  "baseline_source": "6aaba54191513930a4ce013c1af654149c9237f6",
+  "baseline_binary_sha256": "51792b60fdf6beae8f79d00d52ef696c40695cf0da1c581695a5d95a7a07ff91",
+  "fixed_source": "e385ab463b5f73d9e785cae5bbb7daf000128e55",
+  "fixed_binary_sha256": "819bae0bd6f2bf1067b11966b660e083114f8f23cc9b4059c1d18f69656780da",
+  "primary_control": "额外粘贴关闭时，同一原生Shift+Insert在原样基线收到696e73657274（insert），修复收到1b5b323b327e。",
+  "raw_records": [
+    {
+      "utc": "2026-10-07T10:42:20.076940+00:00",
+      "label": "pure-shift-insert",
+      "hex": "1b5b323b327e",
+      "repr": "b'\\x1b[2;2~'"
+    },
+    {
+      "utc": "2026-10-07T10:43:09.601342+00:00",
+      "label": "pure-insert",
+      "hex": "1b5b327e",
+      "repr": "b'\\x1b[2~'"
+    },
+    {
+      "utc": "2026-10-07T11:20:09.630142+00:00",
+      "label": "upstream-shift-insert",
+      "hex": "696e73657274",
+      "repr": "b'insert'"
+    },
+    {
+      "utc": "2026-10-07T11:22:01.011400+00:00",
+      "label": "upstream-insert",
+      "hex": "",
+      "repr": "b''"
+    }
+  ],
+  "ordinary_insert_baseline_limit": "未改基线普通Insert探针60秒读空，只记录该次观察；不扩写为所有平台按键均被吞。",
+  "exit_observation": {
+    "minimal_baseline": "新空配置仅打开bash再直接关窗口，未观察到panic。",
+    "sequence_baseline": "执行粘贴、设置开关、raw读取的序列后，保留bash直接关窗口，复现TerminalView43v1 leaked handle panic；此前有clipboard-manager timeout警告。",
+    "fixed_minimal_branch": "纯Insert分支相似序列后也记录该退出panic。",
+    "conclusion": "无需Insert改动即可触发；不是任何关窗必现，也不据此归因工具库某版本。",
+    "build_scope": "本轮实际均默认调试构建，release未测。检查受test/leak-detection feature控制，不是debug_assertions。"
+  },
+  "baseline_screenshot": {
+    "file": "insert-before-upstream-shift-raw.jpg",
+    "format": "JPEG",
+    "mime": "image/jpeg",
+    "sha256": "68d67ea3b829802ac1f96378b6afae46173c50cfb24cc0bce3491a64414ed64e"
+  }
+}
