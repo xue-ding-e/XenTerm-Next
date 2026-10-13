@@ -1,6 +1,273 @@
 use super::*;
 use serde_json::json;
 
+thread_local! {
+    static LOG_LOCK_REACHED: std::cell::RefCell<Option<std::sync::mpsc::Sender<()>>> = const {
+        std::cell::RefCell::new(None)
+    };
+    static LOG_SYNC_REACHED: std::cell::RefCell<Option<(
+        std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>
+    )>> = const { std::cell::RefCell::new(None) };
+}
+
+pub(super) fn before_log_lock() {
+    LOG_LOCK_REACHED.with(|signal| {
+        if let Some(signal) = signal.borrow_mut().take() {
+            signal.send(()).unwrap();
+        }
+    });
+}
+
+pub(super) fn after_log_sync() {
+    LOG_SYNC_REACHED.with(|signal| {
+        if let Some((reached, resume)) = signal.borrow_mut().take() {
+            reached.send(()).unwrap();
+            resume
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+        }
+    });
+}
+
+fn history_store(root: &Path) -> crate::config::ConfigStore {
+    use crate::config::{ConfigFile, ConfigStore, SavedState};
+    let cache = ConfigFile::default();
+    let saved_state = std::sync::Mutex::new(SavedState::of_cache(&cache)).into();
+    let mut store = ConfigStore {
+        path: root.join("sessions.db"),
+        backup_dir: None,
+        cache,
+        key: [7; 32],
+        keyring_enabled: false,
+        saved_state,
+    };
+    store.set_mcp_execution_log_enabled(true);
+    store.save().unwrap();
+    store
+}
+
+fn guard(store: &crate::config::ConfigStore, command: &str) -> ExecutionGuard {
+    ExecutionGuard::begin_with_store(
+        "run_command",
+        &json!({"session_id": "fixture", "command": command}),
+        Frontend::Cli,
+        store,
+    )
+    .unwrap()
+}
+
+#[test]
+fn opt_out_suppresses_finish_and_drop_without_creating_history() {
+    let root = tempfile::tempdir().unwrap();
+    let mut store = history_store(root.path());
+    let mut finished = guard(&store, "finish after opt-out");
+    let dropped = guard(&store, "drop after opt-out");
+    assert_eq!(
+        finished.epoch, None,
+        "legacy enabled profiles need no token migration"
+    );
+    store.set_mcp_execution_log_enabled(false);
+    store.save().unwrap();
+    finished.finish(&Ok(json!({"exit_code": 0})));
+    drop(dropped);
+    assert!(!root.path().join("mcp-executions").exists());
+}
+
+#[test]
+fn opt_out_then_reenable_does_not_revive_old_guards() {
+    let root = tempfile::tempdir().unwrap();
+    let mut store = history_store(root.path());
+    let logs = root.path().join("mcp-executions");
+    guard(&store, "retained history").finish(&Ok(json!({"exit_code": 0})));
+    let saved = read_records_in(&logs);
+    let mut finished = guard(&store, "revoked finish");
+    let dropped = guard(&store, "revoked drop");
+    store.set_mcp_execution_log_enabled(false);
+    store.save().unwrap();
+    store.set_mcp_execution_log_enabled(true);
+    store.save().unwrap();
+    finished.finish(&Ok(json!({"exit_code": 0})));
+    drop(dropped);
+    assert_eq!(read_records_in(&logs), saved);
+    guard(&store, "new generation").finish(&Ok(json!({"exit_code": 0})));
+    let records = read_records_in(&logs);
+    assert_eq!(records.len(), saved.len() + 1);
+    assert!(records
+        .iter()
+        .any(|record| record.command == "new generation"));
+    assert!(records.contains(&saved[0]));
+}
+
+#[test]
+fn opt_out_commits_while_publisher_waits_for_log_lock() {
+    for reenable in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let mut store = history_store(root.path());
+        let logs = root.path().join("mcp-executions");
+        guard(&store, "retained history").finish(&Ok(json!({"exit_code": 0})));
+        let saved = read_records_in(&logs);
+        let mut pending = guard(&store, "queued before opt-out");
+        let held = lock_log_in(&logs).unwrap();
+        let (reached, waiting) = std::sync::mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            LOG_LOCK_REACHED.with(|signal| *signal.borrow_mut() = Some(reached));
+            pending.finish(&Ok(json!({"exit_code": 0})));
+        });
+        // This signal is after the enabled pre-check and immediately before
+        // the contended OS lock. No sleep or scheduler timing establishes it.
+        waiting
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        let (saved_tx, saved_rx) = std::sync::mpsc::channel();
+        let saver = std::thread::spawn(move || {
+            let result = (|| -> anyhow::Result<()> {
+                store.set_mcp_execution_log_enabled(false);
+                store.save()?;
+                if reenable {
+                    store.set_mcp_execution_log_enabled(true);
+                    store.save()?;
+                }
+                Ok(())
+            })();
+            saved_tx.send(result).unwrap();
+        });
+        let save_result = saved_rx.recv_timeout(std::time::Duration::from_secs(5));
+        assert_eq!(read_records_in(&logs), saved);
+        // Release even on timeout, so an inverted-lock regression fails the
+        // assertion rather than hanging the whole test binary.
+        drop(held);
+        writer.join().unwrap();
+        saver.join().unwrap();
+        save_result.unwrap().unwrap();
+        assert_eq!(read_records_in(&logs), saved);
+    }
+}
+
+#[test]
+fn subprocess_opt_out_fixture() {
+    let Some(root) = std::env::var_os("XENTERM_LOG_OPT_OUT_FIXTURE") else {
+        return;
+    };
+    let root = PathBuf::from(root);
+    let mut args = vec![
+        "xenterm".into(),
+        "--data-dir".into(),
+        root.display().to_string(),
+        "cli".into(),
+    ];
+    crate::config::configure_profile(&mut args).unwrap();
+    let mut store = crate::config::ConfigStore::load().unwrap();
+    println!("log-fixture:ready");
+    std::io::stdout().flush().unwrap();
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input).unwrap();
+    assert_eq!(input.trim(), "save");
+    let profile_lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(root.join("sessions.db.profile-lock"))
+        .unwrap();
+    // This is an actual second process, not just another file handle.
+    assert!(fs2::FileExt::try_lock_exclusive(&profile_lock).is_err());
+    println!("log-fixture:blocked");
+    std::io::stdout().flush().unwrap();
+    store.set_mcp_execution_log_enabled(false);
+    store.save().unwrap();
+    println!("log-fixture:saved");
+}
+
+#[test]
+fn admitted_append_finishes_before_another_process_can_disable() {
+    use std::io::BufRead;
+    use std::process::{Command, Stdio};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let root = tempfile::tempdir().unwrap();
+    let store = history_store(root.path());
+    let module = module_path!().split_once("::").unwrap().1;
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            &format!("{module}::subprocess_opt_out_fixture"),
+            "--nocapture",
+        ])
+        .env("XENTERM_LOG_OPT_OUT_FIXTURE", root.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .unwrap();
+    let (output_tx, output_rx) = mpsc::channel();
+    let output = child.stdout.take().unwrap();
+    let reader = std::thread::spawn(move || {
+        for line in std::io::BufReader::new(output).lines() {
+            if output_tx.send(line.unwrap()).is_err() {
+                break;
+            }
+        }
+    });
+    let wait_for = |expected: &str| loop {
+        let line = output_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        if line.ends_with(expected) {
+            break;
+        }
+    };
+    wait_for("log-fixture:ready");
+    let mut pending = guard(&store, "admitted before opt-out");
+    let (reached, synced) = mpsc::channel();
+    let (resume, paused) = mpsc::channel();
+    let writer = std::thread::spawn(move || {
+        LOG_SYNC_REACHED.with(|signal| *signal.borrow_mut() = Some((reached, paused)));
+        pending.finish(&Ok(json!({"exit_code": 0})));
+    });
+    synced.recv_timeout(Duration::from_secs(5)).unwrap();
+    child.stdin.take().unwrap().write_all(b"save\n").unwrap();
+    wait_for("log-fixture:blocked");
+    resume.send(()).unwrap();
+    writer.join().unwrap();
+    wait_for("log-fixture:saved");
+    assert!(child.wait().unwrap().success());
+    reader.join().unwrap();
+    let saved = read_records_in(&root.path().join("mcp-executions"));
+    assert_eq!(saved.len(), 1);
+    assert_eq!(saved[0].command, "admitted before opt-out");
+    assert!(
+        !crate::config::ConfigStore::with_execution_log_state(&store.path, |state| Ok(
+            state.enabled
+        ))
+        .unwrap()
+    );
+}
+
+#[test]
+fn failed_history_io_never_changes_the_operation_result() {
+    for corrupt_profile in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let store = history_store(root.path());
+        let mut finished = guard(&store, "finish with unavailable history");
+        let dropped = guard(&store, "drop with unavailable history");
+        if corrupt_profile {
+            let conn = rusqlite::Connection::open(&store.path).unwrap();
+            conn.execute(
+                "UPDATE meta SET value='invalid JSON' WHERE key='settings'",
+                [],
+            )
+            .unwrap();
+        } else {
+            std::fs::write(root.path().join("mcp-executions"), "not a directory").unwrap();
+        }
+        let result = Ok(json!({"exit_code": 17, "stdout": "synthetic result"}));
+        finished.finish(&result);
+        drop(dropped);
+        assert_eq!(
+            result.unwrap(),
+            json!({"exit_code": 17, "stdout": "synthetic result"})
+        );
+        assert!(read_records_in(&root.path().join("mcp-executions")).is_empty());
+    }
+}
+
 fn record(command: &str) -> ExecutionRecord {
     let now = now_ms();
     ExecutionRecord {

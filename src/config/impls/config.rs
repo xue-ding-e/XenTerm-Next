@@ -2191,6 +2191,7 @@ CREATE TABLE IF NOT EXISTS command_history (seq INTEGER PRIMARY KEY AUTOINCREMEN
         credentials: &std::collections::HashMap<String, Option<Secret>>,
     ) -> Result<()> {
         if plan.settings {
+            execution_log::revoke_if_disabled(tx, cache.mcp_execution_log_enabled)?;
             // The settings blob keeps the secret treatment the JSON file had:
             // everything plaintext except the WebDAV password.
             let mut settings = cache.clone();
@@ -2723,6 +2724,8 @@ mod import;
 mod native_sync;
 #[path = "persistence.rs"]
 mod persistence;
+#[path = "execution_log.rs"]
+mod execution_log;
 #[path = "profile_io.rs"]
 mod profile_io;
 #[path = "recovery.rs"]

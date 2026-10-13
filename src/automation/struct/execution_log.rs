@@ -40,6 +40,8 @@ pub(crate) fn log_dir() -> PathBuf {
 
 pub(crate) struct ExecutionGuard {
     record: Option<ExecutionRecord>,
+    profile: PathBuf,
+    epoch: Option<String>,
 }
 
 impl ExecutionGuard {
@@ -55,7 +57,17 @@ impl ExecutionGuard {
             return None;
         }
         let store = crate::config::ConfigStore::load().ok()?;
-        if !store.mcp_execution_log_enabled() || (frontend.is_mcp() && !store.mcp_enabled()) {
+        Self::begin_with_store(name, arguments, frontend, &store)
+    }
+
+    fn begin_with_store(
+        name: &str,
+        arguments: &Value,
+        frontend: Frontend,
+        store: &crate::config::ConfigStore,
+    ) -> Option<Self> {
+        let state = crate::config::ConfigStore::with_execution_log_state(&store.path, Ok).ok()?;
+        if !state.enabled || (frontend.is_mcp() && !store.mcp_enabled()) {
             return None;
         }
         let id = arguments
@@ -85,6 +97,8 @@ impl ExecutionGuard {
                 .to_string(),
         };
         Some(Self {
+            profile: store.path.clone(),
+            epoch: state.epoch,
             record: Some(ExecutionRecord {
                 id: uuid::Uuid::new_v4().to_string(),
                 started_at_ms: now_ms(),
@@ -118,19 +132,37 @@ impl ExecutionGuard {
         let Some(mut record) = self.record.take() else {
             return;
         };
-        // Re-read the opt-in flag: turning history off also stops in-flight writes.
-        let Ok(store) = crate::config::ConfigStore::load() else {
-            return;
-        };
-        if !store.mcp_execution_log_enabled() {
-            return;
-        }
-        record.finished_at_ms = now_ms();
-        if let Err(error) = append_in(
-            &log_dir(),
-            &record,
-            store.mcp_execution_log_retention_days(),
-        ) {
+        let dir = self.profile.with_file_name("mcp-executions");
+        let result = (|| -> anyhow::Result<()> {
+            // Open the history lock while opt-in is protected too: a revoked
+            // guard must not create the directory after opt-out returns.
+            let log_lock = crate::config::ConfigStore::with_execution_log_state(
+                &self.profile,
+                |state| {
+                    if !state.enabled || state.epoch != self.epoch {
+                        return Ok(None);
+                    }
+                    Ok(Some(open_log_lock_in(&dir)?))
+                },
+            )?;
+            let Some(log_lock) = log_lock else {
+                return Ok(());
+            };
+            // Never wait for this lock while holding either config lock.
+            lock_log(&log_lock)?;
+            crate::config::ConfigStore::with_execution_log_state(&self.profile, |state| {
+                // Check after waiting for the log lock, then hold the profile
+                // lock through sync. An intervening opt-out revokes this guard
+                // even if another save has already enabled history again.
+                if !state.enabled || state.epoch != self.epoch {
+                    return Ok(());
+                }
+                record.finished_at_ms = now_ms();
+                append_locked(&dir, &record, state.retention_days)?;
+                Ok(())
+            })
+        })();
+        if let Err(error) = result {
             // History failures must not change the remote operation's result.
             tracing::warn!("could not save execution history: {error}");
         }
@@ -190,18 +222,40 @@ fn reject_link(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn append_in(dir: &Path, record: &ExecutionRecord, retention_days: u64) -> io::Result<()> {
+fn open_log_lock_in(dir: &Path) -> io::Result<std::fs::File> {
     reject_link(dir)?;
     std::fs::create_dir_all(dir)?;
     let lock_path = dir.join(".lock");
     reject_link(&lock_path)?;
-    let lock = std::fs::OpenOptions::new()
+    std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .read(true)
         .write(true)
-        .open(lock_path)?;
-    lock.lock_exclusive()?;
+        .open(lock_path)
+}
+
+fn lock_log(lock: &std::fs::File) -> io::Result<()> {
+    #[cfg(test)]
+    tests::before_log_lock();
+    lock.lock_exclusive()
+}
+
+#[cfg(test)]
+fn lock_log_in(dir: &Path) -> io::Result<std::fs::File> {
+    let lock = open_log_lock_in(dir)?;
+    lock_log(&lock)?;
+    Ok(lock)
+}
+
+#[cfg(test)]
+fn append_in(dir: &Path, record: &ExecutionRecord, retention_days: u64) -> io::Result<()> {
+    let _lock = lock_log_in(dir)?;
+    append_locked(dir, record, retention_days)
+}
+
+/// The caller holds the history lock and, for publication, the profile lock.
+fn append_locked(dir: &Path, record: &ExecutionRecord, retention_days: u64) -> io::Result<()> {
     prune_in(dir, retention_days, record.finished_at_ms);
     let millis = i64::try_from(record.finished_at_ms).map_err(io::Error::other)?;
     let at = chrono::DateTime::from_timestamp_millis(millis)
@@ -229,7 +283,10 @@ fn append_in(dir: &Path, record: &ExecutionRecord, retention_days: u64) -> io::R
     // A crashed writer's partial tail must not swallow the next complete record.
     if needs_newline { file.write_all(b"\n")?; }
     file.write_all(&line)?;
-    file.sync_data()
+    file.sync_data()?;
+    #[cfg(test)]
+    tests::after_log_sync();
+    Ok(())
 }
 
 fn prune_in(dir: &Path, retention_days: u64, timestamp_ms: u64) {
@@ -248,7 +305,9 @@ fn prune_in(dir: &Path, retention_days: u64, timestamp_ms: u64) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
-    for entry in entries.flatten() {
+    // Bound discovery while holding the profile lock. Externally added files
+    // beyond this limit can remain outside the normal retention window.
+    for entry in entries.take(MAX_READ_ENTRIES).flatten() {
         let path = entry.path();
         if path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
             continue;
