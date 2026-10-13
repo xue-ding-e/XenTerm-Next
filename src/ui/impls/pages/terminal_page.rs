@@ -230,6 +230,17 @@ pub(crate) struct TerminalPage {
     /// Hiding the dock only releases its layout space; the SFTP session and
     /// transfers keep running and the same listing is restored on reopen.
     pub(crate) sftp_collapsed: bool,
+    /// The dock's shown-ness as it is being drawn, 0.0 folded to 1.0 out.
+    ///
+    /// `sftp_collapsed` is the *target*; this is the value the layout uses,
+    /// advanced one frame at a time while an animation is in flight. Frame
+    /// counted rather than wall-clocked so it advances exactly when
+    /// `simulate_next_frame` does — the pane splitter's tests taught that a
+    /// timer-driven size and a frame-driven test never agree.
+    dock_progress: Cell<f32>,
+    /// The animation in flight: where it is heading and how many frames it
+    /// has left. `None` when the dock is settled.
+    dock_anim: Cell<Option<(bool, u16)>>,
     /// The transfer list, drawn as a popover off the tab strip's transfer button.
     transfers: Entity<TransferListView>,
     /// The quick-command dock, as a popover off the command line.
@@ -382,6 +393,8 @@ impl TerminalPage {
             dock_drag: None,
             sftp,
             sftp_collapsed,
+            dock_progress: Cell::new(if sftp_collapsed { 0.0 } else { 1.0 }),
+            dock_anim: Cell::new(None),
             transfers,
             quick,
             history,
@@ -452,8 +465,37 @@ impl TerminalPage {
     pub(crate) fn set_sftp_collapsed(&mut self, collapsed: bool, cx: &mut Context<Self>) {
         if self.sftp_collapsed != collapsed {
             self.sftp_collapsed = collapsed;
+            // Fold and unfold play at the same pace the sidebar's does —
+            // short enough to read as one motion, long enough that the eye
+            // sees the panel move. The frames tick down in `render`.
+            self.dock_anim.set(Some((!collapsed, DOCK_ANIM_FRAMES)));
             cx.notify();
         }
+    }
+
+    /// Advance the dock animation by one frame, called at the top of
+    /// `render`. Returns whether another frame is wanted.
+    ///
+    /// Exponential smoothing toward the target: fast where the eye is
+    /// following, settling where it lands, and safe to retarget mid-flight —
+    /// a second toggle reverses smoothly from wherever the dock actually is
+    /// instead of snapping.
+    fn tick_dock_anim(&self) -> bool {
+        let Some((to_shown, frames_left)) = self.dock_anim.get() else {
+            return false;
+        };
+        let target = if to_shown { 1.0 } else { 0.0 };
+        let mut progress = self.dock_progress.get() + (target - self.dock_progress.get()) * 0.35;
+        let mut frames_left = frames_left.saturating_sub(1);
+        if (progress - target).abs() < 0.02 || frames_left == 0 {
+            progress = target;
+            frames_left = 0;
+            self.dock_anim.set(None);
+        } else {
+            self.dock_anim.set(Some((to_shown, frames_left)));
+        }
+        self.dock_progress.set(progress);
+        self.dock_anim.get().is_some()
     }
 
     /// Whether the active tab can drive the file dock at all.
@@ -1274,11 +1316,19 @@ impl TerminalPage {
         let theme = cx.theme();
         let muted = theme.muted_foreground;
 
+        // The landing surface's entrance: one fade-and-rise, once per mount.
+        // A page that simply appears next to an animated dock reads as having
+        // skipped a frame; the same 200ms the rest of the shell speaks.
         v_flex()
             .size_full()
             .items_center()
             .justify_center()
             .gap_2()
+            .with_animation(
+                "empty-state-enter",
+                Animation::new(Duration::from_millis(200)),
+                |el, delta| el.opacity(delta),
+            )
             .child(
                 div()
                     .text_size(px(44.))
@@ -1391,14 +1441,32 @@ impl TerminalPage {
         // from the canvas instead, the area reported the *window's* width, and a
         // split then computed its panes against a width nobody was drawn at.
         let sftp_right = self.state.store.borrow().sftp_panel_on_the_right();
-        // The dock is the user's to collapse, and only a session with an SFTP
-        // channel has anything to put in it: a local shell tab mounts no dock at
-        // all rather than an empty frame.
-        let dock_shown = !self.sftp_collapsed && self.sftp_available();
+        // The dock's layout extent follows the animation, not the target: the
+        // terminal reflows per frame while the panel folds, which is the cost
+        // a window resize already pays, spread over ten frames. Only a session
+        // with an SFTP channel has a dock to fold.
+        let dock_available = self.sftp_available();
+        let dock_progress = if dock_available {
+            self.dock_progress.get()
+        } else {
+            0.0
+        };
+        let dock_extent_right = if sftp_right {
+            dock_progress * STRIP_WIDTH
+        } else {
+            0.0
+        };
+        let dock_extent_bottom = if sftp_right {
+            0.0
+        } else {
+            dock_progress * self.strip_height()
+        };
+        let dock_visible =
+            dock_available && (dock_extent_right > 0.5 || dock_extent_bottom > 0.5);
         let pane_w = (self.window_width.get()
             - super::super::tokens::RAIL_WIDTH
             - sidebar_width
-            - file_panel_width(sftp_right, !dock_shown))
+            - dock_extent_right)
         .max(0.0);
         self.pane_width.set(pane_w);
         let (_, _, _, pane_h) = self.pane_area.get();
@@ -1617,7 +1685,7 @@ impl TerminalPage {
                             // that row exactly as tall as the bar.
                             .child(command_bar),
                     )
-                    .when(dock_shown, |this| {
+                    .when(dock_visible, |this| {
                         let dock_edge = self.dock_edge.clone();
                         this.child(
                         // A strip off the bottom, or a column at the right: the same
@@ -1625,9 +1693,9 @@ impl TerminalPage {
                         div()
                             .id("file-panel-dock")
                             .debug_selector(|| "file-panel-dock".to_string())
-                            .when(sftp_right, |this| this.h_full().w(px(STRIP_WIDTH)))
+                            .when(sftp_right, |this| this.h_full().w(px(dock_extent_right)))
                             .when(!sftp_right, |this| {
-                                this.w_full().h(px(self.strip_height()))
+                                this.w_full().h(px(dock_extent_bottom))
                             })
                             .min_w_0()
                             .flex_shrink_0()
@@ -1814,6 +1882,12 @@ impl TerminalPage {
 
 impl Render for TerminalPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The dock's fold advances one frame here, before anything lays out
+        // against its size; while it is in flight this render asks for the
+        // next one, which is the whole loop.
+        if self.tick_dock_anim() {
+            window.request_animation_frame();
+        }
         // First thing in the frame, because this is the first point in it where a
         // `Context` exists to read the panels with — a click that arrived during the
         // previous frame's input pass is carried out here.
@@ -1840,19 +1914,24 @@ impl Render for TerminalPage {
 }
 
 use super::super::tokens::DOCK_STRIP_WIDTH as STRIP_WIDTH;
-use super::super::tokens::{DOCK_MAX_HEIGHT, DOCK_MIN_HEIGHT, RESIZE_BAND};
 
-fn file_panel_width(right: bool, collapsed: bool) -> f32 {
-    if right && !collapsed {
-        STRIP_WIDTH
-    } else {
-        0.0
-    }
-}
+/// The dock's fold/unfold length, in frames. Frame counted rather than
+/// wall-clocked: at 60 Hz this is ~170 ms — the same pace as the sidebar's
+/// fold — and in tests it advances exactly when `simulate_next_frame` does.
+const DOCK_ANIM_FRAMES: u16 = 10;
+use super::super::tokens::{DOCK_MAX_HEIGHT, DOCK_MIN_HEIGHT, RESIZE_BAND};
 
 /// Point the dock at `tab_id`: the listing it shows, the tree beside it, and
 /// the other sessions a cross-session copy can name. `tab_id` of `None` leaves
 /// the panel showing what it has — there is nothing to describe.
+/// The right-docked panel's on-screen width at the given animation progress.
+/// The bottom dock's height never enters the pane-width arithmetic — it takes
+/// its rows out of the measured pane area instead, so only the right dock
+/// reserves columns.
+fn right_dock_extent(progress: f32) -> f32 {
+    progress * STRIP_WIDTH
+}
+
 fn sync_panel(
     panel: &Entity<SftpPanelView>,
     tab_id: Option<&str>,
@@ -1939,11 +2018,14 @@ mod dock_tests {
     }
 
     #[test]
-    fn hidden_file_docks_never_reserve_terminal_columns() {
-        assert_eq!(file_panel_width(true, false), STRIP_WIDTH);
-        assert_eq!(file_panel_width(true, true), 0.0);
-        assert_eq!(file_panel_width(false, false), 0.0);
-        assert_eq!(file_panel_width(false, true), 0.0);
+    fn right_dock_extents_follow_the_animation_progress() {
+        // The extent is progress * strip width for a right-docked panel and
+        // nothing for the pane math when the panel docks below — the bottom
+        // dock takes its rows out of the measured pane area, not out of the
+        // column arithmetic.
+        assert_eq!(super::right_dock_extent(1.0), STRIP_WIDTH);
+        assert_eq!(super::right_dock_extent(0.0), 0.0);
+        assert_eq!(super::right_dock_extent(0.5), STRIP_WIDTH * 0.5);
     }
 
     /// The dock's new contract: a session without an SFTP channel — a local shell,
@@ -1994,6 +2076,26 @@ mod dock_tests {
                 TerminalPage::new(state, Rc::new(Cell::new(1280.)), window, cx)
             });
             assert_eq!(view.read_with(cx, |page, _| page.sftp_collapsed), collapsed);
+        }
+    }
+
+
+    /// Pump `simulate_next_frame` until `done` holds or `max` frames pass.
+    /// The dock's fold is frame-counted, so pumping frames *is* the clock;
+    /// a bounded loop keeps a regression a slow test rather than a hang.
+    fn pump_frames(
+        cx: &mut gpui_kit::gpui::VisualTestContext,
+        max: usize,
+        done: impl Fn(&mut gpui_kit::gpui::VisualTestContext) -> bool,
+    ) {
+        for _ in 0..max {
+            if done(cx) {
+                return;
+            }
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            });
         }
     }
 
@@ -2053,12 +2155,8 @@ mod dock_tests {
                 // The same local-only action performed by Shell::drain_panel.
                 page.set_sftp_collapsed(true, cx);
             });
-            for _ in 0..3 {
-                cx.update(|window, cx| {
-                    window.simulate_next_frame(cx);
-                    window.draw(cx).clear(cx);
-                });
-            }
+            // The fold animates over ten frames; pump until it lands.
+            pump_frames(cx, 30, |cx| cx.debug_bounds("file-panel-dock").is_none());
             assert!(cx.debug_bounds("file-panel-dock").is_none());
             let hidden = cx
                 .debug_bounds("terminal-pane-area")
@@ -2084,13 +2182,15 @@ mod dock_tests {
                 .debug_bounds("toggle-sftp-panel")
                 .expect("reopen control remains available");
             cx.simulate_click(toggle.center(), Modifiers::default());
-            for _ in 0..3 {
-                cx.update(|window, cx| {
-                    window.simulate_next_frame(cx);
-                    window.draw(cx).clear(cx);
-                });
-            }
+            pump_frames(cx, 30, |cx| cx.debug_bounds("file-panel-dock").is_some());
             assert!(cx.debug_bounds("file-panel-dock").is_some());
+            // And until the pane stops growing: the fold eases, so the frame
+            // after the dock remounts is not the frame it is settled in.
+            pump_frames(cx, 30, |cx| {
+                cx.debug_bounds("terminal-pane-area")
+                    .map(|b| b.size == before.size)
+                    .unwrap_or(false)
+            });
             let reopened = cx.debug_bounds("terminal-pane-area").unwrap();
             assert_eq!(reopened.size, before.size, "reopening restores the dock extent");
             let mut resized_back = false;
@@ -2104,12 +2204,11 @@ mod dock_tests {
             for collapsed in [true, false] {
                 let toggle = cx.debug_bounds("toggle-sftp-panel").unwrap();
                 cx.simulate_click(toggle.center(), Modifiers::default());
-                for _ in 0..3 {
-                    cx.update(|window, cx| {
-                        window.simulate_next_frame(cx);
-                        window.draw(cx).clear(cx);
-                    });
-                }
+                // Same pump-to-settle as the phases above: the fold is frames,
+                // and the assert wants the landed state, not a mid-flight one.
+                pump_frames(cx, 30, |cx| {
+                    cx.debug_bounds("file-panel-dock").is_some() != collapsed
+                });
                 assert_eq!(cx.debug_bounds("file-panel-dock").is_none(), collapsed);
             }
             view.read_with(cx, |page, _| {

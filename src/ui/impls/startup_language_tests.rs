@@ -6,6 +6,13 @@ use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::TestSupportExt as _;
 use std::sync::Mutex;
 
+/// The four tests here all set the process-global language (rust_i18n and the
+/// toolkit's locale are neither per-thread nor per-test), so run in parallel
+/// they race each other's globals and assert against whatever won. Serializing
+/// them against this lock keeps each test's set-then-assert atomic; other
+/// tests never *set* the language, so they need no part in it.
+static LANGUAGE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
 struct RestoreLanguage(bool, String);
 impl Drop for RestoreLanguage {
     fn drop(&mut self) {
@@ -57,6 +64,7 @@ fn assert_first_window(cx: &mut TestAppContext, english: bool) {
 }
 
 fn exercise(language: &str, english: bool, cx: &mut TestAppContext) {
+    let _serial = LANGUAGE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _restore = RestoreLanguage(
         crate::i18n::is_en(),
         gpui_kit::component::locale().to_string(),
@@ -92,6 +100,7 @@ fn unknown_language_keeps_existing_chinese_fallback(cx: &mut TestAppContext) {
 }
 #[gpui_kit::gpui::test]
 fn selected_profile_initializes_the_shared_language_for_multiple_windows(cx: &mut TestAppContext) {
+    let _serial = LANGUAGE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _restore = RestoreLanguage(
         crate::i18n::is_en(),
         gpui_kit::component::locale().to_string(),

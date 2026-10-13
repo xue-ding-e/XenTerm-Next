@@ -114,23 +114,9 @@ pub(crate) fn run() -> Result<()> {
             // terminal is for, and one that followed a light window would be white text on
             // white — so a light window is a black pane in a white frame, which is the
             // arrangement every terminal emulator that offers a light theme uses.
-            match store.borrow().theme_pref() {
-                "dark" => {
-                    gpui_kit::component::Theme::change(
-                        gpui_kit::component::ThemeMode::Dark,
-                        None,
-                        cx,
-                    )
-                }
-                "light" => {
-                    gpui_kit::component::Theme::change(
-                        gpui_kit::component::ThemeMode::Light,
-                        None,
-                        cx,
-                    )
-                }
-                _ => gpui_kit::component::Theme::sync_system_appearance(None, cx),
-            }
+            // `set_mode` re-applies this app's radius family on top of the
+            // stock registry config; see `theme_polish`.
+            super::theme_polish::set_mode(&store.borrow().theme_pref().to_string(), None, cx);
 
             // The fonts, registered before any window opens. Meatshell Mono is
             // the terminal's default — a monospace face, which is what a cell
@@ -1438,19 +1424,7 @@ impl Shell {
                 // terminal is unaffected either way — its own palette is dark and is set
                 // where the view is built — so this is only ever about the frame.
                 SettingsAction::ThemeChanged(pref) => {
-                    match pref.as_str() {
-                        "dark" => gpui_kit::component::Theme::change(
-                            gpui_kit::component::ThemeMode::Dark,
-                            Some(window),
-                            cx,
-                        ),
-                        "light" => gpui_kit::component::Theme::change(
-                            gpui_kit::component::ThemeMode::Light,
-                            Some(window),
-                            cx,
-                        ),
-                        _ => gpui_kit::component::Theme::sync_system_appearance(Some(window), cx),
-                    }
+                    super::theme_polish::set_mode(&pref, Some(window), cx);
                     window.refresh();
                     cx.notify();
                 }

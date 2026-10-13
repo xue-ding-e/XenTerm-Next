@@ -466,12 +466,22 @@ impl Render for SftpPanelView {
                 uniform_list("sftp-rows", files.len(), move |range, _window, cx| {
                     let view = panel.read(cx);
                     let muted = cx.theme().muted_foreground;
+                    let row_hover = cx.theme().muted;
+                    let radius = cx.theme().radius;
                     let targets = view.targets.clone();
                     range
                         .clone()
                         .filter_map(|index| {
                             let file = view.listing.files().get(index)?;
-                            Some(file_row(&panel, index, file, targets.clone(), muted))
+                            Some(file_row(
+                                &panel,
+                                index,
+                                file,
+                                targets.clone(),
+                                muted,
+                                row_hover,
+                                f32::from(radius),
+                            ))
                         })
                         .collect()
                 })
@@ -992,6 +1002,8 @@ fn file_row(
     file: &SftpFile,
     targets: Vec<(String, String)>,
     muted: Hsla,
+    row_hover: Hsla,
+    radius: f32,
 ) -> AnyElement {
     let name = if file.is_dir {
         format!("{}/", file.name)
@@ -1007,8 +1019,16 @@ fn file_row(
 
     h_flex()
         .w_full()
+        // Inset a touch and round: a hover fill that runs wall to wall on a
+        // flush panel reads as a striping glitch, while a rounded row inside
+        // its own padding reads as the row it is. The fill is the affordance
+        // the name cell's cursor has been promising.
+        .mx_1()
+        .px_1()
+        .rounded(px(radius))
         .gap_2()
         .py_0p5()
+        .hover(move |this| this.bg(row_hover))
         .child(
             Button::new(SharedString::from(format!("sftp-tick-{index}")))
                 // An id and a debug selector are two different things: the id names the
