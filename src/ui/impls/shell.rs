@@ -435,12 +435,12 @@ pub(crate) struct Shell {
 /// Kept separate from rendering so an idle window observes background saves.
 fn poll_persistence_feedback<T: 'static>(
     cx: &mut Context<T>,
-    refresh: impl Fn(&mut T) -> bool + 'static,
+    refresh: impl Fn(&mut T, &mut Context<T>) -> bool + 'static,
 ) -> gpui_kit::Task<()> {
     cx.spawn(async move |this, cx| loop {
         cx.background_executor().timer(std::time::Duration::from_secs(1)).await;
         if this.update(cx, |view, cx| {
-            if refresh(view) {
+            if refresh(view, cx) {
                 cx.notify();
             }
         }).is_err() {
@@ -595,7 +595,7 @@ mod persistence_warning_tests {
                 warning: PersistenceWarning::default(),
                 _poll: None,
             };
-            view._poll = Some(poll_persistence_feedback(cx, |view: &mut Feedback| {
+            view._poll = Some(poll_persistence_feedback(cx, |view: &mut Feedback, _| {
                 view.warning.refresh(view.source.borrow().clone())
             }));
             view
@@ -736,7 +736,22 @@ impl Shell {
     /// sanitized outcome once per second and repaint only when it changes.
     /// This timer does not scan files or make approval/permission decisions.
     fn start_persistence_poll(&mut self, cx: &mut Context<Self>) {
-        self.persistence_poll = Some(poll_persistence_feedback(cx, Self::refresh_persistence_warning));
+        let last_layout = Cell::new(None);
+        self.persistence_poll = Some(poll_persistence_feedback(cx, move |view: &mut Self, cx| {
+            let layout = {
+                let store = view.state.store.borrow();
+                (store.navigation_icon_gap(), store.sessions_sidebar_width())
+            };
+            let changed = last_layout.replace(Some(layout)) != Some(layout);
+            if changed {
+                // Each window observes its shared profile; update existing page
+                // entities too, rather than only their parent layout.
+                if let Some(page) = &view.pages.sessions {
+                    page.update(cx, |_, cx| cx.notify());
+                }
+            }
+            view.refresh_persistence_warning() || changed
+        }));
     }
 
     /// Say something on the status line: readable for a few seconds, then it
@@ -820,7 +835,8 @@ impl Shell {
     /// The rail, the page, and the two keystrokes the window keeps for itself.
     fn render_body(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let page = self.pages.render_active();
-        let nav = super::nav::render_nav_rail(self.pages.active, cx);
+        let gap = self.state.store.borrow().navigation_icon_gap();
+        let nav = super::nav::render_nav_rail(self.pages.active, gap, cx);
         let shortcut_focus = self.pages.terminal.read(cx).shortcut_focus_handle();
 
         h_flex()

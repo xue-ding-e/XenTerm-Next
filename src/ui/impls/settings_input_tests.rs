@@ -672,6 +672,63 @@ fn colour_formats_roundtrip_draft_and_reject_invalid_conversion(cx: &mut TestApp
     assert!(view.read_with(cx, |view, _| view.text_drafts[&TextSetting::CursorColor].error.is_none()));
 }
 
+#[gpui_kit::gpui::test]
+fn menu_only_colour_format_label_opens_selection_and_escape_preserves_draft(
+    cx: &mut TestAppContext,
+) {
+    use crate::config::color::{ColorFormat, ColorValue};
+    use gpui_kit::test::TestWindowExt as _;
+    let fixture = Fixture::new();
+    fixture
+        .store
+        .borrow_mut()
+        .set_terminal_cursor_color("#12345680");
+    let (view, cx) = open(cx, &fixture, SettingsPageId::TermCursor);
+    click_colour("cursor-color-format", cx);
+    assert!(
+        cx.update(|window, _| window.try_find("popup-menu").is_some()),
+        "the visible format label must open its menu"
+    );
+    assert_eq!(
+        view.read_with(cx, |view, _| view.color_editor.as_ref().unwrap().format),
+        ColorFormat::Hex
+    );
+    cx.simulate_keystrokes("down down enter");
+    draw(cx);
+    assert_eq!(
+        view.read_with(cx, |view, _| view.color_editor.as_ref().unwrap().format),
+        ColorFormat::Rgb
+    );
+    let draft = view.read_with(cx, |view, cx| {
+        view.text_drafts[&TextSetting::CursorColor]
+            .input
+            .read(cx)
+            .value()
+            .to_string()
+    });
+    assert_eq!(
+        ColorValue::parse(&draft).unwrap().canonical_hex(),
+        "#12345680"
+    );
+    assert_eq!(fixture.store.borrow().terminal_cursor_color(), "#12345680");
+    assert!(
+        !fixture.store.borrow().path.exists(),
+        "choosing a display format is not an apply operation"
+    );
+    click_colour("cursor-color-format", cx);
+    cx.simulate_keystrokes("escape");
+    draw(cx);
+    assert!(cx.update(|window, _| window.try_find("popup-menu").is_none()));
+    assert_eq!(
+        view.read_with(cx, |view, cx| view.text_drafts[&TextSetting::CursorColor]
+            .input
+            .read(cx)
+            .value()
+            .to_string()),
+        draft
+    );
+}
+
 
 #[gpui_kit::gpui::test]
 fn colour_popup_unchanged_hex_enter_preserves_every_channel(cx: &mut TestAppContext) {
@@ -857,4 +914,31 @@ fn wallpaper_editor_entity_survives_settings_navigation(cx: &mut TestAppContext)
     assert_eq!(original, returned, "navigation must preserve the uncommitted wallpaper editor");
     assert!(!fixture.store.borrow().wallpaper_settings().enabled);
     assert!(!fixture.directory.join("sessions.db").exists(), "navigation must not save a draft");
+}
+
+#[gpui_kit::gpui::test]
+fn navigation_gap_commits_whole_draft_clamps_and_preserves_other_layout(cx: &mut TestAppContext) {
+    let fixture = Fixture::new();
+    let (_, cx) = open(cx, &fixture, SettingsPageId::Interface);
+    focus_value("8", cx);
+    type_numeric("18", cx);
+    assert_eq!(fixture.store.borrow().navigation_icon_gap(), 8.0);
+    cx.simulate_keystrokes("enter");
+    draw(cx);
+    assert_eq!(fixture.store.borrow().navigation_icon_gap(), 18.0);
+    assert_eq!(fixture.store.borrow().panel_font(), 100);
+    assert_eq!(fixture.store.borrow().terminal_line_spacing(), 1.0);
+    type_numeric("999", cx);
+    cx.simulate_keystrokes("enter");
+    draw(cx);
+    assert_eq!(fixture.store.borrow().navigation_icon_gap(), 24.0);
+    type_numeric("NaN", cx);
+    cx.simulate_keystrokes("enter");
+    draw(cx);
+    assert_eq!(fixture.store.borrow().navigation_icon_gap(), 24.0);
+    assert_eq!(value(cx), "NaN");
+    type_numeric("0", cx);
+    cx.simulate_keystrokes("enter");
+    draw(cx);
+    assert_eq!(fixture.store.borrow().navigation_icon_gap(), 0.0);
 }

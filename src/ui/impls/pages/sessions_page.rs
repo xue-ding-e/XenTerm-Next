@@ -5,14 +5,15 @@
 //! behaviour the old left-column tab could not express — the list was where
 //! the terminal should be, and the best it could do was shrink itself.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use gpui_kit::component::{
-    h_flex, list::ListEvent, v_flex, ActiveTheme as _,
-};
+use gpui_kit::component::{h_flex, list::ListEvent, v_flex, ActiveTheme as _, WindowExt as _};
 use gpui_kit::prelude::*;
-use gpui_kit::{div, px, Entity, FontWeight, SharedString, Subscription, Window};
+use gpui_kit::{
+    canvas, div, px, DispatchPhase, Entity, FontWeight, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, SharedString, Subscription, Window,
+};
 
 use crate::config::ConfigStore;
 use crate::ui::{SessionListAction, SessionListEvent, SessionListView};
@@ -30,7 +31,10 @@ pub(crate) enum SessionsAction {
     Edit(String),
     Duplicate(String),
     Delete(String),
-    Move { id: String, group: String },
+    Move {
+        id: String,
+        group: String,
+    },
     ManageGroups,
     /// The management pane's doors: import from a file, export to one.
     ImportConfig,
@@ -39,6 +43,9 @@ pub(crate) enum SessionsAction {
 
 pub(crate) struct SessionsPage {
     list: Entity<SessionListView>,
+    list_bounds: Rc<Cell<(f32, f32)>>,
+    resize: Option<(f32, f32)>,
+    preview_width: Option<f32>,
     store: Rc<RefCell<ConfigStore>>,
     action: Rc<RefCell<Option<SessionsAction>>>,
     /// A click is an event on the list widget's state, and a subscription is
@@ -90,10 +97,31 @@ impl SessionsPage {
 
         Self {
             list,
+            list_bounds: Rc::new(Cell::new((0.0, 0.0))),
+            resize: None,
+            preview_width: None,
             store,
             action,
             _confirm_subscription,
             _new_session_subscription,
+        }
+    }
+
+    /// Persist a completed gesture once. A failed save restores the preference
+    /// and leaves the store's existing error channel for the shell to display.
+    fn finish_resize(&mut self) {
+        if self.resize.take().is_none() {
+            return;
+        }
+        let Some(width) = self.preview_width.take() else {
+            return;
+        };
+        let mut store = self.store.borrow_mut();
+        let before = store.cache.sessions_sidebar_width;
+        store.set_sessions_sidebar_width(width);
+        if let Err(error) = store.save() {
+            store.cache.sessions_sidebar_width = before;
+            tracing::warn!("could not save session list width: {error:#}");
         }
     }
 
@@ -126,38 +154,168 @@ impl SessionsPage {
     }
 }
 
+/// Count explicit empty folders as well as groups inferred from saved sessions.
+/// Built-in system/ungrouped headings are not user-created folders.
+fn management_counts(store: &ConfigStore) -> (usize, usize) {
+    let sessions = store.sessions();
+    let groups: std::collections::HashSet<&str> = sessions
+        .iter()
+        .map(|session| session.group.trim())
+        .chain(store.groups().iter().map(|group| group.trim()))
+        .filter(|group| !group.is_empty() && !matches!(*group, "system" | "default"))
+        .collect();
+    (sessions.len(), groups.len())
+}
+
+/// Preserve space for the management pane without rewriting the saved preference
+/// when a smaller window temporarily constrains the layout.
+fn fitted_list_width(preferred: f32, available: f32) -> f32 {
+    let preferred = if preferred.is_finite() {
+        preferred.clamp(240.0, 640.0)
+    } else {
+        380.0
+    };
+    let available = if available.is_finite() {
+        available.max(0.0)
+    } else {
+        0.0
+    };
+    preferred.min((available - 280.0).max(0.0))
+}
+
 impl Render for SessionsPage {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let border = cx.theme().border;
+        let available = f32::from(window.bounds().size.width) - super::super::tokens::RAIL_WIDTH;
+        let width = fitted_list_width(
+            self.preview_width
+                .unwrap_or_else(|| self.store.borrow().sessions_sidebar_width()),
+            available,
+        );
+        let bounds = self.list_bounds.clone();
+        let weak = cx.entity().downgrade();
 
         // The full-page layout splits the two jobs this page has: the list on
         // the left is for finding and connecting (a click connects, same as
         // the palette), and the pane on the right is for everything
         // administrative — creating, importing, exporting, grouping — which
         // the narrow column could never house.
-        let (session_count, group_count) = {
-            let store = self.store.borrow();
-            let sessions = store.sessions();
-            let groups: std::collections::HashSet<&str> = sessions
-                .iter()
-                .map(|session| session.group.as_str())
-                .filter(|group| !group.is_empty())
-                .collect();
-            (sessions.len(), groups.len())
-        };
+        let (session_count, group_count) = management_counts(&self.store.borrow());
 
         h_flex()
             .size_full()
+            .relative()
             .overflow_hidden()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                    if window.has_active_dialog(cx) {
+                        return;
+                    }
+                    let (left, right) = this.list_bounds.get();
+                    let x = f32::from(event.position.x);
+                    if right > left && (x - right).abs() <= 5.0 {
+                        this.resize = Some((x, right - left));
+                        this.preview_width = Some(right - left);
+                        cx.stop_propagation();
+                    }
+                }),
+            )
+            .child(
+                canvas(
+                    |_, _, _| (),
+                    move |_, _, window, _| {
+                        let on_move = weak.clone();
+                        window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                            if phase != DispatchPhase::Capture {
+                                return;
+                            }
+                            let _ = on_move.update(cx, |this, cx| {
+                                let Some((start, width)) = this.resize else {
+                                    return;
+                                };
+                                if event.pressed_button != Some(MouseButton::Left)
+                                    || window.has_active_dialog(cx)
+                                {
+                                    // A release outside this window must not leave a sticky drag.
+                                    this.resize = None;
+                                    this.preview_width = None;
+                                } else {
+                                    let available = f32::from(window.bounds().size.width)
+                                        - super::super::tokens::RAIL_WIDTH;
+                                    this.preview_width = Some(fitted_list_width(
+                                        width + f32::from(event.position.x) - start,
+                                        available,
+                                    ));
+                                }
+                                cx.notify();
+                            });
+                        });
+                        let on_up = weak.clone();
+                        window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
+                            if phase != DispatchPhase::Capture || event.button != MouseButton::Left
+                            {
+                                return;
+                            }
+                            let _ = on_up.update(cx, |this, cx| {
+                                if window.has_active_dialog(cx) {
+                                    this.resize = None;
+                                    this.preview_width = None;
+                                } else {
+                                    if let Some((start, width)) = this.resize {
+                                        let available = f32::from(window.bounds().size.width)
+                                            - super::super::tokens::RAIL_WIDTH;
+                                        this.preview_width = Some(fitted_list_width(
+                                            width + f32::from(event.position.x) - start,
+                                            available,
+                                        ));
+                                    }
+                                    this.finish_resize();
+                                }
+                                cx.notify();
+                            });
+                        });
+                    },
+                )
+                .absolute()
+                .inset_0(),
+            )
             .child(
                 div()
-                    .w(px(380.))
+                    .id("sessions-sidebar")
+                    .debug_selector(|| "sessions-sidebar".to_string())
+                    .relative()
+                    .w(px(width))
                     .h_full()
                     .flex_shrink_0()
                     .border_r_1()
                     .border_color(border)
                     .overflow_hidden()
-                    .child(self.list.clone()),
+                    .child(
+                        canvas(
+                            move |rect, _, _| {
+                                bounds.set((
+                                    f32::from(rect.origin.x),
+                                    f32::from(rect.origin.x + rect.size.width),
+                                ));
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .inset_0(),
+                    )
+                    .child(self.list.clone())
+                    .child(
+                        div()
+                            .id("sessions-sidebar-resize")
+                            .absolute()
+                            .right_0()
+                            .top_0()
+                            .w(px(5.0))
+                            .h_full()
+                            .cursor_col_resize()
+                            .hover(|bar| bar.bg(border)),
+                    ),
             )
             .child(
                 v_flex()
@@ -205,10 +363,7 @@ impl SessionsPage {
                         crate::i18n::t("个会话", "sessions"),
                         group_count,
                         crate::i18n::t("个分组", "groups"),
-                        crate::i18n::t(
-                            "Ctrl+K 随时快速连接",
-                            "Ctrl+K connects from anywhere"
-                        ),
+                        crate::i18n::t("Ctrl+K 随时快速连接", "Ctrl+K connects from anywhere"),
                     ))),
             )
             .into_any_element()
@@ -238,9 +393,12 @@ impl SessionsPage {
                 .px_3()
                 .py_2p5()
                 .hover(|this| this.bg(cx.theme().accent))
-                .on_click(move |_, _, _| {
+                .on_click(move |_, window, _| {
                     if let Some(action) = queued.borrow_mut().take() {
                         *queue.borrow_mut() = Some(action);
+                        // The shell drains this intent at the next frame. A
+                        // queue write alone must not wait for an unrelated click.
+                        window.refresh();
                     }
                 })
                 .child(
@@ -270,47 +428,148 @@ impl SessionsPage {
         v_flex()
             .gap_2()
             .children(vec![
-            entry(
-                "mgmt-new",
-                gpui_kit::assets::IconName::FilePlus,
-                crate::i18n::t("新建连接", "New connection"),
-                crate::i18n::t(
-                    "创建一个会话配置：SSH、Telnet、串口或本地终端。",
-                    "Create a session: SSH, Telnet, serial or local.",
+                entry(
+                    "mgmt-new",
+                    gpui_kit::assets::IconName::FilePlus,
+                    crate::i18n::t("新建连接", "New connection"),
+                    crate::i18n::t(
+                        "创建一个会话配置：SSH、Telnet、串口或本地终端。",
+                        "Create a session: SSH, Telnet, serial or local.",
+                    ),
+                    SessionsAction::NewSession,
                 ),
-                SessionsAction::NewSession,
-            ),
-            entry(
-                "mgmt-import",
-                gpui_kit::assets::IconName::Download,
-                crate::i18n::t("导入配置", "Import config"),
-                crate::i18n::t(
-                    "从 JSON 导出或 OpenSSH 配置文件导入主机。",
-                    "Import hosts from a JSON export or an OpenSSH config.",
+                entry(
+                    "mgmt-import",
+                    gpui_kit::assets::IconName::Download,
+                    crate::i18n::t("导入配置", "Import config"),
+                    crate::i18n::t(
+                        "从 JSON 导出或 OpenSSH 配置文件导入主机。",
+                        "Import hosts from a JSON export or an OpenSSH config.",
+                    ),
+                    SessionsAction::ImportConfig,
                 ),
-                SessionsAction::ImportConfig,
-            ),
-            entry(
-                "mgmt-export",
-                gpui_kit::assets::IconName::Upload,
-                crate::i18n::t("导出配置", "Export config"),
-                crate::i18n::t(
-                    "把全部会话导出为一个 JSON 文件。",
-                    "Export every session to a JSON file.",
+                entry(
+                    "mgmt-export",
+                    gpui_kit::assets::IconName::Upload,
+                    crate::i18n::t("导出配置", "Export config"),
+                    crate::i18n::t(
+                        "把全部会话导出为一个 JSON 文件。",
+                        "Export every session to a JSON file.",
+                    ),
+                    SessionsAction::ExportConfig,
                 ),
-                SessionsAction::ExportConfig,
-            ),
-            entry(
-                "mgmt-groups",
-                gpui_kit::assets::IconName::FolderCog,
-                crate::i18n::t("分组管理", "Group management"),
-                crate::i18n::t(
-                    "创建、重命名和删除会话分组。",
-                    "Create, rename and delete session groups.",
+                entry(
+                    "mgmt-groups",
+                    gpui_kit::assets::IconName::FolderCog,
+                    crate::i18n::t("分组管理", "Group management"),
+                    crate::i18n::t(
+                        "创建、重命名和删除会话分组。",
+                        "Create, rename and delete session groups.",
+                    ),
+                    SessionsAction::ManageGroups,
                 ),
-                SessionsAction::ManageGroups,
-            ),
-        ])
-        .into_any_element()
+            ])
+            .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::fitted_list_width;
+
+    #[test]
+    fn sessions_width_preserves_management_room_and_rejects_nonfinite() {
+        assert_eq!(fitted_list_width(500.0, 1000.0), 500.0);
+        assert_eq!(fitted_list_width(640.0, 800.0), 520.0);
+        assert_eq!(fitted_list_width(640.0, 100.0), 0.0);
+        assert_eq!(fitted_list_width(f32::NAN, 1000.0), 380.0);
+        assert_eq!(fitted_list_width(380.0, f32::INFINITY), 0.0);
+        assert_eq!(fitted_list_width(-100.0, 1000.0), 240.0);
+    }
+    use super::*;
+    use gpui_kit::gpui::{TestAppContext, VisualTestContext};
+
+    fn draw(cx: &mut VisualTestContext) {
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        cx.run_until_parked();
+    }
+
+    #[gpui_kit::gpui::test]
+    fn sessions_sidebar_drag_only_persists_on_release_and_reopens(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let directory = tempfile::tempdir().unwrap();
+        let cache = crate::config::ConfigFile::default();
+        let store = Rc::new(RefCell::new(ConfigStore {
+            path: directory.path().join("sessions.db"),
+            backup_dir: None,
+            saved_state: std::sync::Mutex::new(crate::config::SavedState::of_cache(&cache)).into(),
+            cache,
+            key: [7; 32],
+            keyring_enabled: false,
+        }));
+        assert_eq!(management_counts(&store.borrow()), (0, 0));
+        store.borrow_mut().cache.groups = vec!["QA Alpha".into(), "QA Beta".into()];
+        assert_eq!(management_counts(&store.borrow()), (0, 2));
+        let shared = store.clone();
+        let mut page = None;
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| SessionsPage::new(shared, window, cx));
+            page = Some(view.clone());
+            gpui_kit::component::Root::new(view, window, cx)
+        });
+        let page = page.unwrap();
+        cx.update(|window, _| window.resize(gpui_kit::size(px(1280.0), px(800.0))));
+        draw(cx);
+        let (left, right) = page.read_with(cx, |page, _| page.list_bounds.get());
+        assert!(
+            (right - left - 380.0).abs() <= 1.0,
+            "measured list bounds {left}..{right}"
+        );
+        let start = gpui_kit::point(px(right - 1.0), px(200.0));
+        let end = gpui_kit::point(start.x + px(60.0), start.y);
+        cx.simulate_mouse_down(start, MouseButton::Left, Default::default());
+        draw(cx);
+        cx.simulate_mouse_move(end, MouseButton::Left, Default::default());
+        draw(cx);
+        assert!(page.read_with(cx, |page, _| page.preview_width.unwrap()) > 430.0);
+        assert_eq!(store.borrow().sessions_sidebar_width(), 380.0);
+        assert!(!store.borrow().path.exists());
+        cx.simulate_mouse_up(end, MouseButton::Left, Default::default());
+        draw(cx);
+        assert!(store.borrow().sessions_sidebar_width() > 430.0);
+        assert!(store.borrow().path.exists());
+        let connection = rusqlite::Connection::open(&store.borrow().path).unwrap();
+        let settings: String = connection
+            .query_row("SELECT value FROM meta WHERE key='settings'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let settings: serde_json::Value = serde_json::from_str(&settings).unwrap();
+        assert!(settings["sessions_sidebar_width"].as_f64().unwrap() > 430.0);
+        assert!(page.read_with(cx, |page, _| page.resize.is_none()
+            && page.preview_width.is_none()));
+        let before = store.borrow().sessions_sidebar_width();
+        // A release outside the window cancels the next stale motion.
+        let (_, right) = page.read_with(cx, |page, _| page.list_bounds.get());
+        let start = gpui_kit::point(px(right - 1.0), px(200.0));
+        cx.simulate_mouse_down(start, MouseButton::Left, Default::default());
+        draw(cx);
+        cx.simulate_mouse_move(start, None, Default::default());
+        draw(cx);
+        assert_eq!(store.borrow().sessions_sidebar_width(), before);
+        assert!(page.read_with(cx, |page, _| page.resize.is_none()));
+        // A blocked profile write must visibly roll back, not claim a save.
+        store.borrow_mut().path = directory.path().to_path_buf();
+        page.update(cx, |page, _| {
+            page.resize = Some((0.0, before));
+            page.preview_width = Some(600.0);
+            page.finish_resize();
+        });
+        assert_eq!(store.borrow().sessions_sidebar_width(), before);
+        assert!(store.borrow().persistence_error().is_some());
     }
 }

@@ -332,3 +332,36 @@ fn switching_from_a_focused_rename_keeps_the_dialog_close_button_working(cx: &mu
         assert!(groups.contains(&"QA-Switch-B".to_string()));
     });
 }
+
+#[gpui_kit::gpui::test]
+fn sessions_more_menu_opens_group_manager_without_an_extra_click(cx: &mut TestAppContext) {
+    let (shell, _directory, cx) = fixture(cx);
+    cx.update(|window, cx| shell.update(cx, |shell, cx| shell.open_page(PageId::Sessions, window, cx)));
+    draw(cx);
+    let bounds = cx.update(|window, _| window.find("list-more-trigger").bounds());
+    cx.simulate_click(bounds.center(), Default::default());
+    draw(cx);
+    cx.simulate_keystrokes("down enter");
+    draw(cx);
+    assert!(shell.read_with(cx, |shell, _| matches!(shell.overlay, Overlay::Groups(_))),
+        "the visible menu selection must open its manager without unrelated input");
+    assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+}
+
+#[gpui_kit::gpui::test]
+fn group_dialog_cancels_an_underlying_sidebar_resize(cx: &mut TestAppContext) {
+    let (shell, _directory, cx) = fixture(cx);
+    cx.update(|window, cx| shell.update(cx, |shell, cx| shell.open_page(PageId::Sessions, window, cx)));
+    draw(cx);
+    let bounds = cx.debug_bounds("sessions-sidebar").unwrap();
+    let start = gpui_kit::point(bounds.right() - px(1.0), bounds.top() + px(80.0));
+    let end = gpui_kit::point(start.x + px(100.0), start.y);
+    let before = shell.read_with(cx, |shell, _| shell.state.store.borrow().sessions_sidebar_width());
+    cx.simulate_mouse_down(start, gpui_kit::MouseButton::Left, Default::default());
+    draw(cx);
+    open_groups(&shell, cx);
+    cx.simulate_mouse_move(end, gpui_kit::MouseButton::Left, Default::default());
+    cx.simulate_mouse_up(end, gpui_kit::MouseButton::Left, Default::default());
+    draw(cx);
+    assert_eq!(shell.read_with(cx, |shell, _| shell.state.store.borrow().sessions_sidebar_width()), before);
+}

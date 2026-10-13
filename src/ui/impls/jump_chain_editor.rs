@@ -9,9 +9,9 @@ use gpui_kit::component::Disableable;
 use gpui_kit::{
     assets::IconName,
     component::{
-        button::{Button, ButtonVariants, DropdownButton},
+        button::{Button, ButtonVariants},
         h_flex,
-        menu::{PopupMenu, PopupMenuItem},
+        menu::{DropdownMenu, PopupMenu, PopupMenuItem},
         setting::{SettingField, SettingGroup, SettingItem, SettingPage},
         tooltip::Tooltip,
         v_flex, ActiveTheme, Sizable as _,
@@ -144,59 +144,61 @@ pub(super) fn page(
                 let d = draft.clone();
                 let s = store.clone();
                 let e = editor.clone();
+                // This is a menu-only trigger, not DropdownButton's separate
+                // action half plus caret. The entire displayed hop opens it.
                 let choose =
-                    DropdownButton::new(SharedString::from(format!("jump-select-{index}")))
+                    Button::new(SharedString::from(format!("jump-select-trigger-{index}")))
+                        .debug_selector(move || format!("jump-select-trigger-{index}"))
                         .w_full()
                         .min_w_0()
-                        .button(
-                            Button::new(SharedString::from(format!("jump-select-trigger-{index}")))
-                                .debug_selector(move || format!("jump-select-trigger-{index}"))
-                                .flex_1()
+                        .accessibility_label(label.clone())
+                        .child({
+                            let tooltip = label.clone();
+                            div()
+                                .id("label-value")
+                                .w_full()
                                 .min_w_0()
-                                .accessibility_label(label.clone())
-                                .child({
-                                    let tooltip = label.clone();
-                                    div()
-                                        .id("label-value")
-                                        .w_full()
-                                        .min_w_0()
-                                        .overflow_hidden()
-                                        .whitespace_nowrap()
-                                        .text_ellipsis()
-                                        .hoverable_tooltip(move |window, cx| {
-                                            full_label_tooltip(tooltip.clone(), window, cx)
-                                        })
-                                        .child(label)
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .hoverable_tooltip(move |window, cx| {
+                                    full_label_tooltip(tooltip.clone(), window, cx)
                                 })
-                                .outline(),
-                        )
-                        .dropdown_menu(move |menu, window, _| {
-                            let mut menu = bounded_menu(menu, window);
-                            for (id, label) in &choices {
-                                if selected
-                                    .iter()
-                                    .enumerate()
-                                    .any(|(i, chosen)| i != index && chosen == id)
-                                {
-                                    continue;
+                                .child(label)
+                        })
+                        .outline()
+                        .dropdown_caret(true)
+                        .dropdown_menu_with_anchor(
+                            gpui_kit::Anchor::TopRight,
+                            move |menu, window, _| {
+                                let mut menu = bounded_menu(menu, window);
+                                for (id, label) in &choices {
+                                    if selected
+                                        .iter()
+                                        .enumerate()
+                                        .any(|(i, chosen)| i != index && chosen == id)
+                                    {
+                                        continue;
+                                    }
+                                    let id = id.clone();
+                                    let d = d.clone();
+                                    let s = s.clone();
+                                    let e = e.clone();
+                                    menu = menu.item(
+                                        candidate_item(&id, label.clone(), window).on_click(
+                                            move |_, _, cx| {
+                                                edit_route(&d, &s, &e, cx, |ids| {
+                                                    if let Some(slot) = ids.get_mut(index) {
+                                                        *slot = id.clone();
+                                                    }
+                                                });
+                                            },
+                                        ),
+                                    );
                                 }
-                                let id = id.clone();
-                                let d = d.clone();
-                                let s = s.clone();
-                                let e = e.clone();
-                                menu =
-                                    menu.item(candidate_item(&id, label.clone(), window).on_click(
-                                        move |_, _, cx| {
-                                            edit_route(&d, &s, &e, cx, |ids| {
-                                                if let Some(slot) = ids.get_mut(index) {
-                                                    *slot = id.clone();
-                                                }
-                                            });
-                                        },
-                                    ));
-                            }
-                            menu
-                        });
+                                menu
+                            },
+                        );
                 let mut row = h_flex()
                     .debug_selector(move || format!("jump-row-{index}"))
                     .w_full()
@@ -279,15 +281,14 @@ pub(super) fn page(
             let d = draft.clone();
             let s = store.clone();
             let e = editor.clone();
-            let add = DropdownButton::new("jump-add")
-                .button(
-                    Button::new("jump-add-trigger")
-                        .icon(IconName::Plus)
-                        .label(crate::i18n::t("添加跳板", "Add bastion"))
-                        .outline()
-                        .disabled(!valid || ids.len() >= 16 || choices.is_empty()),
-                )
-                .dropdown_menu(move |menu, window, _| {
+            let add = Button::new("jump-add-trigger")
+                .debug_selector(|| "jump-add-trigger".into())
+                .icon(IconName::Plus)
+                .label(crate::i18n::t("添加跳板", "Add bastion"))
+                .outline()
+                .dropdown_caret(true)
+                .disabled(!valid || ids.len() >= 16 || choices.is_empty())
+                .dropdown_menu_with_anchor(gpui_kit::Anchor::TopRight, move |menu, window, _| {
                     let mut menu = bounded_menu(menu, window);
                     for (id, label) in &choices {
                         let id = id.clone();
@@ -510,12 +511,17 @@ mod ui_tests {
     ) {
         cx.update(gpui_kit::init);
         let (view, cx) = long_route_fixture(cx, 0, 640.);
-        let add = cx.debug_bounds("jump-add-control").unwrap();
-        cx.simulate_click(
-            point(add.right() - px(12.), add.center().y),
-            gpui_kit::Modifiers::default(),
-        );
+        let add = cx.debug_bounds("jump-add-trigger").unwrap();
+        cx.simulate_click(add.center(), gpui_kit::Modifiers::default());
         draw(cx);
+        assert!(
+            view.read_with(cx, |probe, _| probe
+                .draft
+                .borrow()
+                .jump_session_ids
+                .is_empty()),
+            "opening the add menu must not add a hop"
+        );
         let menu = cx.update(|window, _| window.find("popup-menu").bounds());
         let viewport = cx.update(|window, _| window.viewport_size());
         assert!(
@@ -545,11 +551,8 @@ mod ui_tests {
         });
         draw(cx);
         assert!(cx.update(|window, _| window.try_find("popup-menu").is_none()));
-        let add = cx.debug_bounds("jump-add-control").unwrap();
-        cx.simulate_click(
-            point(add.right() - px(12.), add.center().y),
-            gpui_kit::Modifiers::default(),
-        );
+        let add = cx.debug_bounds("jump-add-trigger").unwrap();
+        cx.simulate_click(add.center(), gpui_kit::Modifiers::default());
         draw(cx);
         cx.simulate_keystrokes("escape");
         draw(cx);
@@ -574,10 +577,7 @@ mod ui_tests {
         });
         draw(cx);
         let trigger = cx.debug_bounds("jump-select-trigger-0").unwrap();
-        cx.simulate_click(
-            point(trigger.right() + px(16.), trigger.center().y),
-            gpui_kit::Modifiers::default(),
-        );
+        cx.simulate_click(trigger.center(), gpui_kit::Modifiers::default());
         draw(cx);
         let candidate = cx.debug_bounds("jump-menu-label-hop-05").unwrap();
         cx.simulate_click(candidate.center(), gpui_kit::Modifiers::default());
@@ -600,6 +600,49 @@ mod ui_tests {
             cx.notify();
         });
         draw(cx);
+    }
+
+    #[gpui_kit::gpui::test]
+    fn menu_only_jump_add_is_disabled_across_the_whole_trigger(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        for invalid_route in [false, true] {
+            let (view, cx) = long_route_fixture(cx, 1, 640.);
+            view.update(cx, |probe, cx| {
+                if invalid_route {
+                    probe.draft.borrow_mut().jump_session_ids = vec!["missing-hop".into()];
+                } else {
+                    // The only available candidate is already on the route.
+                    probe
+                        .store
+                        .borrow_mut()
+                        .cache
+                        .sessions
+                        .retain(|session| session.id == "hop-00" || session.id == "target");
+                }
+                cx.notify();
+            });
+            draw(cx);
+            let before =
+                view.read_with(cx, |probe, _| probe.draft.borrow().jump_session_ids.clone());
+            let bounds = cx.debug_bounds("jump-add-trigger").unwrap();
+            assert!(bounds.size.width > px(20.) && bounds.size.height > px(10.));
+            for point in [
+                bounds.center(),
+                point(bounds.right() - px(3.), bounds.center().y),
+            ] {
+                cx.simulate_click(point, gpui_kit::Modifiers::default());
+                draw(cx);
+                assert!(
+                    cx.update(|window, _| window.try_find("popup-menu").is_none()),
+                    "disabled primary and caret must both refuse opening"
+                );
+                assert_eq!(
+                    view.read_with(cx, |probe, _| probe.draft.borrow().jump_session_ids.clone()),
+                    before
+                );
+                assert!(!view.read_with(cx, |probe, _| probe.store.borrow().path.exists()));
+            }
+        }
     }
 
     #[gpui_kit::gpui::test]

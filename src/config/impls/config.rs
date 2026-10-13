@@ -1346,6 +1346,24 @@ impl ConfigStore {
         }
     }
 
+    /// Profile-wide navigation preference. Invalid legacy/imported values never
+    /// reach the layout engine; zero is a valid compact spacing.
+    pub fn navigation_icon_gap(&self) -> f32 {
+        self.cache.navigation_icon_gap.filter(|v| v.is_finite()).unwrap_or(8.0).clamp(0.0, 24.0)
+    }
+
+    pub fn set_navigation_icon_gap(&mut self, gap: f32) {
+        self.cache.navigation_icon_gap = Some(if gap.is_finite() { gap.clamp(0.0, 24.0) } else { 8.0 });
+    }
+
+    pub fn sessions_sidebar_width(&self) -> f32 {
+        self.cache.sessions_sidebar_width.filter(|v| v.is_finite()).unwrap_or(380.0).clamp(240.0, 640.0)
+    }
+
+    pub fn set_sessions_sidebar_width(&mut self, width: f32) {
+        self.cache.sessions_sidebar_width = Some(if width.is_finite() { width.clamp(240.0, 640.0) } else { 380.0 });
+    }
+
     /// Global UI scale in percent (#100). Defaults to 100.
     pub fn ui_scale(&self) -> u32 {
         if self.cache.ui_scale == 0 {
@@ -1934,34 +1952,12 @@ impl ConfigStore {
         self.cache.collapsed_session_groups.as_deref()
     }
 
-    /// Remember a Quick Connect folder's open/closed state. On the first
-    /// interaction, materialise the default-collapsed state for every existing
-    /// folder so expanding one folder does not accidentally expand the rest.
+    /// Remember a folder's open/closed state. A missing preference means all
+    /// folders are expanded, so the first interaction only changes its target.
     pub fn set_session_group_collapsed(&mut self, name: &str, collapsed: bool) {
-        if self.cache.collapsed_session_groups.is_none() {
-            let mut groups = vec!["system".to_string()];
-            if self
-                .cache
-                .sessions
-                .iter()
-                .any(|session| session.group.is_empty())
-            {
-                groups.push("default".to_string());
-            }
-            groups.extend(self.cache.groups.iter().cloned());
-            groups.extend(
-                self.cache
-                    .sessions
-                    .iter()
-                    .filter(|session| !session.group.is_empty())
-                    .map(|session| session.group.clone()),
-            );
-            groups.sort();
-            groups.dedup();
-            self.cache.collapsed_session_groups = Some(groups);
-        }
-
-        let groups = self.cache.collapsed_session_groups.as_mut().unwrap();
+        // Missing preference means every group is expanded, matching the row
+        // projection. First toggling one group must not fold all its siblings.
+        let groups = self.cache.collapsed_session_groups.get_or_insert_with(Vec::new);
         groups.retain(|group| group != name);
         if collapsed {
             groups.push(name.to_string());
@@ -2966,7 +2962,7 @@ mod tests {
     }
 
     #[test]
-    fn quick_connect_groups_default_collapsed_and_remember_expansion() {
+    fn quick_connect_group_toggle_preserves_expanded_siblings() {
         let mut store = temp_store();
         store.cache.groups = vec!["production".into(), "staging".into()];
         store.cache.sessions.push(Session {
@@ -2979,8 +2975,8 @@ mod tests {
 
         let collapsed = store.collapsed_session_groups().unwrap();
         assert!(!collapsed.iter().any(|group| group == "production"));
-        assert!(collapsed.iter().any(|group| group == "staging"));
-        assert!(collapsed.iter().any(|group| group == "system"));
+        assert!(!collapsed.iter().any(|group| group == "staging"));
+        assert!(!collapsed.iter().any(|group| group == "system"));
 
         store.set_session_group_collapsed("production", true);
         assert!(store
@@ -2988,6 +2984,41 @@ mod tests {
             .unwrap()
             .iter()
             .any(|group| group == "production"));
+        assert_eq!(store.collapsed_session_groups().unwrap(), &["production".to_string()]);
+        store.set_session_group_collapsed("system", true);
+        assert_eq!(store.collapsed_session_groups().unwrap(), &["production".to_string(), "system".to_string()]);
+        store.set_session_group_collapsed("production", false);
+        assert_eq!(store.collapsed_session_groups().unwrap(), &["system".to_string()]);
+
+    }
+
+    #[test]
+    fn application_layout_defaults_clamps_and_round_trips_independently() {
+        let mut store = temp_store();
+        assert_eq!(store.navigation_icon_gap(), 8.0);
+        assert_eq!(store.sessions_sidebar_width(), 380.0);
+        let terminal_spacing = store.terminal_line_spacing();
+        let resource_width = store.sidebar_width();
+        for (raw, expected) in [(-10.0, 0.0), (0.0, 0.0), (12.5, 12.5), (100.0, 24.0), (f32::NAN, 8.0), (f32::INFINITY, 8.0)] {
+            store.set_navigation_icon_gap(raw);
+            assert_eq!(store.navigation_icon_gap(), expected);
+        }
+        for (raw, expected) in [(-10.0, 240.0), (480.0, 480.0), (900.0, 640.0), (f32::NAN, 380.0)] {
+            store.set_sessions_sidebar_width(raw);
+            assert_eq!(store.sessions_sidebar_width(), expected);
+        }
+        store.cache.navigation_icon_gap = Some(f32::NEG_INFINITY);
+        store.cache.sessions_sidebar_width = Some(f32::NAN);
+        assert_eq!(store.navigation_icon_gap(), 8.0);
+        assert_eq!(store.sessions_sidebar_width(), 380.0);
+        store.set_navigation_icon_gap(0.0);
+        store.set_sessions_sidebar_width(500.0);
+        store.save().unwrap();
+        let (reopened, _) = ConfigStore::read_cache_snapshot(&store.path, &store.key).unwrap();
+        assert_eq!(reopened.navigation_icon_gap, Some(0.0));
+        assert_eq!(reopened.sessions_sidebar_width, Some(500.0));
+        assert_eq!(store.terminal_line_spacing(), terminal_spacing);
+        assert_eq!(store.sidebar_width(), resource_width);
     }
 
     /// Display order for these tests: default(d1, d2), alpha(a1), beta(b1, b2)

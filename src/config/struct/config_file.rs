@@ -238,6 +238,12 @@ pub struct ConfigFile {
     /// Persisted across restarts so the drag-resized width sticks.
     #[serde(default = "default_sidebar_width")]
     pub sidebar_width: f32,
+    /// Application navigation rail spacing only; never changes form or terminal rows.
+    #[serde(default)]
+    pub navigation_icon_gap: Option<f32>,
+    /// Width of the sessions page list, independent from the resource sidebar.
+    #[serde(default)]
+    pub sessions_sidebar_width: Option<f32>,
     /// Resource-panel docking: size when docked top/bottom, and which edge it is
     /// docked to (left|right|top|bottom). Persisted so the layout sticks (#dock).
     #[serde(default = "default_sidebar_height")]

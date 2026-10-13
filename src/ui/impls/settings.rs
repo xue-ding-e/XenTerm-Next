@@ -51,6 +51,9 @@ use crate::config::ConfigStore;
 mod color;
 use color::CursorColorEditor;
 
+#[path = "settings_mcp.rs"]
+mod mcp_guidance;
+
 /// What the settings page asks the shell to do.
 ///
 /// Recorded rather than done here, because the editor is a full-window overlay and the
@@ -164,6 +167,9 @@ pub(crate) struct SettingsView {
     /// Lazily, because an input needs a window and this view is built without one — the
     /// same reason the session editor seeds its tables while rendering.
     paste: Option<Entity<gpui_kit::component::input::TextareaState>>,
+    /// The read-only local MCP example is built once from this process's
+    /// executable and profile, never from saved session credentials.
+    mcp_setup: Option<mcp_guidance::McpSetup>,
     /// The WebDAV password box: masked and write-only (audit N-中5). The saved
     /// password is never read back into the form — typing replaces it, leaving
     /// it empty keeps it, matching the session editor's credential rows.
@@ -199,6 +205,7 @@ struct TextDraft {
 /// Execution-history retention is a separate policy control.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum NumberSetting {
+    NavigationGap,
     PanelFont,
     FontSize,
     LineSpacing,
@@ -208,6 +215,7 @@ enum NumberSetting {
 impl NumberSetting {
     fn read(self, store: &ConfigStore) -> String {
         match self {
+            Self::NavigationGap => store.navigation_icon_gap().to_string(),
             Self::PanelFont => store.panel_font().to_string(),
             Self::FontSize => store.font_size().to_string(),
             // Format the stored f32 directly. Widening it to f64 first exposes
@@ -231,6 +239,7 @@ impl NumberSetting {
 
     fn apply(self, store: &mut ConfigStore, value: f64) {
         match self {
+            Self::NavigationGap => store.set_navigation_icon_gap(value.clamp(0.0, 24.0) as f32),
             Self::PanelFont => store.set_panel_font(value as u32),
             Self::FontSize => store.set_font_size(value as u32),
             Self::LineSpacing => store.set_terminal_line_spacing(value as f32),
@@ -327,6 +336,7 @@ impl SettingsView {
             chevron_turn: super::chevron::new_turn_counter(),
             pending: None,
             paste: None,
+            mcp_setup: None,
             webdav_password_input: None,
             _webdav_password_subscription: None,
             text_drafts: std::collections::HashMap::new(),
@@ -903,6 +913,7 @@ impl SettingsView {
             )
         };
         let panel_font = self.text_field(TextSetting::Number(NumberSetting::PanelFont), window, cx);
+        let navigation_gap = self.text_field(TextSetting::Number(NumberSetting::NavigationGap), window, cx);
 
         let store_for_lang = store.clone();
         let language = {
@@ -947,6 +958,12 @@ impl SettingsView {
         };
         let appearance = SettingGroup::new()
             .title(crate::i18n::t("外观", "Appearance"))
+            .item(SettingItem::new(
+                crate::i18n::t("导航图标间距 (px)", "Navigation icon gap (px)"), navigation_gap,
+            ).description(crate::i18n::t(
+                "应用级设置：仅调整最左侧导航图标间距（0–24，默认 8），不改变终端或表单行距。",
+                "Application preference: left navigation icons only (0–24, default 8). Terminal and form spacing stays unchanged.",
+            )))
             .item(
                 SettingItem::new(crate::i18n::t("主题", "Theme"), theme).description(
                     crate::i18n::t(
@@ -1123,8 +1140,8 @@ impl SettingsView {
         let mcp_server = SettingGroup::new()
             .title(crate::i18n::t("MCP 服务", "MCP server"))
             .description(crate::i18n::t(
-                "启动命令:xenterm mcp serve   传输方式:stdio(仅本机进程)",
-                "Command: xenterm mcp serve   Transport: stdio (local process only)",
+                "本机连接使用 stdio，由 MCP 客户端启动 XenTerm 的 mcp serve 子命令，无需地址或端口。此开关本身不会启动后台服务。",
+                "Local connections use stdio: the MCP client launches XenTerm with mcp serve. No URL or port is needed. This switch does not start a background service.",
             ))
             .item(
                 SettingItem::new(
@@ -1132,11 +1149,11 @@ impl SettingsView {
                     mcp_enabled,
                 )
                 .description(crate::i18n::t(
-                    "允许本机 MCP 客户端通过 stdio 启动服务。插件不受此开关影响。",
-                    "Lets local MCP clients start the server over stdio. Plugins are not \
-                         affected by this switch.",
+                    "允许 MCP 服务响应请求，stdio 与 HTTP 共用此开关。关闭时拒绝所有请求；启用后仍受访问模式约束。",
+                    "Allow the MCP server to respond over stdio or HTTP. When off, all requests are rejected. Access-mode restrictions still apply when enabled.",
                 )),
-            );
+            )
+            .item(mcp_guidance::setup_item(self, window, cx));
 
         let history = self.execution_log_group(window, cx);
         if mode == crate::config::McpAccessMode::Full {

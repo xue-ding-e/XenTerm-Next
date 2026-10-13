@@ -7,9 +7,8 @@ use super::*;
 use crate::config::color::{ColorFormat, ColorValue};
 use gpui_kit::base::{ColorPicker as PickerRoot, ColorSwatch};
 use gpui_kit::component::{
-    button::DropdownButton,
     color_picker::{ColorPickerEvent, ColorPickerState},
-    menu::PopupMenuItem,
+    menu::{DropdownMenu, PopupMenuItem},
     popover::Popover,
     tab::{Tab, TabBar},
     theme,
@@ -550,12 +549,13 @@ impl SettingsView {
                 .child(h_flex().gap_2().items_center().flex_wrap()
                     .child(div().debug_selector(|| "cursor-color-picker".to_string())
                         .child(render_cursor_picker(&picker, &area, &recent, window, cx)))
-                    .child(DropdownButton::new("cursor-color-format")
-                        .button(Button::new("cursor-color-format-trigger").outline()
+                    // A format label has no primary action separate from its menu.
+                    .child(Button::new("cursor-color-format-trigger").outline()
                             .label(format_label(format)).with_size(options.size())
+                            .dropdown_caret(true)
                             .accessibility_label(crate::i18n::t("颜色显示格式", "Colour display format"))
-                            .debug_selector(|| "cursor-color-format".to_string()))
-                        .dropdown_menu(move |mut menu, _, _| {
+                            .debug_selector(|| "cursor-color-format".to_string())
+                        .dropdown_menu_with_anchor(gpui_kit::Anchor::TopRight, move |mut menu, _, _| {
                             for choice in ColorFormat::ALL {
                                 let target = menu_view.clone();
                                 menu = menu.item(PopupMenuItem::new(format_label(choice)).checked(choice == format)

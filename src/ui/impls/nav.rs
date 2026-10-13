@@ -27,7 +27,7 @@ use super::shell::Shell;
 use super::tokens::RAIL_WIDTH;
 
 /// The rail itself.
-pub(crate) fn render_nav_rail(active: PageId, cx: &mut Context<Shell>) -> impl IntoElement {
+pub(crate) fn render_nav_rail(active: PageId, gap: f32, cx: &mut Context<Shell>) -> impl IntoElement {
     let border = cx.theme().border;
 
     v_flex()
@@ -35,7 +35,7 @@ pub(crate) fn render_nav_rail(active: PageId, cx: &mut Context<Shell>) -> impl I
         .h_full()
         .flex_shrink_0()
         .items_center()
-        .gap_1()
+        .gap(px(gap))
         .py_2()
         .border_r_1()
         .border_color(border)
@@ -43,6 +43,7 @@ pub(crate) fn render_nav_rail(active: PageId, cx: &mut Context<Shell>) -> impl I
             let id = *page;
             let selected = active == id;
             Button::new(SharedString::from(format!("nav-{:?}", id)))
+                .debug_selector(move || format!("nav-{id:?}"))
                 .icon(id.icon())
                 .small()
                 .when(selected, |button| button.primary())

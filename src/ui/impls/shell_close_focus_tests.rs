@@ -485,3 +485,47 @@ fn idle_shell_observes_background_save_failure_and_recovery(cx: &mut TestAppCont
     draw(cx);
     assert!(cx.debug_bounds("configuration-save-warning").is_none());
 }
+
+#[gpui_kit::gpui::test]
+fn application_navigation_gap_changes_only_the_navigation_rail(cx: &mut TestAppContext) {
+    let (shell, cx) = fixture_without_forced_focus(cx);
+    let top = cx.debug_bounds("nav-Terminal").unwrap();
+    let sessions = cx.debug_bounds("nav-Sessions").unwrap();
+    assert!((f32::from(sessions.top() - top.bottom()) - 8.0).abs() < 0.5);
+    shell.update(cx, |shell, cx| {
+        shell.state.store.borrow_mut().set_navigation_icon_gap(20.0);
+        cx.notify();
+    });
+    draw(cx);
+    let next_top = cx.debug_bounds("nav-Terminal").unwrap();
+    let next_sessions = cx.debug_bounds("nav-Sessions").unwrap();
+    assert!((f32::from(next_sessions.top() - next_top.bottom()) - 20.0).abs() < 0.5);
+    assert_eq!(top.size, next_top.size);
+    assert_eq!(top.origin, next_top.origin);
+}
+
+#[gpui_kit::gpui::test]
+fn shared_profile_navigation_preferences_refresh_both_windows(cx: &mut TestAppContext) {
+    let mut other_context = cx.clone();
+    let (first, first_cx) = fixture_without_forced_focus(cx);
+    let shared = first.read_with(first_cx, |shell, _| shell.state.store.clone());
+    first.update(first_cx, |shell, cx| shell.start_persistence_poll(cx));
+    let (second, second_cx) = fixture_without_forced_focus(&mut other_context);
+    second.update(second_cx, |shell, cx| {
+        shell.state.store = shared.clone();
+        shell.start_persistence_poll(cx);
+    });
+    draw(first_cx);
+    draw(second_cx);
+    // No notify on either shell: this models a preference committed elsewhere
+    // through the same application profile, while these windows are idle.
+    shared.borrow_mut().set_navigation_icon_gap(17.0);
+    first_cx.background_executor.advance_clock(std::time::Duration::from_secs(1));
+    draw(first_cx);
+    draw(second_cx);
+    for visual in [first_cx, second_cx] {
+        let top = visual.debug_bounds("nav-Terminal").unwrap();
+        let sessions = visual.debug_bounds("nav-Sessions").unwrap();
+        assert!((f32::from(sessions.top() - top.bottom()) - 17.0).abs() < 0.5);
+    }
+}
