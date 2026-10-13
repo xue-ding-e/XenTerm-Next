@@ -347,7 +347,6 @@ jobs:
           arch: x64
       - name: Build MSI installer (Windows)
         if: matrix.name == 'windows-x86_64'
-        continue-on-error: true
         shell: pwsh
         run: |
           # WiX 3 toolset (candle/light) that cargo-wix drives.
@@ -385,6 +384,7 @@ jobs:
         with:
           name: ${{ matrix.name }}-pkg
           path: ${{ env.PKG }}
+          if-no-files-found: error
 
       - name: Upload MSI artifact
         if: matrix.name == 'windows-x86_64' && env.MSI != ''
@@ -392,6 +392,7 @@ jobs:
         with:
           name: windows-x86_64-msi
           path: ${{ env.MSI }}
+          if-no-files-found: error
 
   build-flatpak:
     name: linux-x86_64-flatpak

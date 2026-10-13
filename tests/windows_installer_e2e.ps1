@@ -114,10 +114,13 @@ try {
     [Environment]::SetEnvironmentVariable('PATH', "$originalPath;$sentinel;;$preexisting", 'Machine')
     Run-Msi -Arguments @('/i', "`"$($packages[0])`"", "APPLICATIONFOLDER=`"$installDir`"")
     Assert-State $true $true $true
+    # Mixed maintenance must not skip ownership detection because REMOVE is set.
+    Run-Msi -Arguments @('/i', "`"$($packages[0])`"", 'REMOVE=DesktopIntegration', 'ADDLOCAL=CommandLineIntegration')
+    Assert-State $true $false $true
     Run-Msi -Arguments @('/fa', $products[0])
-    Assert-State $true $true $true
+    Assert-State $true $false $true
     Run-Msi -Arguments @('/i', "`"$($packages[1])`"")
-    Assert-State $true $true $true
+    Assert-State $true $false $true
     Run-Msi -Arguments @('/x', $products[1])
     Assert-State $true $false $false
     if (-not ([Environment]::GetEnvironmentVariable('PATH', 'Machine').Contains($preexisting))) {
