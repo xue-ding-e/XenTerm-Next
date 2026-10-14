@@ -25,7 +25,14 @@
 
 ---
 
-## What is XenTerm
+## What is XenTerm Next
+
+**XenTerm Next** is an independently maintained Next edition of
+[ixbaicn/XenTerm](https://github.com/ixbaicn/XenTerm), with its own repository and
+development direction. Building on XenTerm, it focuses on stability fixes, workflow
+and interaction improvements, and CLI / MCP enhancements. Upstream changes are
+reviewed and tested before integration; upstream authorship, copyright and the MIT
+license remain preserved.
 
 XenTerm is a native desktop terminal client that keeps the workflow people like about
 FinalShell — a resource-monitor sidebar, session management, tabbed terminals, an SFTP
@@ -619,6 +626,7 @@ entry in `Cargo.lock`, runs `cargo check --locked`, verifies `xenterm --version`
 
 ## Acknowledgements
 
+- [ixbaicn/XenTerm](https://github.com/ixbaicn/XenTerm) — the upstream project on which XenTerm Next is based.
 - [meatshell](https://github.com/yituorou/meatshell)
 
 ## License

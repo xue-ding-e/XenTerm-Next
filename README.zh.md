@@ -25,7 +25,12 @@
 
 ---
 
-## XenTerm 是什么
+## XenTerm Next 是什么
+
+**XenTerm Next** 是基于 [ixbaicn/XenTerm](https://github.com/ixbaicn/XenTerm)
+独立维护的 Next 增强版，拥有独立仓库和开发方向。在 XenTerm 的基础上，持续修复稳定性问题、
+改进操作流程与交互，并增强 CLI / MCP 能力。上游更新经审查和验证后再整合；
+保留上游作者归属、版权声明及 MIT 许可证。
 
 XenTerm 是一个原生桌面终端客户端。它保留了大家喜欢 FinalShell 的那些部分——资源监控侧栏、
 会话管理、多标签页终端、跟随 Shell 的 SFTP 面板，同时去掉了不喜欢的部分：几百 MB 的 JVM。
@@ -533,6 +538,7 @@ xenterm/
 
 ## 鸣谢
 
+- [ixbaicn/XenTerm](https://github.com/ixbaicn/XenTerm) — XenTerm Next 所基于的上游项目。
 - [meatshell](https://github.com/yituorou/meatshell)
 
 ## 许可证
