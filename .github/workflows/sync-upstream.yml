@@ -1,0 +1,30 @@
+name: Sync official upstream mirror
+
+on:
+  schedule:
+    - cron: '0 9 * * *' # Daily 17:00 Asia/Shanghai; GitHub may delay scheduled runs.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-official-upstream-mirror
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'xue-ding-e/XenTerm-Next' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Check out maintained synchronization code
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Fast-forward upstream-main only
+        shell: bash
+        run: bash .github/scripts/sync-upstream.sh

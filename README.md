@@ -1,6 +1,6 @@
 > **XenTerm Next** is an independently maintained, enhanced SSH / SFTP / terminal client based on [ixbaicn/XenTerm](https://github.com/ixbaicn/XenTerm). It preserves upstream attribution, the MIT license and original copyright; it is not the official upstream project.
 >
-> Custom features live on `main`; `upstream-main` retains official code and is currently updated manually by fast-forward, never automatically integrated into `main`. Start with this repository’s [source installation](#quick-start), [development guide](#development) and [branch policy](CONTRIBUTING.md#independent-repository-branch-policy-xue-ding-exenterm-next).
+> Custom features live on `main`; `upstream-main` retains official code and is fast-forwarded daily at 09:00 UTC (17:00 China time), subject to GitHub scheduling delays, never automatically integrated into `main`. Start with this repository’s [source installation](#quick-start), [development guide](#development) and [branch policy](CONTRIBUTING.md#independent-repository-branch-policy-xue-ding-exenterm-next).
 
 <p align="center">
   <b>English</b> · <a href="README.zh.md">简体中文</a>

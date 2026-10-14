@@ -2,7 +2,7 @@
 
 ## 独立仓库的分支约定（xue-ding-e/XenTerm-Next）
 
-此节仅适用于独立维护的 XenTerm Next，不代表上游项目的分支约定。官方镜像当前手动快进更新，尚未配置定时同步。
+此节仅适用于独立维护的 XenTerm Next，不代表上游项目的分支约定。官方镜像每天北京时间 17:00 检查，也可手动运行 Sync official upstream mirror 工作流；分叉或检测到并发更新时停止。同步不执行上游代码，不修改 `main`、标签或发布；GitHub 定时任务可能延迟。
 
 - `main` 是自用开发主线，保留全部已经验证的自有功能；新增提交保持单父提交，日常更新使用 rebase，集成使用 squash 或 rebase，不创建 merge commit。
 - `upstream-main` 只镜像 `ixbaicn/XenTerm` 的官方 `main`，保留官方真实提交及其既有 merge 历史。它不是自用开发分支，不允许写入自有补丁。

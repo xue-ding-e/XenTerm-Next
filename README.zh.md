@@ -1,6 +1,6 @@
 > **XenTerm Next** 是基于 [ixbaicn/XenTerm](https://github.com/ixbaicn/XenTerm) 独立维护的增强版 SSH / SFTP / terminal 客户端。本仓库保留上游来源、MIT 许可证及原作者版权，不代表官方项目。
 >
-> 自有功能维护在 `main`；`upstream-main` 仅保存官方代码，当前手动快进更新，不会自动合入 `main`。请从本仓库的[源码安装](#快速开始)、[开发说明](#开发)和[分支约定](CONTRIBUTING.zh-CN.md#独立仓库的分支约定xue-ding-exenterm-next)开始。
+> 自有功能维护在 `main`；`upstream-main` 仅保存官方代码，每天北京时间 17:00 尝试快进同步（GitHub 定时任务可能延迟），不会自动合入 `main`。请从本仓库的[源码安装](#快速开始)、[开发说明](#开发)和[分支约定](CONTRIBUTING.zh-CN.md#独立仓库的分支约定xue-ding-exenterm-next)开始。
 
 <p align="center">
   <a href="README.md">English</a> · <b>简体中文</b>

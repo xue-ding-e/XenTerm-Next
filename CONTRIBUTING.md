@@ -2,7 +2,7 @@
 
 ## Independent repository branch policy (xue-ding-e/XenTerm-Next)
 
-This section applies only to the independently maintained XenTerm Next repository, not to upstream's branch policy. The upstream mirror currently requires a manual fast-forward update; no scheduled sync is configured.
+This section applies only to the independently maintained XenTerm Next repository, not to upstream's branch policy. The upstream mirror is checked daily at 09:00 UTC (17:00 Asia/Shanghai), with manual dispatch also available in the Sync official upstream mirror workflow. The job stops on divergence or detected concurrent updates, never executes upstream code, and never writes `main`, tags or releases. GitHub may delay scheduled runs.
 
 - `main` is the maintained user branch and retains all verified custom features. New commits have one parent: use rebase for updates and squash or rebase for integration, never merge commits.
 - `upstream-main` mirrors the official `main` of `ixbaicn/XenTerm`, including its existing merge history. Do not develop or apply custom patches on this mirror.
