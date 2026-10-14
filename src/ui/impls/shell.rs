@@ -2729,6 +2729,10 @@ impl Shell {
         // re-entrant borrow — the crash the import path already hit.
         cx.spawn(async move |this, cx| {
             let Some(picked) = rfd::AsyncFileDialog::new()
+                .set_title(crate::i18n::t(
+                    "导出连接：请选择新文件名（不覆盖）",
+                    "Export connections: choose a new filename (no overwrite)",
+                ))
                 .set_file_name("xenterm-connections.json")
                 .add_filter("JSON", &["json"])
                 .save_file()
@@ -2744,10 +2748,38 @@ impl Shell {
     }
 
     /// Write the export, and put the count on the status line.
+    ///
+    /// A save-dialog result selects a path; it is not permission to bypass the
+    /// private publisher's profile, payload-size, or file-permission guards.
+    /// Deliberately refuse replacement even if the native dialog offered it.
+    /// Secure, explicitly authorized replacement needs a separate contract;
+    /// never recover from a publisher error with the plain `export_to` writer.
     fn export_sessions_to(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
-        let line = match self.state.store.borrow().export_to(&path) {
+        let line = match self.state.store.borrow().export_to_new(&path) {
             Ok(count) => format!("{} {count}", crate::i18n::t("已导出连接", "exported")),
-            Err(error) => format!("{}: {error}", crate::i18n::t("导出失败", "export failed")),
+            Err(error)
+                if error.downcast_ref::<std::io::Error>().is_some_and(|error| {
+                    error.kind() == std::io::ErrorKind::AlreadyExists
+                }) =>
+            {
+                crate::i18n::t(
+                    "未导出：目标已存在。为保护已有文件，请换一个新文件名后重试。",
+                    "Not exported: the destination already exists. Choose a new filename to protect the existing file.",
+                )
+                .to_string()
+            }
+            Err(error) => format!(
+                "{}: {error}. {}",
+                crate::i18n::t("导出失败", "export failed"),
+                // Native publishers retain their original typed error (for
+                // example Windows NTSTATUS). Do not parse error text or probe
+                // path.exists() to classify it. State the policy for all
+                // failures so every platform explains the no-overwrite rule.
+                crate::i18n::t(
+                    "导出不覆盖已有文件；请选择新文件名。",
+                    "Exports never overwrite existing files; choose a new filename.",
+                ),
+            ),
         };
         self.say(line, cx);
     }

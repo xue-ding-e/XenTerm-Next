@@ -231,3 +231,118 @@ fn delayed_old_file_cleanup_never_clears_a_replacement_or_other_overlay(cx: &mut
     cx.simulate_keystrokes("escape");
     assert_closed(&shell, cx);
 }
+
+// Exercise the real GUI export entry point without invoking a native dialog.
+// Both profile and destination are disposable synthetic directories. These
+// tests pin the deliberate no-overwrite policy even after a dialog picks a path.
+#[cfg(any(unix, windows))]
+fn export_fixture(
+    cx: &mut TestAppContext,
+) -> (
+    Entity<Shell>,
+    &mut VisualTestContext,
+    tempfile::TempDir,
+    tempfile::TempDir,
+) {
+    let (shell, cx) = fixture(cx);
+    let profile = tempfile::tempdir().unwrap();
+    let destination = tempfile::tempdir().unwrap();
+    shell.update(cx, |shell, _| {
+        shell.state.store.borrow_mut().path = profile.path().join("synthetic-profile.db");
+    });
+    (shell, cx, profile, destination)
+}
+
+#[cfg(any(unix, windows))]
+#[gpui_kit::gpui::test]
+fn gui_export_existing_destination_is_preserved_and_explains_rename(cx: &mut TestAppContext) {
+    let (shell, cx, _profile, destination) = export_fixture(cx);
+    let path = destination.path().join("existing.json");
+    std::fs::write(&path, b"KEEP ORIGINAL").unwrap();
+    shell.update(cx, |shell, cx| shell.export_sessions_to(path.clone(), cx));
+    assert_eq!(std::fs::read(&path).unwrap(), b"KEEP ORIGINAL");
+    shell.read_with(cx, |shell, _| {
+        let message = &shell.status.as_ref().unwrap().text;
+        assert!(message.contains(crate::i18n::t("新文件名", "new filename")));
+        #[cfg(unix)]
+        assert_eq!(message, crate::i18n::t(
+            "未导出：目标已存在。为保护已有文件，请换一个新文件名后重试。",
+            "Not exported: the destination already exists. Choose a new filename to protect the existing file.",
+        ));
+    });
+}
+
+#[cfg(any(unix, windows))]
+#[gpui_kit::gpui::test]
+fn gui_export_protected_profile_cannot_fall_back_to_plain_write(cx: &mut TestAppContext) {
+    let (shell, cx, profile, _destination) = export_fixture(cx);
+    let path = profile.path().join("synthetic-profile.db");
+    std::fs::write(&path, b"KEEP PROFILE").unwrap();
+    shell.update(cx, |shell, cx| shell.export_sessions_to(path.clone(), cx));
+    assert_eq!(std::fs::read(path).unwrap(), b"KEEP PROFILE");
+    shell.read_with(cx, |shell, _| {
+        assert!(shell
+            .status
+            .as_ref()
+            .unwrap()
+            .text
+            .starts_with(crate::i18n::t("导出失败", "export failed")));
+    });
+}
+
+#[cfg(any(unix, windows))]
+#[gpui_kit::gpui::test]
+fn gui_export_oversize_payload_preserves_existing_file(cx: &mut TestAppContext) {
+    let (shell, cx, _profile, destination) = export_fixture(cx);
+    let path = destination.path().join("existing.json");
+    std::fs::write(&path, b"KEEP ORIGINAL").unwrap();
+    shell.update(cx, |shell, cx| {
+        let mut session = crate::config::Session::new_empty();
+        session.note = "synthetic".repeat(2 * 1024 * 1024);
+        shell.state.store.borrow_mut().cache.sessions.push(session);
+        shell.export_sessions_to(path.clone(), cx);
+    });
+    assert_eq!(std::fs::read(path).unwrap(), b"KEEP ORIGINAL");
+    shell.read_with(cx, |shell, _| {
+        assert!(shell.status.as_ref().unwrap().text.contains("16 MiB"));
+    });
+}
+
+#[cfg(unix)]
+#[gpui_kit::gpui::test]
+fn gui_export_symlink_does_not_write_through_to_profile(cx: &mut TestAppContext) {
+    let (shell, cx, profile, destination) = export_fixture(cx);
+    let target = profile.path().join("synthetic-profile.db");
+    std::fs::write(&target, b"KEEP PROFILE").unwrap();
+    let link = destination.path().join("alias.json");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    shell.update(cx, |shell, cx| shell.export_sessions_to(link.clone(), cx));
+    assert_eq!(std::fs::read(target).unwrap(), b"KEEP PROFILE");
+    assert!(std::fs::symlink_metadata(link)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+}
+
+#[cfg(any(unix, windows))]
+#[gpui_kit::gpui::test]
+fn gui_export_new_file_succeeds_through_private_publisher(cx: &mut TestAppContext) {
+    let (shell, cx, _profile, destination) = export_fixture(cx);
+    let path = destination.path().join("new.json");
+    shell.update(cx, |shell, cx| shell.export_sessions_to(path.clone(), cx));
+    assert!(path.is_file());
+    shell.read_with(cx, |shell, _| {
+        assert_eq!(
+            shell.status.as_ref().unwrap().text,
+            format!("{} 0", crate::i18n::t("已导出连接", "exported"))
+        );
+    });
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(path).unwrap().permissions().mode() & 0o077,
+            0
+        );
+    }
+}
