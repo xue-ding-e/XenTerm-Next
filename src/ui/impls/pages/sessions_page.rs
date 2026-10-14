@@ -48,6 +48,8 @@ pub(crate) struct SessionsPage {
     /// the column had then. The delta between the two is the resize, so the
     /// drag never needs to know where the column sits on screen.
     width_drag: Option<(f32, f32)>,
+    /// Uncommitted drag geometry must not become a saved preference until release.
+    width_preview: Option<f32>,
     /// A click is an event on the list widget's state, and a subscription is
     /// what turns it into an entry in the queue above. Dropped subscriptions
     /// leave a list that renders and does nothing.
@@ -100,6 +102,7 @@ impl SessionsPage {
             store,
             action,
             width_drag: None,
+            width_preview: None,
             _confirm_subscription,
             _new_session_subscription,
         }
@@ -141,7 +144,9 @@ impl Render for SessionsPage {
         // the management pane keeps a 360 px floor before the list takes its
         // share. The narrowed value is not persisted — a small window is a
         // moment, not a preference (#98).
-        let stored = self.store.borrow().session_list_width();
+        let stored = self
+            .width_preview
+            .unwrap_or_else(|| self.store.borrow().session_list_width());
         let viewport = f32::from(window.viewport_size().width);
         let width = stored.min((viewport - 360.0).max(240.0)).max(240.0);
         let dragging = self.width_drag.is_some();
@@ -174,8 +179,8 @@ impl Render for SessionsPage {
                 };
                 let delta = f32::from(event.position.x) - press_x;
                 let next = (start_width + delta).clamp(240.0, 640.0);
-                if this.store.borrow().session_list_width() != next {
-                    this.store.borrow_mut().set_session_list_width(next);
+                if this.width_preview != Some(next) {
+                    this.width_preview = Some(next);
                     cx.notify();
                 }
             }))
@@ -185,14 +190,13 @@ impl Render for SessionsPage {
                     if this.width_drag.take().is_none() {
                         return;
                     }
-                    // Persist the settled width; a save that fails rolls the
-                    // stored value back so the next frame shows what the file
-                    // actually says rather than a width only memory remembers.
-                    // The pre-save value, for a rollback the file's own
-                    // keeper would disagree with.
-                    let rollback = this.store.borrow().cache.session_list_width;
-                    if this.store.borrow_mut().save().is_err() {
-                        this.store.borrow_mut().set_session_list_width(rollback);
+                    let Some(width) = this.width_preview.take() else {
+                        cx.notify();
+                        return;
+                    };
+                    // Persist only the settled preview. The helper captures the
+                    // old preference before changing it and restores it on failure.
+                    if persist_list_width(&mut this.store.borrow_mut(), width).is_err() {
                         tracing::warn!("could not save the session-list width; rolled back");
                     }
                     cx.notify();
@@ -226,6 +230,7 @@ impl Render for SessionsPage {
                             if window.has_active_dialog(cx) {
                                 return;
                             }
+                            this.width_preview = None;
                             this.width_drag = Some((
                                 f32::from(event.position.x),
                                 this.store.borrow().session_list_width(),
@@ -388,3 +393,19 @@ impl SessionsPage {
         .into_any_element()
     }
 }
+
+/// Save a completed resize without leaving an unsaved width in the shared cache.
+/// Restore the raw value, not the clamped getter: zero represents the default.
+fn persist_list_width(store: &mut ConfigStore, width: f32) -> anyhow::Result<()> {
+    let previous = store.cache.session_list_width;
+    store.set_session_list_width(width);
+    if let Err(error) = store.save() {
+        store.cache.session_list_width = previous;
+        return Err(error);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "sessions_page_width_tests.rs"]
+mod width_tests;
