@@ -16,8 +16,8 @@ def package(root, platform, target, sha):
     stage = root / 'next-stage' / stem
     stage.mkdir(parents=True)
     binary = root / 'target' / target / 'release' / ('xenterm.exe' if platform.startswith('windows') else 'xenterm')
-    version = subprocess.check_output([str(binary), '--version'], text=True, timeout=30).strip()
-    cargo_version = __import__('tomllib').loads((root / 'Cargo.toml').read_text())['package']['version']
+    version = subprocess.check_output([str(binary), '--version'], text=True, encoding='utf-8', timeout=30).strip()
+    cargo_version = __import__('tomllib').loads((root / 'Cargo.toml').read_text(encoding='utf-8'))['package']['version']
     if version != 'xenterm ' + cargo_version:
         raise RuntimeError('Binary version differs from Cargo.toml')
     notices = stage
@@ -58,19 +58,19 @@ def package(root, platform, target, sha):
         'Based on https://github.com/ixbaicn/XenTerm; original MIT attribution retained.\n'
         'Windows: unsigned. macOS: ad-hoc signed, not notarized. Do not disable OS security protections.\n'
         'Linux: built on Ubuntu 22.04; system GUI libraries are required.\n'
-        'Executable and existing configuration paths remain xenterm for compatibility.\n')
+        'Executable and existing configuration paths remain xenterm for compatibility.\n', encoding='utf-8')
     if platform.startswith('linux'):
-        dependencies = subprocess.check_output(['ldd', str(binary)], text=True, timeout=30)
+        dependencies = subprocess.check_output(['ldd', str(binary)], text=True, encoding='utf-8', timeout=30)
         if 'not found' in dependencies:
             raise RuntimeError('Linux executable has unresolved runtime libraries')
         (notices / 'RUNTIME.txt').write_text(
             'Built and version-checked on Ubuntu 22.04. Requires the following system libraries.\n'
-            'This is a dependency check, not a GUI startup acceptance test.\n\n' + dependencies)
+            'This is a dependency check, not a GUI startup acceptance test.\n\n' + dependencies, encoding='utf-8')
     (notices / 'BUILD.json').write_text(json.dumps({
         'repository': REPOSITORY, 'sha': sha, 'platform': platform,
-        'binary_version': version, 'rustc': subprocess.check_output(['rustc', '--version'], text=True, timeout=30).strip(),
+        'binary_version': version, 'rustc': subprocess.check_output(['rustc', '--version'], text=True, encoding='utf-8', timeout=30).strip(),
         'ci_run': os.environ['CI_RUN_ID'], 'build_run': os.environ['GITHUB_RUN_ID'],
-    }, indent=2) + '\n')
+    }, indent=2) + '\n', encoding='utf-8')
     dist = root / 'dist'
     dist.mkdir(exist_ok=True)
     output = dist / (stem + PLATFORMS[platform])
@@ -88,5 +88,11 @@ def package(root, platform, target, sha):
             archive.add(stage, arcname=stem)
 
 
+def package_from_environment():
+    # MSVC dev-cmd sets the generic PLATFORM variable to x64. Keep our package
+    # identity in a dedicated variable that the toolchain does not mutate.
+    package(Path.cwd(), os.environ['XENTERM_PACKAGE_PLATFORM'], os.environ['TARGET'], os.environ['SOURCE_SHA'])
+
+
 if __name__ == '__main__':
-    package(Path.cwd(), os.environ['PLATFORM'], os.environ['TARGET'], os.environ['SOURCE_SHA'])
+    package_from_environment()

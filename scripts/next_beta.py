@@ -114,16 +114,16 @@ def prepare_assets(directory, sha, ci_id, build_id):
     if actual == packages | sidecars:
         # An idempotent retry must verify existing provenance/checksums, never
         # overwrite metadata to bless files from another source or build run.
-        if json.loads((directory / (p + 'BUILD.json')).read_text()) != metadata:
+        if json.loads((directory / (p + 'BUILD.json')).read_text(encoding='utf-8')) != metadata:
             raise RuntimeError('Existing release provenance mismatch')
         sums = ''.join(f'{digest(f)}  {f.name}\n' for f in sorted(directory.iterdir())
                        if f.name != p + 'SHA256SUMS')
-        if (directory / (p + 'SHA256SUMS')).read_text() != sums:
+        if (directory / (p + 'SHA256SUMS')).read_text(encoding='utf-8') != sums:
             raise RuntimeError('Existing checksum manifest mismatch')
         return {f.name: digest(f) for f in sorted(directory.iterdir())}
-    (directory / (p + 'BUILD.json')).write_text(json.dumps(metadata, indent=2) + '\n')
+    (directory / (p + 'BUILD.json')).write_text(json.dumps(metadata, indent=2) + '\n', encoding='utf-8')
     files = sorted(directory.iterdir())
-    (directory / (p + 'SHA256SUMS')).write_text(''.join(f'{digest(f)}  {f.name}\n' for f in files))
+    (directory / (p + 'SHA256SUMS')).write_text(''.join(f'{digest(f)}  {f.name}\n' for f in files), encoding='utf-8')
     return {f.name: digest(f) for f in sorted(directory.iterdir())}
 
 
@@ -133,7 +133,7 @@ def obsolete_assets(assets, current):
 
 class GitHub:
     def command(self, *args, **kwargs):
-        return subprocess.check_output(args, text=True, **kwargs).strip()
+        return subprocess.check_output(args, text=True, encoding='utf-8', **kwargs).strip()
 
     def api(self, endpoint, method='GET', body=None):
         args = ['gh', 'api', f'repos/{REPOSITORY}/{endpoint}', '--method', method]

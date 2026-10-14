@@ -127,7 +127,7 @@ class AssetTests(unittest.TestCase):
             path = Path(tmp); archives(path)
             hashes = release.prepare_assets(path, SHA, '12', '34')
             self.assertEqual(len(hashes), 5)
-            sums = (path / (release.prefix(SHA) + 'SHA256SUMS')).read_text()
+            sums = (path / (release.prefix(SHA) + 'SHA256SUMS')).read_text(encoding='utf-8')
             for file in path.iterdir():
                 self.assertEqual(hashes[file.name], release.digest(file))
                 if not file.name.endswith('SHA256SUMS'):
@@ -155,7 +155,7 @@ class AssetTests(unittest.TestCase):
                 path = Path(tmp); archives(path)
                 release.prepare_assets(path, SHA, '12', '34')
                 file = path / (release.prefix(SHA) + suffix)
-                file.write_text('{}' if suffix == 'BUILD.json' else 'wrong')
+                file.write_text('{}' if suffix == 'BUILD.json' else 'wrong', encoding='utf-8')
                 with self.assertRaises(RuntimeError): release.prepare_assets(path, SHA, '12', '34')
 
     def test_retry_does_not_overwrite_foreign_build_run(self):
@@ -262,6 +262,20 @@ class PublisherTests(unittest.TestCase):
 
 
 class PackagingTests(unittest.TestCase):
+    def test_windows_toolchain_platform_does_not_override_package_identity(self):
+        import os
+        import sys
+        from unittest.mock import patch
+        sys.modules['next_beta'] = release
+        package_spec = importlib.util.spec_from_file_location('next_beta_package', ROOT / 'scripts/next_beta_package.py')
+        package = importlib.util.module_from_spec(package_spec)
+        package_spec.loader.exec_module(package)
+        with patch.dict(os.environ, {'PLATFORM': 'x64', 'XENTERM_PACKAGE_PLATFORM': 'windows-x86_64',
+                                     'TARGET': 'x86_64-pc-windows-msvc', 'SOURCE_SHA': SHA}), \
+             patch.object(package, 'package') as build:
+            package.package_from_environment()
+        self.assertEqual(build.call_args.args[1], 'windows-x86_64')
+
     def test_real_archive_layout_for_three_platforms_with_synthetic_binaries(self):
         # Exercise the actual packaging code and archive structures. Native
         # codesign/ditto/sips are simulated here; genuine OS builds remain CI's
@@ -278,10 +292,10 @@ class PackagingTests(unittest.TestCase):
         for platform in release.PLATFORMS:
             with self.subTest(platform=platform), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
-                (root / 'Cargo.toml').write_text('[package]\nversion = "1.2.3"\n')
-                (root / 'LICENSE').write_text('MIT attribution')
-                (root / 'THIRD_PARTY_NOTICES.md').write_text('notices')
-                (root / 'licenses').mkdir(); (root / 'licenses/dependency.txt').write_text('license')
+                (root / 'Cargo.toml').write_text('# 中文注释\n[package]\nversion = "1.2.3"\n', encoding='utf-8')
+                (root / 'LICENSE').write_text('MIT attribution', encoding='utf-8')
+                (root / 'THIRD_PARTY_NOTICES.md').write_text('notices', encoding='utf-8')
+                (root / 'licenses').mkdir(); (root / 'licenses/dependency.txt').write_text('license', encoding='utf-8')
                 (root / 'assets').mkdir(); (root / 'assets/icon@512.png').write_bytes(b'synthetic image')
                 (root / 'assets/Info.plist').write_bytes(package.plistlib.dumps({'CFBundleExecutable': 'xenterm'}))
                 target = root / 'target/synthetic/release'; target.mkdir(parents=True)
@@ -297,7 +311,13 @@ class PackagingTests(unittest.TestCase):
                         with zipfile.ZipFile(destination, 'w') as archive:
                             for file in app.rglob('*'):
                                 if file.is_file(): archive.write(file, file.relative_to(app.parent))
-                with patch.dict(os.environ, {'CI_RUN_ID': '12', 'GITHUB_RUN_ID': '34'}), \
+                original_read = Path.read_text
+                def simulated_windows_read(path, *args, **kwargs):
+                    if path.name == 'Cargo.toml':
+                        self.assertEqual(kwargs.get('encoding'), 'utf-8')
+                    return original_read(path, *args, **kwargs)
+                with patch.object(Path, 'read_text', simulated_windows_read), \
+                     patch.dict(os.environ, {'CI_RUN_ID': '12', 'GITHUB_RUN_ID': '34'}), \
                      patch.object(package.subprocess, 'check_output', side_effect=output), \
                      patch.object(package.subprocess, 'run', side_effect=run):
                     package.package(root, platform, 'synthetic', SHA)
@@ -313,7 +333,7 @@ class PackagingTests(unittest.TestCase):
 class WorkflowTests(unittest.TestCase):
     def test_single_publisher_and_pinned_actions(self):
         import re
-        workflow = (ROOT / '.github/workflows/next-beta.yml').read_text()
+        workflow = (ROOT / '.github/workflows/next-beta.yml').read_text(encoding='utf-8')
         self.assertIn('cancel-in-progress: false', workflow)
         self.assertIn("run.head_sha !== main.object.sha", workflow)
         self.assertNotIn('pull_request:', workflow)
@@ -321,16 +341,16 @@ class WorkflowTests(unittest.TestCase):
         for action in re.findall(r'uses: ([^\s]+)', workflow):
             if not action.startswith('./'):
                 self.assertRegex(action, r'@[0-9a-f]{40}$')
-        original = (ROOT / '.github/workflows/release.yml').read_text()
+        original = (ROOT / '.github/workflows/release.yml').read_text(encoding='utf-8')
         self.assertIn('[ "${INPUT_MODE:-beta}" = "beta" ]', original)
         self.assertIn('Next beta is published only by next-beta.yml', original)
 
     def test_candidate_packaging_cannot_publish(self):
-        ci = (ROOT / '.github/workflows/ci.yml').read_text().split('  next-beta-dry-run:', 1)[1]
+        ci = (ROOT / '.github/workflows/ci.yml').read_text(encoding='utf-8').split('  next-beta-dry-run:', 1)[1]
         self.assertIn("github.ref == 'refs/heads/ci/next-beta-preview-20261014'", ci)
         self.assertIn('needs: [desktop, migration-e2e, headless-e2e, windows-ssh, installer, installer-windows, installer-macos]', ci)
         self.assertNotIn('contents: write', ci)
-        build = (ROOT / '.github/workflows/next-beta-build.yml').read_text()
+        build = (ROOT / '.github/workflows/next-beta-build.yml').read_text(encoding='utf-8')
         self.assertNotIn('contents: write', build)
         self.assertNotIn('scripts/next_beta.py', build)
         self.assertIn('prepare_assets(', build)
@@ -339,7 +359,7 @@ class WorkflowTests(unittest.TestCase):
             self.assertRegex(action, r'@[0-9a-f]{40}$')
 
     def test_ci_wires_policy_tests_and_preserves_security_regression(self):
-        workflow = (ROOT / '.github/workflows/ci.yml').read_text()
+        workflow = (ROOT / '.github/workflows/ci.yml').read_text(encoding='utf-8')
         self.assertIn('python3 tests/next_beta_test.py', workflow)
         self.assertIn('ui::shell::file_dialog_tests::gui_export_', workflow)
         self.assertEqual(workflow.count('"scripts/next_beta*.py"'), 2)
