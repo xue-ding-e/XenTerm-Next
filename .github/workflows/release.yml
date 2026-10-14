@@ -444,15 +444,9 @@ jobs:
         shell: bash
         run: |
           set -eu
-          # snapshot.debian.org at a frozen timestamp, not archive.debian.org:
-          # the archive's buster indexes still list pool files it has since
-          # pruned (cmake 3.13.4-1, libmpc3 1.1.0-1 both 404 there), so apt
-          # resolves a package and then fails to fetch it. A snapshot is
-          # immutable and immune to that drift; the timestamp is late in
-          # buster LTS, when the pool was still complete.
           sed -i \
-            -e 's|deb.debian.org/debian|https://snapshot.debian.org/archive/debian/20240601T000000Z|g' \
-            -e 's|security.debian.org/debian-security|https://snapshot.debian.org/archive/debian-security/20240601T000000Z|g' \
+            -e 's|deb.debian.org/debian|archive.debian.org/debian|g' \
+            -e 's|security.debian.org/debian-security|archive.debian.org/debian-security|g' \
             -e '/buster-updates/d' \
             /etc/apt/sources.list
           printf 'Acquire::Check-Valid-Until "false";\n' > /etc/apt/apt.conf.d/99archive
