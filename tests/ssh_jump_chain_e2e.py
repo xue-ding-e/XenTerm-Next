@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import pathlib
+import queue
 import select
 import shutil
 import socket
@@ -282,6 +283,60 @@ class Fixture:
         assert value["exit_code"] == 0 and value["stdout"].startswith("multi-hop-command:"), value
         return value
 
+    def check_completed_command_closes_transports(self):
+        # Keep the MCP process alive after its reply: process exit must not hide
+        # leaked target/bastion transports after command cleanup.
+        replies = queue.Queue()
+        with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as errors:
+            process = subprocess.Popen(
+                [str(self.exe), "--data-dir", str(self.config), "mcp", "serve"],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors,
+                text=True, encoding="utf-8", env=self.env,
+            )
+            def read_replies():
+                for line in process.stdout:
+                    if line.strip():
+                        replies.put(json.loads(line))
+            reader = threading.Thread(target=read_replies, daemon=True)
+            reader.start()
+            try:
+                requests = [
+                    dict(jsonrpc="2.0", id=1, method="initialize", params=dict(
+                        protocolVersion="2025-06-18", capabilities={},
+                        clientInfo=dict(name="command-cleanup-regression", version="1"))),
+                    dict(jsonrpc="2.0", method="notifications/initialized", params={}),
+                    dict(jsonrpc="2.0", id=2, method="tools/call", params=dict(
+                        name="run_command", arguments=dict(session_id="target",
+                        command="fixture", timeout_seconds=8))),
+                ]
+                process.stdin.write("".join(json.dumps(item) + "\n" for item in requests))
+                process.stdin.flush()
+                response = replies.get(timeout=15)
+                while response.get("id") != 2:
+                    response = replies.get(timeout=15)
+                assert "result" in response, response
+                result = response["result"]
+                assert not result.get("isError"), result
+                value = result["structuredContent"]
+                assert value["exit_code"] == 0 and not value["timed_out"], value
+                assert value["stdout"] == "multi-hop-command:target\n", value
+                deadline = time.monotonic() + 3
+                while any(t.is_active() for n in self.nodes for t in n.transports):
+                    assert time.monotonic() < deadline, "completed command left an active SSH transport"
+                    time.sleep(.02)
+                assert process.poll() is None, "MCP process exit masked transport cleanup"
+                print("PASS: completed command closes target and both bastions while MCP remains alive")
+            finally:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+                reader.join(timeout=5)
+                process.stdin.close()
+                process.stdout.close()
+
     def check(self, regression_only=False):
         self.explicit_profile = not regression_only
         if regression_only:
@@ -297,6 +352,7 @@ class Fixture:
         assert ("inner.invalid", 22) in self.nodes[0].forwarded
         assert ("target.invalid", 22) in self.nodes[1].forwarded
         print("PASS: direct, one-hop and two-hop command execution")
+        self.check_completed_command_closes_transports()
         self.nodes[1].interactive = True
         self.command()
         self.nodes[1].interactive = False
