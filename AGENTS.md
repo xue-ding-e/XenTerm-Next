@@ -25,6 +25,6 @@ an entry point, not a separate policy.
 - If another tool needs a rules entry point, link it here or to the guide instead
   of copying policy text. Keep both guide languages aligned when policy changes.
 
-## Fork-specific branch entry point
+## Independent repository branch entry point
 
-For `xue-ding-e/XenTerm`, first read the [fork branch policy](CONTRIBUTING.md#fork-branch-policy-xue-ding-exenterm) ([中文](CONTRIBUTING.zh-CN.md#本-fork-的分支约定xue-ding-exenterm)). Keep custom development on linear `main`; `upstream-main` is an unchanged official mirror. A fetch never authorizes integrating or overwriting custom work.
+For `xue-ding-e/XenTerm-Next`, first read the [branch policy](CONTRIBUTING.md#independent-repository-branch-policy-xue-ding-exenterm-next) ([中文](CONTRIBUTING.zh-CN.md#独立仓库的分支约定xue-ding-exenterm-next)). Keep custom development on linear `main`; `upstream-main` is an unchanged official mirror. A fetch never authorizes integrating or overwriting custom work.

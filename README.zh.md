@@ -1,22 +1,22 @@
-> 本 Fork 的自用功能维护在 `main`；`upstream-main` 仅跟踪官方，不会自动合入自用主线。开发与清理前请阅读[分支约定](CONTRIBUTING.zh-CN.md#本-fork-的分支约定xue-ding-exenterm)。
+> **XenTerm Next** 是基于 [ixbaicn/XenTerm](https://github.com/ixbaicn/XenTerm) 独立维护的增强版 SSH / SFTP / terminal 客户端。本仓库保留上游来源、MIT 许可证及原作者版权，不代表官方项目。
+>
+> 自有功能维护在 `main`；`upstream-main` 仅保存官方代码，当前手动快进更新，不会自动合入 `main`。请从本仓库的[源码安装](#快速开始)、[开发说明](#开发)和[分支约定](CONTRIBUTING.zh-CN.md#独立仓库的分支约定xue-ding-exenterm-next)开始。
 
 <p align="center">
   <a href="README.md">English</a> · <b>简体中文</b>
 </p>
 
-<h1 align="center">XenTerm</h1>
+<h1 align="center">XenTerm Next</h1>
 
 <p align="center">
   <em>面向 Windows / macOS / Linux 的轻量级 SSH / SFTP / 终端客户端 —— 纯 Rust 编写，无运行时、无 JVM。</em>
 </p>
 
 <p align="center">
-  <a href="https://github.com/ixbaicn/XenTerm/stargazers"><img src="https://img.shields.io/github/stars/ixbaicn/XenTerm?style=flat-square&label=Stars&color=2ea043" alt="Stars"></a>
-  <a href="https://github.com/ixbaicn/XenTerm/network/members"><img src="https://img.shields.io/github/forks/ixbaicn/XenTerm?style=flat-square&label=Forks" alt="Forks"></a>
-  <a href="https://github.com/ixbaicn/XenTerm/releases"><img src="https://img.shields.io/github/v/release/ixbaicn/XenTerm?style=flat-square&label=Release&color=00b8d4" alt="Release"></a>
-  <a href="https://github.com/ixbaicn/XenTerm/commits/master"><img src="https://img.shields.io/github/last-commit/ixbaicn/XenTerm?style=flat-square&label=Last%20commit" alt="Last commit"></a>
+  <a href="https://github.com/xue-ding-e/XenTerm-Next/stargazers"><img src="https://img.shields.io/github/stars/xue-ding-e/XenTerm-Next?style=flat-square&label=Stars&color=2ea043" alt="Stars"></a>
+  <a href="https://github.com/xue-ding-e/XenTerm-Next/releases"><img src="https://img.shields.io/github/v/release/xue-ding-e/XenTerm-Next?style=flat-square&label=Release&color=00b8d4" alt="Release"></a>
+  <a href="https://github.com/xue-ding-e/XenTerm-Next/commits/main"><img src="https://img.shields.io/github/last-commit/xue-ding-e/XenTerm-Next?style=flat-square&label=Last%20commit" alt="Last commit"></a>
   <a href="#%E8%AE%B8%E5%8F%AF%E8%AF%81"><img src="https://img.shields.io/badge/License-MIT-blue?style=flat-square" alt="License: MIT"></a>
-  <a href="https://coderabbit.ai"><img src="https://img.shields.io/coderabbit/prs/github/ixbaicn/XenTerm?utm_source=oss&utm_medium=github&utm_campaign=ixbaicn%2FXenTerm&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews" alt="CodeRabbit Pull Request Reviews"></a>
 </p>
 
 <p align="center">
@@ -180,9 +180,7 @@ Linux 原生界面的验证不能代替 Windows、macOS 原生交互验证；请
 
 ## 安装
 
-每次打 `v*` 标签，GitHub Actions 会构建 **Windows**、**macOS**（Apple 芯片与 Intel）和
-**Linux**（x86_64 与 aarch64）安装包，并发布到
-[Releases](https://github.com/ixbaicn/XenTerm/releases) 页面。
+本独立仓库尚未发布安装包。要使用 `main` 中的增强功能，请按[快速开始](#快速开始)从源码构建；后续安装包以[本仓库 Releases](https://github.com/xue-ding-e/XenTerm-Next/releases) 实际内容为准。下述说明介绍继承的 Windows、macOS 和 Linux 包格式，不表示这些包已发布。上游安装包见[官方 Releases](https://github.com/ixbaicn/XenTerm/releases)，不包含本仓库全部增强功能。
 
 ### Windows
 
@@ -268,8 +266,8 @@ PREFIX="$HOME/Apps/XenTerm" ./install-linux.sh /path/to/xenterm
 ## 快速开始
 
 ```bash
-git clone https://github.com/ixbaicn/XenTerm
-cd xenterm
+git clone --branch main https://github.com/xue-ding-e/XenTerm-Next.git
+cd XenTerm-Next
 cargo run --release
 ```
 

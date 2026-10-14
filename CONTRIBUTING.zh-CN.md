@@ -1,8 +1,8 @@
 <p align="center">
 
-## 本 Fork 的分支约定（xue-ding-e/XenTerm）
+## 独立仓库的分支约定（xue-ding-e/XenTerm-Next）
 
-此节仅适用于本 Fork，不代表上游项目的分支约定。
+此节仅适用于独立维护的 XenTerm Next，不代表上游项目的分支约定。官方镜像当前手动快进更新，尚未配置定时同步。
 
 - `main` 是自用开发主线，保留全部已经验证的自有功能；新增提交保持单父提交，日常更新使用 rebase，集成使用 squash 或 rebase，不创建 merge commit。
 - `upstream-main` 只镜像 `ixbaicn/XenTerm` 的官方 `main`，保留官方真实提交及其既有 merge 历史。它不是自用开发分支，不允许写入自有补丁。

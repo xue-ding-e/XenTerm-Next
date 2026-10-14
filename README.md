@@ -1,22 +1,22 @@
-> This fork maintains custom features on `main`; `upstream-main` only tracks upstream and never integrates automatically. Read the [fork branch policy](CONTRIBUTING.md#fork-branch-policy-xue-ding-exenterm) before development or cleanup.
+> **XenTerm Next** is an independently maintained, enhanced SSH / SFTP / terminal client based on [ixbaicn/XenTerm](https://github.com/ixbaicn/XenTerm). It preserves upstream attribution, the MIT license and original copyright; it is not the official upstream project.
+>
+> Custom features live on `main`; `upstream-main` retains official code and is currently updated manually by fast-forward, never automatically integrated into `main`. Start with this repository’s [source installation](#quick-start), [development guide](#development) and [branch policy](CONTRIBUTING.md#independent-repository-branch-policy-xue-ding-exenterm-next).
 
 <p align="center">
   <b>English</b> · <a href="README.zh.md">简体中文</a>
 </p>
 
-<h1 align="center">XenTerm</h1>
+<h1 align="center">XenTerm Next</h1>
 
 <p align="center">
   <em>A lightweight SSH / SFTP / terminal client for Windows, macOS and Linux — written in Rust, no runtime, no JVM.</em>
 </p>
 
 <p align="center">
-  <a href="https://github.com/ixbaicn/XenTerm/stargazers"><img src="https://img.shields.io/github/stars/ixbaicn/XenTerm?style=flat-square&label=Stars&color=2ea043" alt="Stars"></a>
-  <a href="https://github.com/ixbaicn/XenTerm/network/members"><img src="https://img.shields.io/github/forks/ixbaicn/XenTerm?style=flat-square&label=Forks" alt="Forks"></a>
-  <a href="https://github.com/ixbaicn/XenTerm/releases"><img src="https://img.shields.io/github/v/release/ixbaicn/XenTerm?style=flat-square&label=Release&color=00b8d4" alt="Release"></a>
-  <a href="https://github.com/ixbaicn/XenTerm/commits/master"><img src="https://img.shields.io/github/last-commit/ixbaicn/XenTerm?style=flat-square&label=Last%20commit" alt="Last commit"></a>
+  <a href="https://github.com/xue-ding-e/XenTerm-Next/stargazers"><img src="https://img.shields.io/github/stars/xue-ding-e/XenTerm-Next?style=flat-square&label=Stars&color=2ea043" alt="Stars"></a>
+  <a href="https://github.com/xue-ding-e/XenTerm-Next/releases"><img src="https://img.shields.io/github/v/release/xue-ding-e/XenTerm-Next?style=flat-square&label=Release&color=00b8d4" alt="Release"></a>
+  <a href="https://github.com/xue-ding-e/XenTerm-Next/commits/main"><img src="https://img.shields.io/github/last-commit/xue-ding-e/XenTerm-Next?style=flat-square&label=Last%20commit" alt="Last commit"></a>
   <a href="#license"><img src="https://img.shields.io/badge/License-MIT-blue?style=flat-square" alt="License: MIT"></a>
-  <a href="https://coderabbit.ai"><img src="https://img.shields.io/coderabbit/prs/github/ixbaicn/XenTerm?utm_source=oss&utm_medium=github&utm_campaign=ixbaicn%2FXenTerm&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews" alt="CodeRabbit Pull Request Reviews"></a>
 </p>
 
 <p align="center">
@@ -209,9 +209,7 @@ behaviour still require platform testing.
 
 ## Install
 
-Every `v*` tag builds **Windows**, **macOS** (Apple Silicon and Intel) and **Linux**
-(x86_64 and aarch64) packages in GitHub Actions and publishes them on the
-[Releases](https://github.com/ixbaicn/XenTerm/releases) page.
+This independent repository has not published installation packages yet. Build the enhanced `main` from source using [Quick start](#quick-start); future packages will appear in [this repository’s Releases](https://github.com/xue-ding-e/XenTerm-Next/releases). The instructions below describe inherited Windows, macOS and Linux package formats, not packages already published here. [Official upstream releases](https://github.com/ixbaicn/XenTerm/releases) do not include all enhancements from this repository.
 
 ### Windows
 
@@ -321,8 +319,8 @@ launcher before retrying.
 ## Quick start
 
 ```bash
-git clone https://github.com/ixbaicn/XenTerm
-cd xenterm
+git clone --branch main https://github.com/xue-ding-e/XenTerm-Next.git
+cd XenTerm-Next
 cargo run --release
 ```
 
