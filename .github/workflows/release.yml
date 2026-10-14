@@ -53,6 +53,14 @@ jobs:
           INPUT_MODE: ${{ inputs.mode }}
         run: |
           set -eu
+          # Next's rolling beta has one publisher: next-beta.yml. Preserve the
+          # existing formal-tag and dry-run paths, including other repositories.
+          if [ "${GITHUB_REPOSITORY:-}" = "xue-ding-e/XenTerm-Next" ] && \
+             [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] && \
+             [ "${INPUT_MODE:-beta}" = "beta" ]; then
+            echo "Next beta is published only by next-beta.yml after same-SHA CI."
+            exit 1
+          fi
           CARGO_VERSION="$(sed -n '/^\[package\]/,/^\[/ s/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
           if [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$GITHUB_REF_TYPE" = "tag" ]; then
             MODE=stable
@@ -570,3 +578,4 @@ jobs:
             --prerelease \
             --title "Beta (${SHORT_SHA})" \
             --notes "自动构建的预览版（beta），来自 commit ${SHORT_SHA}。每次代码提交都会替换此预览版，始终只保留最新一个。"
+

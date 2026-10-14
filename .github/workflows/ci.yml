@@ -10,9 +10,9 @@ name: CI
 
 on:
   push:
-    paths: ["Cargo.toml", "Cargo.lock", "build.rs", "src/**", "tests/*_e2e.py", "tests/tls_proxy_fixture.py", "assets/install-linux.sh", "tests/install_linux_test.py", "wix/**", "packaging/macos/**", "tests/windows_installer*", "tests/macos_installer*", "tests/release_workflow_test.py", ".github/workflows/ci.yml", ".github/workflows/release.yml"]
+    paths: ["Cargo.toml", "Cargo.lock", "build.rs", "src/**", "tests/*_e2e.py", "tests/tls_proxy_fixture.py", "assets/install-linux.sh", "tests/install_linux_test.py", "wix/**", "packaging/macos/**", "tests/windows_installer*", "tests/macos_installer*", "tests/release_workflow_test.py", ".github/workflows/ci.yml", ".github/workflows/release.yml", ".github/workflows/next-beta.yml", ".github/workflows/next-beta-build.yml", "scripts/next_beta*.py", "tests/next_beta*.py"]
   pull_request:
-    paths: ["Cargo.toml", "Cargo.lock", "build.rs", "src/**", "tests/*_e2e.py", "tests/tls_proxy_fixture.py", "assets/install-linux.sh", "tests/install_linux_test.py", "wix/**", "packaging/macos/**", "tests/windows_installer*", "tests/macos_installer*", "tests/release_workflow_test.py", ".github/workflows/ci.yml", ".github/workflows/release.yml"]
+    paths: ["Cargo.toml", "Cargo.lock", "build.rs", "src/**", "tests/*_e2e.py", "tests/tls_proxy_fixture.py", "assets/install-linux.sh", "tests/install_linux_test.py", "wix/**", "packaging/macos/**", "tests/windows_installer*", "tests/macos_installer*", "tests/release_workflow_test.py", ".github/workflows/ci.yml", ".github/workflows/release.yml", ".github/workflows/next-beta.yml", ".github/workflows/next-beta-build.yml", "scripts/next_beta*.py", "tests/next_beta*.py"]
   workflow_dispatch:
 
 permissions:
@@ -188,6 +188,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y desktop-file-utils python3-gi gir1.2-glib-2.0
       - run: python3 tests/release_workflow_test.py
+      - run: python3 tests/next_beta_test.py
       - name: Check installer syntax
         run: bash -n assets/install-linux.sh
       - name: Run isolated installer regressions
@@ -232,3 +233,18 @@ jobs:
       - run: python tests/macos_installer_test.py
       - name: Build and inspect genuine Apple Installer packages
         run: bash tests/macos_installer_build.sh
+
+
+  next-beta-dry-run:
+    # Candidate validation after every normal CI gate succeeds for this same
+    # SHA. Main keeps its separate completed-CI release gate; this job has no
+    # publish step and cannot write a tag or release.
+    if: github.repository == 'xue-ding-e/XenTerm-Next' && github.event_name == 'push' && github.ref == 'refs/heads/ci/next-beta-preview-20261014'
+    needs: [desktop, migration-e2e, headless-e2e, windows-ssh, installer, installer-windows, installer-macos]
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/next-beta-build.yml
+    with:
+      source_sha: ${{ github.sha }}
+      ci_run: ${{ format('{0}', github.run_id) }}
