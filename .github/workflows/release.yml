@@ -448,7 +448,11 @@ jobs:
         shell: bash
         run: |
           set -eu
-          dnf install -y \
+          # --enablerepo=devel: RHEL 8 filed libxkbcommon-x11 in Devel rather
+          # than AppStream/CRB, and Rocky mirrors that layout with the repo
+          # disabled by default. `--enablerepo` is core dnf, so no plugin
+          # install is needed to reach it.
+          dnf install -y --enablerepo=devel \
             ca-certificates curl git xz file tar \
             gcc gcc-c++ make pkgconf-pkg-config cmake \
             fontconfig-devel freetype-devel \
