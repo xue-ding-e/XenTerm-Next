@@ -1644,6 +1644,28 @@ impl ConfigStore {
         self.cache.sidebar_width = v;
     }
 
+    /// Vertical gap between navigation-rail buttons, clamped to 0–24 px.
+    pub fn nav_spacing(&self) -> f32 {
+        self.cache.nav_spacing.clamp(0.0, 24.0)
+    }
+    pub fn set_nav_spacing(&mut self, v: f32) {
+        self.cache.nav_spacing = v.clamp(0.0, 24.0);
+    }
+
+    /// The sessions page's list-column width, clamped to 240–640 px; an
+    /// unset/zero value falls back to the default.
+    pub fn session_list_width(&self) -> f32 {
+        let w = self.cache.session_list_width;
+        if w <= 0.0 {
+            default_session_list_width()
+        } else {
+            w.clamp(240.0, 640.0)
+        }
+    }
+    pub fn set_session_list_width(&mut self, v: f32) {
+        self.cache.session_list_width = v.clamp(240.0, 640.0);
+    }
+
     /// Resource / SFTP panel docking geometry, persisted across restarts (#dock).
     /// Sizes fall back to their defaults when unset/zero; docks fall back to a
     /// sensible edge when the stored string is empty.
@@ -1938,27 +1960,12 @@ impl ConfigStore {
     /// interaction, materialise the default-collapsed state for every existing
     /// folder so expanding one folder does not accidentally expand the rest.
     pub fn set_session_group_collapsed(&mut self, name: &str, collapsed: bool) {
+        // Seeded empty on the first write: `None` reads as "every group
+        // expanded", so the stored list has to start from that same state —
+        // seeding it with every group's name collapsed the whole tree on the
+        // first click, folding groups the user never touched (#98).
         if self.cache.collapsed_session_groups.is_none() {
-            let mut groups = vec!["system".to_string()];
-            if self
-                .cache
-                .sessions
-                .iter()
-                .any(|session| session.group.is_empty())
-            {
-                groups.push("default".to_string());
-            }
-            groups.extend(self.cache.groups.iter().cloned());
-            groups.extend(
-                self.cache
-                    .sessions
-                    .iter()
-                    .filter(|session| !session.group.is_empty())
-                    .map(|session| session.group.clone()),
-            );
-            groups.sort();
-            groups.dedup();
-            self.cache.collapsed_session_groups = Some(groups);
+            self.cache.collapsed_session_groups = Some(Vec::new());
         }
 
         let groups = self.cache.collapsed_session_groups.as_mut().unwrap();
@@ -2969,7 +2976,12 @@ mod tests {
     }
 
     #[test]
-    fn quick_connect_groups_default_collapsed_and_remember_expansion() {
+    fn collapsed_groups_start_expanded_and_the_first_write_touches_one_group() {
+        // The unified default (#98): `None` means every group expanded, in the
+        // sessions list and the quick-connect palette alike, and the first
+        // write records exactly the group it was asked about. The old first
+        // write pre-collapsed every group — one click in the list hid them
+        // all, and the palette leaned on that accident for its own default.
         let mut store = temp_store();
         store.cache.groups = vec!["production".into(), "staging".into()];
         store.cache.sessions.push(Session {
@@ -2978,19 +2990,16 @@ mod tests {
         });
 
         assert!(store.collapsed_session_groups().is_none());
-        store.set_session_group_collapsed("production", false);
+        store.set_session_group_collapsed("production", true);
 
         let collapsed = store.collapsed_session_groups().unwrap();
-        assert!(!collapsed.iter().any(|group| group == "production"));
-        assert!(collapsed.iter().any(|group| group == "staging"));
-        assert!(collapsed.iter().any(|group| group == "system"));
+        assert_eq!(collapsed, vec!["production".to_string()]);
+        assert!(!collapsed.iter().any(|group| group == "staging"));
+        assert!(!collapsed.iter().any(|group| group == "system"));
 
-        store.set_session_group_collapsed("production", true);
-        assert!(store
-            .collapsed_session_groups()
-            .unwrap()
-            .iter()
-            .any(|group| group == "production"));
+        // Expansion is remembered the same way — by touching one group.
+        store.set_session_group_collapsed("production", false);
+        assert!(store.collapsed_session_groups().unwrap().is_empty());
     }
 
     /// Display order for these tests: default(d1, d2), alpha(a1), beta(b1, b2)
@@ -4463,5 +4472,42 @@ mod wallpaper_settings_tests {
         assert!(store.save_wallpaper_settings(changed).is_err());
         assert_eq!(store.wallpaper_settings(), before);
         assert_eq!(std::fs::read(blocked).unwrap(), b"keep");
+    }
+}
+
+#[cfg(test)]
+mod issue98_layout_tests {
+    use super::*;
+
+    fn store_with_groups() -> ConfigStore {
+        let mut store = ConfigStore {
+            path: std::env::temp_dir().join(format!(
+                "xenterm-i98-{}.db",
+                uuid::Uuid::new_v4()
+            )),
+            backup_dir: None,
+            cache: ConfigFile::default(),
+            key: [7; 32],
+            keyring_enabled: false,
+            saved_state: std::sync::Mutex::new(crate::config::SavedState::default()).into(),
+        };
+        store.cache.groups = vec!["alpha".to_string(), "beta".to_string()];
+        store
+    }
+
+    #[test]
+    fn nav_spacing_and_list_width_clamp_to_their_ranges() {
+        let mut store = store_with_groups();
+        store.set_nav_spacing(99.0);
+        assert_eq!(store.nav_spacing(), 24.0);
+        store.set_nav_spacing(-5.0);
+        assert_eq!(store.nav_spacing(), 0.0);
+
+        // Unset falls back to the default rather than a zero-width column.
+        assert_eq!(store.session_list_width(), 380.0);
+        store.set_session_list_width(10_000.0);
+        assert_eq!(store.session_list_width(), 640.0);
+        store.set_session_list_width(1.0);
+        assert_eq!(store.session_list_width(), 240.0);
     }
 }

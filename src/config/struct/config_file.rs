@@ -71,6 +71,12 @@ pub(crate) const DEFAULT_WALLPAPER_OVERLAY: f32 = 1.0 - DEFAULT_WALLPAPER_TRANSP
 pub(crate) fn default_sidebar_width() -> f32 {
     220.0
 }
+pub(crate) fn default_nav_spacing() -> f32 {
+    8.0
+}
+pub(crate) fn default_session_list_width() -> f32 {
+    380.0
+}
 pub(crate) fn default_sidebar_height() -> f32 {
     240.0
 }
@@ -238,6 +244,15 @@ pub struct ConfigFile {
     /// Persisted across restarts so the drag-resized width sticks.
     #[serde(default = "default_sidebar_width")]
     pub sidebar_width: f32,
+    /// Vertical gap between the navigation rail's page buttons, 0–24 logical
+    /// px. Scoped to the rail on purpose: a global "spacing" knob would scale
+    /// forms and terminal pitch with it (#98).
+    #[serde(default = "default_nav_spacing")]
+    pub nav_spacing: f32,
+    /// Width of the sessions page's list column, 240–640 logical px, so the
+    /// drag handle's result survives a restart (#98).
+    #[serde(default = "default_session_list_width")]
+    pub session_list_width: f32,
     /// Resource-panel docking: size when docked top/bottom, and which edge it is
     /// docked to (left|right|top|bottom). Persisted so the layout sticks (#dock).
     #[serde(default = "default_sidebar_height")]

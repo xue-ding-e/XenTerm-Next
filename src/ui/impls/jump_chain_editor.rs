@@ -9,9 +9,9 @@ use gpui_kit::component::Disableable;
 use gpui_kit::{
     assets::IconName,
     component::{
-        button::{Button, ButtonVariants, DropdownButton},
+        button::{Button, ButtonVariants},
         h_flex,
-        menu::{PopupMenu, PopupMenuItem},
+        menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
         setting::{SettingField, SettingGroup, SettingItem, SettingPage},
         tooltip::Tooltip,
         v_flex, ActiveTheme, Sizable as _,
@@ -144,32 +144,30 @@ pub(super) fn page(
                 let d = draft.clone();
                 let s = store.clone();
                 let e = editor.clone();
+                // The whole button is the picker: its label shows the chosen
+                // bastion, and every pixel of it opens the choices — the old
+                // split kept the main half dead (#98).
                 let choose =
-                    DropdownButton::new(SharedString::from(format!("jump-select-{index}")))
+                    Button::new(SharedString::from(format!("jump-select-{index}")))
+                        .debug_selector(move || format!("jump-select-trigger-{index}"))
                         .w_full()
                         .min_w_0()
-                        .button(
-                            Button::new(SharedString::from(format!("jump-select-trigger-{index}")))
-                                .debug_selector(move || format!("jump-select-trigger-{index}"))
-                                .flex_1()
+                        .accessibility_label(label.clone())
+                        .child({
+                            let tooltip = label.clone();
+                            div()
+                                .id("label-value")
+                                .w_full()
                                 .min_w_0()
-                                .accessibility_label(label.clone())
-                                .child({
-                                    let tooltip = label.clone();
-                                    div()
-                                        .id("label-value")
-                                        .w_full()
-                                        .min_w_0()
-                                        .overflow_hidden()
-                                        .whitespace_nowrap()
-                                        .text_ellipsis()
-                                        .hoverable_tooltip(move |window, cx| {
-                                            full_label_tooltip(tooltip.clone(), window, cx)
-                                        })
-                                        .child(label)
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .hoverable_tooltip(move |window, cx| {
+                                    full_label_tooltip(tooltip.clone(), window, cx)
                                 })
-                                .outline(),
-                        )
+                                .child(label)
+                        })
+                        .outline()
                         .dropdown_menu(move |menu, window, _| {
                             let mut menu = bounded_menu(menu, window);
                             for (id, label) in &choices {
@@ -279,14 +277,13 @@ pub(super) fn page(
             let d = draft.clone();
             let s = store.clone();
             let e = editor.clone();
-            let add = DropdownButton::new("jump-add")
-                .button(
-                    Button::new("jump-add-trigger")
-                        .icon(IconName::Plus)
-                        .label(crate::i18n::t("添加跳板", "Add bastion"))
-                        .outline()
-                        .disabled(!valid || ids.len() >= 16 || choices.is_empty()),
-                )
+            // The whole button opens the candidate menu — the old split's
+            // main half was a dead zone next to a live caret (#98).
+            let add = Button::new("jump-add")
+                .icon(IconName::Plus)
+                .label(crate::i18n::t("添加跳板", "Add bastion"))
+                .outline()
+                .disabled(!valid || ids.len() >= 16 || choices.is_empty())
                 .dropdown_menu(move |menu, window, _| {
                     let mut menu = bounded_menu(menu, window);
                     for (id, label) in &choices {
@@ -574,10 +571,9 @@ mod ui_tests {
         });
         draw(cx);
         let trigger = cx.debug_bounds("jump-select-trigger-0").unwrap();
-        cx.simulate_click(
-            point(trigger.right() + px(16.), trigger.center().y),
-            gpui_kit::Modifiers::default(),
-        );
+        // The whole button opens the menu now (#98) — no caret strip to its
+        // right to aim at, and no dead zone that used to ignore clicks.
+        cx.simulate_click(trigger.center(), gpui_kit::Modifiers::default());
         draw(cx);
         let candidate = cx.debug_bounds("jump-menu-label-hop-05").unwrap();
         cx.simulate_click(candidate.center(), gpui_kit::Modifiers::default());

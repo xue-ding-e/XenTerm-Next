@@ -806,7 +806,8 @@ impl Shell {
     /// The rail, the page, and the two keystrokes the window keeps for itself.
     fn render_body(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let page = self.pages.render_active();
-        let nav = super::nav::render_nav_rail(self.pages.active, cx);
+        let nav_spacing = self.state.store.borrow().nav_spacing();
+        let nav = super::nav::render_nav_rail(self.pages.active, nav_spacing, cx);
         let shortcut_focus = self.pages.terminal.read(cx).shortcut_focus_handle();
 
         h_flex()

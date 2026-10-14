@@ -174,6 +174,10 @@ pub(crate) struct SettingsView {
     text_drafts: std::collections::HashMap<TextSetting, TextDraft>,
     color_editor: Option<CursorColorEditor>,
     wallpaper_editor: Option<Entity<super::wallpaper_editor::WallpaperEditor>>,
+    /// The MCP block's copy feedback: which of its values was last put on the
+    /// clipboard. The line under the block shows it, so a copy answers instead
+    /// of hoping the clipboard took it (#98).
+    mcp_copied: Option<&'static str>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -203,6 +207,7 @@ enum NumberSetting {
     FontSize,
     LineSpacing,
     PanelHeight,
+    NavSpacing,
 }
 
 impl NumberSetting {
@@ -214,11 +219,12 @@ impl NumberSetting {
             // representation noise such as 0.8999999761581421 in a small field.
             Self::LineSpacing => store.terminal_line_spacing().to_string(),
             Self::PanelHeight => store.quick_panel_height().to_string(),
+            Self::NavSpacing => store.nav_spacing().to_string(),
         }
     }
 
     fn parse(self, value: &str) -> Result<f64, &'static str> {
-        let integer = matches!(self, Self::PanelFont | Self::FontSize);
+        let integer = matches!(self, Self::PanelFont | Self::FontSize | Self::NavSpacing);
         let value = value.trim().parse::<f64>().ok().filter(|value| {
             value.is_finite() && (!integer || value.fract() == 0.)
         });
@@ -235,6 +241,7 @@ impl NumberSetting {
             Self::FontSize => store.set_font_size(value as u32),
             Self::LineSpacing => store.set_terminal_line_spacing(value as f32),
             Self::PanelHeight => store.set_quick_panel_height(value as f32),
+            Self::NavSpacing => store.set_nav_spacing(value as f32),
         }
     }
 
@@ -332,6 +339,7 @@ impl SettingsView {
             text_drafts: std::collections::HashMap::new(),
             color_editor: None,
             wallpaper_editor: None,
+            mcp_copied: None,
         }
     }
 
@@ -908,6 +916,7 @@ impl SettingsView {
             )
         };
         let panel_font = self.text_field(TextSetting::Number(NumberSetting::PanelFont), window, cx);
+        let nav_spacing = self.text_field(TextSetting::Number(NumberSetting::NavSpacing), window, cx);
 
         let store_for_lang = store.clone();
         let language = {
@@ -973,6 +982,16 @@ impl SettingsView {
             .item(
                 SettingItem::new(crate::i18n::t("语言", "Language"), language)
                     .description(crate::i18n::t("界面语言。", "The interface language.")),
+            )
+            .item(
+                SettingItem::new(
+                    crate::i18n::t("导航间距 (px)", "Navigation spacing (px)"),
+                    nav_spacing,
+                )
+                .description(crate::i18n::t(
+                    "左侧导航按钮之间的垂直间距,0–24。",
+                    "Vertical gap between the navigation buttons, 0–24.",
+                )),
             );
 
         appearance
@@ -1125,6 +1144,159 @@ impl SettingsView {
         // The MCP server's own on-switch, deliberately *not* in the group above: a
         // plugin does not care whether `xenterm mcp serve` may start, and filing it
         // with the gates is what made the page read as being about MCP only.
+        // What an integrator actually needs to wire a client: the real
+        // executable path, the profile directory it reads, and a ready client
+        // config that matches both — copied as JSON, so spaces, CJK and
+        // Windows backslashes are escaped by the serializer rather than by
+        // hand (#98).
+        let exe = std::env::current_exe()
+            .map(|path| path.to_string_lossy().to_string())
+            .unwrap_or_else(|_| "xenterm".to_string());
+        let data_dir = store
+            .borrow()
+            .path
+            .parent()
+            .map(|parent| parent.display().to_string())
+            .unwrap_or_default();
+        let client_json = serde_json::to_string_pretty(&serde_json::json!({
+            "mcpServers": {
+                "xenterm": { "command": exe, "args": ["mcp", "serve"] }
+            }
+        }))
+        .unwrap_or_default();
+        let view = cx.entity();
+        let exe_for_element = exe.clone();
+        let dir_for_element = data_dir.clone();
+        let json_for_element = client_json.clone();
+
+        let mcp_wiring = SettingField::element(
+            move |_: &gpui_kit::component::setting::RenderOptions,
+                  _: &mut Window,
+                  cx: &mut gpui_kit::App| {
+                let border = cx.theme().border;
+                let muted = cx.theme().muted_foreground;
+                let copied = view.read(cx).mcp_copied;
+
+                // One labelled, copyable line. The copy answers with the
+                // button itself turning into 已复制 — visible proof the
+                // clipboard write happened, not a hope.
+                let copy_row = |id: &'static str,
+                                label: &'static str,
+                                value: &str,
+                                is_copied: bool,
+                                view: &Entity<SettingsView>| {
+                    let for_clip = value.to_string();
+                    let view_for_click = view.clone();
+                    h_flex()
+                        .w_full()
+                        .gap_2()
+                        .items_center()
+                        .child(
+                            div()
+                                .w(px(96.))
+                                .flex_shrink_0()
+                                .text_xs()
+                                .text_color(muted)
+                                .child(label),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_xs()
+                                .truncate()
+                                .child(value.to_string()),
+                        )
+                        .child(
+                            Button::new(SharedString::from(id))
+                                .label(if is_copied {
+                                    crate::i18n::t("已复制", "Copied")
+                                } else {
+                                    crate::i18n::t("复制", "Copy")
+                                })
+                                .ghost()
+                                .small()
+                                .on_click(move |_, _, cx| {
+                                    cx.write_to_clipboard(
+                                        gpui_kit::ClipboardItem::new_string(for_clip.clone()),
+                                    );
+                                    view_for_click.update(cx, |view, cx| {
+                                        view.mcp_copied = Some(label);
+                                        cx.notify();
+                                    });
+                                }),
+                        )
+                };
+
+                let json_label = crate::i18n::t("客户端配置", "Client config");
+                let json_for_click = json_for_element.clone();
+                let view_for_json = view.clone();
+                v_flex()
+                    .gap_1()
+                    .child(copy_row(
+                        "mcp-copy-exe",
+                        crate::i18n::t("可执行文件", "Executable"),
+                        &exe_for_element,
+                        copied == Some(crate::i18n::t("可执行文件", "Executable")),
+                        &view,
+                    ))
+                    .child(copy_row(
+                        "mcp-copy-dir",
+                        crate::i18n::t("数据目录", "Data directory"),
+                        &dir_for_element,
+                        copied == Some(crate::i18n::t("数据目录", "Data directory")),
+                        &view,
+                    ))
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .gap_2()
+                            .items_start()
+                            .child(
+                                div()
+                                    .w(px(96.))
+                                    .flex_shrink_0()
+                                    .text_xs()
+                                    .text_color(muted)
+                                    .child(json_label),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .rounded_sm()
+                                    .border_1()
+                                    .border_color(border)
+                                    .px_2()
+                                    .py_1()
+                                    .text_xs()
+                                    .child(json_for_element.clone()),
+                            )
+                            .child(
+                                Button::new("mcp-copy-json")
+                                    .label(if copied == Some(json_label) {
+                                        crate::i18n::t("已复制", "Copied")
+                                    } else {
+                                        crate::i18n::t("复制", "Copy")
+                                    })
+                                    .ghost()
+                                    .small()
+                                    .on_click(move |_, _, cx| {
+                                        cx.write_to_clipboard(
+                                            gpui_kit::ClipboardItem::new_string(
+                                                json_for_click.clone(),
+                                            ),
+                                        );
+                                        view_for_json.update(cx, |view, cx| {
+                                            view.mcp_copied = Some(json_label);
+                                            cx.notify();
+                                        });
+                                    }),
+                            ),
+                    )
+            },
+        );
+
         let mcp_server = SettingGroup::new()
             .title(crate::i18n::t("MCP 服务", "MCP server"))
             .description(crate::i18n::t(
@@ -1137,10 +1309,17 @@ impl SettingsView {
                     mcp_enabled,
                 )
                 .description(crate::i18n::t(
-                    "允许本机 MCP 客户端通过 stdio 启动服务。插件不受此开关影响。",
+                    "允许本机 MCP 客户端通过 stdio 启动服务。插件不受此开关影响,该开关也不会在桌面窗口上监听任何网络端口。",
                     "Lets local MCP clients start the server over stdio. Plugins are not \
-                         affected by this switch.",
+                         affected, and the switch opens no network port on the desktop window.",
                 )),
+            )
+            .item(
+                SettingItem::new(crate::i18n::t("接入信息", "Wiring"), mcp_wiring)
+                    .description(crate::i18n::t(
+                        "本机 stdio 接入:客户端按“客户端配置”启动上面的可执行文件。远程 HTTP 接入是另一套部署(见 docs/REMOTE_MCP.md),本页不提供也不开放任何地址。",
+                        "Local stdio wiring: a client launches the executable above with the client config. Remote HTTP is a separate deployment (see docs/REMOTE_MCP.md); this page offers and opens no address.",
+                    )),
             );
 
         let history = self.execution_log_group(window, cx);

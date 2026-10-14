@@ -9,10 +9,13 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui_kit::component::{
-    h_flex, list::ListEvent, v_flex, ActiveTheme as _,
+    h_flex, list::ListEvent, v_flex, ActiveTheme as _, WindowExt as _,
 };
 use gpui_kit::prelude::*;
-use gpui_kit::{div, px, Entity, FontWeight, SharedString, Subscription, Window};
+use gpui_kit::{
+    div, px, Entity, FontWeight, MouseDownEvent, MouseMoveEvent, SharedString,
+    Subscription, Window,
+};
 
 use crate::config::ConfigStore;
 use crate::ui::{SessionListAction, SessionListEvent, SessionListView};
@@ -41,6 +44,10 @@ pub(crate) struct SessionsPage {
     list: Entity<SessionListView>,
     store: Rc<RefCell<ConfigStore>>,
     action: Rc<RefCell<Option<SessionsAction>>>,
+    /// A list-column drag in flight: the x the press landed at, and the width
+    /// the column had then. The delta between the two is the resize, so the
+    /// drag never needs to know where the column sits on screen.
+    width_drag: Option<(f32, f32)>,
     /// A click is an event on the list widget's state, and a subscription is
     /// what turns it into an entry in the queue above. Dropped subscriptions
     /// leave a list that renders and does nothing.
@@ -92,6 +99,7 @@ impl SessionsPage {
             list,
             store,
             action,
+            width_drag: None,
             _confirm_subscription,
             _new_session_subscription,
         }
@@ -127,8 +135,16 @@ impl SessionsPage {
 }
 
 impl Render for SessionsPage {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let border = cx.theme().border;
+        // The stored width, narrowed to what this window can actually spare:
+        // the management pane keeps a 360 px floor before the list takes its
+        // share. The narrowed value is not persisted — a small window is a
+        // moment, not a preference (#98).
+        let stored = self.store.borrow().session_list_width();
+        let viewport = f32::from(window.viewport_size().width);
+        let width = stored.min((viewport - 360.0).max(240.0)).max(240.0);
+        let dragging = self.width_drag.is_some();
 
         // The full-page layout splits the two jobs this page has: the list on
         // the left is for finding and connecting (a click connects, same as
@@ -138,26 +154,84 @@ impl Render for SessionsPage {
         let (session_count, group_count) = {
             let store = self.store.borrow();
             let sessions = store.sessions();
-            let groups: std::collections::HashSet<&str> = sessions
-                .iter()
-                .map(|session| session.group.as_str())
-                .filter(|group| !group.is_empty())
-                .collect();
+            // The manager's own definition of a group — explicit folders
+            // included — so the counts on this page and in the manager's card
+            // are the same number, empty folders and all (#98).
+            let groups = crate::config::named_display_groups(store.groups(), sessions);
             (sessions.len(), groups.len())
         };
 
         h_flex()
             .size_full()
             .overflow_hidden()
+            // The drag's motion and release are read here rather than on the
+            // 6-px handle: a strip that narrow never receives a press in this
+            // window (measured when the pane splitter was built), while the
+            // area receives both and knows what the drag means.
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                let Some((press_x, start_width)) = this.width_drag else {
+                    return;
+                };
+                let delta = f32::from(event.position.x) - press_x;
+                let next = (start_width + delta).clamp(240.0, 640.0);
+                if this.store.borrow().session_list_width() != next {
+                    this.store.borrow_mut().set_session_list_width(next);
+                    cx.notify();
+                }
+            }))
+            .on_mouse_up(
+                gpui_kit::MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    if this.width_drag.take().is_none() {
+                        return;
+                    }
+                    // Persist the settled width; a save that fails rolls the
+                    // stored value back so the next frame shows what the file
+                    // actually says rather than a width only memory remembers.
+                    // The pre-save value, for a rollback the file's own
+                    // keeper would disagree with.
+                    let rollback = this.store.borrow().cache.session_list_width;
+                    if this.store.borrow_mut().save().is_err() {
+                        this.store.borrow_mut().set_session_list_width(rollback);
+                        tracing::warn!("could not save the session-list width; rolled back");
+                    }
+                    cx.notify();
+                }),
+            )
             .child(
                 div()
-                    .w(px(380.))
+                    .w(px(width))
                     .h_full()
                     .flex_shrink_0()
                     .border_r_1()
                     .border_color(border)
                     .overflow_hidden()
                     .child(self.list.clone()),
+            )
+            .child(
+                // The handle itself: a hairline that reads as the column's
+                // edge, wide enough to press. A modal on top owns the pointer,
+                // so a press while one is open never starts a drag.
+                div()
+                    .id("sessions-width-handle")
+                    .w(px(6.0))
+                    .h_full()
+                    .flex_shrink_0()
+                    .cursor_col_resize()
+                    .when(dragging, |this| this.bg(cx.theme().accent.opacity(0.4)))
+                    .hover(|this| this.bg(cx.theme().muted))
+                    .on_mouse_down(
+                        gpui_kit::MouseButton::Left,
+                        cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                            if window.has_active_dialog(cx) {
+                                return;
+                            }
+                            this.width_drag = Some((
+                                f32::from(event.position.x),
+                                this.store.borrow().session_list_width(),
+                            ));
+                        }),
+                    ),
             )
             .child(
                 v_flex()

@@ -19,10 +19,10 @@ use std::rc::Rc;
 
 use gpui_kit::{
     component::{
-        button::{Button, ButtonVariants, DropdownButton},
+        button::{Button, ButtonVariants},
         h_flex,
         list::{List, ListDelegate, ListItem, ListState},
-        menu::{ContextMenuExt, PopupMenuItem},
+        menu::{ContextMenuExt, DropdownMenu, PopupMenuItem},
         ActiveTheme as _, Icon, IndexPath,
     },
     div,
@@ -325,24 +325,22 @@ impl ListDelegate for SessionListDelegate {
         // mystery gaps.
         let row = self.row_at(ix)?.clone();
 
-        // A folded group: one row that IS the collapsed heading — chevron
-        // right, folder, name, and how many sessions are folded away.
-        // Clicking it expands; the section header stays empty so the heading
-        // is not drawn twice. No hint text: a folded folder in a tree needs
-        // no caption.
+        // A folded group: its one row says how much is hidden and expands on
+        // a click. The heading above it is the same header the expanded group
+        // shows, so folding changes an arrow and this line — never the
+        // layout (#98).
         let span = self.sections.get(ix.section)?;
         if span.collapsed && self.query.is_empty() {
             let group = span.group.clone();
-            let group_for_label = group.clone();
             let count = span.len;
             let store = self.store.clone();
             let list = self.list.clone();
             let muted = cx.theme().muted_foreground;
             let sessions_word = if count == 1 {
-                crate::i18n::t("1 个会话", "1 session").to_string()
+                crate::i18n::t("1 个会话已折叠", "1 session folded").to_string()
             } else {
-                match crate::i18n::t("个会话", "sessions") {
-                    "个会话" => format!("{count} 个会话"),
+                match crate::i18n::t("个会话已折叠", "sessions folded") {
+                    "个会话已折叠" => format!("{count} 个会话已折叠"),
                     other => format!("{count} {other}"),
                 }
             };
@@ -371,65 +369,32 @@ impl ListDelegate for SessionListDelegate {
                                     });
                                 }
                             })
-                            .child(if self.compact {
-                                h_flex()
-                                    .w_full()
-                                    .gap_1()
-                                    .items_center()
-                                    .child(
-                                        Icon::new(IconName::ChevronRight)
-                                            .size_3()
-                                            .text_color(muted),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_color(muted)
-                                            .child(SharedString::from(group_for_label)),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(muted)
-                                            .child(SharedString::from(sessions_word)),
-                                    )
-                            } else {
-                                // Two lines, the same shape as a session row:
-                                // the toolkit gives every entry the height it
-                                // measured from the first row, so a one-line
-                                // heading here would leave a large blank under
-                                // itself. Matching the session-row shape keeps
-                                // folded groups at the same slot height.
+                            // One muted line — the count and nothing else.
+                            // The slot keeps the session-row height the
+                            // toolkit measured; the content just doesn't
+                            // need it all, and the header above already
+                            // carries the name and the arrow.
+                            .child(
                                 h_flex()
                                     .w_full()
                                     .gap_2()
+                                    .items_center()
                                     .child(
-                                        Icon::new(IconName::ChevronRight)
-                                            .size_4()
-                                            .text_color(muted),
+                                        div()
+                                            .text_sm()
+                                            .text_color(muted)
+                                            .child(SharedString::from(sessions_word)),
                                     )
                                     .child(
                                         div()
-                                            .flex()
-                                            .flex_col()
-                                            .gap_0p5()
-                                            .child(
-                                                div()
-                                                    .text_sm()
-                                                    .font_weight(FontWeight::MEDIUM)
-                                                    .child(SharedString::from(
-                                                        group_for_label,
-                                                    )),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_xs()
-                                                    .text_color(muted)
-                                                    .child(SharedString::from(sessions_word)),
-                                            ),
-                                    )
-                            }),
+                                            .text_xs()
+                                            .text_color(muted)
+                                            .child(crate::i18n::t(
+                                                "· 点击展开",
+                                                "· click to expand",
+                                            )),
+                                    ),
+                            ),
                     ),
             );
         }
@@ -665,17 +630,11 @@ impl ListDelegate for SessionListDelegate {
         let list = self.list.clone();
         let searching = !self.query.is_empty();
 
-        // A folded section's heading is drawn by its single item row (the
-        // collapsed-folder row), so the header stays out of the way here.
-        if collapsed && !searching {
-            return None::<AnyElement>;
-        }
-
-        // `system` is an interface: the built-in local shells live there and
-        // the rail's terminal entry assumes they are visible. `default` is
-        // just the ungrouped rows — a user with many of those folds it like
-        // any other folder.
-        let reserved = group == "system";
+        // `system` folds like any other folder now: hiding the built-ins is a
+        // display choice, not a data change — delete/rename/move stay guarded
+        // in the row menus — and a chevron that is drawn but does nothing is
+        // a control that lies (#98).
+        let reserved = false;
 
         let group_for_toggle = group.clone();
         let chevron_turn = self.chevron_turn.clone();
@@ -991,18 +950,25 @@ impl Render for SessionListView {
                     .px_3()
                     .py_2()
                     .child(
-                        // No title: the column's tab above says which panel this is, and a
-                        // header repeating it spends a line saying nothing new. What is
-                        // worth the line is how many are shown, and the three things you
-                        // can do to them.
+                        // No title: the column's tab above says which panel this is. What
+                        // the line is for is how many sessions the list is showing — as
+                        // words, not a bare number behind a magnifier: a search icon next
+                        // to a count reads as a second search box that ignores clicks
+                        // (#98).
                         h_flex()
                             .gap_2()
-                            .child(Icon::new(IconName::Search).size_4().text_color(muted))
                             .child(
                                 div()
                                     .text_xs()
                                     .text_color(muted)
-                                    .child(SharedString::from(shown.to_string())),
+                                    .child(SharedString::from(if shown == 1 {
+                                        crate::i18n::t("1 个会话", "1 session").to_string()
+                                    } else {
+                                        match crate::i18n::t("个会话", "sessions") {
+                                            "个会话" => format!("{shown} 个会话"),
+                                            other => format!("{shown} {other}"),
+                                        }
+                                    })),
                             ),
                     )
                     .child(
@@ -1016,14 +982,14 @@ impl Render for SessionListView {
                                 // rather than on what they act on — and the original
                                 // keeps its occasional actions behind menus for exactly
                                 // that reason.
-                                DropdownButton::new("list-more")
-                                    .button(
-                                        Button::new("list-more-trigger")
-                                            .icon(IconName::Ellipsis)
-                                            .ghost()
-                                            .tooltip(crate::i18n::t("更多", "More"))
-                                            .accessibility_label(crate::i18n::t("更多", "More")),
-                                    )
+                                // The whole button is the menu trigger — a
+                                // split whose main half does nothing is a
+                                // button half of whose pixels lie (#98).
+                                Button::new("list-more")
+                                    .icon(IconName::Ellipsis)
+                                    .ghost()
+                                    .tooltip(crate::i18n::t("更多", "More"))
+                                    .accessibility_label(crate::i18n::t("更多", "More"))
                                     .dropdown_menu(move |menu, _, _| {
                                         let groups = pending_for_menu.clone();
                                         menu.item(
@@ -1031,9 +997,15 @@ impl Render for SessionListView {
                                                 "管理分组",
                                                 "Manage groups",
                                             ))
-                                            .on_click(move |_, _, _| {
+                                            .on_click(move |_, window, _| {
                                                 *groups.borrow_mut() =
                                                     Some(SessionListAction::ManageGroups);
+                                                // The shell drains pending
+                                                // actions at the top of its
+                                                // next render; without a frame
+                                                // the click waits for the next
+                                                // input to schedule one (#98).
+                                                window.request_animation_frame();
                                             }),
                                         )
                                     }),

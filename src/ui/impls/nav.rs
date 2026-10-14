@@ -27,15 +27,22 @@ use super::shell::Shell;
 use super::tokens::RAIL_WIDTH;
 
 /// The rail itself.
-pub(crate) fn render_nav_rail(active: PageId, cx: &mut Context<Shell>) -> impl IntoElement {
+pub(crate) fn render_nav_rail(
+    active: PageId,
+    spacing: f32,
+    cx: &mut Context<Shell>,
+) -> impl IntoElement {
     let border = cx.theme().border;
+    // The rail's own breathing room, 0–24 px from the settings (#98), handed
+    // in by the shell: reading the entity here would re-enter the render that
+    // is already running it.
 
     v_flex()
         .w(px(RAIL_WIDTH))
         .h_full()
         .flex_shrink_0()
         .items_center()
-        .gap_1()
+        .gap(px(spacing))
         .py_2()
         .border_r_1()
         .border_color(border)

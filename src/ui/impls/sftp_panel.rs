@@ -46,10 +46,10 @@
 
 use gpui_kit::{
     component::{
-        button::{Button, ButtonVariants, DropdownButton},
+        button::{Button, ButtonVariants},
         h_flex,
         input::{Input, InputState},
-        menu::{ContextMenuExt, PopupMenuItem},
+        menu::{ContextMenuExt, DropdownMenu, PopupMenuItem},
         spinner::Spinner,
         v_flex, ActiveTheme as _, Icon, Sizable as _, Size,
     },
@@ -566,14 +566,13 @@ impl Render for SftpPanelView {
         let chosen = self.listing.selected_paths();
         let for_rename = chosen.clone();
         let for_chmod = chosen;
-        let more_menu = DropdownButton::new("sftp-more")
-            .button(
-                Button::new("sftp-more-trigger")
-                    .icon(IconName::Ellipsis)
-                    .ghost()
-                    .tooltip(crate::i18n::t("更多操作", "More actions"))
-                    .accessibility_label(crate::i18n::t("更多操作", "More actions")),
-            )
+        // The whole button is the trigger: a split whose main half does
+        // nothing is half a button (#98).
+        let more_menu = Button::new("sftp-more")
+            .icon(IconName::Ellipsis)
+            .ghost()
+            .tooltip(crate::i18n::t("更多操作", "More actions"))
+            .accessibility_label(crate::i18n::t("更多操作", "More actions"))
             .dropdown_menu({
                 let panel = cx.entity().downgrade();
                 move |menu, _, _| {
@@ -830,20 +829,17 @@ impl Render for SftpPanelView {
                                 // open session, carrying everything ticked. It appears with the
                                 // other batch actions, so the toolbar never offers to copy nothing.
                                 .child(
-                                    DropdownButton::new("sftp-copy-to")
-                                        .button(
-                                            Button::new("sftp-copy-to-trigger")
-                                                .icon(Icon::new(IconName::Copy))
-                                                .ghost()
-                                                .tooltip(crate::i18n::t(
-                                                    "复制到其他会话",
-                                                    "Copy to another session",
-                                                ))
-                                                .accessibility_label(crate::i18n::t(
-                                                    "复制到其他会话",
-                                                    "Copy to another session",
-                                                )),
-                                        )
+                                    Button::new("sftp-copy-to")
+                                        .icon(Icon::new(IconName::Copy))
+                                        .ghost()
+                                        .tooltip(crate::i18n::t(
+                                            "复制到其他会话",
+                                            "Copy to another session",
+                                        ))
+                                        .accessibility_label(crate::i18n::t(
+                                            "复制到其他会话",
+                                            "Copy to another session",
+                                        ))
                                         .dropdown_menu({
                                             let targets = self.targets.clone();
                                             let chosen = chosen.clone();

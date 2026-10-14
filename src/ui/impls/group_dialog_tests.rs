@@ -268,6 +268,43 @@ fn enter_in_the_creation_box_adds_the_group_and_keeps_the_card_open(cx: &mut Tes
 }
 
 #[gpui_kit::gpui::test]
+fn a_refused_rename_keeps_the_draft_and_the_card(cx: &mut TestAppContext) {
+    let (shell, _directory, cx) = fixture(cx);
+    open_groups(&shell, cx);
+    // Two groups, then rename the first onto the second's name.
+    focus_input_before("group-add", "", cx);
+    cx.simulate_input("QA-First");
+    draw(cx);
+    click("group-add", cx);
+    focus_input_before("group-add", "", cx);
+    cx.simulate_input("QA-Second");
+    draw(cx);
+    click("group-add", cx);
+
+    click("group-edit-QA-First", cx);
+    cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+        "cmd-a"
+    } else {
+        "ctrl-a"
+    });
+    cx.simulate_input("QA-Second");
+    draw(cx);
+    // Enter means "save the rename" (the card's confirm), and the save
+    // refuses: the name belongs to the other group. The card stays, the
+    // draft stays, and both groups are intact (#98).
+    cx.simulate_keystrokes("enter");
+    for _ in 0..3 {
+        draw(cx);
+    }
+    assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+    shell.read_with(cx, |shell, _| {
+        let store = shell.state.store.borrow();
+        assert!(store.groups().contains(&"QA-First".to_string()));
+        assert!(store.groups().contains(&"QA-Second".to_string()));
+    });
+}
+
+#[gpui_kit::gpui::test]
 fn deleting_a_group_needs_the_confirm_press(cx: &mut TestAppContext) {
     let (shell, _directory, cx) = fixture(cx);
     open_groups(&shell, cx);

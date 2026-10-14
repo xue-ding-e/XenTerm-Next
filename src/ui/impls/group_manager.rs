@@ -54,6 +54,10 @@ pub(crate) struct GroupManagerView {
     /// The always-present creation box at the top of the list.
     create: Entity<InputState>,
     pending: Option<GroupManagerAction>,
+    /// Why the rename in progress was refused, shown under its row: an empty
+    /// name or one another group already has. The refusal keeps the draft —
+    /// the user fixes a typo, not retypes the name (#98).
+    rename_error: Option<&'static str>,
     /// The group whose delete button is armed (first press). Deleting a group
     /// keeps its sessions but takes their grouping with it, and regrouping a
     /// dozen sessions by hand is tedious enough that a stray click should not
@@ -87,6 +91,7 @@ impl GroupManagerView {
             editing: None,
             create,
             pending: None,
+            rename_error: None,
             confirming_delete: None,
             _create_subscription,
         }
@@ -129,6 +134,7 @@ impl GroupManagerView {
     /// living only for as long as the edit. The creation box is untouched.
     fn start_edit(&mut self, group: String, window: &mut Window, cx: &mut Context<Self>) {
         self.stand_down_delete();
+        self.rename_error = None;
         let input = cx.new(|cx| InputState::new(window, cx).default_value(group.clone()));
         let subscription = cx.subscribe_in(
             &input,
@@ -167,6 +173,7 @@ impl GroupManagerView {
     /// Add the group the creation box names, then clear the box.
     fn add_group(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.stand_down_delete();
+        self.rename_error = None;
         let name = self.create.read(cx).value().trim().to_string();
         if name.is_empty() {
             return;
@@ -228,8 +235,27 @@ impl GroupManagerView {
             return;
         };
         let name = input.read(cx).value().trim().to_string();
-        if name.is_empty() || name == old {
+        if name.is_empty() {
+            // Kept open with the reason under it: a silent discard of a
+            // half-typed name reads as an Enter that did nothing (#98).
+            self.rename_error = Some(crate::i18n::t(
+                "名称不能为空。",
+                "The name cannot be empty.",
+            ));
+            cx.notify();
+            return;
+        }
+        if name == old {
+            self.rename_error = None;
             self.finish_edit(window, cx);
+            return;
+        }
+        if self.groups().iter().any(|(group, _)| group == &name) {
+            self.rename_error = Some(crate::i18n::t(
+                "已有同名分组。",
+                "Another group already has that name.",
+            ));
+            cx.notify();
             return;
         }
         {
@@ -239,6 +265,7 @@ impl GroupManagerView {
                 tracing::warn!("could not save the session groups: {error:#}");
             }
         }
+        self.rename_error = None;
         self.pending = Some(GroupManagerAction::Saved);
         self.finish_edit(window, cx);
     }
@@ -338,29 +365,50 @@ impl GroupManagerView {
                 let Some((_, input, _)) = self.editing.as_ref() else {
                     return div().into_any_element();
                 };
-                h_flex()
+                v_flex()
                     .flex_1()
                     .min_w_0()
-                    .gap_1()
-                    .child(div().flex_1().min_w_0().child(Input::new(input)))
+                    .gap_0p5()
                     .child(
-                        Button::new(SharedString::from(format!("group-save-{name}")))
-                            .icon(Icon::new(IconName::Check))
-                            .label(crate::i18n::t("保存", "Save"))
-                            .primary()
-                            .small()
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.save_rename(window, cx)
-                            })),
-                    )
-                    .child(
-                        Button::new(SharedString::from(format!("group-cancel-{name}")))
-                            .label(crate::i18n::t("取消", "Cancel"))
-                            .ghost()
-                            .small()
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.finish_edit(window, cx)),
+                        h_flex()
+                            .w_full()
+                            .gap_1()
+                            .child(div().flex_1().min_w_0().child(Input::new(input)))
+                            .child(
+                                Button::new(SharedString::from(format!(
+                                    "group-save-{name}"
+                                )))
+                                .icon(Icon::new(IconName::Check))
+                                .label(crate::i18n::t("保存", "Save"))
+                                .primary()
+                                .small()
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.save_rename(window, cx)
+                                })),
+                            )
+                            .child(
+                                Button::new(SharedString::from(format!(
+                                    "group-cancel-{name}"
+                                )))
+                                .label(crate::i18n::t("取消", "Cancel"))
+                                .ghost()
+                                .small()
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.finish_edit(window, cx)
+                                })),
                             ),
+                    )
+                    .when_some(
+                        self.rename_error.filter(|_| self.editing.as_ref().is_some_and(|(g, _, _)| g == name)),
+                        |this, error| {
+                            this.child(
+                                div()
+                                    .w_full()
+                                    .text_xs()
+                                    .text_color(theme.danger)
+                                    .child(error),
+                            )
+                        },
                     )
                     .into_any_element()
             } else {
