@@ -425,7 +425,11 @@ jobs:
     needs: prepare
     if: needs.prepare.outputs.mode != 'beta' || github.repository == 'ixbaicn/XenTerm' || github.event_name == 'workflow_dispatch'
     runs-on: ${{ matrix.runner }}
-    container: debian:10
+    # Rocky 8, not the dead debian:10: both are glibc 2.28, but Rocky's repos
+    # are maintained until 2029 while buster's archive has begun losing pool
+    # files its own indexes still list (cmake 3.13.4-1 and libmpc3 1.1.0-1
+    # both 404 there), which broke apt with nothing to fall back to.
+    container: rockylinux:8
     strategy:
       fail-fast: false
       matrix:
@@ -440,26 +444,17 @@ jobs:
       VERSION: ${{ needs.prepare.outputs.version }}
 
     steps:
-      - name: Prepare Debian 10 build dependencies
+      - name: Prepare Rocky Linux 8 (glibc 2.28) build dependencies
         shell: bash
         run: |
           set -eu
-          sed -i \
-            -e 's|deb.debian.org/debian|archive.debian.org/debian|g' \
-            -e 's|security.debian.org/debian-security|archive.debian.org/debian-security|g' \
-            -e '/buster-updates/d' \
-            /etc/apt/sources.list
-          printf 'Acquire::Check-Valid-Until "false";\n' > /etc/apt/apt.conf.d/99archive
-
-          apt-get update
-          apt-get install -y --no-install-recommends \
-            ca-certificates curl git xz-utils file tar \
-            build-essential pkg-config cmake \
-            libfontconfig1-dev libfreetype6-dev \
-            libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
-            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
-            libgl1-mesa-dev libegl1-mesa-dev libgtk-3-dev \
-            libudev-dev
+          dnf install -y \
+            ca-certificates curl git xz file tar \
+            gcc gcc-c++ make pkgconf-pkg-config cmake \
+            fontconfig-devel freetype-devel \
+            libxcb-devel libxkbcommon-devel libxkbcommon-x11-devel \
+            wayland-devel mesa-libGL-devel mesa-libEGL-devel \
+            gtk3-devel systemd-devel
 
       - uses: actions/checkout@v4
 
