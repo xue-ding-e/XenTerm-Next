@@ -14,12 +14,15 @@ use axum::{
 use futures::StreamExt;
 use rmcp::{
     model::{
-        CallToolRequestParams, CallToolResult, ContentBlock, Implementation, ListToolsResult,
-        PaginatedRequestParams, ServerCapabilities, ServerInfo,
+        CallToolRequestParams, CallToolResult, ClientJsonRpcMessage, ClientRequest, ContentBlock,
+        GetExtensions, Implementation, ListToolsResult, PaginatedRequestParams, ServerCapabilities,
+        ServerInfo, ServerJsonRpcMessage,
     },
     service::RequestContext,
     transport::streamable_http_server::{
-        session::{local::LocalSessionManager, SessionManager},
+        session::{
+            local::LocalSessionManager, RestoreOutcome, ServerSseMessage, SessionId, SessionManager,
+        },
         StreamableHttpServerConfig, StreamableHttpService,
     },
     ErrorData, RoleServer, ServerHandler,
@@ -62,7 +65,10 @@ fn default_max_sessions() -> usize {
     DEFAULT_MAX_SESSIONS
 }
 fn validate_max_sessions(value: usize) -> Result<()> {
-    ensure!((1..=1024).contains(&value), "max_sessions must be within 1..=1024");
+    ensure!(
+        (1..=1024).contains(&value),
+        "max_sessions must be within 1..=1024"
+    );
     Ok(())
 }
 
@@ -78,6 +84,193 @@ impl Drop for SessionOwner {
 }
 #[derive(Clone)]
 struct SessionCancellation(CancellationToken);
+
+const EXPIRY_ERROR: &str = "request deadline or access token expiry reached";
+
+// Per HTTP request, never per MCP session: concurrent calls must not share IDs
+// or terminal state. The SDK sets tool_id only after parsing a tools/call request.
+#[derive(Clone)]
+struct RequestDeadline {
+    at: tokio::time::Instant,
+    cancel: CancellationToken,
+    tool_id: Arc<std::sync::OnceLock<rmcp::model::RequestId>>,
+    terminal: Arc<std::sync::atomic::AtomicBool>,
+}
+impl RequestDeadline {
+    fn new(at: tokio::time::Instant) -> Self {
+        Self {
+            at,
+            cancel: CancellationToken::new(),
+            tool_id: Arc::default(),
+            terminal: Arc::default(),
+        }
+    }
+}
+struct ResponseCancellation(Option<CancellationToken>);
+impl Drop for ResponseCancellation {
+    fn drop(&mut self) {
+        if let Some(cancel) = &self.0 {
+            cancel.cancel();
+        }
+    }
+}
+
+// Preserve the SDK's session lifecycle and SSE serializer. The locked rmcp 2.2
+// + sse-stream 0.2.6 chain emits one complete Body data frame per typed message,
+// synchronously, without prefetching. The outer gate relies on this contract;
+// the integration tests must be rerun when upgrading that transport dependency.
+struct DeadlineSessions(Arc<LocalSessionManager>);
+impl SessionManager for DeadlineSessions {
+    type Error = <LocalSessionManager as SessionManager>::Error;
+    type Transport = <LocalSessionManager as SessionManager>::Transport;
+    async fn create_session(&self) -> Result<(SessionId, Self::Transport), Self::Error> {
+        self.0.create_session().await
+    }
+    async fn initialize_session(
+        &self,
+        id: &SessionId,
+        message: ClientJsonRpcMessage,
+    ) -> Result<ServerJsonRpcMessage, Self::Error> {
+        self.0.initialize_session(id, message).await
+    }
+    async fn has_session(&self, id: &SessionId) -> Result<bool, Self::Error> {
+        self.0.has_session(id).await
+    }
+    async fn close_session(&self, id: &SessionId) -> Result<(), Self::Error> {
+        self.0.close_session(id).await
+    }
+    async fn accept_message(
+        &self,
+        id: &SessionId,
+        message: ClientJsonRpcMessage,
+    ) -> Result<(), Self::Error> {
+        self.0.accept_message(id, message).await
+    }
+    async fn create_standalone_stream(
+        &self,
+        id: &SessionId,
+    ) -> Result<impl futures::Stream<Item = ServerSseMessage> + Send + Sync + 'static, Self::Error>
+    {
+        self.0.create_standalone_stream(id).await
+    }
+    async fn resume(
+        &self,
+        id: &SessionId,
+        last_event_id: String,
+    ) -> Result<impl futures::Stream<Item = ServerSseMessage> + Send + Sync + 'static, Self::Error>
+    {
+        self.0.resume(id, last_event_id).await
+    }
+    async fn restore_session(
+        &self,
+        id: SessionId,
+    ) -> Result<RestoreOutcome<Self::Transport>, Self::Error> {
+        self.0.restore_session(id).await
+    }
+    async fn create_stream(
+        &self,
+        id: &SessionId,
+        message: ClientJsonRpcMessage,
+    ) -> Result<impl futures::Stream<Item = ServerSseMessage> + Send + Sync + 'static, Self::Error>
+    {
+        let deadline = match &message {
+            ClientJsonRpcMessage::Request(request)
+                if matches!(request.request, ClientRequest::CallToolRequest(_)) =>
+            {
+                request
+                    .request
+                    .extensions()
+                    .get::<axum::http::request::Parts>()
+                    .and_then(|parts| parts.extensions.get::<RequestDeadline>())
+                    .cloned()
+                    .map(|deadline| {
+                        let _ = deadline.tool_id.set(request.id.clone());
+                        deadline
+                    })
+            }
+            _ => None,
+        };
+        let source = self.0.create_stream(id, message).await?;
+        Ok(source.map(move |mut event| {
+            if let Some(deadline) = &deadline {
+                let id = deadline.tool_id.get().expect("validated tool ID");
+                if tokio::time::Instant::now() >= deadline.at {
+                    deadline.cancel.cancel();
+                    event = ServerSseMessage::from_message(ServerJsonRpcMessage::error(
+                        ErrorData::internal_error(EXPIRY_ERROR, None),
+                        Some(id.clone()),
+                    ));
+                }
+                let terminal = match event.message.as_deref() {
+                    Some(ServerJsonRpcMessage::Response(response)) => &response.id == id,
+                    Some(ServerJsonRpcMessage::Error(error)) => error.id.as_ref() == Some(id),
+                    _ => false,
+                };
+                deadline
+                    .terminal
+                    .store(terminal, std::sync::atomic::Ordering::Release);
+            }
+            event
+        }))
+    }
+}
+
+// No SSE parser or additional business-frame buffer. The gate checks both sides
+// of SDK polling/serialization, so a frame finishing after expiry is discarded.
+// Already yielded network bytes cannot be recalled. Existing SDK serialization
+// CPU/memory costs are unchanged; this is not a hard realtime scheduling bound.
+fn tool_response_stream(
+    body: Body,
+    deadline: RequestDeadline,
+) -> impl futures::Stream<Item = Result<axum::body::Bytes, axum::Error>> + Send {
+    let guard = ResponseCancellation(Some(deadline.cancel.clone()));
+    futures::stream::unfold(
+        (
+            Some(Box::pin(body.into_data_stream())),
+            deadline,
+            guard,
+            false,
+        ),
+        |(mut source, deadline, guard, mut done)| async move {
+            loop {
+                if done {
+                    return None;
+                }
+                if tokio::time::Instant::now() >= deadline.at {
+                    deadline.cancel.cancel();
+                    source.take();
+                    let error = ServerJsonRpcMessage::error(
+                        ErrorData::internal_error(EXPIRY_ERROR, None),
+                        Some(deadline.tool_id.get().expect("validated tool ID").clone()),
+                    );
+                    let mut bytes = b"data: ".to_vec();
+                    serde_json::to_writer(&mut bytes, &error).expect("JSON-RPC error serializes");
+                    bytes.extend_from_slice(b"\n\n");
+                    return Some((Ok(bytes.into()), (source, deadline, guard, true)));
+                }
+                let next = tokio::select! {
+                    biased;
+                    _ = tokio::time::sleep_until(deadline.at) => continue,
+                    next = source.as_mut().expect("active response").next() => next,
+                };
+                // Includes a deadline crossing during synchronous SDK serialization.
+                if tokio::time::Instant::now() >= deadline.at {
+                    drop(next);
+                    continue;
+                }
+                let Some(chunk) = next else {
+                    return None;
+                };
+                if chunk.is_err() || deadline.terminal.load(std::sync::atomic::Ordering::Acquire) {
+                    done = true;
+                    source.take();
+                }
+                return Some((chunk, (source, deadline, guard, done)));
+            }
+        },
+    )
+}
+
 struct Boundary {
     oauth: OAuth,
     origins: Vec<String>,
@@ -182,6 +375,11 @@ impl ServerHandler for HttpTools {
             .get::<axum::http::request::Parts>()
             .and_then(|parts| parts.extensions.get::<SessionCancellation>())
             .ok_or_else(|| ErrorData::invalid_request("session context missing", None))?;
+        let deadline = context
+            .extensions
+            .get::<axum::http::request::Parts>()
+            .and_then(|parts| parts.extensions.get::<RequestDeadline>())
+            .ok_or_else(|| ErrorData::invalid_request("request deadline missing", None))?;
         let remaining = oauth::remaining(principal.expires_at);
         if remaining.is_zero() {
             return Err(ErrorData::invalid_request("access token expired", None));
@@ -196,9 +394,13 @@ impl ServerHandler for HttpTools {
             biased;
             _ = context.ct.cancelled() => return Err(ErrorData::internal_error("request cancelled", None)),
             _ = session_cancel.0.cancelled() => return Err(ErrorData::internal_error("session closed", None)),
-            _ = tokio::time::sleep(remaining) => return Err(ErrorData::internal_error("request deadline or access token expiry reached", None)),
+            _ = deadline.cancel.cancelled() => return Err(ErrorData::internal_error(EXPIRY_ERROR, None)),
+            _ = tokio::time::sleep_until(deadline.at) => return Err(ErrorData::internal_error(EXPIRY_ERROR, None)),
             result = super::tools::call_mcp(&request.name, &args, self.allow_config_import) => result,
         };
+        if tokio::time::Instant::now() >= deadline.at {
+            return Err(ErrorData::internal_error(EXPIRY_ERROR, None));
+        }
         Ok(match result {
             Ok(value) => CallToolResult::structured(value),
             Err(error) => CallToolResult::error(vec![ContentBlock::text(format!("{error:#}"))]),
@@ -396,6 +598,8 @@ async fn authenticated_guard(state: Arc<Boundary>, request: Request, next: Next)
     } else {
         None
     };
+    let deadline =
+        RequestDeadline::new(tokio::time::Instant::now() + oauth::remaining(principal.expires_at));
     let method = request.method().clone();
     let (mut parts, body) = request.into_parts();
     let mut body = match tokio::time::timeout(Duration::from_secs(5), to_bytes(body, MAX_BODY))
@@ -506,6 +710,7 @@ async fn authenticated_guard(state: Arc<Boundary>, request: Request, next: Next)
     } else {
         None
     };
+    parts.extensions.insert(deadline.clone());
     parts.extensions.insert(principal.clone());
     if let Some(cancel) = session_cancel {
         parts.extensions.insert(cancel);
@@ -513,6 +718,7 @@ async fn authenticated_guard(state: Arc<Boundary>, request: Request, next: Next)
     // Do not propagate bearer tokens into the SDK's request context/debug view.
     parts.headers.remove(header::AUTHORIZATION);
     let request = Request::from_parts(parts, Body::from(body));
+    let mut pending_cancel = ResponseCancellation(Some(deadline.cancel.clone()));
     let mut response = match tokio::time::timeout(Duration::from_secs(10), next.run(request)).await
     {
         Ok(response) => response,
@@ -541,6 +747,22 @@ async fn authenticated_guard(state: Arc<Boundary>, request: Request, next: Next)
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    if deadline.tool_id.get().is_some()
+        && response.status().is_success()
+        && response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.split(';').next() == Some("text/event-stream"))
+    {
+        let (parts, body) = response.into_parts();
+        pending_cancel.0.take(); // The response stream now owns cancellation.
+        let stream = tool_response_stream(body, deadline).map(move |chunk| {
+            let _hold = &stream_permit;
+            chunk
+        });
+        return Response::from_parts(parts, Body::from_stream(stream));
+    }
     let (parts, body) = response.into_parts();
     let remaining = oauth::remaining(principal.expires_at);
     // Also bound the response stream; a token cannot keep reading after expiry.
@@ -635,7 +857,7 @@ pub(super) fn run(path: &str, allow_config_import: bool) -> Result<()> {
             initialize_lock: Mutex::new(()), sessions: sessions.clone(), max_sessions: config.max_sessions, requests: Semaphore::new(32), streams: Arc::new(Semaphore::new(16)) });
         let shutdown = CancellationToken::new();
         let tools = HttpTools { allow_config_import, scope: state.oauth.config.required_scope.clone(), calls: Arc::new(Semaphore::new(16)) };
-        let service = StreamableHttpService::new(move || Ok(HttpService(tools.clone())), sessions,
+        let service = StreamableHttpService::new(move || Ok(HttpService(tools.clone())), Arc::new(DeadlineSessions(sessions)),
             StreamableHttpServerConfig::default().with_allowed_hosts([public_authority, config.bind.to_string()])
                 .with_cancellation_token(shutdown.child_token()));
         let mcp = Router::new().route_service(&endpoint, service)
@@ -677,6 +899,305 @@ pub(super) fn run(path: &str, allow_config_import: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn expiry_sse_locked_transport_contract_requires_upgrade_review() {
+        // The full headless CI suite runs these actual-SDK contract tests.
+        // A transport upgrade must re-audit the one-message/one-frame boundary.
+        let lock = include_str!("../../../Cargo.lock");
+        for (name, version) in [("rmcp", "2.2.0"), ("sse-stream", "0.2.6")] {
+            assert!(
+                lock.split("[[package]]").any(|package| {
+                    package
+                        .lines()
+                        .any(|line| line == format!("name = \"{name}\""))
+                        && package
+                            .lines()
+                            .any(|line| line == format!("version = \"{version}\""))
+                }),
+                "re-audit the SDK SSE frame contract before upgrading {name}"
+            );
+        }
+    }
+
+    #[derive(Clone)]
+    struct DeadlineFixture {
+        ready: Arc<std::sync::atomic::AtomicBool>,
+    }
+    impl ServerHandler for DeadlineFixture {
+        fn get_info(&self) -> ServerInfo {
+            let mut info = ServerInfo::default();
+            info.capabilities = ServerCapabilities::builder().enable_tools().build();
+            info
+        }
+        async fn call_tool(
+            &self,
+            request: CallToolRequestParams,
+            _: RequestContext<RoleServer>,
+        ) -> Result<CallToolResult, ErrorData> {
+            if request.name == "error" {
+                return Err(ErrorData::internal_error("fixture error", None));
+            }
+            if request.name == "slow" {
+                tokio::time::sleep(Duration::from_millis(40)).await;
+            }
+            let result = if request.name == "large" {
+                CallToolResult::structured(json!({"text": "x".repeat(4 * 1024 * 1024)}))
+            } else {
+                CallToolResult::structured(json!({"name": request.name}))
+            };
+            self.ready.store(true, std::sync::atomic::Ordering::Release);
+            Ok(result)
+        }
+    }
+    fn sdk_request(
+        value: Value,
+        session: Option<&str>,
+        deadline: Option<RequestDeadline>,
+    ) -> Request {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("http://localhost/mcp")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::ACCEPT, "application/json, text/event-stream")
+            .header("mcp-protocol-version", "2025-06-18");
+        if let Some(session) = session {
+            request = request.header("mcp-session-id", session);
+        }
+        let mut request = request.body(Body::from(value.to_string())).unwrap();
+        if let Some(deadline) = deadline {
+            request.extensions_mut().insert(deadline);
+        }
+        request
+    }
+    async fn deadline_sdk() -> (
+        StreamableHttpService<DeadlineFixture, DeadlineSessions>,
+        String,
+        Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        let mut manager = LocalSessionManager::default();
+        manager.session_config.sse_retry = Some(Duration::from_millis(9));
+        let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let state = ready.clone();
+        let service = StreamableHttpService::new(
+            move || {
+                Ok(DeadlineFixture {
+                    ready: state.clone(),
+                })
+            },
+            Arc::new(DeadlineSessions(Arc::new(manager))),
+            StreamableHttpServerConfig::default()
+                .disable_allowed_hosts()
+                .with_sse_keep_alive(Some(Duration::from_millis(5))),
+        );
+        let response = service.handle(sdk_request(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+            "protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"deadline-fixture","version":"1"}}}), None, None)).await;
+        assert!(response.status().is_success());
+        let session = response.headers()["mcp-session-id"]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        to_bytes(Body::new(response.into_body()), 4096)
+            .await
+            .unwrap();
+        let response = service
+            .handle(sdk_request(
+                json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+                Some(&session),
+                None,
+            ))
+            .await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        (service, session, ready)
+    }
+    async fn sdk_tool(
+        service: &StreamableHttpService<DeadlineFixture, DeadlineSessions>,
+        session: &str,
+        id: i32,
+        name: &str,
+        deadline: RequestDeadline,
+    ) -> Body {
+        let response = service.handle(sdk_request(json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":name,"arguments":{}}}), Some(session), Some(deadline))).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        Body::new(response.into_body())
+    }
+    fn after(duration: Duration) -> RequestDeadline {
+        RequestDeadline::new(tokio::time::Instant::now() + duration)
+    }
+    async fn gated_bytes(body: Body, deadline: RequestDeadline) -> Vec<u8> {
+        let stream = tool_response_stream(body, deadline);
+        futures::pin_mut!(stream);
+        let mut bytes = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            bytes.extend_from_slice(&chunk.unwrap());
+        }
+        bytes
+    }
+
+    #[tokio::test]
+    async fn expiry_sse_real_sdk_frame_contract_and_keepalive() {
+        let (service, session, _) = deadline_sdk().await;
+        let deadline = after(Duration::from_secs(2));
+        let body = sdk_tool(&service, &session, 79, "slow", deadline.clone()).await;
+        let mut source = Box::pin(body.into_data_stream());
+        let mut priming = false;
+        let mut keepalive = false;
+        let mut terminals = 0;
+        while let Some(chunk) = source.next().await {
+            let chunk = chunk.unwrap();
+            let text = std::str::from_utf8(&chunk).unwrap();
+            assert!(text.ends_with("\n\n"), "SDK split an SSE event: {text:?}");
+            assert_eq!(text.matches("\n\n").count(), 1, "SDK combined events");
+            if text.contains("retry: 9") {
+                priming = true;
+                assert!(text.contains("id: 0/"));
+            }
+            if text.starts_with(':') {
+                keepalive = true;
+            }
+            let terminal = text
+                .lines()
+                .filter_map(|line| line.strip_prefix("data: "))
+                .filter_map(|data| serde_json::from_str::<Value>(data).ok())
+                .any(|value| value["id"] == 79 && value.get("result").is_some());
+            assert_eq!(
+                deadline.terminal.load(std::sync::atomic::Ordering::Acquire),
+                terminal
+            );
+            if terminal {
+                terminals += 1;
+            }
+        }
+        assert!(priming && keepalive);
+        assert_eq!(terminals, 1);
+    }
+
+    #[tokio::test]
+    async fn expiry_sse_real_sdk_concurrent_request_markers_are_isolated() {
+        let (service, session, _) = deadline_sdk().await;
+        let fast = after(Duration::from_secs(1));
+        let slow = after(Duration::from_secs(1));
+        let fast_body = sdk_tool(&service, &session, 79, "fast", fast.clone()).await;
+        let slow_body = sdk_tool(&service, &session, 80, "slow", slow.clone()).await;
+        let output = gated_bytes(fast_body, fast.clone()).await;
+        assert!(std::str::from_utf8(&output).unwrap().contains("\"id\":79"));
+        assert!(fast.terminal.load(std::sync::atomic::Ordering::Acquire));
+        assert!(!slow.terminal.load(std::sync::atomic::Ordering::Acquire));
+        let output = gated_bytes(slow_body, slow.clone()).await;
+        assert!(std::str::from_utf8(&output).unwrap().contains("\"id\":80"));
+        assert!(slow.terminal.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn expiry_sse_real_sdk_result_then_late_poll_is_eof() {
+        let (service, session, _) = deadline_sdk().await;
+        let deadline = after(Duration::from_millis(100));
+        let body = sdk_tool(&service, &session, 79, "fast", deadline.clone()).await;
+        let mut stream = Box::pin(tool_response_stream(body, deadline.clone()));
+        while !deadline.terminal.load(std::sync::atomic::Ordering::Acquire) {
+            stream.next().await.unwrap().unwrap();
+        }
+        tokio::time::sleep_until(deadline.at + Duration::from_millis(1)).await;
+        assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn expiry_sse_ready_deadline_never_polls_business_source() {
+        let deadline = after(Duration::ZERO);
+        deadline
+            .tool_id
+            .set(serde_json::from_value(json!(79)).unwrap())
+            .unwrap();
+        let polls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = polls.clone();
+        let body = Body::from_stream(futures::stream::poll_fn(move |_| {
+            observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            std::task::Poll::Ready(Some(Ok::<_, std::io::Error>(
+                axum::body::Bytes::from_static(b"secret"),
+            )))
+        }));
+        let bytes = gated_bytes(body, deadline.clone()).await;
+        assert_eq!(polls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(deadline.cancel.is_cancelled());
+        let text = std::str::from_utf8(&bytes).unwrap();
+        assert!(text.contains(EXPIRY_ERROR) && !text.contains("secret") && !text.contains("id:"));
+    }
+
+    #[tokio::test]
+    async fn expiry_sse_real_sdk_serialization_crossing_deadline_discards_frame() {
+        let (service, session, ready) = deadline_sdk().await;
+        let deadline = after(Duration::from_secs(3));
+        let body = sdk_tool(&service, &session, 79, "large", deadline.clone()).await;
+        let mut source = Box::pin(body.into_data_stream());
+        source.next().await.unwrap().unwrap(); // SDK priming, not the large result
+        while !ready.load(std::sync::atomic::Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+        // Enqueue the completed result before testing serialization itself.
+        tokio::time::sleep(Duration::from_millis(2)).await;
+        // Start with a ready real SDK result. The gate's deadline is shortened
+        // just for this boundary contract test, avoiding timing the handler work.
+        let mut gate = deadline.clone();
+        gate.at = tokio::time::Instant::now() + Duration::from_millis(1);
+        let started = std::time::Instant::now();
+        let output = gated_bytes(Body::from_stream(source), gate.clone()).await;
+        eprintln!(
+            "real SDK serialization + expiry gate: {:?}",
+            started.elapsed()
+        );
+        assert!(
+            deadline.terminal.load(std::sync::atomic::Ordering::Acquire),
+            "SDK result was not polled"
+        );
+        let output = std::str::from_utf8(&output).unwrap();
+        assert!(output.contains(EXPIRY_ERROR));
+        assert!(!output.contains("\"result\"") && !output.contains("xxxx"));
+        assert!(gate.cancel.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn expiry_sse_real_sdk_error_is_one_terminal() {
+        let (service, session, _) = deadline_sdk().await;
+        let deadline = after(Duration::from_secs(1));
+        let body = sdk_tool(&service, &session, 79, "error", deadline.clone()).await;
+        let output = gated_bytes(body, deadline.clone()).await;
+        let output = std::str::from_utf8(&output).unwrap();
+        assert!(output.contains("fixture error"));
+        assert_eq!(output.matches("\"id\":79").count(), 1);
+        assert!(!output.contains(EXPIRY_ERROR));
+        assert!(deadline.terminal.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn expiry_sse_dropped_response_cancels_request() {
+        let deadline = after(Duration::from_secs(1));
+        let stream = tool_response_stream(Body::empty(), deadline.clone());
+        drop(stream);
+        assert!(deadline.cancel.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn expiry_sse_sdk_does_not_mark_invalid_ids_or_non_tool_requests() {
+        let (service, session, _) = deadline_sdk().await;
+        let mut requests = vec![
+            json!({"jsonrpc":"2.0","id":81,"method":"tools/list","params":{}}),
+            json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+        ];
+        for id in [Value::Null, json!({}), json!([]), json!(true)] {
+            requests.push(json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"fast","arguments":{}}}));
+        }
+        for request in requests {
+            let deadline = after(Duration::from_secs(1));
+            let response = service
+                .handle(sdk_request(request, Some(&session), Some(deadline.clone())))
+                .await;
+            to_bytes(Body::new(response.into_body()), 4096)
+                .await
+                .unwrap();
+            assert!(deadline.tool_id.get().is_none());
+            assert!(!deadline.terminal.load(std::sync::atomic::Ordering::Acquire));
+        }
+    }
 
     fn sample_config() -> Value {
         json!({"oauth": {

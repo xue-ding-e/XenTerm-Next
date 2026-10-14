@@ -131,7 +131,7 @@ def main():
             else:
                 raise AssertionError('server not ready')
 
-            def request(payload=None, auth=None, session=None, method='POST', path=args.path, headers=None, raw=None):
+            def request(payload=None, auth=None, session=None, method='POST', path=args.path, headers=None, raw=None, capture=None):
                 client = connection(timeout=15)
                 hdr = {'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream',
                        'MCP-Protocol-Version': args.protocol_version}
@@ -145,6 +145,8 @@ def main():
                 client.request(method, path, body=body, headers=hdr)
                 response = client.getresponse()
                 content = response.read().decode()
+                if capture is not None:
+                    capture.append(content)
                 status, response_headers = response.status, dict(response.getheaders())
                 client.close()
                 value = None
@@ -255,6 +257,14 @@ def main():
             assert request(auth=alice, session=a, raw='x'*(1024*1024+1))[0] == 413
             assert request(auth=alice, session=a, raw='{bad')[0] == 400
             assert request(listing, alice)[0] == 400
+            for invalid_id in [None, {}, [], True]:
+                invalid = dict(jsonrpc='2.0', id=invalid_id, method='tools/call',
+                    params=dict(name='list_sessions', arguments={}))
+                status, _, invalid_result = request(invalid, alice, a)
+                # rmcp may interpret an unparseable request ID as a notification;
+                # neither that path nor an invalid request gets an expiry frame.
+                assert status in (400, 202), (invalid_id, status, invalid_result)
+                assert 'request deadline or access token expiry reached' not in json.dumps(invalid_result)
             slow = connection(timeout=10)
             slow.putrequest('POST', args.path)
             for k,v in {'Authorization': 'Bearer '+alice, 'Content-Type': 'application/json',
@@ -303,16 +313,32 @@ def main():
                 assert time.monotonic()-started < 5
                 assert closed.wait(5), 'cancelled SSH transport did not close'
             print('PASS: MCP cancellation promptly closes synthetic stalled SSH transport')
-            accepted.clear()
-            closed.clear()
-            threading.Thread(target=silent_peer, daemon=True).start()
-            short_token = token(exp=int(time.time()) + 2)
-            started = time.monotonic()
-            request(dict(jsonrpc='2.0', id=79, method='tools/call', params=dict(name='run_command',
-                arguments=dict(session_id='fixture', command='true', timeout_seconds=60))), short_token, a)
-            assert accepted.is_set() and closed.wait(3), 'expired access token did not close in-flight SSH'
-            assert time.monotonic() - started < 4
-            print('PASS: token expiry cancels an in-flight operation and bounds its result stream')
+            for expiry_id in [79, 'expired-请求']:
+                accepted.clear()
+                closed.clear()
+                threading.Thread(target=silent_peer, daemon=True).start()
+                short_token = token(exp=int(time.time()) + 2)
+                started = time.monotonic()
+                expiry_wire = []
+                expiry_status, _, expiry_result = request(dict(jsonrpc='2.0', id=expiry_id, method='tools/call', params=dict(name='run_command',
+                    arguments=dict(session_id='fixture', command='true', timeout_seconds=60))), short_token, a, capture=expiry_wire)
+                assert accepted.is_set() and closed.wait(3), 'expired access token did not close in-flight SSH'
+                assert time.monotonic() - started < 4
+                assert expiry_status == 200, expiry_status
+                assert isinstance(expiry_result, dict) and expiry_result.get('id') == expiry_id, ('missing expiry terminal response', expiry_result)
+                assert 'error' in expiry_result and 'result' not in expiry_result, expiry_result
+                assert expiry_result['error'] == dict(code=-32603, message='request deadline or access token expiry reached'), expiry_result
+                events = [json.loads(line[5:]) for line in expiry_wire[0].splitlines()
+                          if line.startswith('data:') and line[5:].strip()]
+                assert [event for event in events if event.get('id') == expiry_id] == [expiry_result], events
+                # The SDK supports cached replay, but this adapter deliberately
+                # rejects GET/replay even with a fresh token and an authentic cursor.
+                cursors = [line[3:].strip() for line in expiry_wire[0].splitlines() if line.startswith('id:')]
+                assert cursors, ('missing SDK priming event ID', expiry_wire)
+                replay_status, _, replay_value = request(auth=token(), session=a, method='GET',
+                    headers={'Last-Event-ID': cursors[-1]})
+                assert replay_status == 405 and 'result' not in (replay_value or {}), replay_value
+            print('PASS: token expiry closes SSH and delivers the matching terminal JSON-RPC error')
             accepted.clear()
             closed.clear()
             threading.Thread(target=silent_peer, daemon=True).start()
@@ -327,11 +353,12 @@ def main():
             assert accepted.wait(5)
             pending_response.close()
             disconnected.close()
+            assert closed.wait(5), 'response body disconnect did not close SSH before DELETE'
             assert request(auth=alice, session=disposable, method='DELETE')[0] in (200,202)
             assert closed.wait(5), 'DELETE after network disconnect did not close SSH'
             assert request(listing, alice, disposable)[0] == 404
             peer.close()
-            print('PASS: disconnected request can be explicitly terminated with session DELETE')
+            print('PASS: response disconnect closes SSH before explicit session DELETE')
 
             # Reuse the existing synthetic SSH fixture, with a deliberately slow
             # in-memory upload endpoint. Cancelling must stop detached transfers.
