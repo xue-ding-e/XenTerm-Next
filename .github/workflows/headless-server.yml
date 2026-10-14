@@ -1,37 +1,69 @@
-name: Build verified headless server (Ubuntu 22.04)
+name: XenTerm Next headless server
+
+# Build the SAME product source already verified by main CI. Tooling is kept
+# separate in BUILD.json. Push/PR changes only test packaging; dispatch builds.
 on:
   push:
-    branches: [build/headless-issue1-20261014]
-    paths:
-      - .github/workflows/headless-server.yml
-      - scripts/headless_server_package.py
-      - tests/test_headless_server_package.py
+    paths: [.github/workflows/headless-server.yml, scripts/headless_server*, tests/test_headless_server*, docs/headless-server.md]
+  pull_request:
+    paths: [.github/workflows/headless-server.yml, scripts/headless_server*, tests/test_headless_server*, docs/headless-server.md]
+  workflow_dispatch:
+    inputs:
+      ci_run:
+        description: Successful main CI run ID whose exact source should be packaged
+        required: true
+        type: string
+      publish:
+        description: Publish a new fixed-source headless prerelease (otherwise artifacts only)
+        default: false
+        type: boolean
 permissions:
   contents: read
   actions: read
+
 jobs:
+  tooling-tests:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - run: python3 -m unittest discover -s tests -p 'test_headless_server*.py' -v
+      - run: node tests/test_headless_server_publish.cjs
+      - run: node tests/test_headless_server_gate.cjs
+
+  gate:
+    needs: tooling-tests
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'xue-ding-e/XenTerm-Next'
+    runs-on: ubuntu-22.04
+    outputs:
+      source_sha: ${{ steps.verify.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Verify main CI and source ancestry before product checkout
+        id: verify
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          CI_RUN_ID: ${{ inputs.ci_run }}
+          PUBLISH: ${{ inputs.publish }}
+        with:
+          script: |
+            await require('./scripts/headless_server_gate.cjs')({github, context, core});
+
   build:
-    if: github.repository == 'xue-ding-e/XenTerm-Next'
+    needs: gate
     runs-on: ubuntu-22.04
     timeout-minutes: 60
     env:
-      SOURCE_SHA: 2c8da5b8486c9865a5d769766f5051bcf4998571
-      CI_RUN_ID: '38629573194'
+      SOURCE_SHA: ${{ needs.gate.outputs.source_sha }}
+      CI_RUN_ID: ${{ inputs.ci_run }}
       CARGO_BUILD_JOBS: '2'
     steps:
-      - name: Verify immutable source CI before checkout
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
-        with:
-          script: |
-            const {owner, repo} = context.repo;
-            const {data: run} = await github.rest.actions.getWorkflowRun({owner, repo, run_id: process.env.CI_RUN_ID});
-            if (run.repository.full_name !== context.repo.owner + '/' + context.repo.repo ||
-                run.head_repository.full_name !== run.repository.full_name ||
-                run.head_sha !== process.env.SOURCE_SHA || run.head_branch !== 'main' ||
-                run.path !== '.github/workflows/ci.yml' || run.event !== 'push' ||
-                run.status !== 'completed' || run.conclusion !== 'success') {
-              throw new Error('Source must have its own successful main CI');
-            }
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           path: tooling
@@ -45,23 +77,55 @@ jobs:
         with:
           python-version: '3.12'
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
-      - name: Test packaging validation
-        run: python3 -m unittest discover -s tooling/tests -p test_headless_server_package.py -v
       - name: Build fixed source without desktop dependencies
         working-directory: source
         run: |
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
           cargo build --locked --release --no-default-features --features headless
-      - name: Test actual release binary stdio access policy
+      - name: Test actual release binary stdio and HTTP configuration recovery
         working-directory: source
         run: |
-          python3 -m pip install 'mcp>=2.3,<3'
+          python3 -m pip install 'mcp>=2.3,<3' cryptography paramiko
           python3 tests/access_policy_e2e.py --exe target/release/xenterm
+          python3 tests/remote_mcp_e2e.py --exe target/release/xenterm --path /mcp
       - name: Validate ELF ABI and package with provenance
         run: python3 tooling/scripts/headless_server_package.py source dist
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: headless-linux-x86_64-2c8da5b
+          name: headless-linux-x86_64
           path: dist/*
           if-no-files-found: error
           retention-days: 14
+
+  publish:
+    needs: [gate, build]
+    if: inputs.publish
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    concurrency:
+      group: headless-publish-${{ needs.gate.outputs.source_sha }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      actions: read
+    env:
+      SOURCE_SHA: ${{ needs.gate.outputs.source_sha }}
+      CI_RUN_ID: ${{ inputs.ci_run }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: headless-linux-x86_64
+          path: dist
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Revalidate package and provenance without executing binary
+        run: python3 scripts/headless_server_verify.py dist
+      - name: Publish new fixed-source prerelease without overwriting existing tags or assets
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            await require('./scripts/headless_server_publish.cjs')({github, context, core});

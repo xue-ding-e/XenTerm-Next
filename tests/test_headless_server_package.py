@@ -17,12 +17,13 @@ class AbiValidation(unittest.TestCase):
         workflow = (root / '.github/workflows/headless-server.yml').read_text()
         cli = (root / 'tests/access_policy_e2e.py').read_text()
         self.assertIn("parser.add_argument('--exe', required=True", cli)
-        self.assertIn('access_policy_e2e.py --exe target/release/xenterm', workflow)
+        self.assertIn("access_policy_e2e.py --exe target/release/xenterm", workflow)
         self.assertIn('cargo build --locked --release --no-default-features --features headless', workflow)
         self.assertIn('runs-on: ubuntu-22.04', workflow)
         self.assertIn('ref: ${{ env.SOURCE_SHA }}', workflow)
         self.assertIn('contents: read', workflow)
-        self.assertNotIn('contents: write', workflow)
+        self.assertEqual(workflow.count('contents: write'), 1)
+        self.assertIn('if: inputs.publish', workflow)
         self.assertNotIn('secrets.', workflow)
 
     def test_allowed(self):
