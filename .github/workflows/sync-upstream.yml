@@ -23,7 +23,7 @@ jobs:
       - name: Check out maintained synchronization code
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.sha }}
           fetch-depth: 0
       - name: Fast-forward upstream-main only
         shell: bash
