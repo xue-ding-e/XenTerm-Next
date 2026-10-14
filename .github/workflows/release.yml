@@ -88,7 +88,10 @@ jobs:
             APP_VERSION="${VERSION#v}"
           elif [ "$INPUT_MODE" = "dry-run" ]; then
             MODE=dry-run
-            VERSION="${GITHUB_REF_NAME:-dev}"
+            # A ref name may contain "/" (a branch like ixbai/dev); a version
+            # must not, or every path built from it (staging dirs, artifact
+            # names) tries to create a directory that does not exist.
+            VERSION="$(echo "${GITHUB_REF_NAME:-dev}" | tr '/' '-')"
             DEB_VERSION="$CARGO_VERSION"
             APP_VERSION="$CARGO_VERSION"
           else

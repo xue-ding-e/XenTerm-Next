@@ -206,17 +206,29 @@ fn arrows_move_the_selection_and_enter_runs_it(cx: &mut TestAppContext) {
     let (shell, cx) = fixture(cx);
     open_palette(&shell, cx);
 
-    cx.simulate_keystrokes("down down up");
+    cx.simulate_keystrokes("down down");
     draw(cx);
     shell.read_with(cx, |shell, cx| match &shell.overlay {
         Overlay::Commands(palette) => assert_eq!(palette.read(cx).selected_index(), 2),
         other => panic!("palette overlay missing: {other:?}"),
     });
 
-    // Enter runs the selected row — the third command, where the old Enter
-    // always took the first. The pick drains through the shell and the card
-    // goes with it.
+    // Up walks back one, and Enter runs whatever is selected — the second
+    // command, where the old Enter always took the first. That command
+    // (NewSession) opens the session editor, so the proof is the overlay
+    // leaving Commands, not the dialog layer going empty.
+    cx.simulate_keystrokes("up");
+    draw(cx);
+    shell.read_with(cx, |shell, cx| match &shell.overlay {
+        Overlay::Commands(palette) => assert_eq!(palette.read(cx).selected_index(), 1),
+        other => panic!("palette overlay missing: {other:?}"),
+    });
     cx.simulate_keystrokes("enter");
     draw(cx);
-    assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+    shell.read_with(cx, |shell, _| {
+        assert!(
+            !matches!(shell.overlay, Overlay::Commands(_)),
+            "Enter must run the selected command and retire the palette"
+        );
+    });
 }

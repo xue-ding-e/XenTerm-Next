@@ -1136,11 +1136,23 @@ round-{} alpha
     fn shift_enter_steps_backwards() {
         let mut buffer = buffer_with_history();
         buffer.set_find_query("alpha");
-        // Walk forward to the top, then one step back must come down.
-        while buffer.step_find_match(true) && buffer.view_offset > 0 {}
-        let top = buffer.view_offset;
-        assert!(buffer.step_find_match(false));
-        assert!(buffer.view_offset > top, "stepping back scrolls down");
+        // The query's own scroll parks the view on the first alpha; one
+        // forward step moves to the second, and the step back must return to
+        // exactly where the first one sat. (A bounded, deterministic pair of
+        // steps — walking "until the top" never terminates, because the wrap
+        // re-finds the first match rather than reaching offset 0.)
+        let first = buffer.view_offset;
+        assert!(buffer.step_find_match(true), "a later alpha exists");
+        assert_ne!(
+            buffer.view_offset,
+            first,
+            "the forward step must actually move the view"
+        );
+        assert!(buffer.step_find_match(false), "an earlier alpha exists");
+        assert_eq!(
+            buffer.view_offset, first,
+            "a step back returns to the first match"
+        );
     }
 
     #[test]
