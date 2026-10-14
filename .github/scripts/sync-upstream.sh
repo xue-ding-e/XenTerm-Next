@@ -1,22 +1,39 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Only move the official mirror. Never merge or run files fetched from upstream.
+# Historical filename retained for dispatch links. This is a read-only check:
+# never push refs, merge, or run files fetched from upstream.
+mirror_url=https://github.com/xue-ding-e/XenTerm-Next.git
+upstream_url=https://github.com/ixbaicn/XenTerm.git
 mirror=refs/heads/upstream-main
-expected=$(git ls-remote --exit-code origin "$mirror" | cut -f1)
-[[ "$expected" =~ ^[0-9a-f]{40}$ ]] || { echo 'Missing or invalid mirror baseline'; exit 1; }
-git fetch --no-tags origin "$mirror"
-[[ "$(git rev-parse FETCH_HEAD)" == "$expected" ]] || { echo 'Mirror changed during fetch'; exit 1; }
-git fetch --no-tags https://github.com/ixbaicn/XenTerm.git refs/heads/main
-candidate=$(git rev-parse FETCH_HEAD)
-git merge-base --is-ancestor "$expected" "$candidate" || { echo 'Upstream diverged or rewrote history; manual review required'; exit 1; }
-[[ "$(git ls-remote --exit-code origin "$mirror" | cut -f1)" == "$expected" ]] || { echo 'Mirror changed concurrently; retry after review'; exit 1; }
+report() {
+  printf '%s\n' "$1"
+  if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+    printf '%s\n\n' "$1" >> "$GITHUB_STEP_SUMMARY"
+  fi
+}
+report 'Official mirror drift check (read-only; no synchronization is performed).'
+expected=$(git ls-remote --exit-code "$mirror_url" "$mirror" | cut -f1)
+[[ "$expected" =~ ^[0-9a-f]{40}$ ]] || { report 'Missing or invalid mirror baseline'; exit 1; }
+# Fetch into a disposable bare repository, not the maintained checkout.
+work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+git init --bare --quiet "$work"
+git -C "$work" fetch --quiet --no-tags "$mirror_url" "$mirror"
+[[ "$(git -C "$work" rev-parse FETCH_HEAD)" == "$expected" ]] || { report 'Mirror changed during fetch; retry after review'; exit 1; }
+git -C "$work" fetch --quiet --no-tags "$upstream_url" refs/heads/main
+candidate=$(git -C "$work" rev-parse FETCH_HEAD)
+[[ "$(git ls-remote --exit-code "$mirror_url" "$mirror" | cut -f1)" == "$expected" ]] || { report 'Mirror changed concurrently; retry after review'; exit 1; }
+[[ "$(git ls-remote --exit-code "$upstream_url" refs/heads/main | cut -f1)" == "$candidate" ]] || { report 'Official main changed concurrently; retry after review'; exit 1; }
+report "Mirror SHA: $expected"
+report "Official SHA: $candidate"
 if [[ "$candidate" == "$expected" ]]; then
-  echo "Official mirror is already current: $expected"
-  exit 0
+  report 'Status: current. No refs were changed.'
+elif git -C "$work" merge-base --is-ancestor "$expected" "$candidate"; then
+  count=$(git -C "$work" rev-list --count "$expected..$candidate")
+  report "Status: behind by $count commit(s). Synchronization is pending; use the existing authorized connector after ancestry and expected-SHA checks. No refs were changed."
+  echo '::warning::Official mirror is behind; this read-only check does not synchronize it.'
+else
+  report 'Status: diverged or upstream history rewritten. Manual review required; no refs were changed.'
+  exit 1
 fi
-# A regular push rejects non-fast-forward updates; no force, tags, or main writes.
-git push --porcelain origin "$candidate:$mirror"
-actual=$(git ls-remote --exit-code origin "$mirror" | cut -f1)
-[[ "$actual" == "$candidate" ]] || { echo 'Mirror changed after push; inspect concurrent update'; exit 1; }
-echo "Official mirror fast-forwarded: $expected -> $actual"

@@ -1,30 +1,35 @@
-name: Sync official upstream mirror
+name: Check official upstream mirror (read-only)
 
 on:
   schedule:
     - cron: '0 9 * * *' # Daily 17:00 Asia/Shanghai; GitHub may delay scheduled runs.
   workflow_dispatch:
+  push:
+    paths: ['.github/workflows/sync-upstream.yml', '.github/scripts/sync-upstream.sh', 'tests/upstream_mirror_check_test.py']
+  pull_request:
+    paths: ['.github/workflows/sync-upstream.yml', '.github/scripts/sync-upstream.sh', 'tests/upstream_mirror_check_test.py']
 
 permissions:
   contents: read
 
 concurrency:
-  group: sync-official-upstream-mirror
+  group: check-official-upstream-mirror-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  sync:
-    if: github.repository == 'xue-ding-e/XenTerm-Next' && github.ref == 'refs/heads/main'
+  check:
+    if: github.repository == 'xue-ding-e/XenTerm-Next'
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    permissions:
-      contents: write
     steps:
-      - name: Check out maintained synchronization code
+      - name: Check out maintained verification code
         uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
-          fetch-depth: 0
-      - name: Fast-forward upstream-main only
+          persist-credentials: false
+      - name: Test read-only mirror checks with isolated Git repositories
+        run: python3 tests/upstream_mirror_check_test.py
+      - name: Check mirror drift without writing remote refs
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         shell: bash
         run: bash .github/scripts/sync-upstream.sh
