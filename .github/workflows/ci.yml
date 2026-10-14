@@ -68,6 +68,13 @@ jobs:
           XDG_DATA_HOME: ${{ runner.temp }}/xenterm-gui-data
           XDG_RUNTIME_DIR: ${{ runner.temp }}/xenterm-gui-runtime
         run: cargo test --locked --target ${{ matrix.target }} --jobs 2 ui::dialog_parity_tests
+      - name: Test session-list width rollback on every desktop platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked --target ${{ matrix.target }} --jobs 2 ui::pages::sessions_page::width_tests -- --test-threads=1 2>&1 | tee "$RUNNER_TEMP/session-width-tests.log"
+          # Reject a renamed/miswired filter that silently executes zero tests.
+          grep -F "test result: ok. 4 passed; 0 failed;" "$RUNNER_TEMP/session-width-tests.log"
       - name: Test complete desktop regression suite on Linux
         if: runner.os == 'Linux'
         env:
@@ -168,3 +175,4 @@ jobs:
         run: bash -n assets/install-linux.sh
       - name: Run isolated installer regressions
         run: /usr/bin/python3 tests/install_linux_test.py
+
