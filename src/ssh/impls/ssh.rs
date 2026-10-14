@@ -1402,36 +1402,70 @@ pub async fn execute_command(
     // and timeout futures. Otherwise its state is embedded in every CLI/MCP
     // caller, exhausting the Windows main thread's 1 MiB stack in debug builds.
     // Boxing still drops it immediately on timeout; no detached task is spawned.
-    match tokio::time::timeout(
+    crate::ssh::connection::with_automation_cancellation(command_with_cleanup(
         timeout,
-        crate::ssh::connection::with_automation_cancellation(Box::pin(execute_command_inner(
+        Box::pin(execute_command_inner(
             session,
             jump,
             command,
-            timeout,
             max_output_bytes,
-        ))),
-    )
+        )),
+        |(handle, jump_handles)| async move {
+            let _ = handle
+                .disconnect(Disconnect::ByApplication, "command complete", "")
+                .await;
+            for jump_handle in jump_handles.into_iter().rev() {
+                let _ = jump_handle
+                    .disconnect(Disconnect::ByApplication, "command complete", "")
+                    .await;
+            }
+        },
+    ))
     .await
-    {
-        Ok(result) => result,
-        Err(_) => Ok(CommandExecution {
-            stdout: String::new(),
-            stderr: String::new(),
-            exit_code: None,
-            timed_out: true,
-            truncated: false,
-        }),
-    }
+}
+
+// Keep the command result outside the cleanup deadline. A full transport queue
+// can stall disconnect even after stdout/exit status have already been received.
+// All hops share one cleanup budget, capped by the original command deadline;
+// dropping this future still drops cleanup and the enclosing transport guard.
+async fn command_with_cleanup<T, Operation, CleanupFn, Cleanup>(
+    timeout: std::time::Duration,
+    operation: Operation,
+    cleanup: CleanupFn,
+) -> Result<CommandExecution>
+where
+    Operation: std::future::Future<Output = Result<(CommandExecution, T)>>,
+    CleanupFn: FnOnce(T) -> Cleanup,
+    Cleanup: std::future::Future<Output = ()>,
+{
+    let deadline = tokio::time::Instant::now() + timeout;
+    let (result, connections) = match tokio::time::timeout_at(deadline, operation).await {
+        Ok(result) => result?,
+        Err(_) => {
+            return Ok(CommandExecution {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: None,
+                timed_out: true,
+                truncated: false,
+            });
+        }
+    };
+    let cleanup_deadline =
+        deadline.min(tokio::time::Instant::now() + std::time::Duration::from_secs(1));
+    let _ = tokio::time::timeout_at(cleanup_deadline, cleanup(connections)).await;
+    Ok(result)
 }
 
 async fn execute_command_inner(
     session: Session,
     jump: Vec<Session>,
     command: &str,
-    timeout: std::time::Duration,
     max_output_bytes: usize,
-) -> Result<CommandExecution> {
+) -> Result<(
+    CommandExecution,
+    (Handle<ClientHandler>, Vec<Handle<ClientHandler>>),
+)> {
     let (events, event_rx) = mpsc::unbounded_channel();
     drop(event_rx);
     let config = ssh_client_config();
@@ -1491,25 +1525,8 @@ async fn execute_command_inner(
         }
     };
 
-    let result = match tokio::time::timeout(timeout, collect).await {
-        Ok(result) => result,
-        Err(_) => CommandExecution {
-            stdout: String::new(),
-            stderr: String::new(),
-            exit_code: None,
-            timed_out: true,
-            truncated: false,
-        },
-    };
-    let _ = handle
-        .disconnect(Disconnect::ByApplication, "command complete", "")
-        .await;
-    for jump_handle in jump_handle.into_iter().rev() {
-        let _ = jump_handle
-            .disconnect(Disconnect::ByApplication, "command complete", "")
-            .await;
-    }
-    Ok(result)
+    let result = collect.await;
+    Ok((result, (handle, jump_handle)))
 }
 
 fn append_bounded(target: &mut Vec<u8>, data: &[u8], limit: usize, truncated: &mut bool) {
@@ -1537,6 +1554,166 @@ mod command_stack_tests {
         // but never embed the whole route in nested CLI/MCP request futures.
         let bytes = std::mem::size_of_val(&command);
         assert!(bytes <= 4096, "SSH command future grew to {bytes} bytes");
+    }
+}
+
+#[cfg(test)]
+mod command_cleanup_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    struct DropCount(Arc<AtomicUsize>);
+    impl Drop for DropCount {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn completed() -> CommandExecution {
+        CommandExecution {
+            stdout: "completed stdout".into(),
+            stderr: "completed stderr".into(),
+            exit_code: Some(7),
+            timed_out: false,
+            truncated: true,
+        }
+    }
+
+    fn assert_completed(result: CommandExecution) {
+        assert_eq!(result.stdout, "completed stdout");
+        assert_eq!(result.stderr, "completed stderr");
+        assert_eq!(result.exit_code, Some(7));
+        assert!(!result.timed_out);
+        assert!(result.truncated);
+    }
+
+    #[tokio::test]
+    async fn completed_result_survives_cleanup_at_original_deadline() {
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let connections = DropCount(dropped.clone());
+        let started = tokio::time::Instant::now();
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            command_with_cleanup(
+                Duration::from_millis(20),
+                async { Ok((completed(), connections)) },
+                |connections| async move {
+                    let _connections = connections;
+                    std::future::pending::<()>().await;
+                },
+            ),
+        )
+        .await
+        .expect("cleanup exceeded the command's original deadline")
+        .unwrap();
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "cleanup received a fresh one-second budget past the original deadline"
+        );
+        assert_completed(result);
+        assert_eq!(dropped.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn all_hops_share_one_cleanup_budget() {
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let entered = Arc::new(AtomicUsize::new(0));
+        let connections: Vec<_> = (0..3).map(|_| DropCount(dropped.clone())).collect();
+        let entered_cleanup = entered.clone();
+        let result = tokio::time::timeout(
+            Duration::from_secs(3),
+            command_with_cleanup(
+                Duration::from_secs(30),
+                async { Ok((completed(), connections)) },
+                |connections| async move {
+                    // Model the exact sequential target/reverse-hop cleanup shape.
+                    // The first stalled disconnect must not grant later hops
+                    // fresh budgets or leave their owned transports detached.
+                    for connection in connections.into_iter().rev() {
+                        let _connection = connection;
+                        entered_cleanup.fetch_add(1, Ordering::SeqCst);
+                        std::future::pending::<()>().await;
+                    }
+                },
+            ),
+        )
+        .await
+        .expect("cleanup was bounded only by the 30-second command timeout")
+        .unwrap();
+        assert_completed(result);
+        assert_eq!(entered.load(Ordering::SeqCst), 1);
+        assert_eq!(dropped.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn unfinished_command_still_times_out_and_drops_its_resources() {
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let connections = DropCount(dropped.clone());
+        let result = command_with_cleanup(
+            Duration::from_millis(20),
+            async move {
+                let _connections = connections;
+                std::future::pending::<Result<(CommandExecution, ())>>().await
+            },
+            |_| async { panic!("an unfinished command must not start result cleanup") },
+        )
+        .await
+        .unwrap();
+        assert!(result.timed_out);
+        assert!(result.stdout.is_empty() && result.stderr.is_empty());
+        assert_eq!(result.exit_code, None);
+        assert!(!result.truncated);
+        assert_eq!(dropped.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn command_error_is_not_hidden_by_cleanup() {
+        let error = command_with_cleanup(
+            Duration::from_secs(30),
+            async { Err::<(CommandExecution, ()), _>(anyhow!("authentication failed")) },
+            |_| async { panic!("failed commands have no completed result to clean up") },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.to_string(), "authentication failed");
+    }
+
+    #[tokio::test]
+    async fn dropping_call_during_cleanup_drops_all_owned_connections() {
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let connections: Vec<_> = (0..3).map(|_| DropCount(dropped.clone())).collect();
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let mut call = Box::pin(command_with_cleanup(
+            Duration::from_secs(30),
+            async { Ok((completed(), connections)) },
+            |connections| async move {
+                let _connections = connections;
+                let _ = entered_tx.send(());
+                std::future::pending::<()>().await;
+            },
+        ));
+        tokio::select! {
+            _ = entered_rx => {}
+            _ = &mut call => panic!("cleanup should still be pending"),
+        }
+        drop(call);
+        assert_eq!(dropped.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn successful_cleanup_preserves_the_completed_result() {
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let connection = DropCount(dropped.clone());
+        let result = command_with_cleanup(
+            Duration::from_secs(30),
+            async { Ok((completed(), connection)) },
+            |connection| async move { drop(connection) },
+        )
+        .await
+        .unwrap();
+        assert_completed(result);
+        assert_eq!(dropped.load(Ordering::SeqCst), 1);
     }
 }
 
