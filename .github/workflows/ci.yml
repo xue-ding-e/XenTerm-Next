@@ -82,6 +82,15 @@ jobs:
           XDG_DATA_HOME: ${{ runner.temp }}/xenterm-history-data
           XDG_RUNTIME_DIR: ${{ runner.temp }}/xenterm-history-runtime
         run: cargo test --locked --target ${{ matrix.target }} --jobs 2 execution_log -- --test-threads=1
+      # Run the GUI export policy against each platform's private publisher.
+      # Linux's full suite also covers it; Windows/macOS need this explicit
+      # filter because their remaining desktop steps run narrower subsets.
+      - name: Test private GUI export policy
+        env:
+          XDG_CONFIG_HOME: ${{ runner.temp }}/xenterm-export-config
+          XDG_DATA_HOME: ${{ runner.temp }}/xenterm-export-data
+          XDG_RUNTIME_DIR: ${{ runner.temp }}/xenterm-export-runtime
+        run: cargo test --locked --target ${{ matrix.target }} --jobs 2 ui::shell::file_dialog_tests::gui_export_ -- --test-threads=1
       - name: Test complete desktop regression suite on Linux
         if: runner.os == 'Linux'
         env:
