@@ -7,7 +7,12 @@ use std::time::Duration;
 
 use sysinfo::{Disks, Networks, System};
 
-use super::system_types::{DiskUsage, InfoRow, ProcRow, SystemSampler, SystemSnapshot, TabStatus};
+use super::system_types::{
+    DiskUsage, InfoRow, ProcRow, SystemSampler, SystemSnapshot, TabStatus,
+};
+// The event vocabulary's GPU shape: produced here, defined beside ProcInfo in
+// the protocol both sides share (#87).
+use crate::session::protocol::GpuUsage;
 use crate::session::protocol::ProcInfo;
 
 impl SystemSampler {
@@ -25,6 +30,7 @@ impl SystemSampler {
             last_rx_total,
             last_tx_total,
             last_instant: std::time::Instant::now(),
+            gpu_supported: None,
         }
     }
 
@@ -87,6 +93,41 @@ impl SystemSampler {
             .filter(|(_, _, total)| *total > 0)
             .collect();
 
+        // The GPU probe (#87): one `nvidia-smi` per tick on this background
+        // thread, and none at all once the machine has said it cannot answer —
+        // an unsupported box must not pay a spawn a second for a fact it told
+        // us the first time. A probe that answers with no rows is a supported
+        // "no GPU" and stays distinct from "cannot tell".
+        let (gpus, gpu_unsupported) = match self.gpu_supported {
+            Some(false) => (Vec::new(), true),
+            _ => {
+                let query = std::process::Command::new("nvidia-smi")
+                    .args([
+                        "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu",
+                        "--format=csv,noheader,nounits",
+                    ])
+                    .output();
+                match query {
+                    Ok(output) if output.status.success() => {
+                        let text = String::from_utf8_lossy(&output.stdout).to_string();
+                        let gpus = parse_nvidia_smi(&text);
+                        if gpus.is_empty() && text.trim().is_empty() {
+                            // Answered, with nothing: driver present, no GPU.
+                            self.gpu_supported = Some(true);
+                            (Vec::new(), false)
+                        } else {
+                            self.gpu_supported = Some(true);
+                            (gpus, false)
+                        }
+                    }
+                    _ => {
+                        self.gpu_supported = Some(false);
+                        (Vec::new(), true)
+                    }
+                }
+            }
+        };
+
         SystemSnapshot {
             cpu_percent,
             mem_percent,
@@ -99,8 +140,60 @@ impl SystemSampler {
             net_rx_per_sec,
             net_tx_per_sec,
             disks,
+            gpus,
+            gpu_unsupported,
         }
     }
+}
+
+/// Parse `nvidia-smi --query-gpu=... --format=csv,noheader,nounits` output
+/// into rows (#87). One GPU per line, fields comma-separated; the name may
+/// contain no comma but can contain spaces, so the four numbers are taken
+/// from the right and everything before them is the name. `N/A` fields
+/// (a GPU in a low-power state reports no temperature) become `None`-shaped
+/// defaults rather than dropping the whole row.
+pub fn parse_nvidia_smi(output: &str) -> Vec<GpuUsage> {
+    const MAX_GPUS: usize = 16;
+    let mut gpus = Vec::new();
+    for line in output.lines() {
+        if gpus.len() >= MAX_GPUS {
+            break;
+        }
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let fields: Vec<&str> = line.split(',').map(str::trim).collect();
+        if fields.len() < 5 {
+            continue;
+        }
+        let tail = &fields[fields.len() - 4..];
+        let name = fields[..fields.len() - 4].join(",").trim().to_string();
+        if name.is_empty() {
+            continue;
+        }
+        let number = |field: &str| field.parse::<f64>().ok().filter(|v| v.is_finite());
+        let util_percent = match number(tail[0]) {
+            Some(v) => v.clamp(0.0, 100.0) as f32,
+            // "N/A" or "[Not Supported]": an idle GPU still has a row.
+            None => 0.0,
+        };
+        let mem_used_mib = number(tail[1]).map(|v| v.max(0.0) as u64).unwrap_or(0);
+        let mem_total_mib = number(tail[2]).map(|v| v.max(0.0) as u64).unwrap_or(0);
+        let temp_c = number(tail[3])
+            .map(|v| v.clamp(0.0, 200.0) as u32)
+            // 0 is what a refusal like "N/A" parses to in some driver builds;
+            // a real 0°C does not exist for a running GPU.
+            .filter(|temp| *temp > 0);
+        gpus.push(GpuUsage {
+            name,
+            util_percent,
+            mem_used_mib,
+            mem_total_mib,
+            temp_c,
+        });
+    }
+    gpus
 }
 
 /// Format a used/total memory pair (both in MiB) for the narrow sidebar.
@@ -572,5 +665,45 @@ mod tests {
             rows[0].cells(),
             ["eth0", "1 KB", "2 KB", "3 KB/s", "4 KB/s"]
         );
+    }
+}
+
+#[cfg(test)]
+mod gpu_parse_tests {
+    use super::*;
+
+    #[test]
+    fn parses_one_row_per_gpu_with_names_that_keep_spaces() {
+        let rows = parse_nvidia_smi(
+            "NVIDIA GeForce RTX 4090, 35, 8123, 24564, 55
+Tesla T4, 0, 0, 16384, N/A
+",
+        );
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].name, "NVIDIA GeForce RTX 4090");
+        assert_eq!(rows[0].util_percent, 35.0);
+        assert_eq!(rows[0].mem_used_mib, 8123);
+        assert_eq!(rows[0].mem_total_mib, 24564);
+        assert_eq!(rows[0].temp_c, Some(55));
+        // N/A temperature is a row without one, not a dropped row.
+        assert_eq!(rows[1].temp_c, None);
+        assert_eq!(rows[1].util_percent, 0.0);
+    }
+
+    #[test]
+    fn garbage_lines_yield_nothing_rather_than_partial_rows() {
+        assert!(parse_nvidia_smi("").is_empty());
+        assert!(parse_nvidia_smi("Unable to determine the device handle").is_empty());
+        // Too few fields for the four numbers and a name.
+        assert!(parse_nvidia_smi("RTX, 1, 2, 3").is_empty());
+    }
+
+    #[test]
+    fn utilisation_is_clamped_to_the_metered_range() {
+        let rows = parse_nvidia_smi("GPU A, 250, 10, 100, 40
+GPU B, -5, 0, 100, 40
+");
+        assert_eq!(rows[0].util_percent, 100.0);
+        assert_eq!(rows[1].util_percent, 0.0);
     }
 }

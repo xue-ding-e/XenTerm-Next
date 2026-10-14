@@ -2316,6 +2316,8 @@ fn apply_event(
             swap_total_kib,
             net,
             disks,
+            gpus,
+            gpu_unsupported,
             current_user: _,
             procs: _,
             sys,
@@ -2339,6 +2341,8 @@ fn apply_event(
                     status.sampled_at = Some(std::time::Instant::now());
                     status.cpu_sampled = cpu_sampled;
                     status.cpu = cpu_percent;
+                    status.gpus = gpus;
+                    status.gpu_unsupported = gpu_unsupported;
                     status.mem_used_kib = mem_used_kib;
                     status.mem_total_kib = mem_total_kib;
                     status.swap_used_kib = swap_used_kib;

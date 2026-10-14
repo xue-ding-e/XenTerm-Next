@@ -1724,7 +1724,10 @@ async fn run_session(
     // pid/user/pcpu/pmem/args, each line clipped to 200 chars so a giant command
     // line can't bloat the stream. A host whose `ps` lacks `--sort`/`-o` simply
     // yields nothing (2>/dev/null), degrading to an empty process list.
-    const MON_CMD: &[u8] = b"PATH=/usr/bin:/bin:/usr/sbin:/sbin; export PATH; while :; do awk '/^cpu /{print}' /proc/stat; awk '/^(MemTotal|MemAvailable|SwapTotal|SwapFree|Buffers|Cached):/{print}' /proc/meminfo; cat /proc/net/dev; echo __DF__; df -kP 2>/dev/null; echo __MSTICK__; sleep 2; done\n";
+    // The GPU pass rides the same loop (#87): one `nvidia-smi` per sample,
+    // and an explicit `__GPU_NOSMI__` when the host cannot answer — the
+    // panel then says "unavailable" instead of quietly showing nothing.
+    const MON_CMD: &[u8] = b"PATH=/usr/bin:/bin:/usr/sbin:/sbin; export PATH; while :; do awk '/^cpu /{print}' /proc/stat; awk '/^(MemTotal|MemAvailable|SwapTotal|SwapFree|Buffers|Cached):/{print}' /proc/meminfo; cat /proc/net/dev; echo __DF__; df -kP 2>/dev/null; echo __GPU__; nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits 2>/dev/null || echo __GPU_NOSMI__; echo __MSTICK__; sleep 2; done\n";
     // Detailed system information is intentionally one-shot and last priority.
     // It includes commands such as lspci/hostname that may be slow on some hosts
     // and must never delay either the terminal or the lightweight sidebar sample.
@@ -2440,6 +2443,10 @@ fn parse_monitor_block(
     let mut seen_fs: std::collections::HashSet<(u64, u64)> = std::collections::HashSet::new();
     // Processes from `ps` (#23): top-by-CPU rows.
     let mut procs: Vec<ProcInfo> = Vec::new();
+    // GPUs from the sample's `nvidia-smi` pass (#87); the explicit refusal
+    // marker is the difference between "no GPUs" and "cannot tell".
+    let mut gpus: Vec<crate::resource::GpuUsage> = Vec::new();
+    let mut gpu_unsupported = false;
     let mut current_user = String::new();
     let mut sys_kv: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     // The sample is split into sections by `echo` markers; everything before the
@@ -2450,6 +2457,7 @@ fn parse_monitor_block(
         Me,
         Ps,
         Sys,
+        Gpu,
     }
     let mut section = Section::Top;
 
@@ -2473,6 +2481,10 @@ fn parse_monitor_block(
         }
         if line == "__SYS__" {
             section = Section::Sys;
+            continue;
+        }
+        if line == "__GPU__" {
+            section = Section::Gpu;
             continue;
         }
         match section {
@@ -2506,6 +2518,17 @@ fn parse_monitor_block(
             Section::Sys => {
                 if let Some((k, v)) = line.split_once('=') {
                     sys_kv.insert(k.trim().to_string(), v.trim().to_string());
+                }
+                continue;
+            }
+            Section::Gpu => {
+                if line == "__GPU_NOSMI__" {
+                    gpu_unsupported = true;
+                } else if gpus.len() < MAX_MON_ENTRIES {
+                    // One CSV row per GPU; the shared parser also serves the
+                    // local probe, so both monitors read nvidia-smi the same
+                    // way or not at all.
+                    gpus.extend(crate::resource::parse_nvidia_smi(line));
                 }
                 continue;
             }
@@ -2628,6 +2651,8 @@ fn parse_monitor_block(
         swap_total_kib: swap_total,
         net,
         disks,
+        gpus,
+        gpu_unsupported,
         current_user,
         procs,
         sys,
@@ -3473,6 +3498,54 @@ mod monitor_hardening_tests {
         assert!(parse_monitor_block(&block, &mut prev, &mut prev_net, &mut at).is_some());
         // The remembered interface set is capped, not 500.
         assert!(prev_net.len() <= 64, "prev_net held {}", prev_net.len());
+    }
+
+    #[test]
+    fn monitor_carries_gpu_rows_and_the_explicit_refusal() {
+        // A host with two GPUs: rows land in the sample (#87).
+        let block = "MemTotal: 1000 kB
+MemAvailable: 500 kB
+__GPU__
+NVIDIA GeForce RTX 4090, 35, 8123, 24564, 55
+Tesla T4, 0, 0, 16384, N/A
+";
+        let mut prev = None;
+        let mut prev_net = HashMap::new();
+        let mut at = Instant::now();
+        let event = parse_monitor_block(block, &mut prev, &mut prev_net, &mut at).unwrap();
+        match event {
+            super::SessionEvent::ResourceStats {
+                gpus, gpu_unsupported, ..
+            } => {
+                assert!(!gpu_unsupported);
+                assert_eq!(gpus.len(), 2);
+                assert_eq!(gpus[0].name, "NVIDIA GeForce RTX 4090");
+                assert_eq!(gpus[0].temp_c, Some(55));
+                assert_eq!(gpus[1].temp_c, None);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        // A host without nvidia-smi says so, and the sample says "cannot
+        // tell" rather than quietly reporting no GPUs (#87).
+        let block = "MemTotal: 1000 kB
+MemAvailable: 500 kB
+__GPU__
+__GPU_NOSMI__
+";
+        let mut prev = None;
+        let mut prev_net = HashMap::new();
+        let mut at = Instant::now();
+        let event = parse_monitor_block(block, &mut prev, &mut prev_net, &mut at).unwrap();
+        match event {
+            super::SessionEvent::ResourceStats {
+                gpus, gpu_unsupported, ..
+            } => {
+                assert!(gpu_unsupported);
+                assert!(gpus.is_empty());
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
     }
 
     #[test]

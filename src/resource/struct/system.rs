@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use crate::session::protocol::{ProcInfo, SystemDetails};
+use crate::session::protocol::{GpuUsage, ProcInfo, SystemDetails};
 
 use sysinfo::{Disks, Networks, System};
 
@@ -20,6 +20,13 @@ pub struct SystemSnapshot {
     pub net_tx_per_sec: u64,
     /// Per-filesystem (mount, available_bytes, total_bytes).
     pub disks: Vec<(String, u64, u64)>,
+    /// Per-GPU utilisation samples (#87). Empty with `gpu_unsupported` false
+    /// means probed and no GPU reported rows — a different fact from "cannot
+    /// tell", and the panel shows both rather than folding them together.
+    pub gpus: Vec<GpuUsage>,
+    /// The probe cannot answer on this machine (no `nvidia-smi`, or it
+    /// refused). The panel says so instead of hiding the section (#87).
+    pub gpu_unsupported: bool,
 }
 
 /// Stateful sampler. Construct once per process and poll via [`Self::sample`].
@@ -30,28 +37,10 @@ pub struct SystemSampler {
     pub(super) last_rx_total: u64,
     pub(super) last_tx_total: u64,
     pub(super) last_instant: std::time::Instant,
-}
-
-#[derive(Clone, Default)]
-pub(crate) struct LocalHardwareInfo {
-    pub(crate) os: String,
-    pub(crate) kernel: String,
-    pub(crate) kernel_version: String,
-    pub(crate) arch: String,
-    pub(crate) hostname: String,
-    pub(crate) cpu_name: String,
-    pub(crate) cpu_vendor: String,
-    pub(crate) cpu_cores: String,
-    pub(crate) cpu_frequency: String,
-    pub(crate) gpus: Vec<LocalGpuInfo>,
-}
-
-#[derive(Clone, Default)]
-pub(crate) struct LocalGpuInfo {
-    pub(crate) name: String,
-    pub(crate) vendor: String,
-    pub(crate) driver: String,
-    pub(crate) memory: String,
+    /// The GPU probe's verdict, sticky once decided: `None` = not probed yet,
+    /// `Some(false)` = unsupported (no `nvidia-smi`), so an unsupported
+    /// machine stops paying for a process spawn every tick.
+    pub(super) gpu_supported: Option<bool>,
 }
 
 /// One filesystem row for the resource panel: where it is mounted, how full it is,
@@ -145,6 +134,8 @@ pub(crate) struct TabStatus {
     pub(crate) selected_iface: String,
     pub(crate) net_hist: Vec<f32>,
     pub(crate) disks: Vec<(String, u64, u64)>,
+    pub(crate) gpus: Vec<GpuUsage>,
+    pub(crate) gpu_unsupported: bool,
     pub(crate) procs: Vec<ProcInfo>,
     pub(crate) sys: SystemDetails,
 }

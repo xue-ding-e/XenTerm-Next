@@ -125,6 +125,14 @@ struct Resources {
     bot_down: SharedString,
     bot_history: Vec<f32>,
     disks: Vec<DiskUsage>,
+    /// Per-GPU samples (#87), projected the same way for this machine and the
+    /// connected one.
+    gpus: Vec<crate::resource::GpuUsage>,
+    /// The probe cannot answer here (no `nvidia-smi`). The panel says so in
+    /// place of the rows rather than hiding the section (#87): a reader who
+    /// just added a GPU or installed the driver needs to see "unavailable",
+    /// not an absence indistinguishable from "none".
+    gpu_unsupported: bool,
 }
 
 impl Resources {
@@ -158,6 +166,8 @@ impl Resources {
             bot_down: SharedString::default(),
             bot_history: vec![0.0; NET_HISTORY_LEN],
             disks: Vec::new(),
+            gpus: Vec::new(),
+            gpu_unsupported: false,
         }
     }
 }
@@ -429,6 +439,8 @@ impl SidebarView {
             view.mem_detail = format_mem(snapshot.mem_used_mib, snapshot.mem_total_mib).into();
             view.swap_detail = format_mem(snapshot.swap_used_mib, snapshot.swap_total_mib).into();
             view.disks = local_disks.clone();
+            view.gpus = snapshot.gpus.clone();
+            view.gpu_unsupported = snapshot.gpu_unsupported;
         };
 
         let status: Option<TabStatus> = self
@@ -494,6 +506,8 @@ impl SidebarView {
                     .map(|(name, _, _)| name.as_str().into())
                     .collect();
                 view.disks = crate::resource::disk_usage(&status.disks);
+                view.gpus = status.gpus.clone();
+                view.gpu_unsupported = status.gpu_unsupported;
             }
             // Dropped or still connecting: the heading stays the server's — that is what
             // the panel is about — and the top graph holds a placeholder rather than
@@ -952,6 +966,72 @@ impl SidebarView {
     }
 
     /// The filesystem list: mount, how full, and the figure behind the fill.
+    /// The GPU section (#87): one row per GPU — utilisation bar, memory
+    /// figures, temperature — with the same anatomy as the disk rows so the
+    /// panel stays one scanner's list.
+    ///
+    /// Two honest non-measurements take the rows' place rather than the
+    /// section's: "unavailable" when the probe cannot answer (no
+    /// `nvidia-smi`, local or remote), and "no GPU" when it answered with
+    /// nothing. Hiding the section would fold both into silence (#87).
+    fn gpus(&self, cx: &Context<Self>) -> AnyElement {
+        let shown = self.shown.clone();
+        let theme = cx.theme();
+        let muted = theme.muted_foreground;
+        v_flex()
+            .w_full()
+            .flex_shrink_0()
+            .gap_1()
+            .child(
+                h_flex()
+                    .w_full()
+                    .gap_2()
+                    .text_xs()
+                    .text_color(muted)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(crate::i18n::t("GPU", "GPU")),
+                    )
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .child(crate::i18n::t("利用率/显存", "Load/Memory")),
+                    ),
+            )
+            .child(if shown.gpu_unsupported {
+                v_flex().w_full().child(
+                    div()
+                        .w_full()
+                        .text_xs()
+                        .text_color(muted)
+                        .py_1()
+                        .child(crate::i18n::t(
+                            "GPU 监控不可用(未检测到 nvidia-smi)",
+                            "GPU monitoring unavailable (nvidia-smi not found)",
+                        )),
+                )
+            } else if shown.gpus.is_empty() {
+                v_flex().w_full().child(
+                    div()
+                        .w_full()
+                        .text_xs()
+                        .text_color(muted)
+                        .py_1()
+                        .child(crate::i18n::t("未检测到 GPU", "No GPU detected")),
+                )
+            } else {
+                v_flex()
+                    .w_full()
+                    .gap_0p5()
+                    .children(
+                        shown.gpus.iter().map(|gpu| gpu_row(gpu, theme)),
+                    )
+            })
+            .into_any_element()
+    }
+
     fn disks(&self, cx: &Context<Self>) -> AnyElement {
         let shown = self.shown.clone();
         let theme = cx.theme();
@@ -1030,6 +1110,7 @@ impl Render for SidebarView {
         let header = self.header(cx);
         let stats = self.stats(cx);
         let networks = self.networks(cx);
+        let gpus = self.gpus(cx);
         let disks = self.disks(cx);
 
         v_flex()
@@ -1053,6 +1134,8 @@ impl Render for SidebarView {
                     .child(stats)
                     .child(divider(theme))
                     .child(networks)
+                    .child(divider(theme))
+                    .child(gpus)
                     .child(divider(theme))
                     .child(disks),
             )
@@ -1224,6 +1307,63 @@ fn sparkline(history: &[f32], theme: &Theme) -> impl IntoElement {
 }
 
 /// One filesystem: a fill drawn behind the mount's own name.
+/// One measured GPU row: name, utilisation bar, memory figures and
+/// temperature — the disk row's anatomy with the load in the bar instead of
+/// fullness.
+fn gpu_row(gpu: &crate::resource::GpuUsage, theme: &Theme) -> impl IntoElement {
+    let fill = if gpu.util_percent > 90.0 {
+        theme.danger
+    } else if gpu.util_percent > 75.0 {
+        theme.warning
+    } else {
+        theme.chart_2
+    };
+    let mem = format_mem(gpu.mem_used_mib, gpu.mem_total_mib);
+    let detail = match gpu.temp_c {
+        Some(temp) => format!("{mem} · {temp}°C"),
+        None => mem,
+    };
+    h_flex()
+        .w_full()
+        .h(px(20.))
+        .flex_shrink_0()
+        .gap(px(6.))
+        .items_center()
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_xs()
+                .truncate()
+                .child(SharedString::from(gpu.name.clone())),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .h(px(4.))
+                .rounded_full()
+                .bg(theme.border)
+                .child(
+                    div()
+                        .h_full()
+                        .w(relative(f32::from(gpu.util_percent) / 100.0))
+                        .rounded_full()
+                        .bg(fill),
+                ),
+        )
+        .child(
+            div()
+                .flex_shrink_0()
+                .text_xs()
+                .text_color(theme.muted_foreground)
+                .child(SharedString::from(format!(
+                    "{:.0}% · {detail}",
+                    gpu.util_percent
+                ))),
+        )
+}
+
 fn disk_row(disk: &DiskUsage, theme: &Theme) -> impl IntoElement {
     // The fill carries the same reading as the bar's length: blue while there is room,
     // yellow near full, red when there is not. Two signals for one fact, because a bar

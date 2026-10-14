@@ -76,6 +76,22 @@ pub struct ProcessKillResult {
 
 // --- Events: what a running session reports back ------------------------------
 
+/// One GPU as the resource panel draws it (#87): who it is, how busy, how
+/// full its memory is, and how hot — the four numbers a training job watches.
+///
+/// Lives here rather than in `resource` because both sides name it: the
+/// samplers produce it and the events carry it, and the protocol is the
+/// vocabulary they share — `ProcInfo` is here for the same reason.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GpuUsage {
+    pub name: String,
+    /// 0..100.
+    pub util_percent: f32,
+    pub mem_used_mib: u64,
+    pub mem_total_mib: u64,
+    pub temp_c: Option<u32>,
+}
+
 /// Events emitted back to the UI thread.
 #[derive(Debug, Clone)]
 pub enum SessionEvent {
@@ -136,6 +152,11 @@ pub enum SessionEvent {
         net: Vec<(String, u64, u64)>,
         /// Per-filesystem (mount_point, available_bytes, total_bytes).
         disks: Vec<(String, u64, u64)>,
+        /// Per-GPU utilisation (#87), from the same sample's `nvidia-smi` pass.
+        gpus: Vec<GpuUsage>,
+        /// The remote has no `nvidia-smi` (or it refused): the panel shows
+        /// "unavailable" rather than hiding the section (#87).
+        gpu_unsupported: bool,
         /// Effective login name reported by the remote host (`id -un`).
         current_user: String,
         /// Top processes by CPU (#23). Empty if the host's `ps` is unusable.
