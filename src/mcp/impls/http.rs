@@ -539,14 +539,23 @@ async fn authenticated_guard(state: Arc<Boundary>, request: Request, next: Next)
         }
         _ => return unauthorized(&state),
     };
-    if !crate::config::ConfigStore::load()
-        .map(|store| store.mcp_enabled())
-        .unwrap_or(false)
-    {
-        return failure(
-            StatusCode::FORBIDDEN,
-            "MCP is disabled or the selected profile is unavailable",
-        );
+    // Keep configuration failures distinct from an explicit disable while
+    // denying both. Only authenticated callers receive this profile diagnostic;
+    // never include the underlying error's paths or credential details.
+    match crate::config::ConfigStore::load().map(|store| store.mcp_enabled()) {
+        Ok(true) => {}
+        Ok(false) => {
+            return failure(
+                StatusCode::FORBIDDEN,
+                "MCP is disabled in Settings > MCP & permissions",
+            );
+        }
+        Err(_) => {
+            return failure(
+                StatusCode::SERVICE_UNAVAILABLE,
+                super::server::CONFIG_UNAVAILABLE_MESSAGE,
+            );
+        }
     }
     if request
         .headers()

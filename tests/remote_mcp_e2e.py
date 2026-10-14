@@ -247,9 +247,45 @@ def main():
             assert value['result']['isError'] and 'saved' in json.dumps(value).lower()
             config['mcp_enabled'] = False
             save_config(config)
-            assert request(listing, alice, a)[0] == 403
+            status, _, value = request(listing, alice, a)
+            assert status == 403 and value == {'error': 'MCP is disabled in Settings > MCP & permissions'}
             config['mcp_enabled'] = True
             save_config(config)
+            assert request(listing, alice, a)[0] == 200
+
+            # Re-read the real profile on every request, without restarting or
+            # replacing the MCP session. Corruption must fail closed without
+            # being reported as an operator disabling MCP or leaking its input.
+            invalid_settings = json.dumps({'password': 'synthetic-config-load-secret',
+                                          'profile': str(profile)})[:-1]
+            with contextlib.closing(sqlite3.connect(saved)) as db, db:
+                db.execute("UPDATE meta SET value=? WHERE key='settings'", (invalid_settings,))
+            try:
+                unavailable = {'error': 'MCP configuration is unavailable; request denied. Check the selected profile and retry.'}
+                for payload, session in [(init, None), (listing, a),
+                                         (dict(jsonrpc='2.0', id=4, method='ping'), a)]:
+                    status, _, value = request(payload, alice, session)
+                    assert status == 503 and value == unavailable, (status, value)
+                    response_text = json.dumps(value)
+                    assert str(profile) not in response_text and 'synthetic-config-load-secret' not in response_text
+                status, _, value = call('get_access_policy', {})
+                assert status == 503 and value == unavailable, (status, value)
+                for method in ['GET', 'DELETE']:
+                    status, _, value = request(auth=alice, session=a, method=method)
+                    assert status == 503 and value == unavailable, (status, value)
+                for auth in [None, 'invalid-token']:
+                    status, _, value = request(listing, auth, a)
+                    assert status == 401 and value == {'error': 'invalid or missing access token'}
+                with contextlib.closing(sqlite3.connect(saved)) as db:
+                    assert db.execute("SELECT value FROM meta WHERE key='settings'").fetchone()[0] == invalid_settings
+            finally:
+                save_config(config)
+            status, _, listed = request(listing, alice, a)
+            assert status == 200 and len(listed['result']['tools']) >= 7
+            status, _, value = call('get_access_policy', {})
+            assert status == 200 and not value['result'].get('isError')
+            assert process.poll() is None
+            print('PASS: same-session config corruption is redacted 503, disabled is 403, unauthenticated is 401, and recovery needs no restart')
             assert request(listing, alice, a, headers={'MCP-Protocol-Version': 'not-supported'})[0] == 400
             assert request(listing, alice, a, headers={'MCP-Protocol-Version': '2026-07-28'})[0] == 400
             print('PASS: redacted read tool; command, file transfer, import, MCP enable and saved-credential gates')

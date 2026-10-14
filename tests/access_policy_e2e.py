@@ -10,6 +10,7 @@ from pathlib import Path
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from mcp.shared.exceptions import MCPError
 
 
 def profile_settings(profile):
@@ -73,6 +74,41 @@ async def verify(executable):
                 assert 'get_access_policy' in {tool.name for tool in discovered.tools}
                 policy = await client.call_tool('get_access_policy', {})
                 assert not policy.is_error and json.loads(payload(policy))['mode'] == 'full'
+                # Corrupt only the disposable profile. A live process must fail
+                # closed without claiming the switch was disabled or leaking data.
+                with closing(sqlite3.connect(profile / 'sessions.db')) as db:
+                    original = db.execute("SELECT value FROM meta WHERE key='settings'").fetchone()[0]
+                def set_settings(value):
+                    with closing(sqlite3.connect(profile / 'sessions.db')) as db, db:
+                        db.execute("UPDATE meta SET value=? WHERE key='settings'", (value,))
+                try:
+                    set_settings('{invalid-json synthetic-policy-secret')
+                    for operation in [client.list_tools, lambda: client.call_tool('get_access_policy', {})]:
+                        try:
+                            await operation()
+                        except MCPError as error:
+                            assert error.error.code == -32002, error
+                            assert 'configuration is unavailable' in error.error.message, error
+                            assert 'synthetic-policy-secret' not in str(error)
+                            assert str(profile) not in str(error)
+                            assert 'disabled' not in str(error)
+                        else:
+                            raise AssertionError('Unreadable settings allowed an MCP operation')
+                    disabled_settings = json.loads(original)
+                    disabled_settings['mcp_enabled'] = False
+                    set_settings(json.dumps(disabled_settings))
+                    try:
+                        await client.list_tools()
+                    except MCPError as error:
+                        assert error.error.code == -32001, error
+                        assert 'disabled' in error.error.message, error
+                    else:
+                        raise AssertionError('Explicitly disabled MCP allowed discovery')
+                finally:
+                    set_settings(original)
+                recovered = await client.call_tool('get_access_policy', {})
+                assert not recovered.is_error and json.loads(payload(recovered))['mcp_enabled'] is True
+                assert (await client.list_tools()).tools, 'same-process recovery failed'
                 sessions = await client.call_tool('list_sessions', {})
                 assert not sessions.is_error and 'Policy fixture' in payload(sessions)
                 result = await asyncio.wait_for(client.call_tool('run_command', {

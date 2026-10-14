@@ -14,3 +14,7 @@ pub(crate) use structs::Frontend;
 pub(crate) use structs::execution_log;
 
 pub(crate) use tools::{access_policy, call};
+
+/// Safe remote diagnostic shared by MCP gates and subsequent tool loads.
+pub(crate) const MCP_CONFIG_UNAVAILABLE_MESSAGE: &str =
+    "MCP configuration is unavailable; request denied. Check the selected profile and retry.";

@@ -84,12 +84,13 @@ fn discard_rest_of_line() -> Result<()> {
 
 /// The MCP server's own on-switch, re-read per request so flipping the setting
 /// takes effect on the next request without a restart. Fail closed: an
-/// unreadable config means the server answers nothing (audit I-04).
-fn mcp_enabled() -> bool {
-    crate::config::ConfigStore::load()
-        .map(|store| store.mcp_enabled())
-        .unwrap_or(false)
+/// unreadable config rejects operations, but is not a user-disabled switch (audit I-04).
+fn mcp_enabled() -> Result<bool> {
+    crate::config::ConfigStore::load().map(|store| store.mcp_enabled())
 }
+
+// Never expose the underlying loader error: it may contain paths or credentials.
+pub(super) use crate::automation::MCP_CONFIG_UNAVAILABLE_MESSAGE as CONFIG_UNAVAILABLE_MESSAGE;
 
 async fn handle(request: Value, allow_config_import: bool) -> Option<Value> {
     handle_with_import(request, mcp_enabled(), allow_config_import).await
@@ -97,12 +98,12 @@ async fn handle(request: Value, allow_config_import: bool) -> Option<Value> {
 
 #[cfg(test)]
 async fn handle_with(request: Value, enabled: bool) -> Option<Value> {
-    handle_with_import(request, enabled, false).await
+    handle_with_import(request, Ok(enabled), false).await
 }
 
 async fn handle_with_import(
     request: Value,
-    enabled: bool,
+    enabled: Result<bool>,
     allow_config_import: bool,
 ) -> Option<Value> {
     let id = request.get("id").cloned();
@@ -113,12 +114,16 @@ async fn handle_with_import(
     let id = id.unwrap_or(Value::Null);
     // Every method — not only tool calls — requires the server to be enabled;
     // a disabled server must not even enumerate its capabilities.
-    if !enabled {
-        return Some(error_response(
-            id,
-            -32001,
-            "MCP is disabled in Settings > MCP & permissions",
-        ));
+    match enabled {
+        Ok(true) => {}
+        Ok(false) => {
+            return Some(error_response(
+                id,
+                -32001,
+                "MCP is disabled in Settings > MCP & permissions",
+            ));
+        }
+        Err(_) => return Some(error_response(id, -32002, CONFIG_UNAVAILABLE_MESSAGE)),
     }
     let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
     match method {
@@ -233,6 +238,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn config_load_failure_is_distinct_and_redacted_for_every_method() {
+        for method in ["initialize", "ping", "tools/list", "tools/call"] {
+            let response = handle_with_import(
+                json!({"jsonrpc": "2.0", "id": "failed", "method": method}),
+                Err(anyhow::anyhow!("private/path credential=synthetic-secret")),
+                false,
+            )
+            .await
+            .unwrap();
+            assert_eq!(response["id"], "failed");
+            assert_eq!(response["error"]["code"], -32002);
+            assert_eq!(response["error"]["message"], CONFIG_UNAVAILABLE_MESSAGE);
+            assert!(response.get("result").is_none());
+            assert!(!response.to_string().contains("synthetic-secret"));
+            assert!(!response.to_string().contains("private/path"));
+        }
+        assert!(handle_with_import(
+            json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+            Err(anyhow::anyhow!("synthetic-secret")),
+            false,
+        )
+        .await
+        .is_none());
+    }
+
+    #[tokio::test]
     async fn notifications_do_not_receive_responses() {
         assert!(handle_with(
             json!({
@@ -258,7 +289,10 @@ mod tests {
         .await
         .unwrap();
         let tools = response["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), super::super::tools::definitions().as_array().unwrap().len());
+        assert_eq!(
+            tools.len(),
+            super::super::tools::definitions().as_array().unwrap().len()
+        );
         assert!(tools.iter().any(|tool| tool["name"] == "get_access_policy"));
     }
 }

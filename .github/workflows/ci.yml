@@ -124,6 +124,10 @@ jobs:
       # Synthetic independent profiles only; no GUI dependencies or real credentials.
       - name: Build the headless CLI binary
         run: cargo build --locked --no-default-features --features headless --jobs 2
+      - name: Install MCP client for live configuration gate regression
+        run: python -m pip install "mcp>=2.3,<3"
+      - name: Test live MCP configuration failure and recovery
+        run: python tests/access_policy_e2e.py --exe "${{ runner.os == 'Windows' && 'target/debug/xenterm.exe' || 'target/debug/xenterm' }}"
       - name: Stable-ID import and native snapshot migration
         run: python tests/migration_modes_e2e.py --exe "${{ runner.os == 'Windows' && 'target/debug/xenterm.exe' || 'target/debug/xenterm' }}"
       - name: Read-only full CLI migration previews

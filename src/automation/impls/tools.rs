@@ -214,8 +214,18 @@ fn sftp_context(
     Ok((session, jump, Duration::from_secs(timeout)))
 }
 
+// The profile may become unreadable after the transport gate passed. Drop the
+// underlying error chain for MCP; HTTP formats complete chains for tool errors.
+fn config_load_error(error: anyhow::Error, frontend: Frontend) -> anyhow::Error {
+    if frontend.is_mcp() {
+        anyhow!(crate::automation::MCP_CONFIG_UNAVAILABLE_MESSAGE)
+    } else {
+        error.context("load XenTerm configuration")
+    }
+}
+
 fn load_store(frontend: Frontend) -> Result<ConfigStore> {
-    let store = ConfigStore::load().context("load XenTerm configuration")?;
+    let store = ConfigStore::load().map_err(|error| config_load_error(error, frontend))?;
     // The one gate that stays a comparison against `Mcp` rather than going
     // through `is_unattended`. This is not a rule about what a caller may do, it
     // is the MCP server's own on-switch: turning the server off must stop MCP
@@ -361,6 +371,15 @@ fn optional_u64(arguments: &Value, key: &str) -> Result<Option<u64>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mcp_config_load_error_drops_sensitive_chain_but_cli_keeps_diagnostics() {
+        let error = || anyhow!("credential=synthetic-secret").context("private/profile/path");
+        let remote = config_load_error(error(), Frontend::Mcp { allow_config_import: false });
+        assert_eq!(format!("{remote:#}"), crate::automation::MCP_CONFIG_UNAVAILABLE_MESSAGE);
+        let local = config_load_error(error(), Frontend::Cli);
+        assert!(format!("{local:#}").contains("synthetic-secret"));
+    }
 
     #[test]
     fn import_arguments_are_strict_before_loading_a_profile() {
