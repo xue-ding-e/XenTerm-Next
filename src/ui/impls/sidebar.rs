@@ -1065,8 +1065,8 @@ impl Render for SidebarView {
                     .text_color(theme.muted_foreground)
                     .text_center()
                     .child(SharedString::from(format!(
-                        "xenterm v{}",
-                        env!("CARGO_PKG_VERSION")
+                        "xenterm {}",
+                        crate::version::VERSION
                     ))),
             )
             .into_any_element()

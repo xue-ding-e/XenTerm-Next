@@ -154,7 +154,7 @@ fn initialize(params: &Value) -> Value {
         "serverInfo": {
             "name": "xenterm",
             "title": "XenTerm MCP",
-            "version": env!("CARGO_PKG_VERSION")
+            "version": crate::version::VERSION
         },
         "instructions": "Manage saved XenTerm sessions and run permitted SSH automation. Session metadata omits credential values; enabled command and file tools have the documented OS-account access."
     })

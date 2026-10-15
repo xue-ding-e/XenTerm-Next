@@ -33,6 +33,7 @@ mod terminal;
 mod tunnel;
 #[cfg(feature = "desktop")]
 mod ui;
+mod version;
 mod webdav;
 mod wallpaper;
 
@@ -63,7 +64,7 @@ fn main() -> anyhow::Result<()> {
     let migration_preview = config::configure_profile(&mut args)?;
     let mode = StartMode::detect(&args);
     if matches!(mode, StartMode::Version) {
-        println!("xenterm {}", env!("CARGO_PKG_VERSION"));
+        println!("xenterm {}", version::VERSION);
         return Ok(());
     }
 
@@ -80,7 +81,7 @@ fn main() -> anyhow::Result<()> {
         println!(
             "{}",
             serde_json::json!({
-                "executable": std::env::current_exe()?, "version": env!("CARGO_PKG_VERSION"),
+                "executable": std::env::current_exe()?, "version": version::VERSION,
                 "data_dir": config::data_dir(), "session_count": store.sessions().len()
             })
         );
