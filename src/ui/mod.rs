@@ -102,7 +102,7 @@ pub(crate) use execution_log_window::ExecutionLogWindowHandle;
 pub(crate) use actions::{
     CloseTab, CommandPalette, CopySelection, CyclePane, Find, NextTab, Paste,
     PasteAlternate, PrevTab, QuickConnect,
-    Reconnect, SplitDown, SplitRight, ZoomIn, ZoomOut, ZoomReset,
+    Reconnect, SendTab, SplitDown, SplitRight, ZoomIn, ZoomOut, ZoomReset,
 };
 pub(crate) use shell::run;
 // What a detached window — the process monitor, the system-information window — has to be

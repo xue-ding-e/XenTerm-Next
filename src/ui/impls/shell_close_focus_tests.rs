@@ -451,6 +451,77 @@ fn entry_closing_inactive_x_preserves_active_terminal(cx: &mut TestAppContext) {
     assert!(raw_input(&mut left).is_empty());
 }
 
+/// Tab in the grid is the shell's completion key and must reach the session, not
+/// the toolkit root's Tab binding that focuses the next field. A key binding runs
+/// before the grid's own key handler, so without the grid claiming Tab in its own
+/// context the press was consumed by the root: it moved the keyboard to the
+/// command bar and the shell never completed anything. Chinese sessions hit this
+/// first, where completion is the only way to type a path.
+#[gpui_kit::gpui::test]
+fn terminal_tab_reaches_the_session_instead_of_moving_focus(cx: &mut TestAppContext) {
+    use gpui_kit::test::TestWindowExt as _;
+
+    let (shell, cx) = fixture(cx);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    open_entry_tab(&shell, "tab-completion", cx);
+    let mut inbox = entry_inbox(&shell, "tab-completion", &runtime, cx);
+    for _ in 0..3 {
+        draw(cx);
+    }
+    // The same click the other focus tests use: it hands the keyboard to the grid.
+    let area = cx.debug_bounds("terminal-pane-area").unwrap();
+    cx.simulate_click(area.center(), Default::default());
+    draw(cx);
+    cx.simulate_input("ls");
+    assert_eq!(
+        raw_input(&mut inbox),
+        b"ls",
+        "the click must focus the grid"
+    );
+
+    // Tab is a keystroke, not text: it arrives as 0x09 ...
+    cx.simulate_keystrokes("tab");
+    assert_eq!(raw_input(&mut inbox), b"\t");
+
+    // ... Shift+Tab as Backtab, not a second forward Tab ...
+    cx.simulate_keystrokes("shift-tab");
+    assert_eq!(raw_input(&mut inbox), b"\x1b[Z");
+
+    // ... and the keyboard stayed in the grid, so the next text still lands in
+    // this session rather than in the command bar the root's Tab would have reached.
+    cx.simulate_input("after");
+    assert_eq!(raw_input(&mut inbox), b"after");
+
+    // Repeated completion does not accumulate handlers or move focus.
+    for _ in 0..3 {
+        cx.simulate_keystrokes("tab");
+        assert_eq!(raw_input(&mut inbox), b"\t");
+        cx.simulate_keystrokes("shift-tab");
+        assert_eq!(raw_input(&mut inbox), b"\x1b[Z");
+    }
+
+    // The find bar owns editing keys while open. Completion must not leak to
+    // the session, and Escape must restore the same terminal's input routing.
+    cx.simulate_keystrokes("ctrl-f");
+    draw(cx);
+    cx.simulate_keystrokes("tab");
+    cx.simulate_keystrokes("shift-tab");
+    assert!(raw_input(&mut inbox).is_empty());
+    cx.simulate_keystrokes("escape");
+    draw(cx);
+    cx.simulate_keystrokes("tab");
+    assert_eq!(raw_input(&mut inbox), b"\t");
+
+    // Once the command field owns focus, completion must stay out of the PTY.
+    let command = cx.update(|window, _| window.find("command-input").bounds());
+    cx.simulate_click(command.center(), Default::default());
+    draw(cx);
+    cx.simulate_input("draft-command");
+    assert!(raw_input(&mut inbox).is_empty());
+    cx.simulate_keystrokes("tab");
+    assert!(raw_input(&mut inbox).is_empty());
+}
+
 #[path = "startup_shortcut_tests.rs"]
 mod startup_shortcut_tests;
 #[path = "shell_tab_cycle_tests.rs"]

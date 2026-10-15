@@ -91,6 +91,14 @@ jobs:
           XDG_DATA_HOME: ${{ runner.temp }}/xenterm-export-data
           XDG_RUNTIME_DIR: ${{ runner.temp }}/xenterm-export-runtime
         run: cargo test --locked --target ${{ matrix.target }} --jobs 2 ui::shell::file_dialog_tests::gui_export_ -- --test-threads=1
+      - name: Test terminal completion routing and focus regressions
+        env:
+          XDG_CONFIG_HOME: ${{ runner.temp }}/xenterm-tab-config
+          XDG_DATA_HOME: ${{ runner.temp }}/xenterm-tab-data
+          XDG_RUNTIME_DIR: ${{ runner.temp }}/xenterm-tab-runtime
+        run: cargo test --locked --target ${{ matrix.target }} --jobs 2 ui::shell::shell_close_focus_tests -- --test-threads=1
+      - name: Test Tab and Backtab byte encoding
+        run: cargo test --locked --target ${{ matrix.target }} --jobs 2 tab_encoding_tests -- --test-threads=1
       - name: Test complete desktop regression suite on Linux
         if: runner.os == 'Linux'
         env:

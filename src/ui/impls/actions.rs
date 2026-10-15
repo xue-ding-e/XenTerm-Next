@@ -66,6 +66,19 @@ pub struct PasteAlternate {
     pub insert: bool,
 }
 
+/// The terminal's Tab, as the shell's completion key rather than the toolkit's
+/// "focus the next field". It exists as a binding because the toolkit root binds
+/// bare Tab in its own context, and a binding outranks the grid's key handler — so
+/// the grid has to claim the chord in its context, and the action it dispatches is
+/// what actually sends the byte. Shift is carried because Shift+Tab is the CSI form
+/// while Tab is the control character, so the two do not encode alike.
+#[derive(Clone, Debug, PartialEq, Eq, gpui_kit::Action)]
+#[action(namespace = xenterm, no_json)]
+pub struct SendTab {
+    /// `true` for Shift+Tab.
+    pub shift: bool,
+}
+
 /// Bind every chord once, at startup. This is the whole keymap; nothing else in
 /// the crate is allowed to call `bind_keys`.
 pub(crate) fn init(cx: &mut gpui_kit::App) {
@@ -109,6 +122,16 @@ pub(crate) fn init(cx: &mut gpui_kit::App) {
         // is open), and PageUp/PageDown/Home/End (scroll keys on the normal screen,
         // the program's keys on the alternate one — and which variant depends on
         // the snapshot, not the focus).
+        // Tab is bound here rather than left to the view because the toolkit root
+        // binds bare Tab to "focus the next field", and a binding outranks the
+        // grid's key handler: a Tab meant for the shell was consumed by the root
+        // and the command bar took the keyboard. Claiming it in the deeper
+        // `Terminal` context keeps it for the grid, and the action (which consumes
+        // the key) is what sends it, so the press reaches the session exactly once.
+        // Shift+Tab carries its own action because the two encode differently
+        // (`\t` versus the CSI form).
+        KeyBinding::new("tab", SendTab { shift: false }, Some("Terminal")),
+        KeyBinding::new("shift-tab", SendTab { shift: true }, Some("Terminal")),
         KeyBinding::new("ctrl-shift-c", CopySelection, Some("Terminal")),
         KeyBinding::new("ctrl-v", Paste, Some("Terminal")),
         KeyBinding::new("ctrl-shift-v", Paste, Some("Terminal")),

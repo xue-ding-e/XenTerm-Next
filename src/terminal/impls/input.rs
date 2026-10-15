@@ -277,6 +277,13 @@ pub(crate) fn key_to_pty_bytes_with_shift(
     if key == "\n" && !ctrl && !alt {
         return vec![0x0d];
     }
+    // Tab is the completion key a shell reads as its control character; Shift+Tab
+    // is Backtab, whose CSI form a shell reads as `menu-complete-backward`. Without
+    // this the shared encoder would hand a shifted Tab the same `\t` as an unshifted
+    // one, completing forward when the user asked for backward.
+    if key == "\t" && !ctrl && !alt {
+        return if shift { b"\x1b[Z".to_vec() } else { vec![0x09] };
+    }
     if key.is_empty() {
         return Vec::new();
     }
@@ -524,6 +531,49 @@ mod mouse_encoding_tests {
         // afterwards, and the setting is not consent to that.
         let huge = "x".repeat(PASTE_REVIEW_LIMIT + 1);
         assert!(paste_needs_review(&huge, false));
+    }
+}
+
+#[cfg(test)]
+mod tab_encoding_tests {
+    use super::*;
+
+    #[test]
+    fn tab_preserves_cursor_modes_and_modified_key_encoding() {
+        for app_cursor in [false, true] {
+            assert_eq!(
+                key_to_pty_bytes_with_shift("\t", false, false, false, app_cursor),
+                b"\t"
+            );
+            assert_eq!(
+                key_to_pty_bytes_with_shift("\t", false, false, true, app_cursor),
+                b"\x1b[Z"
+            );
+            for shift in [false, true] {
+                assert_eq!(
+                    key_to_pty_bytes_with_shift("\t", true, false, shift, app_cursor),
+                    b"\t"
+                );
+                assert_eq!(
+                    key_to_pty_bytes_with_shift("\t", false, true, shift, app_cursor),
+                    b"\x1b\t"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tab_is_the_control_character_and_shift_tab_is_backtab() {
+        // Tab is the completion key a shell reads as `\t`; Shift+Tab is
+        // `menu-complete-backward`, which is Backtab — not a second forward Tab.
+        assert_eq!(
+            key_to_pty_bytes_with_shift("\t", false, false, false, false),
+            vec![0x09]
+        );
+        assert_eq!(
+            key_to_pty_bytes_with_shift("\t", false, false, true, false),
+            b"\x1b[Z".to_vec()
+        );
     }
 }
 

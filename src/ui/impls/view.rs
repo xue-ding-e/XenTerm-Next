@@ -836,6 +836,28 @@ impl TerminalView {
         self.send_bytes(&bytes);
     }
 
+    /// Send Tab to the session.
+    ///
+    /// `send_key` would encode it too, but a binding runs before the key handler,
+    /// and the toolkit root binds bare Tab for field navigation — so the grid
+    /// claims the chord in its own context (see `impls/actions.rs`) and the action
+    /// it dispatches is what reaches the PTY. Shift picks the CSI form, which is
+    /// what the shared encoder gives `Shift+Tab`. While the find bar is open the
+    /// editing keys belong to it, exactly as in `send_key`, so Tab is dropped.
+    fn send_tab(&mut self, shift: bool, cx: &mut Context<Self>) {
+        if self.find_open {
+            return;
+        }
+        let app_cursor = self
+            .buffer
+            .lock()
+            .ok()
+            .is_some_and(|buffer| buffer.parser.screen().application_cursor());
+        let bytes = gpui_key_bytes("tab", false, false, shift, app_cursor);
+        self.send_bytes(&bytes);
+        cx.notify();
+    }
+
     /// Step this session's font size.
     ///
     /// `step` is `1`, `-1` or `0` for reset. The clamping and the reset semantics are
@@ -1535,6 +1557,9 @@ impl Render for TerminalView {
                     this.paste_alternate(action, window, cx);
                 },
             ))
+            .on_action(cx.listener(|this, action: &crate::ui::SendTab, _, cx| {
+                this.send_tab(action.shift, cx);
+            }))
             .on_action(cx.listener(|this, _: &crate::ui::Find, _, cx| {
                 this.open_find(cx);
             }))
