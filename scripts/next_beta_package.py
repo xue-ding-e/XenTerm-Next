@@ -9,6 +9,7 @@ import subprocess
 import tarfile
 import zipfile
 from next_beta import PLATFORMS, REPOSITORY, prefix
+from packaging_version import verify_binary_version
 
 
 def package(root, platform, target, sha):
@@ -17,9 +18,8 @@ def package(root, platform, target, sha):
     stage.mkdir(parents=True)
     binary = root / 'target' / target / 'release' / ('xenterm.exe' if platform.startswith('windows') else 'xenterm')
     version = subprocess.check_output([str(binary), '--version'], text=True, encoding='utf-8', timeout=30).strip()
-    cargo_version = __import__('tomllib').loads((root / 'Cargo.toml').read_text(encoding='utf-8'))['package']['version']
-    if version != 'xenterm ' + cargo_version:
-        raise RuntimeError('Binary version differs from Cargo.toml')
+    version_metadata = verify_binary_version(root, sha, version)
+    cargo_version = version_metadata['package_version']
     notices = stage
     if platform.startswith('macos'):
         app = stage / 'XenTerm Next.app'
@@ -68,6 +68,7 @@ def package(root, platform, target, sha):
             'This is a dependency check, not a GUI startup acceptance test.\n\n' + dependencies, encoding='utf-8')
     (notices / 'BUILD.json').write_text(json.dumps({
         'repository': REPOSITORY, 'sha': sha, 'platform': platform,
+        **version_metadata,
         'binary_version': version, 'rustc': subprocess.check_output(['rustc', '--version'], text=True, encoding='utf-8', timeout=30).strip(),
         'ci_run': os.environ['CI_RUN_ID'], 'build_run': os.environ['GITHUB_RUN_ID'],
     }, indent=2) + '\n', encoding='utf-8')

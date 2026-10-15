@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import tarfile
 import zipfile
+from packaging_version import prepared_metadata, validate_manifest_version
 
 REPOSITORY = 'xue-ding-e/XenTerm-Next'
 WORKFLOW = '.github/workflows/ci.yml'
@@ -96,6 +97,10 @@ def verify_archive(path, platform, sha, ci_id, build_id):
         'ci_run': str(ci_id), 'build_run': str(build_id),
     }.items()):
         raise RuntimeError('Archive provenance does not match tested source and build')
+    try:
+        return validate_manifest_version(manifest, sha)
+    except ValueError as error:
+        raise RuntimeError(str(error)) from error
 
 
 def prepare_assets(directory, sha, ci_id, build_id):
@@ -105,9 +110,11 @@ def prepare_assets(directory, sha, ci_id, build_id):
     actual = {f.name for f in directory.iterdir()}
     if actual not in (packages, packages | sidecars) or any(not f.is_file() or f.is_symlink() or f.stat().st_size == 0 for f in directory.iterdir()):
         raise RuntimeError('Expected exactly three nonempty, regular platform archives')
-    for platform, suffix in PLATFORMS.items():
-        verify_archive(directory / (p + platform + suffix), platform, sha, ci_id, build_id)
-    metadata = {'repository': REPOSITORY, 'commit': sha, 'ci_run': str(ci_id),
+    versions = [verify_archive(directory / (p + platform + suffix), platform, sha, ci_id, build_id)
+                for platform, suffix in PLATFORMS.items()]
+    if any(version != versions[0] for version in versions[1:]):
+        raise RuntimeError('Platform archives disagree on runtime/package version')
+    metadata = {**versions[0], 'repository': REPOSITORY, 'commit': sha, 'ci_run': str(ci_id),
                 'build_run': str(build_id), 'platforms': sorted(PLATFORMS),
                 'windows_signing': 'unsigned', 'macos_signing': 'ad-hoc, not notarized',
                 'upstream': 'https://github.com/ixbaicn/XenTerm', 'license': 'MIT'}
@@ -240,5 +247,6 @@ def publish(api, directory, sha, ci_id, build_id):
 
 
 if __name__ == '__main__':
+    prepared_metadata(required=True)
     publish(GitHub(), Path('dist'), os.environ['SOURCE_SHA'],
             os.environ['CI_RUN_ID'], os.environ['GITHUB_RUN_ID'])

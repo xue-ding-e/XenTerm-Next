@@ -31,6 +31,16 @@ cargo build --locked --release --no-default-features --features headless
 产物包含 MIT/第三方许可证、运行时依赖、BUILD.json、压缩包 SHA256SUMS 和 manifest 中的二进制 SHA256。
 不宣称 glibc 2.28 兼容，也不要求服务器安装 GUI 库。
 
+## 运行时版本与包版本
+
+新的产品源码同时包含 `src/version.rs` 和 `scripts/version.sh`。准备步骤先核验产品 checkout 的完整 SHA，再调用产品自己的 `scripts/version.sh`；不会使用工具 SHA 生成版本。Next 桌面 beta 和新的 headless 构建明确选择解析器的 rolling beta 上下文，即使产品提交已有 `headless-*` 包标签也不把该标签当稳定版本。
+
+解析出的 `XT_VERSION` 必须显式传给 Cargo 和打包检查；桌面三平台共用 reusable workflow 的一次解析结果。新源码缺少 `XT_VERSION`、运行时短 SHA 与产品 SHA 不符、二进制 `--version` 不符或三平台版本不同，都会拒绝打包/发布。只有不含这两个版本文件的历史源码使用严格的 `xenterm <Cargo版本>` 校验，因此仍可构建 `2c8da5b8486c` 等历史产品，不把工具版本套到旧二进制上。
+
+`BUILD.json` 新增 `version_scheme`、`runtime_version`、`package_version`、`version_timestamp`；保留原有产品/工具 SHA、源 CI、本次构建、ABI 与校验和证据。`package_version` 始终取 Cargo 数字版本，用于 macOS plist 等包元数据；运行时使用 `xt-beta-<产品SHA前7位>-T<10位Unix时间>`，正式标签解析为 `xt-vX.Y.Z`，不会把这个字符串写成 Debian/MSI/PKG 的版本号。
+
+beta 时间戳是准备步骤的实际解析时间，不是提交时间。一个矩阵内相同；重新执行准备步骤会生成新的时间戳，因此同一源码的完整重建不承诺字节一致。仅重跑失败的构建 job 时继续使用本次已有准备输出。headless 固定标签与已有资产仍禁止覆盖；桌面 beta 的同 SHA 已有资产若校验和不同仍拒绝替换，不会因新版版本规则放宽重试门禁。
+
 默认权限只读，仅显式发布 job 有短期 `contents: write`；没有部署 secret、SSH、服务器连接或持久凭据配置。
 上传后核对精确资产名、大小、digest，完整后才把 Draft Release 转为公开预发布。
 已有 tag 或草稿/正式 release 都拒绝覆盖；失败保留证据，由维护者核查后处理，不能盲目重跑或删除既有资产。
@@ -46,3 +56,5 @@ Build with `cargo build --locked --release --no-default-features --features head
 Run **XenTerm Next headless server** with a successful same-repository main `CI` run ID. The default produces artifacts only; explicitly selecting publish on main creates a new fixed-source prerelease. Product source and build tooling SHAs are independently recorded.
 
 The Ubuntu 22.04 runner tests the actual release binary, enforces the ABI/runtime dependency gate and packages license/provenance/checksum files. Only the optional publication job receives temporary repository write permission. It cannot overwrite existing tags/releases. No deployment access or persistent credential is configured. Verify public downloads and preserve a consistent profile backup before upgrading servers.
+
+Runtime and package versions are separate. The read-only prepare step verifies the full product SHA and calls that source's version resolver once. Next beta and modern headless explicitly select its rolling-beta context, then pass the same XT_VERSION through build and package validation. Desktop platforms must agree. Historical sources without the runtime module/resolver retain exact Cargo-version CLI checks. BUILD.json records the runtime version, numeric Cargo package version, scheme and timestamp alongside the existing provenance. The beta timestamp is resolution time, not commit time; rerunning preparation changes it, so same-source rebuilds are not claimed byte-reproducible. Existing no-overwrite and checksum gates remain unchanged.

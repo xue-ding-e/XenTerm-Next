@@ -41,7 +41,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       mode: ${{ steps.resolve.outputs.mode }}           # stable | beta | dry-run
-      version: ${{ steps.resolve.outputs.version }}     # vX.Y.Z | beta-<sha7> | <ref>
+      version: ${{ steps.resolve.outputs.version }}     # vX.Y.Z | beta-<sha7> | dry-run-<sha12>
+      runtime_version: ${{ steps.resolve.outputs.runtime_version }}
       deb_version: ${{ steps.resolve.outputs.deb_version }}
       app_version: ${{ steps.resolve.outputs.app_version }}
     steps:
@@ -62,9 +63,45 @@ jobs:
             exit 1
           fi
           CARGO_VERSION="$(sed -n '/^\[package\]/,/^\[/ s/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+          SOURCE_SHA="$(git rev-parse HEAD)"
           if [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$GITHUB_REF_TYPE" = "tag" ]; then
             MODE=stable
             VERSION="$GITHUB_REF_NAME"
+            DEB_VERSION="${VERSION#v}"
+            APP_VERSION="${VERSION#v}"
+          elif [ "$INPUT_MODE" = "stable" ]; then
+            if [ "$GITHUB_REF_TYPE" != "tag" ]; then
+              echo "Mode 'stable' requires dispatching on a tag ref (got ${GITHUB_REF_NAME:-<none>})."
+              exit 1
+            fi
+            MODE=stable
+            VERSION="$GITHUB_REF_NAME"
+            DEB_VERSION="${VERSION#v}"
+            APP_VERSION="${VERSION#v}"
+          elif [ "$INPUT_MODE" = "dry-run" ]; then
+            MODE=dry-run
+            # Feature refs contain slashes; they must never become artifact paths.
+            VERSION="dry-run-${SOURCE_SHA::12}"
+            DEB_VERSION="$CARGO_VERSION"
+            APP_VERSION="$CARGO_VERSION"
+          else
+            MODE=beta
+            VERSION="beta-${SOURCE_SHA::7}"
+            # Unlike a tag ("v0.7.3"), "beta-<sha>" is not a valid Debian
+            # upstream version (it must start with a digit), so derive one from
+            # Cargo.toml: 0.7.3~beta.<sha7> sorts *before* the 0.7.3 release,
+            # which is what a pre-release should do.
+            DEB_VERSION="${CARGO_VERSION}~beta.${SOURCE_SHA::7}"
+            APP_VERSION="${CARGO_VERSION}-beta"
+          fi
+
+          # The manual stable retry must enforce the same tag/manifest gates
+          # as a tag push. Runtime versions do not replace package semver.
+          if [ "$MODE" = "stable" ]; then
+            if ! [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "Stable release requires a plain vX.Y.Z tag (got $VERSION)."
+              exit 1
+            fi
             LOCK_VERSION="$(awk '
               $0 == "name = \"xenterm\"" { found = 1; next }
               found && $1 == "version" {
@@ -83,35 +120,26 @@ jobs:
               echo "Run: pwsh ./scripts/release.ps1 ${VERSION}"
               exit 1
             fi
-            DEB_VERSION="${VERSION#v}"
-            APP_VERSION="${VERSION#v}"
-          elif [ "$INPUT_MODE" = "stable" ]; then
-            if [ "$GITHUB_REF_TYPE" != "tag" ]; then
-              echo "Mode 'stable' requires dispatching on a tag ref (got ${GITHUB_REF_NAME:-<none>})."
-              exit 1
-            fi
-            MODE=stable
-            VERSION="$GITHUB_REF_NAME"
-            DEB_VERSION="${VERSION#v}"
-            APP_VERSION="${VERSION#v}"
-          elif [ "$INPUT_MODE" = "dry-run" ]; then
-            MODE=dry-run
-            # Feature refs contain slashes; they must never become artifact paths.
-            VERSION="dry-run-${GITHUB_SHA::12}"
-            DEB_VERSION="$CARGO_VERSION"
-            APP_VERSION="$CARGO_VERSION"
-          else
-            MODE=beta
-            VERSION="beta-${GITHUB_SHA::7}"
-            # Unlike a tag ("v0.7.3"), "beta-<sha>" is not a valid Debian
-            # upstream version (it must start with a digit), so derive one from
-            # Cargo.toml: 0.7.3~beta.<sha7> sorts *before* the 0.7.3 release,
-            # which is what a pre-release should do.
-            DEB_VERSION="${CARGO_VERSION}~beta.${GITHUB_SHA::7}"
-            APP_VERSION="${CARGO_VERSION}-beta"
           fi
+
+          # Resolve once for every platform, using the checked-out source and
+          # no inherited runtime/package override. The beta release always uses
+          # the resolver's rolling-beta context, including dispatches on a tag.
+          RUNTIME_REF_TYPE="$GITHUB_REF_TYPE"
+          RUNTIME_REF_NAME="$GITHUB_REF_NAME"
+          if [ "$MODE" = "beta" ]; then
+            RUNTIME_REF_TYPE=tag
+            RUNTIME_REF_NAME=beta
+          fi
+          VERSION_JSON="$(mktemp)"
+          trap 'rm -f "$VERSION_JSON"' EXIT
+          RUNTIME_VERSION="$(env -u VERSION -u XT_VERSION -u XT_CHANNEL \
+            GITHUB_SHA="$SOURCE_SHA" GITHUB_REF_TYPE="$RUNTIME_REF_TYPE" \
+            GITHUB_REF_NAME="$RUNTIME_REF_NAME" XT_VERSION_JSON="$VERSION_JSON" \
+            bash scripts/version.sh)"
           echo "mode=$MODE"               >> "$GITHUB_OUTPUT"
           echo "version=$VERSION"         >> "$GITHUB_OUTPUT"
+          echo "runtime_version=$RUNTIME_VERSION" >> "$GITHUB_OUTPUT"
           echo "deb_version=$DEB_VERSION" >> "$GITHUB_OUTPUT"
           echo "app_version=$APP_VERSION" >> "$GITHUB_OUTPUT"
 
@@ -124,6 +152,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
+      XT_VERSION: ${{ needs.prepare.outputs.runtime_version }}
       DEB_VERSION: ${{ needs.prepare.outputs.deb_version }}
       APP_VERSION: ${{ needs.prepare.outputs.app_version }}
     strategy:
@@ -181,19 +210,11 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Verify binary version
-        if: runner.os != 'Windows'
         shell: bash
-        env:
-          MODE: ${{ needs.prepare.outputs.mode }}
         run: |
           set -eu
-          if [ "$MODE" = "stable" ]; then
-            EXPECTED="${VERSION#v}"
-          else
-            EXPECTED="$(sed -n '/^\[package\]/,/^\[/ s/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
-          fi
           ACTUAL="$(target/${{ matrix.target }}/release/${{ matrix.bin }} --version)"
-          test "$ACTUAL" = "xenterm ${EXPECTED}"
+          test "$ACTUAL" = "xenterm ${XT_VERSION}"
 
       # AppImage stays best-effort so a tooling failure does not block the tarball.
       # MSI and PKG are required outputs on their respective platforms.
@@ -413,6 +434,7 @@ jobs:
       options: --privileged
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
+      XT_VERSION: ${{ needs.prepare.outputs.runtime_version }}
 
     steps:
       - uses: actions/checkout@v4
@@ -463,6 +485,7 @@ jobs:
             target: aarch64-unknown-linux-gnu
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
+      XT_VERSION: ${{ needs.prepare.outputs.runtime_version }}
 
     steps:
       - name: Prepare Debian 10 build dependencies
@@ -508,6 +531,13 @@ jobs:
           . "$HOME/.cargo/env"
           rustc --version
           cargo build --release --target ${{ matrix.target }}
+
+      - name: Verify binary version
+        shell: bash
+        run: |
+          set -eu
+          ACTUAL="$(target/${{ matrix.target }}/release/xenterm --version)"
+          test "$ACTUAL" = "xenterm ${XT_VERSION}"
 
       - name: Verify glibc baseline
         shell: bash

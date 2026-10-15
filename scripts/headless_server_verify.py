@@ -7,6 +7,7 @@ from pathlib import Path, PurePosixPath
 import re
 import sys
 import tarfile
+from packaging_version import prepared_metadata, validate_manifest_version
 
 
 def verify(directory, source, tooling, ci_run, build_run):
@@ -26,6 +27,7 @@ def verify(directory, source, tooling, ci_run, build_run):
                     runner='ubuntu-22.04', features='--no-default-features --features headless')
     if any(manifest.get(k) != v for k, v in expected.items()):
         raise ValueError('Manifest provenance mismatch')
+    validate_manifest_version(manifest, source)
     if not re.fullmatch(r'\d+(?:\.\d+)+', manifest.get('maximum_glibc', '')) or tuple(map(int, manifest['maximum_glibc'].split('.'))) > (2, 35):
         raise ValueError('Incompatible glibc requirement')
     allowed = {'libc.so.6', 'libm.so.6', 'libgcc_s.so.1', 'ld-linux-x86-64.so.2'}
@@ -56,5 +58,6 @@ def verify(directory, source, tooling, ci_run, build_run):
 
 
 if __name__ == '__main__':
+    prepared_metadata(required=True)
     verify(Path(sys.argv[1]), os.environ['SOURCE_SHA'], os.environ['GITHUB_SHA'],
            os.environ['CI_RUN_ID'], os.environ['GITHUB_RUN_ID'])

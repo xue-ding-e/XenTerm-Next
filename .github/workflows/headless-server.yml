@@ -4,9 +4,9 @@ name: XenTerm Next headless server
 # separate in BUILD.json. Push/PR changes only test packaging; dispatch builds.
 on:
   push:
-    paths: [.github/workflows/headless-server.yml, scripts/headless_server*, tests/test_headless_server*, docs/headless-server.md]
+    paths: [.github/workflows/headless-server.yml, scripts/headless_server*, scripts/packaging_version.py, tests/test_headless_server*, tests/test_packaging_version.py, docs/headless-server.md]
   pull_request:
-    paths: [.github/workflows/headless-server.yml, scripts/headless_server*, tests/test_headless_server*, docs/headless-server.md]
+    paths: [.github/workflows/headless-server.yml, scripts/headless_server*, scripts/packaging_version.py, tests/test_headless_server*, tests/test_packaging_version.py, docs/headless-server.md]
   workflow_dispatch:
     inputs:
       ci_run:
@@ -32,6 +32,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: python3 -m unittest discover -s tests -p 'test_headless_server*.py' -v
+      - run: python3 -m unittest discover -s tests -p 'test_packaging_version.py' -v
       - run: node tests/test_headless_server_publish.cjs
       - run: node tests/test_headless_server_gate.cjs
 
@@ -59,6 +60,8 @@ jobs:
     needs: gate
     runs-on: ubuntu-22.04
     timeout-minutes: 60
+    outputs:
+      version_metadata: ${{ steps.version.outputs.version_metadata }}
     env:
       SOURCE_SHA: ${{ needs.gate.outputs.source_sha }}
       CI_RUN_ID: ${{ inputs.ci_run }}
@@ -76,6 +79,9 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
+      - name: Resolve runtime version from product source, including historical sources
+        id: version
+        run: python3 tooling/scripts/packaging_version.py source --source-sha "$SOURCE_SHA" --github-output "$GITHUB_OUTPUT" --github-env "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
       - name: Build fixed source without desktop dependencies
         working-directory: source
@@ -111,6 +117,7 @@ jobs:
     env:
       SOURCE_SHA: ${{ needs.gate.outputs.source_sha }}
       CI_RUN_ID: ${{ inputs.ci_run }}
+      XENTERM_VERSION_METADATA: ${{ needs.build.outputs.version_metadata }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:

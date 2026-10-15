@@ -4,6 +4,8 @@ import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('next_beta', ROOT / 'scripts/next_beta.py')
@@ -75,7 +77,7 @@ class FakeGitHub:
         self.ref = sha
 
 
-def archives(path, manifest_sha=SHA):
+def archives(path, manifest_sha=SHA, versions=None):
     import io
     import json
     import tarfile
@@ -85,7 +87,11 @@ def archives(path, manifest_sha=SHA):
         binary = ('XenTerm Next.app/Contents/MacOS/xenterm' if platform.startswith('macos') else root + ('xenterm.exe' if platform.startswith('windows') else 'xenterm'))
         files = {root + 'LICENSE': b'MIT', root + 'THIRD_PARTY_NOTICES.md': b'notices', binary: b'synthetic binary',
                  root + 'BUILD.json': json.dumps({'repository': release.REPOSITORY, 'sha': manifest_sha, 'platform': platform,
-                                                 'ci_run': '12', 'build_run': '34'}).encode()}
+                                                 'ci_run': '12', 'build_run': '34',
+                                                 **((versions or {}).get(platform) or {
+                                                     'version_scheme': 'cargo-legacy', 'runtime_version': '1.2.3',
+                                                     'package_version': '1.2.3', 'version_timestamp': None,
+                                                     'binary_version': 'xenterm 1.2.3'})}).encode()}
         output = path / (release.prefix(SHA) + platform + suffix)
         if suffix == '.zip':
             with zipfile.ZipFile(output, 'w') as archive:
@@ -132,6 +138,30 @@ class AssetTests(unittest.TestCase):
                 self.assertEqual(hashes[file.name], release.digest(file))
                 if not file.name.endswith('SHA256SUMS'):
                     self.assertIn(hashes[file.name] + '  ' + file.name, sums)
+
+    def test_modern_versions_are_shared_and_recorded(self):
+        import json
+        details = dict(version_scheme='xt-v1', runtime_version='xt-beta-aaaaaaa-T1792060000',
+                       package_version='1.2.3', version_timestamp=1792060000,
+                       binary_version='xenterm xt-beta-aaaaaaa-T1792060000')
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp); archives(path, versions={p: details for p in release.PLATFORMS})
+            release.prepare_assets(path, SHA, '12', '34')
+            manifest = json.loads((path / (release.prefix(SHA) + 'BUILD.json')).read_text())
+            self.assertEqual(manifest['runtime_version'], details['runtime_version'])
+            self.assertEqual(manifest['package_version'], '1.2.3')
+
+    def test_cross_platform_runtime_mismatch_rejected(self):
+        first = dict(version_scheme='xt-v1', runtime_version='xt-beta-aaaaaaa-T1792060000',
+                     package_version='1.2.3', version_timestamp=1792060000,
+                     binary_version='xenterm xt-beta-aaaaaaa-T1792060000')
+        second = first | dict(runtime_version='xt-beta-aaaaaaa-T1792060001', version_timestamp=1792060001,
+                              binary_version='xenterm xt-beta-aaaaaaa-T1792060001')
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)
+            archives(path, versions={p: second if p.startswith('macos') else first for p in release.PLATFORMS})
+            with self.assertRaisesRegex(RuntimeError, 'Platform archives disagree'):
+                release.prepare_assets(path, SHA, '12', '34')
 
     def test_missing_empty_or_extra_artifact_rejected(self):
         for kind in ('missing', 'empty', 'extra'):
@@ -289,10 +319,15 @@ class PackagingTests(unittest.TestCase):
         package_spec = importlib.util.spec_from_file_location('next_beta_package', ROOT / 'scripts/next_beta_package.py')
         package = importlib.util.module_from_spec(package_spec)
         package_spec.loader.exec_module(package)
-        for platform in release.PLATFORMS:
-            with self.subTest(platform=platform), tempfile.TemporaryDirectory() as tmp:
+        from itertools import product
+        for modern, platform in product((False, True), release.PLATFORMS):
+            with self.subTest(platform=platform, modern=modern), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 (root / 'Cargo.toml').write_text('# 中文注释\n[package]\nversion = "1.2.3"\n', encoding='utf-8')
+                runtime = 'xt-beta-aaaaaaa-T1792060000' if modern else '1.2.3'
+                if modern:
+                    (root / 'src').mkdir(); (root / 'src/version.rs').write_text('// Runtime fixture')
+                    (root / 'scripts').mkdir(); (root / 'scripts/version.sh').write_text('# Resolver fixture')
                 (root / 'LICENSE').write_text('MIT attribution', encoding='utf-8')
                 (root / 'THIRD_PARTY_NOTICES.md').write_text('notices', encoding='utf-8')
                 (root / 'licenses').mkdir(); (root / 'licenses/dependency.txt').write_text('license', encoding='utf-8')
@@ -302,9 +337,10 @@ class PackagingTests(unittest.TestCase):
                 (target / ('xenterm.exe' if platform.startswith('windows') else 'xenterm')).write_bytes(b'synthetic binary')
                 def output(args, **kwargs):
                     self.assertEqual(kwargs['timeout'], 30)
+                    if args[0] == 'git': return SHA
                     if args[0] == 'rustc': return 'rustc synthetic'
                     if args[0] == 'ldd': return 'libc.so.6 => /lib/libc.so.6\n'
-                    return 'xenterm 1.2.3\n'
+                    return 'xenterm ' + runtime + '\n'
                 def run(args, **kwargs):
                     if args[0] == 'ditto':
                         app = Path(args[-2]); destination = Path(args[-1])
@@ -317,7 +353,8 @@ class PackagingTests(unittest.TestCase):
                         self.assertEqual(kwargs.get('encoding'), 'utf-8')
                     return original_read(path, *args, **kwargs)
                 with patch.object(Path, 'read_text', simulated_windows_read), \
-                     patch.dict(os.environ, {'CI_RUN_ID': '12', 'GITHUB_RUN_ID': '34'}), \
+                     patch.dict(os.environ, {'CI_RUN_ID': '12', 'GITHUB_RUN_ID': '34',
+                                             'XT_VERSION': runtime if modern else ''}, clear=True), \
                      patch.object(package.subprocess, 'check_output', side_effect=output), \
                      patch.object(package.subprocess, 'run', side_effect=run):
                     package.package(root, platform, 'synthetic', SHA)
@@ -328,6 +365,8 @@ class PackagingTests(unittest.TestCase):
                         info = package.plistlib.loads(archive.read('XenTerm Next.app/Contents/Info.plist'))
                         self.assertEqual(info['CFBundleIdentifier'], 'io.github.xue-ding-e.xenterm-next')
                         self.assertEqual(info['CFBundleDisplayName'], 'XenTerm Next')
+                        self.assertEqual(info['CFBundleShortVersionString'], '1.2.3')
+                        self.assertEqual(info['CFBundleVersion'], '1.2.3')
 
 
 class WorkflowTests(unittest.TestCase):

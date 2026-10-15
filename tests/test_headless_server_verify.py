@@ -7,6 +7,8 @@ from pathlib import Path
 import tarfile
 import tempfile
 import unittest
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 
 spec = importlib.util.spec_from_file_location('verify', Path(__file__).resolve().parents[1] / 'scripts/headless_server_verify.py')
 verify = importlib.util.module_from_spec(spec)
@@ -26,6 +28,9 @@ class PackageAdmission(unittest.TestCase):
                              tooling_sha=self.tooling, source_ci_run='123', build_run='456',
                              platform='linux-x86_64-headless', runner='ubuntu-22.04',
                              features='--no-default-features --features headless', maximum_glibc='2.34',
+                             version_scheme='xt-v1', runtime_version='xt-beta-aaaaaaa-T1792060000',
+                             package_version='0.7.3', version_timestamp=1792060000,
+                             binary_version='xenterm xt-beta-aaaaaaa-T1792060000',
                              needed=['libc.so.6'], binary_sha256=hashlib.sha256(b'binary').hexdigest())
 
     def write(self, extra=None, executable=True):
@@ -51,6 +56,25 @@ class PackageAdmission(unittest.TestCase):
     def test_round_trip(self):
         self.write()
         self.assertEqual(self.admit(), self.manifest)
+
+    def test_legacy_runtime_round_trip(self):
+        self.manifest.update(version_scheme='cargo-legacy', runtime_version='0.7.3',
+                             version_timestamp=None, binary_version='xenterm 0.7.3')
+        self.write()
+        self.assertEqual(self.admit(), self.manifest)
+
+    def test_wrong_runtime_hash_or_binary_version(self):
+        for key, value in [('runtime_version', 'xt-beta-bbbbbbb-T1792060000'),
+                           ('binary_version', 'xenterm 0.7.3'),
+                           ('version_timestamp', 1792060001),
+                           ('version_scheme', 'unknown')]:
+            with self.subTest(key=key):
+                before = self.manifest[key]
+                self.manifest[key] = value
+                self.write()
+                with self.assertRaises(ValueError):
+                    self.admit()
+                self.manifest[key] = before
 
     def test_wrong_source_or_run(self):
         for key in ('source_sha', 'tooling_sha', 'source_ci_run', 'build_run'):

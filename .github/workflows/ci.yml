@@ -10,9 +10,9 @@ name: CI
 
 on:
   push:
-    paths: ["Cargo.toml", "Cargo.lock", "build.rs", "src/**", "tests/*_e2e.py", "tests/tls_proxy_fixture.py", "assets/install-linux.sh", "tests/install_linux_test.py", "wix/**", "packaging/macos/**", "tests/windows_installer*", "tests/macos_installer*", "tests/release_workflow_test.py", ".github/workflows/ci.yml", ".github/workflows/release.yml", ".github/workflows/next-beta.yml", ".github/workflows/next-beta-build.yml", "scripts/next_beta*.py", "tests/next_beta*.py"]
+    paths: ["Cargo.toml", "Cargo.lock", "build.rs", "scripts/version.sh", "tests/version_metadata_test.py", "tests/version_build_test.py", "src/**", "tests/*_e2e.py", "tests/tls_proxy_fixture.py", "assets/install-linux.sh", "tests/install_linux_test.py", "wix/**", "packaging/macos/**", "tests/windows_installer*", "tests/macos_installer*", "tests/release_workflow_test.py", ".github/workflows/ci.yml", ".github/workflows/release.yml", ".github/workflows/next-beta.yml", ".github/workflows/next-beta-build.yml", "scripts/next_beta*.py", "scripts/packaging_version.py", "tests/test_packaging_version.py", "tests/next_beta*.py"]
   pull_request:
-    paths: ["Cargo.toml", "Cargo.lock", "build.rs", "src/**", "tests/*_e2e.py", "tests/tls_proxy_fixture.py", "assets/install-linux.sh", "tests/install_linux_test.py", "wix/**", "packaging/macos/**", "tests/windows_installer*", "tests/macos_installer*", "tests/release_workflow_test.py", ".github/workflows/ci.yml", ".github/workflows/release.yml", ".github/workflows/next-beta.yml", ".github/workflows/next-beta-build.yml", "scripts/next_beta*.py", "tests/next_beta*.py"]
+    paths: ["Cargo.toml", "Cargo.lock", "build.rs", "scripts/version.sh", "tests/version_metadata_test.py", "tests/version_build_test.py", "src/**", "tests/*_e2e.py", "tests/tls_proxy_fixture.py", "assets/install-linux.sh", "tests/install_linux_test.py", "wix/**", "packaging/macos/**", "tests/windows_installer*", "tests/macos_installer*", "tests/release_workflow_test.py", ".github/workflows/ci.yml", ".github/workflows/release.yml", ".github/workflows/next-beta.yml", ".github/workflows/next-beta-build.yml", "scripts/next_beta*.py", "scripts/packaging_version.py", "tests/test_packaging_version.py", "tests/next_beta*.py"]
   workflow_dispatch:
 
 permissions:
@@ -126,9 +126,22 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Test version metadata serialization
+        shell: bash
+        run: |
+          export VERSION_TEST_BASH="$BASH"
+          if [ "$RUNNER_OS" = Windows ]; then
+            export VERSION_TEST_BASH="$(cygpath -w "$BASH")"
+          fi
+          python tests/version_metadata_test.py
+      - name: Test incremental build version inputs
+        if: runner.os == 'Linux'
+        run: python tests/version_build_test.py
       - uses: Swatinem/rust-cache@v2
         with:
           key: migration-cli-${{ runner.os }}
+      - name: Test runtime version contract
+        run: cargo test --locked --no-default-features --features headless version::tests --jobs 2
       # Synthetic independent profiles only; no GUI dependencies or real credentials.
       - name: Build the headless CLI binary
         run: cargo build --locked --no-default-features --features headless --jobs 2
@@ -201,6 +214,7 @@ jobs:
           sudo apt-get install -y desktop-file-utils python3-gi gir1.2-glib-2.0
       - run: python3 tests/release_workflow_test.py
       - run: python3 tests/next_beta_test.py
+      - run: python3 -m unittest discover -s tests -p 'test_packaging_version.py' -v
       - name: Check installer syntax
         run: bash -n assets/install-linux.sh
       - name: Run isolated installer regressions

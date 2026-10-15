@@ -67,6 +67,7 @@ jobs:
     env:
       SOURCE_SHA: ${{ needs.gate.outputs.sha }}
       CI_RUN_ID: ${{ needs.gate.outputs.ci_run }}
+      XENTERM_VERSION_METADATA: ${{ needs.build.outputs.version_metadata }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:

@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
-import tomllib
+from packaging_version import verify_binary_version
 
 ALLOWED_NEEDED = {'libc.so.6', 'libm.so.6', 'libgcc_s.so.1', 'ld-linux-x86-64.so.2'}
 
@@ -47,9 +47,7 @@ def package(root, destination):
     if 'not found' in dependencies:
         raise ValueError('Unresolved runtime dependency')
     version = output(str(binary), '--version')
-    expected = tomllib.loads((root / 'Cargo.toml').read_text())['package']['version']
-    if version != 'xenterm ' + expected:
-        raise ValueError('Binary version mismatch')
+    version_metadata = verify_binary_version(root, sha, version)
     destination.mkdir(parents=True, exist_ok=True)
     stem = f'xenterm-next-{sha[:12]}-headless-linux-x86_64'
     stage = destination / stem
@@ -58,7 +56,7 @@ def package(root, destination):
     for name in ('LICENSE', 'THIRD_PARTY_NOTICES.md'):
         shutil.copy2(root / name, stage / name)
     shutil.copytree(root / 'licenses', stage / 'licenses')
-    manifest = dict(repository='xue-ding-e/XenTerm-Next', source_sha=sha,
+    manifest = dict(**version_metadata, repository='xue-ding-e/XenTerm-Next', source_sha=sha,
                     tooling_sha=os.environ['GITHUB_SHA'], source_ci_run=os.environ['CI_RUN_ID'],
                     build_run=os.environ['GITHUB_RUN_ID'], platform='linux-x86_64-headless',
                     runner='ubuntu-22.04', features='--no-default-features --features headless',
