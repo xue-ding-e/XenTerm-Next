@@ -342,8 +342,8 @@ CLI 与 MCP 服务共用 GUI 中保存的会话和同一套 SSH / SFTP 实现，
 CLI 适合脚本、CI 和明确的手动命令；MCP 让 AI 客户端用自然语言完成服务器巡检、日志分析、
 文件传输。
 
-> 使用前请先在 GUI 中创建并成功连接一次目标会话，以完成主机密钥确认。密码、私钥等凭据
-> 不会出现在 CLI / MCP 的输出中——也不要把明文密码写进提示词或 MCP 配置文件。
+> 使用前请先在 GUI 中创建并成功连接一次目标会话，以完成主机密钥确认。普通 CLI / MCP 响应
+> 不会暴露密码或私钥；显式 CLI 导出会把可恢复的凭据写入私密文件。也不要把明文密码写进提示词或 MCP 配置文件。
 
 ### CLI
 
@@ -368,9 +368,29 @@ xenterm cli files <session-id> /var/log
 xenterm cli read <session-id> /var/log/example.log
 xenterm cli upload <session-id> ./local.txt /tmp
 xenterm cli download <session-id> /tmp/result.txt ./downloads
+
+# 只读查看当前有效访问策略
+xenterm cli permissions --json
+
+# 显式私密导出：选择配置目录之外的新文件
+xenterm cli export ./private-sessions.json --include-credentials
+
+# 先预览追加导入
+xenterm cli import ./private-sessions.json --dry-run --json
+
+# 在使用本地凭据存储的独立配置目录中预览稳定 ID 迁移
+xenterm --data-dir ./migration-profile cli import ./private-sessions.json --preserve-ids --dry-run --json
+xenterm --data-dir ./migration-profile cli sync-native ./sessions.json --dry-run --json
 ```
 
 下载要求本地目标目录已经存在，且不会覆盖同名文件。
+
+便携导出包含可恢复的凭据，必须妥善保密；只包含已保存的会话，不包含全局设置、主机信任记录
+或外部密钥文件，且拒绝覆盖已有目标文件。上面的导入和 `sync-native` 示例只做预览，去掉
+`--dry-run` 才会写入配置。跨配置目录迁移应先使用便携导入；原生加密快照仍要求匹配的本地
+加密密钥，导入便携会话不会让另一个配置目录的密文变得可读，也不能导入系统钥匙串标记。
+Headless CLI / MCP 同样要求显式独立的 `--data-dir`（放在子命令之前）或 `XENTERM_DATA_DIR`，
+不要指向桌面配置目录。详见[配置迁移说明](docs/REMOTE_MCP.md)。
 
 ### MCP
 
@@ -392,9 +412,13 @@ xenterm cli download <session-id> /tmp/result.txt ./downloads
 ```
 
 Windows 下 `command` 可以填 `C:\\path\\to\\xenterm.exe`。重启或刷新客户端后，应当能看到名为
-`xenterm` 的服务，提供七个工具：`list_sessions`、`get_session`、`run_command`、
+`xenterm` 的服务，工具以 [`src/mcp/impls/tools.rs`](src/mcp/impls/tools.rs) 的注册定义为准：
+`get_access_policy`、`import_sessions`、`list_sessions`、`get_session`、`run_command`、
 `list_remote_files`、`read_remote_text_file`、`upload_file`、`download_file`。
 不同 AI 客户端的 MCP 配置文件位置不同，请以对应客户端的文档为准。
+
+`get_access_policy` 只读查询策略。`import_sessions` 默认预览；应用导入要求启动 MCP 时显式传入
+`--allow-config-import`，预览和应用都需要文件传输权限。凭据导出只通过本地 CLI 提供，不注册为 MCP 工具。
 
 #### 调试 stdio 连接
 

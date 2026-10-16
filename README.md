@@ -417,7 +417,8 @@ and explicit commands; MCP lets an AI client do inspection, log analysis and fil
 transfers from a natural-language request.
 
 > Connect to the target session in the GUI at least once first, so the host key is
-> confirmed. Passwords and private keys never appear in CLI or MCP output — and do not put
+> confirmed. Normal CLI/MCP responses do not expose passwords or private keys. Explicit
+> CLI exports write recoverable credentials to a private file; do not put
 > plaintext passwords into prompts or MCP configuration files.
 
 ### CLI
@@ -443,10 +444,33 @@ xenterm cli files <session-id> /var/log
 xenterm cli read <session-id> /var/log/example.log
 xenterm cli upload <session-id> ./local.txt /tmp
 xenterm cli download <session-id> /tmp/result.txt ./downloads
+
+# Inspect the effective access policy without changing it
+xenterm cli permissions --json
+
+# Explicit private export: choose a new file outside the profile directory
+xenterm cli export ./private-sessions.json --include-credentials
+
+# Preview an append-only import before applying it
+xenterm cli import ./private-sessions.json --dry-run --json
+
+# Preview stable-ID migration in an independent profile with local credential storage
+xenterm --data-dir ./migration-profile cli import ./private-sessions.json --preserve-ids --dry-run --json
+xenterm --data-dir ./migration-profile cli sync-native ./sessions.json --dry-run --json
 ```
 
 Downloads require an existing local destination directory and will not overwrite a file of
 the same name.
+
+Portable exports contain recoverable credentials and must be kept private. They include
+saved sessions, not global settings, trusted host keys or external key files. Export refuses
+an existing destination. Import and `sync-native` examples above are previews; removing
+`--dry-run` writes configuration. For migration from another profile, start with a portable
+import. Native encrypted snapshots still require the matching local encryption key;
+importing portable sessions does not make another profile's ciphertext readable, and OS
+keyring markers cannot be imported. Headless CLI/MCP also requires an
+explicit independent `--data-dir` (before the subcommand) or `XENTERM_DATA_DIR`; do not
+point it at the desktop profile. See [profile migration](docs/REMOTE_MCP.md).
 
 ### MCP
 
@@ -468,10 +492,17 @@ Then register the stdio server in your MCP client:
 ```
 
 On Windows, `command` can be `C:\\path\\to\\xenterm.exe`. Restart or refresh the client and
-you should see an `xenterm` server exposing seven tools — `list_sessions`, `get_session`,
+you should see an `xenterm` server exposing the tools registered in
+[`src/mcp/impls/tools.rs`](src/mcp/impls/tools.rs): `get_access_policy`, `import_sessions`,
+`list_sessions`, `get_session`,
 `run_command`, `list_remote_files`, `read_remote_text_file`, `upload_file`,
 `download_file`. MCP configuration files live in different places per client, so check that
 client's documentation.
+
+`get_access_policy` is read-only. `import_sessions` previews by default; applying an import
+requires starting MCP with `--allow-config-import`, and file-transfer permission is required
+for both preview and apply. Credential export is deliberately available only through the
+local CLI, not as an MCP tool.
 
 #### Debugging the stdio connection
 
