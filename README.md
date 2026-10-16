@@ -1,6 +1,6 @@
-> **XenTerm Next** is an independently maintained, enhanced SSH / SFTP / terminal client based on [ixbaicn/XenTerm](https://github.com/ixbaicn/XenTerm). It preserves upstream attribution, the MIT license and original copyright; it is not the official upstream project.
+> **XenTerm Next (XenTerm-Next)** is an independent SSH, SFTP and terminal project created and maintained by [xue-ding-e](https://github.com/xue-ding-e), building on [ixbaicn/XenTerm](https://github.com/ixbaicn/XenTerm). We develop our own next-generation terminal experience, including Next-specific enhancements and reviewed community fixes that may not yet be in upstream. It is not an official XenTerm release or a promise of upstream’s next version; upstream authorship, copyright and the MIT license are preserved.
 >
-> Custom features live on `main`; `upstream-main` retains official code and is fast-forwarded daily at 09:00 UTC (17:00 China time), subject to GitHub scheduling delays, never automatically integrated into `main`. Start with this repository’s [source installation](#quick-start), [development guide](#development) and [branch policy](CONTRIBUTING.md#independent-repository-branch-policy-xue-ding-exenterm-next).
+> Our development line is `main`. `upstream-main` preserves official history; a daily read-only workflow checks drift, and verified mirror fast-forwards are handled separately. Upstream updates never automatically replace Next features. See the [branch policy](CONTRIBUTING.md#independent-repository-branch-policy-xue-ding-exenterm-next).
 
 <p align="center">
   <b>English</b> · <a href="README.zh.md">简体中文</a>
@@ -27,12 +27,20 @@
 
 ## What is XenTerm Next
 
-**XenTerm Next** is an independently maintained Next edition of
-[ixbaicn/XenTerm](https://github.com/ixbaicn/XenTerm), with its own repository and
-development direction. Building on XenTerm, it focuses on stability fixes, workflow
-and interaction improvements, and CLI / MCP enhancements. Upstream changes are
-reviewed and tested before integration; upstream authorship, copyright and the MIT
-license remain preserved.
+**XenTerm Next** is the independent terminal project by **xue-ding-e**, for people who want a native Rust desktop client and scriptable CLI / MCP workflows in one codebase. “Next” describes our own development direction: a next-generation experience built on XenTerm, with independently developed enhancements and carefully integrated community contributions. It does not designate the official upstream’s next release.
+
+### Why choose Next?
+
+Next ships its own development and release line. Examples already implemented here, beyond [upstream `f25f6af`](https://github.com/ixbaicn/XenTerm/tree/f25f6afcd82429d2286526c33c9ea257cb34809f) as checked on **2026-10-16**:
+
+- **Private, no-overwrite GUI session exports**: the GUI keeps the hardened export policy and reports an existing destination instead of falling back to a plain overwrite. See the [implementation](src/ui/impls/shell.rs) and [regression tests](src/ui/impls/file_dialog_tests.rs).
+- **Traceable Next desktop previews**: our [beta release pipeline](.github/workflows/next-beta.yml) publishes cross-platform packages tied to a successful main CI run, with source SHA, build metadata and SHA256 checksums. [Download the current preview](https://github.com/xue-ding-e/XenTerm-Next/releases/tag/beta).
+- **Dedicated headless server packaging**: our [headless build and release entry point](docs/headless-server.md) reuses the existing shared core, checks the Ubuntu 22.04 ABI/runtime dependencies and can produce fixed-source releases. The shared CLI/MCP core builds on upstream work; the Next packaging is an additional workflow, not a separate implementation.
+- **Installer build tooling and lifecycle tests**: [Windows MSI](wix/main.wxs) and [macOS packaging](packaging/macos) include optional integrations with [Windows](tests/windows_installer_test.py) and [macOS](tests/macos_installer_test.py) regression coverage. These are installer build capabilities; the current rolling beta downloads are portable archives.
+
+Upstream may adopt or independently add similar changes later. Other improvements here include reviewed contributions from the XenTerm community; their authors retain credit. “Available in Next” does not mean every feature was originally authored by us, nor that every Next change is awaiting an upstream PR.
+
+If these workflows help you, **[star XenTerm Next](https://github.com/xue-ding-e/XenTerm-Next)** to support the project and help other developers find it. Try the preview, report reproducible issues and follow our independent development here.
 
 XenTerm is a native desktop terminal client that keeps the workflow people like about
 FinalShell — a resource-monitor sidebar, session management, tabbed terminals, an SFTP

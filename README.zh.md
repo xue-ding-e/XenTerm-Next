@@ -1,6 +1,6 @@
-> **XenTerm Next** 是基于 [ixbaicn/XenTerm](https://github.com/ixbaicn/XenTerm) 独立维护的增强版 SSH / SFTP / terminal 客户端。本仓库保留上游来源、MIT 许可证及原作者版权，不代表官方项目。
+> **XenTerm Next（XenTerm-Next）** 是由 [xue-ding-e](https://github.com/xue-ding-e) 创建并维护的独立 SSH、SFTP 与终端项目，基于 [ixbaicn/XenTerm](https://github.com/ixbaicn/XenTerm) 发展。我们打造自己的下一代终端体验，包含 Next 自有增强，以及经审查整合、可能尚未进入上游的社区修复。本项目不是 XenTerm 官方发行版，也不代表官方下一版本的承诺；保留上游作者归属、版权及 MIT 许可证。
 >
-> 自有功能维护在 `main`；`upstream-main` 仅保存官方代码，每天北京时间 17:00 尝试快进同步（GitHub 定时任务可能延迟），不会自动合入 `main`。请从本仓库的[源码安装](#快速开始)、[开发说明](#开发)和[分支约定](CONTRIBUTING.zh-CN.md#独立仓库的分支约定xue-ding-exenterm-next)开始。
+> 自有开发维护在 `main`；`upstream-main` 保留官方历史。每日只读工作流检查差异，经核验的镜像快进另行执行，上游更新不会自动替换 Next 功能。详见[分支约定](CONTRIBUTING.zh-CN.md#独立仓库的分支约定xue-ding-exenterm-next)。
 
 <p align="center">
   <a href="README.md">English</a> · <b>简体中文</b>
@@ -27,10 +27,20 @@
 
 ## XenTerm Next 是什么
 
-**XenTerm Next** 是基于 [ixbaicn/XenTerm](https://github.com/ixbaicn/XenTerm)
-独立维护的 Next 增强版，拥有独立仓库和开发方向。在 XenTerm 的基础上，持续修复稳定性问题、
-改进操作流程与交互，并增强 CLI / MCP 能力。上游更新经审查和验证后再整合；
-保留上游作者归属、版权声明及 MIT 许可证。
+**XenTerm Next** 是 **xue-ding-e 创建并维护的独立终端项目**，面向希望在同一套代码中使用原生 Rust 桌面客户端与可脚本化 CLI / MCP 工作流的用户。“Next”代表我们自己的发展方向：在 XenTerm 基础上打造下一代体验，持续开发自有增强并审查整合社区贡献，不是官方下一版本的名称。
+
+### 为什么选择 Next？
+
+Next 有自己的开发与发行节奏。以下能力已在本仓库实现；截至 **2026-10-16**，相较[上游 `f25f6af`](https://github.com/ixbaicn/XenTerm/tree/f25f6afcd82429d2286526c33c9ea257cb34809f) 包含这些额外增强：
+
+- **GUI 会话导出的私密与禁止覆盖策略**：图形界面保持安全导出策略，目标已存在时提示失败，不退回普通覆盖写入。查看[实现](src/ui/impls/shell.rs)与[回归测试](src/ui/impls/file_dialog_tests.rs)。
+- **可追溯的 Next 桌面预览发行**：[beta 流水线](.github/workflows/next-beta.yml)以成功的 main CI 为来源，提供绑定源码 SHA、构建元数据和 SHA256 校验的跨平台包。[下载当前预览版](https://github.com/xue-ding-e/XenTerm-Next/releases/tag/beta)。
+- **专用 headless 服务器打包**：[构建与发布入口](docs/headless-server.md)复用已有共享核心，验证 Ubuntu 22.04 ABI / 运行时依赖，并支持固定源码版本的发行。CLI / MCP 共享核心承接上游工作，Next 增加的是打包工作流，不是另写一套业务实现。
+- **安装器构建能力与生命周期测试**：[Windows MSI](wix/main.wxs)和 [macOS 安装包](packaging/macos)提供可选集成，并有 [Windows](tests/windows_installer_test.py)及 [macOS](tests/macos_installer_test.py)回归覆盖。这些是安装器构建能力；当前滚动 beta 下载提供的是便携归档包。
+
+上游以后可能接纳或独立实现类似改进。Next 也整合 XenTerm 社区其他作者的贡献并保留署名；“Next 已提供”不等于所有功能都是我们原创，也不等于每项自有改动都已有待合并的上游 PR。
+
+如果这些工作流对你有帮助，欢迎 **[为 XenTerm Next 点一个 Star](https://github.com/xue-ding-e/XenTerm-Next)**，支持项目并帮助更多开发者发现它。也欢迎试用预览版、提交可复现的问题，持续关注这里的独立开发。
 
 XenTerm 是一个原生桌面终端客户端。它保留了大家喜欢 FinalShell 的那些部分——资源监控侧栏、
 会话管理、多标签页终端、跟随 Shell 的 SFTP 面板，同时去掉了不喜欢的部分：几百 MB 的 JVM。
