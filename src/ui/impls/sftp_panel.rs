@@ -359,6 +359,10 @@ impl SftpPanelView {
             .h_full()
             .border_r_1()
             .border_color(cx.theme().border)
+            // Scrolled rather than clipped: a deep tree has more rows than the
+            // panel is tall, and without this they were simply unreachable —
+            // the same fold the settings nav had.
+            .overflow_y_scroll()
             .py_1()
             .children(rows)
             .into_any_element()
@@ -902,7 +906,14 @@ impl Render for SftpPanelView {
                             .child(mtime_header),
                     )
                     .child(
-                        div()
+                        // A `v_flex`, not a plain `div`: only a flex container passes
+                        // its definite height down to the virtual list, and `Infer`
+                        // sizes the list to `min(content, that height)`. A block
+                        // container offers its child an unbounded height, so the list
+                        // measured itself to its full content — two hundred rows laid
+                        // out past the bottom of the window, and nothing to scroll.
+                        v_flex()
+                            .id("sftp-rows")
                             .flex_1()
                             .min_h_0()
                             .overflow_hidden()
@@ -1651,6 +1662,120 @@ mod tests {
             action,
             Some(PanelAction::Download(vec![expected])),
             "the download carries the row that was ticked"
+        );
+    }
+
+    /// A long listing and a deep tree both scroll under the wheel.
+    ///
+    /// The listing is a `uniform_list` whose `Infer` sizing takes its height
+    /// from `min(content, available)`, and only a *flex* container hands a
+    /// definite `available` down. Wrapped in a block `div`, the list measured
+    /// itself to its full content height and hung far past the window with
+    /// nothing to scroll — the tree, a plain clipped column, was the same fold.
+    /// Both are exercised here so neither can regress silently again.
+    #[gpui_kit::gpui::test]
+    fn a_long_listing_and_tree_scroll_under_the_wheel(cx: &mut TestAppContext) {
+        use crate::session::protocol::RemoteTreeNode;
+        cx.update(gpui_kit::init);
+        const COUNT: usize = 200;
+        let (view, cx) = cx.add_window_view(move |_window, cx| {
+            let mut panel = SftpPanelView::new(cx);
+            let entries: Vec<RemoteEntry> = (0..COUNT)
+                .map(|i| RemoteEntry {
+                    name: format!("file-{i:03}.txt"),
+                    full_path: format!("/var/file-{i:03}.txt"),
+                    is_dir: false,
+                    size: i as u64,
+                    modified: 1_700_000_000,
+                    mode: 0o644,
+                })
+                .collect();
+            let mut listing = SftpListing::default();
+            listing.load("/var".into(), &entries);
+            panel.set_listing(listing, cx);
+            panel.set_tree(
+                (0..COUNT)
+                    .map(|i| RemoteTreeNode {
+                        path: format!("/dir-{i:03}"),
+                        name: format!("dir-{i:03}"),
+                        depth: 0,
+                        expanded: false,
+                        has_children: true,
+                    })
+                    .collect(),
+                cx,
+            );
+            panel
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+
+        // The list knows it overflows its viewport, which is what lets the wheel move it.
+        assert!(
+            view.read_with(cx, |panel, _| panel.list_scroll.is_scrollable()),
+            "a two-hundred-row listing must overflow its viewport"
+        );
+        // The deep rows are laid out *below* the fold, not squeezed into it: the
+        // tree is a clipped column and must not shrink its rows to fit.
+        let folded_tree = cx
+            .debug_bounds(leaked("sftp-tree-/dir-199".to_string()))
+            .expect("the last tree node is laid out");
+        assert!(
+            folded_tree.top() > px(1080.),
+            "the fixture must put the last tree node below the fold: {folded_tree:?}"
+        );
+
+        let first_row = cx
+            .debug_bounds(leaked("sftp-name-0".to_string()))
+            .expect("the first file row is laid out");
+        assert!(
+            cx.debug_bounds(leaked("sftp-name-60".to_string()))
+                .is_none(),
+            "the fixture must start with row sixty below the fold"
+        );
+        let over_list = gpui_kit::point(first_row.center().x, first_row.center().y + px(400.));
+        cx.simulate_mouse_move(over_list, None, Modifiers::default());
+        cx.simulate_event(gpui_kit::ScrollWheelEvent {
+            position: over_list,
+            delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-1200.))),
+            modifiers: Default::default(),
+            touch_phase: gpui_kit::TouchPhase::Moved,
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+        // The virtual window moved down: the first row is gone and a row that
+        // was below the fold is now laid out.
+        assert!(
+            cx.debug_bounds(leaked("sftp-name-0".to_string())).is_none(),
+            "the wheel must scroll the first row off the top"
+        );
+        assert!(
+            cx.debug_bounds(leaked("sftp-name-60".to_string()))
+                .is_some(),
+            "the wheel must bring a row from below the fold into view"
+        );
+
+        let first_tree = cx
+            .debug_bounds(leaked("sftp-tree-/dir-000".to_string()))
+            .expect("the first tree node is laid out");
+        let over_tree = gpui_kit::point(first_tree.center().x, first_tree.center().y + px(300.));
+        cx.simulate_mouse_move(over_tree, None, Modifiers::default());
+        cx.simulate_event(gpui_kit::ScrollWheelEvent {
+            position: over_tree,
+            delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-1200.))),
+            modifiers: Default::default(),
+            touch_phase: gpui_kit::TouchPhase::Moved,
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+        let scrolled_tree = cx
+            .debug_bounds(leaked("sftp-tree-/dir-199".to_string()))
+            .expect("the last tree node is still laid out");
+        assert!(
+            scrolled_tree.top() < folded_tree.top(),
+            "the wheel must scroll the tree: {} did not move above {}",
+            scrolled_tree.top(),
+            folded_tree.top()
         );
     }
 
