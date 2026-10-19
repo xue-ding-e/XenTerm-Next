@@ -16,15 +16,16 @@ jobs:
     timeout-minutes: 60
     env:
       CARGO_BUILD_JOBS: '2'
-      XDG_CONFIG_HOME: ${{ runner.temp }}/sftp-config
-      XDG_DATA_HOME: ${{ runner.temp }}/sftp-data
-      XDG_RUNTIME_DIR: ${{ runner.temp }}/sftp-runtime
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249
       - name: Compile and verify exact regression selection
+        env:
+        XDG_CONFIG_HOME: ${{ runner.temp }}/sftp-config
+        XDG_DATA_HOME: ${{ runner.temp }}/sftp-data
+        XDG_RUNTIME_DIR: ${{ runner.temp }}/sftp-runtime
         shell: bash
         run: |
           set -euo pipefail
@@ -32,6 +33,10 @@ jobs:
           grep -Fx 'sftp::sftp::connection_failure_tests::connection_failure_emits_sftp_error: test' sftp-tests.txt
           test "$(grep -c ': test$' sftp-tests.txt)" = 1
       - name: Run actual spawn_sftp regression
+        env:
+        XDG_CONFIG_HOME: ${{ runner.temp }}/sftp-config
+        XDG_DATA_HOME: ${{ runner.temp }}/sftp-data
+        XDG_RUNTIME_DIR: ${{ runner.temp }}/sftp-runtime
         shell: bash
         run: |
           set -euo pipefail
