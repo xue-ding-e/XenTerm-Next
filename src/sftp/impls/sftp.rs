@@ -229,7 +229,7 @@ pub fn spawn_sftp(
     let join = runtime.spawn(crate::ssh::connection::inherit_automation_cancellation(
         async move {
             if let Err(err) = run_sftp(session, jump, cmd_rx, self_tx, events).await {
-                let _ = events_err.send(SessionEvent::SftpStatus(friendly_sftp_error(&err)));
+                let _ = events_err.send(SessionEvent::SftpError(friendly_sftp_error(&err)));
             }
         },
     ));
@@ -2566,5 +2566,45 @@ mod sanitize_tests {
             validate_editor_text("第一行\nsecond line\n".as_bytes().to_vec()),
             Ok("第一行\nsecond line\n".into())
         );
+    }
+}
+
+#[cfg(test)]
+mod connection_failure_tests {
+    use super::spawn_sftp;
+    use crate::config::Session;
+    use crate::session::protocol::SessionEvent;
+    use std::time::Duration;
+    use tokio::sync::mpsc;
+
+    #[tokio::test]
+    async fn connection_failure_emits_sftp_error() {
+        // An explicit unsupported proxy fails before environment proxy lookup,
+        // socket connection or credentials. No real SSH service is contacted.
+        let mut session = Session::new_empty();
+        session.host = "127.0.0.1".into();
+        session.port = 1;
+        session.proxy = "invalid-sftp-test://127.0.0.1:1".into();
+        let (events, mut receiver) = mpsc::unbounded_channel();
+        let handle = spawn_sftp(&tokio::runtime::Handle::current(), session, vec![], events);
+        let received = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut errors = Vec::new();
+            let mut last_was_error = false;
+            while let Some(event) = receiver.recv().await {
+                last_was_error = matches!(&event, SessionEvent::SftpError(_));
+                if let SessionEvent::SftpError(message) = event {
+                    errors.push(message);
+                }
+            }
+            (errors, last_was_error)
+        })
+        .await;
+        // Clean up the worker before any assertion, including the timeout path.
+        handle.join.abort();
+        let _ = handle.join.await;
+        let (errors, last_was_error) = received.expect("SFTP worker must finish within five seconds");
+        assert_eq!(errors.len(), 1, "connection failure must emit one SFTP error");
+        assert!(last_was_error, "the terminal event must be SftpError");
+        assert!(errors[0].contains("invalid session proxy URL"));
     }
 }
