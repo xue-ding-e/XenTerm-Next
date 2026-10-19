@@ -229,7 +229,7 @@ pub fn spawn_sftp(
     let join = runtime.spawn(crate::ssh::connection::inherit_automation_cancellation(
         async move {
             if let Err(err) = run_sftp(session, jump, cmd_rx, self_tx, events).await {
-                let _ = events_err.send(SessionEvent::SftpStatus(friendly_sftp_error(&err)));
+                let _ = events_err.send(SessionEvent::SftpError(friendly_sftp_error(&err)));
             }
         },
     ));
