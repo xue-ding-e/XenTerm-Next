@@ -1,4 +1,4 @@
-name: Exact Windows shader source hypothesis (manual)
+name: Published Windows release visible home (manual)
 # Isolated diagnostic only: never integrate this harness over product CI.
 on:
   workflow_dispatch:
@@ -14,7 +14,6 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
-      actions: read
     defaults:
       run:
         shell: powershell -NoLogo -NoProfile -NonInteractive -STA -File {0}
@@ -33,27 +32,14 @@ jobs:
             if ($errors.Count) { throw ($file.Name+': '+(($errors | ForEach-Object Message) -join '; ')) }
           }
           New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/native-evidence" | Out-Null
-      - name: Verify exact producer and artifact metadata without credentials
-        timeout-minutes: 1
-        run: '& ./scripts/windows-native/verify-producer.ps1'
-      - name: Download only the exact existing artifact; never rebuild
-        timeout-minutes: 3
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          repository: xue-ding-e/XenTerm-Next
-          run-id: '39415201204'
-          artifact-ids: '12261619305'
-          github-token: ${{ github.token }}
-          merge-multiple: true
-          path: ${{ runner.temp }}/xenterm-exact-reuse
-      - name: Verify manifest, source objects and executable bytes
+      - name: Verify fixed public release assets without credentials or builds
         id: verified
-        timeout-minutes: 1
-        run: '& ./scripts/windows-native/verify-reuse.ps1'
-      - name: Read only executable import names and matching installed DLL metadata
-        if: steps.verified.outputs.identity_gate == 'verified'
-        timeout-minutes: 1
-        run: '& ./scripts/windows-native/inspect-dependencies.ps1'
+        timeout-minutes: 3
+        run: |
+          python -m py_compile ./scripts/windows-native/verify-release.py
+          if ($LASTEXITCODE -ne 0) { throw 'Release verifier syntax failed' }
+          python ./scripts/windows-native/verify-release.py
+          if ($LASTEXITCODE -ne 0) { throw 'Published release identity verification failed' }
       - name: Native visible WinForms control immediately before launch
         id: preflight
         if: steps.verified.outputs.identity_gate == 'verified'
@@ -61,13 +47,25 @@ jobs:
         run: |
           & ./scripts/windows-native/preflight.ps1 -EvidenceDir "$env:RUNNER_TEMP/native-evidence/prelaunch"
           exit $LASTEXITCODE
-      - name: Compare no-input startup before and after locked shader source restoration
-        id: experiment
+      - name: Observe published visible home without any input
+        id: smoke
         if: steps.preflight.outputs.desktop_gate == 'passed'
-        timeout-minutes: 5
+        timeout-minutes: 2
+        env:
+          VERIFIED_PACKAGE: ${{ steps.verified.outputs.package_dir }}
         run: |
-          & ./scripts/windows-native/shader-experiment.ps1
+          & ./scripts/windows-native/smoke.ps1 -SourceDir "$env:GITHUB_WORKSPACE" -EvidenceDir "$env:RUNNER_TEMP/native-evidence/release-home" -VerifiedDir $env:VERIFIED_PACKAGE -PreflightDir "$env:RUNNER_TEMP/native-evidence/prelaunch"
           exit $LASTEXITCODE
+      - name: Remove only this job's fixed downloaded release staging
+        if: always()
+        run: |
+          $path=Join-Path $env:RUNNER_TEMP 'xenterm-published-77ce731'
+          if (Test-Path -LiteralPath $path) {
+            if ((Get-Item -LiteralPath $path).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Unexpected staging reparse point; no recursive cleanup' }
+            $marker=Join-Path $path '.owned-native-release'
+            if (-not (Test-Path -LiteralPath $marker -PathType Leaf) -or ((Get-Item -LiteralPath $marker).Attributes -band [IO.FileAttributes]::ReparsePoint) -or (Get-Content -LiteralPath $marker -Raw) -ne "$env:GITHUB_RUN_ID/$env:GITHUB_RUN_ATTEMPT/$env:GITHUB_SHA") { throw 'Staging ownership not established; do not delete' }
+            Remove-Item -LiteralPath $path -Recurse -Force
+          }
       - name: Preserve bounded evidence only; never profile or executable
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -81,7 +79,7 @@ jobs:
         env:
           IDENTITY_GATE: ${{ steps.verified.outputs.identity_gate }}
           DESKTOP_GATE: ${{ steps.preflight.outputs.desktop_gate }}
-          SMOKE_GATE: ${{ steps.experiment.outputs.experiment_gate }}
+          SMOKE_GATE: ${{ steps.smoke.outputs.smoke_gate }}
         run: |
           "Artifact identity=$env:IDENTITY_GATE; visible desktop=$env:DESKTOP_GATE; no-input startup=$env:SMOKE_GATE. Inspect exit metadata/screenshots; input is disabled and navigation remains unverified." | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
           if ($env:IDENTITY_GATE -ne 'verified' -or $env:DESKTOP_GATE -ne 'passed' -or $env:SMOKE_GATE -ne 'needs_visual_review') { throw 'Diagnostic incomplete or failed; do not infer a navigation fix or retry input.' }

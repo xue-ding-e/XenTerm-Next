@@ -14,17 +14,17 @@ $profile=Join-Path $sandboxRoot 'profile'
 try {
     $gate=Get-Content -Raw -LiteralPath (Join-Path $PreflightDir 'preflight.json') | ConvertFrom-Json
     if ($gate.status -ne 'passed' -or ([DateTime]::UtcNow-[DateTime]::Parse($gate.finished_utc)).TotalMinutes -gt 3) { throw 'Immediate prelaunch desktop control is missing, failed, or stale' }
-    $manifest=Get-Content -Raw -LiteralPath (Join-Path $VerifiedDir 'manifest.json') | ConvertFrom-Json
-    $identity=Get-Content -Raw -LiteralPath "$env:RUNNER_TEMP/native-evidence/reuse-identity.json" | ConvertFrom-Json
+    $identity=Get-Content -Raw -LiteralPath "$env:RUNNER_TEMP/native-evidence/release-identity.json" | ConvertFrom-Json
     $harnessSha=(& git -C $SourceDir rev-parse HEAD | Out-String).Trim()
-    if ($LASTEXITCODE -ne 0 -or $harnessSha -ne $env:GITHUB_SHA -or $identity.harness_sha -ne $harnessSha -or $identity.status -ne 'identity_verified_not_execution_pass') { throw 'Harness or prior identity gate mismatch' }
-    $src=(& git -C $SourceDir rev-parse HEAD:src | Out-String).Trim()
-    if ($LASTEXITCODE -ne 0 -or $src -ne 'a8f4de26c9c0b0782b5cce12e629133664ce5a5d' -or $manifest.src_tree -ne $src -or $manifest.sha -ne 'ad095a64a4054caa27a3f0fe7b556d901f252bf6' -or $identity.build_sha -ne $manifest.sha) { throw 'Source or producer identity changed before launch' }
+    $expectedPackage=Join-Path $env:RUNNER_TEMP 'xenterm-published-77ce731/XenTerm-Next-beta-77ce7313b71d176c26f62ec199b34aaad91c2251-windows-x86_64'
+    if ($LASTEXITCODE -ne 0 -or $harnessSha -ne $env:GITHUB_SHA -or $identity.harness_sha -ne $harnessSha -or $identity.status -ne 'published_release_identity_verified_not_execution_pass' -or [IO.Path]::GetFullPath($VerifiedDir) -ne [IO.Path]::GetFullPath($expectedPackage) -or $identity.package_dir -ne $VerifiedDir) { throw 'Published package or harness identity mismatch' }
+    if ($identity.build_sha -ne '77ce7313b71d176c26f62ec199b34aaad91c2251' -or $identity.zip_sha256 -ne '2739215d5555a7819ac390ce08372fcaff6fe44ca2e6830e8df2b1cbf87f86c6' -or $identity.runtime_version -ne 'xt-beta-77ce731-T1792516261') { throw 'Pinned published source/version mismatch' }
     $exe=Join-Path $VerifiedDir 'xenterm.exe'
     $binaryHash=(Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($binaryHash -ne 'f6dfc60bb334247f788012ad52c9ad2faa126b48b8df11d2ec6313dc141325e0' -or $binaryHash -ne $manifest.binary_sha256 -or (Get-Item -LiteralPath $exe).Length -ne 102243840) { throw 'Binary changed after identity verification' }
-    $report.build_sha=$manifest.sha; $report.harness_sha=$harnessSha; $report.src_tree=$src; $report.binary_sha256=$binaryHash
-    $report.producer_run=39415201204; $report.producer_conclusion='failure'; $report.reused_artifact=12261619305
+    if ($binaryHash -ne $identity.binary_sha256 -or (Get-Item -LiteralPath $exe).Length -ne $identity.binary_bytes -or ((Get-Item -LiteralPath $exe).Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Published executable changed after byte verification' }
+    $report.build_sha=$identity.build_sha; $report.harness_sha=$harnessSha; $report.binary_sha256=$binaryHash
+    $report.runtime_version=$identity.runtime_version; $report.ci_run=$identity.ci_run; $report.build_run=$identity.build_run
+    $report.harness_source_is_not_application_source=$true
     $oldDpi=[XenTermNativeProbe.Desktop]::SetThreadDpiAwarenessContext([IntPtr](-4))
     if ($oldDpi -eq [IntPtr]::Zero) { throw 'Cannot establish screenshot DPI context' }
     $report.desktop=[XenTermNativeProbe.Desktop]::Inspect()
