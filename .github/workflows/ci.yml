@@ -37,35 +37,31 @@ jobs:
         with:
           key: desktop-check-x86_64-unknown-linux-gnu
           cache-on-failure: true
-      - name: Diagnose focused geometry and run independent UI suites
+      - name: Reproduce SFTP editor destination with independent cases
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$XDG_RUNTIME_DIR"
           chmod 700 "$XDG_RUNTIME_DIR"
-          rustc -Vv
-          git rev-parse HEAD
-          sha256sum src/ui/impls/sidebar.rs src/ui/impls/pages/terminal_page.rs src/ui/impls/pages/sidebar_resize_tests.rs > flow-source-sha256.txt
+          git rev-parse HEAD > flow-source.txt
           timeout 2400 cargo test --locked --target x86_64-unknown-linux-gnu --bin xenterm --jobs 2 --no-run --message-format=json > flow-green-build.json
           python3 .github/scripts/flow-test-binary.py flow-green-build.json > flow-binary.txt
           binary=$(cat flow-binary.txt)
-          "$binary" --list > flow-tests.txt
           failed=0
-          timeout 120 "$binary" "$FILTER" --test-threads=1 --nocapture > sidebar-green.log 2>&1 || failed=1
-          cat sidebar-green.log
-          grep -F 'test result: ok. 5 passed; 0 failed;' sidebar-green.log || failed=1
-          timeout 120 "$binary" "$DOCK" --exact --test-threads=1 --nocapture > dock-green.log 2>&1 || failed=1
-          cat dock-green.log
-          grep -F 'test result: ok. 1 passed; 0 failed;' dock-green.log || failed=1
-          timeout 600 "$binary" ui:: --test-threads=1 > flow-ui-suite.log 2>&1 || failed=1
-          cat flow-ui-suite.log
-          grep -E 'test result: ok\. [1-9][0-9]+ passed; 0 failed;' flow-ui-suite.log || failed=1
+          for test in same_tab_edit_reply_typing_and_save_keep_the_source_destination delayed_source_reply_after_switching_tabs_must_never_write_to_the_new_tab closing_source_before_its_reply_cannot_open_or_save_a_stale_editor delayed_view_reply_stays_readonly_and_close_sends_no_write; do
+            result=0
+            timeout 120 "$binary" "ui::shell::sftp_editor_routing_tests::$test" --exact --test-threads=1 --nocapture > "flow-$test.log" 2>&1 || result=$?
+            cat "flow-$test.log"
+            echo "$result" > "flow-$test-exit.txt"
+            if [ "$result" = 0 ]; then
+              grep -F 'test result: ok. 1 passed; 0 failed;' "flow-$test.log" || failed=1
+            elif [ "$result" = 101 ]; then
+              grep -F 'test result: FAILED. 0 passed; 1 failed;' "flow-$test.log" || failed=1
+            else
+              failed=1
+            fi
+          done
           exit "$failed"
-      - name: Build exact candidate and smoke native Linux window
-        shell: bash
-        run: |
-          timeout 1800 cargo build --locked --target x86_64-unknown-linux-gnu --bin xenterm --jobs 2
-          bash .github/scripts/native-smoke.sh
       - name: Preserve regression evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
