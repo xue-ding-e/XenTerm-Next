@@ -1,0 +1,11 @@
+--- a/src/sftp/impls/sftp.rs
++++ b/src/sftp/impls/sftp.rs
+@@ -1496,7 +1496,7 @@
+         .await
+         .context("write remote file")?;
+     f.flush().await.context("flush remote file")?;
+-    let _ = f.shutdown().await;
++    f.shutdown().await.context("close remote file")?;
+     Ok(())
+ }
+ 
