@@ -1,9 +1,9 @@
 # Dot-sourced by smoke.ps1 only for an explicit opt-in, using the same owned app process.
-# Two bounded navigation clicks: home to Settings, then Sessions; no connection or data input.
+# Three reviewed navigation clicks, then Ctrl+K observation only; no Enter, data input or Escape.
 function Invoke-LimitedInteractions([object]$OwnedProcess,[string]$OutputDir) {
     Add-Type -Path (Join-Path $PSScriptRoot 'LimitedInput.cs') -ReferencedAssemblies System.dll,System.Core.dll,System.Drawing.dll
     $result=[ordered]@{status='blocked';scope='visible_client_only_not_full_window';full_window_verified=$false;semantic_status='requires_visual_review';reason=$null;flows=@();steps=@();screenshots=@();input_cleanup='not_started'}
-    $layoutBounds=$null; $settingsReference=$null; $reference=$null; $injector=$null; $handle=[IntPtr]::Zero; $frame=$null; $after=$null
+    $layoutBounds=$null; $sessionsReference=$null; $settingsReference=$null; $reference=$null; $injector=$null; $handle=[IntPtr]::Zero; $frame=$null; $after=$null
     $elapsed=[Diagnostics.Stopwatch]::StartNew()
     function Assert-Geometry($capture) {
         $o=$capture.OriginalBounds; $v=$capture.VisibleBounds
@@ -58,6 +58,12 @@ function Invoke-LimitedInteractions([object]$OwnedProcess,[string]$OutputDir) {
         }
         Assert-Nav $capture 84
     }
+    function Assert-Sessions($capture) {
+        foreach ($r in @([Drawing.Rectangle]::new(65,8,350,270),[Drawing.Rectangle]::new(465,35,510,350))) {
+            if ([XenTermNativeProbe.LimitedPixels]::Match($capture.Image,$sessionsReference,$r) -lt 0.98) { throw 'Fresh page differs from reviewed Sessions; no return-home input' }
+        }
+        Assert-Nav $capture 52
+    }
     function Assert-ActionFresh($capture) {
         if (([DateTime]::UtcNow-[DateTime]$capture.Image.Tag).TotalSeconds -gt 1) { throw 'Input authorization screenshot is older than one second' }
         if ([XenTermNativeProbe.Desktop]::ClientBounds($handle) -ne $capture.OriginalBounds) { throw 'App moved after the fresh input screenshot' }
@@ -87,6 +93,9 @@ function Invoke-LimitedInteractions([object]$OwnedProcess,[string]$OutputDir) {
         if ((Get-FileHash -LiteralPath $referencePath -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'd81a84f4c49e331969196c9bd859ab6435511e3cb323f656b3fa67e95b67a7b6') { throw 'Reviewed home reference changed' }
         $settingsPath=Join-Path $PSScriptRoot 'reviewed-release-settings-77ce731.png'
         if ((Get-FileHash -LiteralPath $settingsPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne '1a536d736ad9fe4224ecd2643494469ef152bfc9a50c8993c83071a26fdb0eb8') { throw 'Reviewed release Settings reference changed' }
+        $sessionsPath=Join-Path $PSScriptRoot 'reviewed-release-sessions-77ce731.png'
+        if ((Get-FileHash -LiteralPath $sessionsPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'd7f99db30da9ac79d2a195a079c419fedd18efb9932201ae05c3835246201db4') { throw 'Reviewed release Sessions reference changed' }
+        $sessionsReference=[Drawing.Bitmap]::new($sessionsPath)
         $settingsReference=[Drawing.Bitmap]::new($settingsPath)
         $reference=[Drawing.Bitmap]::new($referencePath)
         # Read-only first-frame wait, at most 20 seconds. Never save/map the rich
@@ -143,7 +152,7 @@ function Invoke-LimitedInteractions([object]$OwnedProcess,[string]$OutputDir) {
         Assert-Settings $frame
         $result.flows+=@([ordered]@{name='home-to-settings';status='reviewed-page-regions-matched';semantic_status='requires_visual_review'})
         # Exactly one further click on the visible Sessions icon (client x27/y52).
-        # No action is taken on the resulting unreviewed page.
+        # The resulting page must match the separately reviewed Sessions reference before any further input.
         Record-Phase 'sessions-before-move' 52
         Assert-ActionFresh $frame; $injector.Hover(($origin.X+27),($origin.Y+52))
         $frame.Dispose(); $frame=$null; Start-Sleep -Milliseconds 120
@@ -169,14 +178,52 @@ function Invoke-LimitedInteractions([object]$OwnedProcess,[string]$OutputDir) {
             if ($selected) { $sessionsObserved=$true; break }
         }
         if (-not $sessionsObserved) { throw 'One Sessions click did not establish selection within one second; stop without retry' }
+        Assert-Sessions $frame
+        $result.flows+=@([ordered]@{name='settings-to-sessions';status='reviewed-page-regions-matched';semantic_status='requires_visual_review'})
+        # One return-home click on the reviewed rail, with the same fresh/owned guards.
+        Record-Phase 'terminal-before-move' 20
+        Assert-ActionFresh $frame; $injector.Hover(($origin.X+27),($origin.Y+20))
+        $frame.Dispose(); $frame=$null; Start-Sleep -Milliseconds 120
+        $frame=Read-FreshFrame '07-terminal-hover'; Assert-Sessions $frame
+        Assert-ActionFresh $frame; $injector.PressDiagnostic(($origin.X+27),($origin.Y+20))
+        Start-Sleep -Milliseconds 120
+        $frame.Dispose(); $frame=$null; $frame=Read-FreshFrame '08-terminal-held'
+        Record-Phase 'terminal-after-down' 20
+        Assert-ActionFresh $frame; $injector.ReleaseDiagnostic()
+        Record-Phase 'terminal-after-up' 20
+        $homeStable=0
+        foreach ($sample in 0..7) {
+            $frame.Dispose(); $frame=$null
+            if ($sample -gt 0) { Start-Sleep -Milliseconds 250 }
+            $frame=Read-FreshFrame ('09-returned-home-'+$sample)
+            try { Assert-Home $frame; Assert-Nav $frame 20; $homeStable++ } catch { $homeStable=0 }
+            if ($homeStable -ge 2) { break }
+        }
+        if ($homeStable -lt 2) { throw 'Return-home click did not yield two reviewed home frames; no keyboard input' }
+        $result.flows+=@([ordered]@{name='sessions-to-home';status='two-reviewed-home-frames-matched';semantic_status='requires_visual_review'})
+        # Ctrl down, K down, K up, Ctrl up only. Never types text, Enter, or selects a connection.
+        Assert-ActionFresh $frame; $injector.QuickConnect()
+        Record-Phase 'after-ctrl-k' 20
+        $overlayObserved=$false
+        foreach ($sample in 0..4) {
+            $frame.Dispose(); $frame=$null
+            if ($sample -gt 0) { Start-Sleep -Milliseconds 250 }
+            $frame=Read-FreshFrame ('10-quick-connect-'+$sample)
+            $shape=$false
+            try { Assert-Overlay $frame; $shape=$true; $overlayObserved=$true } catch { }
+            $result.steps+=@([ordered]@{name=('quick-connect-'+$sample);overlay_shape_observed=$shape})
+            Write-Report $result (Join-Path $OutputDir 'interactions.json')
+        }
+        # No Escape in this increment: shape alone is not a reviewed semantic overlay.
+        if (-not $overlayObserved) { throw 'Ctrl+K overlay shape not established; screenshots saved, no retry or Escape' }
         $result.status='needs_visual_review'
-        $result.reason='Two navigation clicks only; inspect actual Settings and Sessions screenshots. No connection/new/delete/import or subsequent input.'
+        $result.reason='Three navigation clicks and Ctrl+K only; inspect the actual palette. No text, Enter, connection selection, Escape or subsequent input.'
 
     } catch { $result.reason=$_.Exception.Message }
     finally {
         if ($frame) { $frame.Dispose() }; if ($after) { $after.Dispose() }
         if ($injector) { $injector.Dispose(); $result.accepted_input_events=$injector.AcceptedEvents; $result.input_cleanup=$injector.CleanupConfirmed; if (-not $injector.CleanupConfirmed) { $result.status='blocked'; $result.reason=$injector.CleanupError } }
-        if ($reference) { $reference.Dispose() }; if ($settingsReference) { $settingsReference.Dispose() }
+        if ($reference) { $reference.Dispose() }; if ($settingsReference) { $settingsReference.Dispose() }; if ($sessionsReference) { $sessionsReference.Dispose() }
         $result.elapsed_seconds=[Math]::Round($elapsed.Elapsed.TotalSeconds,2)
         Write-Report $result (Join-Path $OutputDir 'interactions.json')
     }
