@@ -1,4 +1,4 @@
-name: Exact Windows settings click diagnostic (manual)
+name: Exact Windows startup dependency diagnostic (manual)
 # Isolated diagnostic only: never integrate this harness over product CI.
 on:
   workflow_dispatch:
@@ -50,6 +50,10 @@ jobs:
         id: verified
         timeout-minutes: 1
         run: '& ./scripts/windows-native/verify-reuse.ps1'
+      - name: Read only executable import names and matching installed DLL metadata
+        if: steps.verified.outputs.identity_gate == 'verified'
+        timeout-minutes: 1
+        run: '& ./scripts/windows-native/inspect-dependencies.ps1'
       - name: Native visible WinForms control immediately before launch
         id: preflight
         if: steps.verified.outputs.identity_gate == 'verified'
@@ -57,18 +61,18 @@ jobs:
         run: |
           & ./scripts/windows-native/preflight.ps1 -EvidenceDir "$env:RUNNER_TEMP/native-evidence/prelaunch"
           exit $LASTEXITCODE
-      - name: One owned settings click with verified existing binary
+      - name: Observe one owned startup without any input
         id: smoke
         if: steps.preflight.outputs.desktop_gate == 'passed'
         timeout-minutes: 2
         run: |
-          & ./scripts/windows-native/smoke.ps1 -SourceDir "$env:GITHUB_WORKSPACE" -EvidenceDir "$env:RUNNER_TEMP/native-evidence/app" -VerifiedDir "$env:RUNNER_TEMP/xenterm-exact-reuse" -PreflightDir "$env:RUNNER_TEMP/native-evidence/prelaunch" -RunLimitedInteractions
+          & ./scripts/windows-native/smoke.ps1 -SourceDir "$env:GITHUB_WORKSPACE" -EvidenceDir "$env:RUNNER_TEMP/native-evidence/app" -VerifiedDir "$env:RUNNER_TEMP/xenterm-exact-reuse" -PreflightDir "$env:RUNNER_TEMP/native-evidence/prelaunch"
           exit $LASTEXITCODE
       - name: Preserve bounded evidence only; never profile or executable
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: windows-settings-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          name: windows-startup-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/native-evidence/
           if-no-files-found: warn
           retention-days: 3
@@ -79,5 +83,5 @@ jobs:
           DESKTOP_GATE: ${{ steps.preflight.outputs.desktop_gate }}
           SMOKE_GATE: ${{ steps.smoke.outputs.smoke_gate }}
         run: |
-          "Artifact identity=$env:IDENTITY_GATE; visible desktop=$env:DESKTOP_GATE; one settings click=$env:SMOKE_GATE. Inspect screenshots; full window and subsequent flows are unverified." | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+          "Artifact identity=$env:IDENTITY_GATE; visible desktop=$env:DESKTOP_GATE; no-input startup=$env:SMOKE_GATE. Inspect exit metadata/screenshots; input is disabled and navigation remains unverified." | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
           if ($env:IDENTITY_GATE -ne 'verified' -or $env:DESKTOP_GATE -ne 'passed' -or $env:SMOKE_GATE -ne 'needs_visual_review') { throw 'Diagnostic incomplete or failed; do not infer a navigation fix or retry input.' }
