@@ -1,4 +1,4 @@
-name: Exact Windows startup dependency diagnostic (manual)
+name: Exact Windows shader source hypothesis (manual)
 # Isolated diagnostic only: never integrate this harness over product CI.
 on:
   workflow_dispatch:
@@ -61,12 +61,12 @@ jobs:
         run: |
           & ./scripts/windows-native/preflight.ps1 -EvidenceDir "$env:RUNNER_TEMP/native-evidence/prelaunch"
           exit $LASTEXITCODE
-      - name: Observe one owned startup without any input
-        id: smoke
+      - name: Compare no-input startup before and after locked shader source restoration
+        id: experiment
         if: steps.preflight.outputs.desktop_gate == 'passed'
-        timeout-minutes: 2
+        timeout-minutes: 5
         run: |
-          & ./scripts/windows-native/smoke.ps1 -SourceDir "$env:GITHUB_WORKSPACE" -EvidenceDir "$env:RUNNER_TEMP/native-evidence/app" -VerifiedDir "$env:RUNNER_TEMP/xenterm-exact-reuse" -PreflightDir "$env:RUNNER_TEMP/native-evidence/prelaunch"
+          & ./scripts/windows-native/shader-experiment.ps1
           exit $LASTEXITCODE
       - name: Preserve bounded evidence only; never profile or executable
         if: always()
@@ -81,7 +81,7 @@ jobs:
         env:
           IDENTITY_GATE: ${{ steps.verified.outputs.identity_gate }}
           DESKTOP_GATE: ${{ steps.preflight.outputs.desktop_gate }}
-          SMOKE_GATE: ${{ steps.smoke.outputs.smoke_gate }}
+          SMOKE_GATE: ${{ steps.experiment.outputs.experiment_gate }}
         run: |
           "Artifact identity=$env:IDENTITY_GATE; visible desktop=$env:DESKTOP_GATE; no-input startup=$env:SMOKE_GATE. Inspect exit metadata/screenshots; input is disabled and navigation remains unverified." | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
           if ($env:IDENTITY_GATE -ne 'verified' -or $env:DESKTOP_GATE -ne 'passed' -or $env:SMOKE_GATE -ne 'needs_visual_review') { throw 'Diagnostic incomplete or failed; do not infer a navigation fix or retry input.' }
