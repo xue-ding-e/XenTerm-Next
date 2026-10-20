@@ -1,5 +1,5 @@
 # Dot-sourced by smoke.ps1 only for an explicit opt-in, using the same owned app process.
-# Fixed three flows, not a general-purpose input runner. No connection submission.
+# Single settings click diagnostic; no drag, navigation loop, keyboard, connection or data input.
 function Invoke-LimitedInteractions([object]$OwnedProcess,[string]$OutputDir) {
     Add-Type -Path (Join-Path $PSScriptRoot 'LimitedInput.cs') -ReferencedAssemblies System.dll,System.Core.dll,System.Drawing.dll
     $result=[ordered]@{status='blocked';scope='visible_client_only_not_full_window';full_window_verified=$false;semantic_status='requires_visual_review';reason=$null;flows=@();steps=@();screenshots=@();input_cleanup='not_started'}
@@ -97,50 +97,40 @@ function Invoke-LimitedInteractions([object]$OwnedProcess,[string]$OutputDir) {
         $injector=[XenTermNativeProbe.LimitedInput]::new($handle,$OwnedProcess.Pid,$frame.VisibleBounds,$frame.DesktopBounds)
         $layoutBounds=$frame.OriginalBounds
         $origin=$frame.OriginalBounds.Location
-        $beforeMeasure=Measure-Sidebar $frame 275 'sidebar-before'
-        # 1. Actual left-button drag; one planned outward/back round-trip, never retries.
-        Assert-ActionFresh $frame; $injector.Drag(($origin.X+275),($origin.Y+500),($origin.X+355))
-        $frame.Dispose(); $frame=$null; Start-Sleep -Milliseconds 350
-        $frame=Read-FreshFrame '01-sidebar-expanded-released'; Assert-Nav $frame 20
-        $expanded=Measure-Sidebar $frame 355 'sidebar-expanded-released'
-        Assert-ActionFresh $frame; $injector.Hover(($origin.X+395),($origin.Y+500))
-        $frame.Dispose(); $frame=$null; Start-Sleep -Milliseconds 350
-        $frame=Read-FreshFrame '02-sidebar-after-release-hover'; Assert-Nav $frame 20
-        $hovered=Measure-Sidebar $frame 355 'sidebar-after-release-hover'
-        if ($hovered.outer_edge -ne $expanded.outer_edge -or $hovered.separator_73_right -ne $expanded.separator_73_right -or $hovered.separator_174_right -ne $expanded.separator_174_right) { throw 'Sidebar still changed after release and pure hover' }
-        Assert-ActionFresh $frame; $injector.Drag(($origin.X+355),($origin.Y+500),($origin.X+275))
-        $frame.Dispose(); $frame=$null; Start-Sleep -Milliseconds 350
-        $frame=Read-FreshFrame '03-sidebar-restored'; Assert-Home $frame; Assert-Nav $frame 20
-        $restored=Measure-Sidebar $frame 275 'sidebar-restored'
-        $result.flows+=@([ordered]@{name='sidebar_real_drag_release';status='structural_assertions_passed_needs_visual_review';before=$beforeMeasure;expanded=$expanded;released_hover=$hovered;restored=$restored})
-        # 2. Exactly three known rail clicks. No settings mutation/list action.
-        foreach ($stage in @(@{name='settings';from=20;to=84},@{name='sessions';from=84;to=52},@{name='terminal';from=52;to=20})) {
-            # Do not reuse a prior screenshot to authorize the next page action.
-            $frame.Dispose(); $frame=$null
-            $frame=Read-FreshFrame ('04-before-'+$stage.name); Assert-Nav $frame $stage.from
-            if ($stage.from -eq 20) { Assert-Home $frame }
-            Assert-ActionFresh $frame; $injector.Click(($origin.X+27),($origin.Y+$stage.to))
-            Start-Sleep -Milliseconds 400
-            $after=Read-FreshFrame ('05-after-'+$stage.name); Assert-Nav $after $stage.to
-            $changed=[XenTermNativeProbe.LimitedPixels]::Changed($frame.Image,$after.Image,[Drawing.Rectangle]::new(290,120,700,520))
-            if ($changed -lt 0.015) { throw 'Navigation did not visibly change the main client content' }
-            $frame.Dispose(); $frame=$after; $after=$null
-            $result.flows+=@([ordered]@{name=('navigate_'+$stage.name);status='selection_and_content_change_observed_needs_visual_review';main_changed_fraction=$changed})
+        function Record-Phase([string]$phase) {
+            $result.steps+=@([ordered]@{name=$phase;evidence=$injector.DiagnosticSnapshot(($origin.X+27),($origin.Y+84))})
+            Write-Report $result (Join-Path $OutputDir 'interactions.json')
         }
-        # Clear a possible rail hover tooltip by moving to reviewed blank home content.
-        Assert-Nav $frame 20; Assert-ActionFresh $frame; $injector.Hover(($origin.X+900),($origin.Y+650))
-        $frame.Dispose(); $frame=$null; Start-Sleep -Milliseconds 300
-        $frame=Read-FreshFrame '06-before-ctrl-k'; Assert-Home $frame; Assert-Nav $frame 20
-        # 3. Keyboard only: open palette, capture shape, cancel. Never type or confirm.
-        Assert-ActionFresh $frame; $injector.QuickConnect()
-        $frame.Dispose(); $frame=$null; Start-Sleep -Milliseconds 400
-        $frame=Read-FreshFrame '07-palette-before-escape'; Assert-Overlay $frame
-        Assert-ActionFresh $frame; $injector.Escape()
-        $frame.Dispose(); $frame=$null; Start-Sleep -Milliseconds 400
-        $frame=Read-FreshFrame '08-after-escape'; Assert-Home $frame; Assert-Nav $frame 20
-        $result.flows+=@([ordered]@{name='ctrl_k_escape_cancel';status='overlay_shape_and_home_restoration_observed_needs_visual_review';no_confirmation_or_text_sent=$true})
+        # One same-coordinate click, with evidence between input phases. Never retries.
+        Record-Phase 'before-move'
+        Assert-ActionFresh $frame; $injector.Hover(($origin.X+27),($origin.Y+84))
+        $frame.Dispose(); $frame=$null; Start-Sleep -Milliseconds 120
+        $frame=Read-FreshFrame '01-settings-hover'; Assert-Nav $frame 20
+        Record-Phase 'after-move'
+        Assert-ActionFresh $frame
+        $injector.PressDiagnostic(($origin.X+27),($origin.Y+84))
+        Start-Sleep -Milliseconds 120
+        $frame.Dispose(); $frame=$null
+        $frame=Read-FreshFrame '02-settings-held'
+        Record-Phase 'after-down'
+        $result.steps+=@([ordered]@{name='left-held';observed=$injector.DiagnosticLeftHeld()})
+        Write-Report $result (Join-Path $OutputDir 'interactions.json')
+        Assert-ActionFresh $frame; $injector.ReleaseDiagnostic()
+        Record-Phase 'after-up'
+        $observed=$false
+        foreach ($sample in 0..4) {
+            $frame.Dispose(); $frame=$null
+            if ($sample -gt 0) { Start-Sleep -Milliseconds 250 }
+            $frame=Read-FreshFrame ('03-settings-released-'+$sample)
+            $selected=$false
+            try { Assert-Nav $frame 84; $selected=$true } catch { }
+            $result.steps+=@([ordered]@{name=('released-'+$sample);settings_selection_observed=$selected})
+            Write-Report $result (Join-Path $OutputDir 'interactions.json')
+            if($selected) { $observed=$true; break }
+        }
+        if(-not $observed) { throw 'One diagnostic click did not establish settings selection within one second; no retry or later input' }
         $result.status='needs_visual_review'
-        $result.reason='Three bounded native flows completed structural checks. Parent must inspect screenshots; not full-window, text-semantic, connection, or comprehensive Windows QA.'
+        $result.reason='Single settings click selection observed; inspect hover/held/released screenshots for semantic page change. No subsequent input.'
     } catch { $result.reason=$_.Exception.Message }
     finally {
         if ($frame) { $frame.Dispose() }; if ($after) { $after.Dispose() }

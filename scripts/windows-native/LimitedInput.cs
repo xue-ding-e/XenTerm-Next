@@ -72,6 +72,29 @@ namespace XenTermNativeProbe {
         void KeyDown(ushort key) { Send(Key(key,false)); keys.Add(key); }
         void KeyUp(ushort key) { Send(Key(key,true)); keys.Remove(key); }
         public void Hover(int x,int y) { AssertReleased(); Move(x,y); }
+        // Read-only phase evidence; this sends no input and never changes focus.
+        public object DiagnosticSnapshot(int targetX,int targetY) {
+            AssertForeground();
+            POINT actual; uint foregroundPid;
+            if(!GetCursorPos(out actual)) throw new Exception("Cannot read diagnostic cursor");
+            var foreground=GetForegroundWindow();
+            if(GetWindowThreadProcessId(foreground,out foregroundPid)==0) throw new Exception("Cannot read foreground PID");
+            return new { elapsedMilliseconds=timer.ElapsedMilliseconds, targetX=targetX, targetY=targetY,
+                actualX=actual.X, actualY=actual.Y, foregroundHwnd=foreground.ToInt64(), foregroundPid=foregroundPid,
+                acceptedEvents=AcceptedEvents, ownedLeftDown=leftDown, asyncLeftDown=(GetAsyncKeyState(1)&0x8000)!=0 };
+        }
+        public void PressDiagnostic(int x,int y) {
+            AssertReleased(); PointOwned(x,y);
+            POINT actual;
+            if(!GetCursorPos(out actual) || Math.Abs(actual.X-x)>1 || Math.Abs(actual.Y-y)>1) throw new Exception("Diagnostic cursor moved before Down");
+            Down();
+        }
+        public bool DiagnosticLeftHeld() { AssertForeground(); return leftDown && (GetAsyncKeyState(1) & 0x8000)!=0; }
+        public void ReleaseDiagnostic() {
+            AssertForeground();
+            if(!leftDown) throw new Exception("No owned diagnostic press to release");
+            Up();
+        }
         public void Click(int x,int y) { AssertReleased(); Move(x,y); Down(); Up(); }
         public void Drag(int startX,int y,int endX) {
             AssertReleased(); Move(startX,y); Down();

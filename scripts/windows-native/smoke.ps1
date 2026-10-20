@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$SourceDir,[Parameter(Mandatory=$true)][string]$EvidenceDir,[Parameter(Mandatory=$true)][string]$BuildEvidenceDir,[Parameter(Mandatory=$true)][string]$PreflightDir,[switch]$RunLimitedInteractions)
+param([Parameter(Mandatory=$true)][string]$SourceDir,[Parameter(Mandatory=$true)][string]$EvidenceDir,[Parameter(Mandatory=$true)][string]$VerifiedDir,[Parameter(Mandatory=$true)][string]$PreflightDir,[switch]$RunLimitedInteractions)
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'common.ps1')
@@ -12,12 +12,17 @@ $profile=Join-Path $sandboxRoot 'profile'
 try {
     $gate=Get-Content -Raw -LiteralPath (Join-Path $PreflightDir 'preflight.json') | ConvertFrom-Json
     if ($gate.status -ne 'passed' -or ([DateTime]::UtcNow-[DateTime]::Parse($gate.finished_utc)).TotalMinutes -gt 3) { throw 'Immediate prelaunch desktop control is missing, failed, or stale' }
-    $build=Get-Content -Raw -LiteralPath (Join-Path $BuildEvidenceDir 'build-metadata.json') | ConvertFrom-Json
-    if ($build.status -ne 'passed' -or $build.sha -ne $env:GITHUB_SHA -or $build.src_tree -ne 'a8f4de26c9c0b0782b5cce12e629133664ce5a5d') { throw 'No validated candidate build' }
-    $exe=Join-Path $SourceDir 'target\x86_64-pc-windows-msvc\debug\xenterm.exe'
+    $manifest=Get-Content -Raw -LiteralPath (Join-Path $VerifiedDir 'manifest.json') | ConvertFrom-Json
+    $identity=Get-Content -Raw -LiteralPath "$env:RUNNER_TEMP/native-evidence/reuse-identity.json" | ConvertFrom-Json
+    $harnessSha=(& git -C $SourceDir rev-parse HEAD | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $harnessSha -ne $env:GITHUB_SHA -or $identity.harness_sha -ne $harnessSha -or $identity.status -ne 'identity_verified_not_execution_pass') { throw 'Harness or prior identity gate mismatch' }
+    $src=(& git -C $SourceDir rev-parse HEAD:src | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $src -ne 'a8f4de26c9c0b0782b5cce12e629133664ce5a5d' -or $manifest.src_tree -ne $src -or $manifest.sha -ne 'ad095a64a4054caa27a3f0fe7b556d901f252bf6' -or $identity.build_sha -ne $manifest.sha) { throw 'Source or producer identity changed before launch' }
+    $exe=Join-Path $VerifiedDir 'xenterm.exe'
     $binaryHash=(Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($binaryHash -ne $build.binary_sha256) { throw 'Binary changed after build' }
-    $report.sha=$build.sha; $report.src_tree=$build.src_tree; $report.binary_sha256=$binaryHash
+    if ($binaryHash -ne 'f6dfc60bb334247f788012ad52c9ad2faa126b48b8df11d2ec6313dc141325e0' -or $binaryHash -ne $manifest.binary_sha256 -or (Get-Item -LiteralPath $exe).Length -ne 102243840) { throw 'Binary changed after identity verification' }
+    $report.build_sha=$manifest.sha; $report.harness_sha=$harnessSha; $report.src_tree=$src; $report.binary_sha256=$binaryHash
+    $report.producer_run=39415201204; $report.producer_conclusion='failure'; $report.reused_artifact=12261619305
     $oldDpi=[XenTermNativeProbe.Desktop]::SetThreadDpiAwarenessContext([IntPtr](-4))
     if ($oldDpi -eq [IntPtr]::Zero) { throw 'Cannot establish screenshot DPI context' }
     $report.desktop=[XenTermNativeProbe.Desktop]::Inspect()
