@@ -20,7 +20,7 @@ use uuid::Uuid;
 use anyhow::{anyhow, Context, Result};
 use futures::stream::{FuturesUnordered, StreamExt};
 use russh::client::{self, Handler};
-use russh::keys::{key::PrivateKeyWithHashAlg, HashAlg, PublicKey};
+use russh::keys::{key::PrivateKeyWithHashAlg, HashAlg, PublicKeyOrCertificate};
 use russh::Disconnect;
 use russh_sftp::client::error::Error as SftpError;
 use russh_sftp::client::{RawSftpSession, SftpSession};
@@ -2389,12 +2389,16 @@ impl Handler for SftpClientHandler {
 
     async fn check_server_key(
         &mut self,
-        server_public_key: &PublicKey,
+        server_public_key: &PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
+        // Keep the shell and SFTP trust policy identical: no implicit CA trust.
+        let PublicKeyOrCertificate::PublicKey { key, .. } = server_public_key else {
+            return Ok(false);
+        };
         Ok(crate::ssh::verify_host_key(
             &self.host,
             self.port,
-            server_public_key,
+            key,
             &self.events,
             &self.host_key_wait,
         )
@@ -2565,6 +2569,60 @@ mod sanitize_tests {
         assert_eq!(
             validate_editor_text("第一行\nsecond line\n".as_bytes().to_vec()),
             Ok("第一行\nsecond line\n".into())
+        );
+    }
+}
+
+#[cfg(test)]
+mod host_certificate_tests {
+    use super::*;
+    use russh::keys::ssh_key::{
+        certificate::{Builder, CertType},
+        private::Ed25519Keypair,
+        Certificate, PrivateKey,
+    };
+
+    fn synthetic_host_certificate() -> Certificate {
+        // Fixed, public test seeds: no credentials, RNG dependency, or network.
+        let ca = PrivateKey::new(Ed25519Keypair::from_seed(&[1; 32]).into(), "test CA")
+            .expect("test CA key");
+        let host = PrivateKey::new(Ed25519Keypair::from_seed(&[2; 32]).into(), "test host")
+            .expect("test host key");
+        let mut builder = Builder::new(
+            vec![3; 32],
+            host.public_key().key_data().clone(),
+            0,
+            u64::MAX,
+        )
+        .expect("test certificate builder");
+        builder.cert_type(CertType::Host).expect("host certificate");
+        builder
+            .valid_principal("certificate-test.invalid")
+            .expect("test principal");
+        builder.sign(&ca).expect("signed test certificate")
+    }
+
+    #[tokio::test]
+    async fn rejects_host_certificate_without_prompting() {
+        let (events, mut receiver) = mpsc::unbounded_channel();
+        let mut handler = SftpClientHandler {
+            host_key_wait: crate::ssh::connection::HostKeyWait::default(),
+            host: "certificate-test.invalid".into(),
+            port: 22,
+            events,
+        };
+        let certificate = PublicKeyOrCertificate::Certificate(synthetic_host_certificate());
+        let accepted = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            Handler::check_server_key(&mut handler, &certificate),
+        )
+        .await
+        .expect("certificate rejection must not wait for a trust prompt")
+        .expect("host-key callback");
+        assert!(!accepted, "host certificates must not inherit plain-key trust");
+        assert!(
+            matches!(receiver.try_recv(), Err(mpsc::error::TryRecvError::Empty)),
+            "unsupported certificates must not emit a TOFU prompt"
         );
     }
 }
