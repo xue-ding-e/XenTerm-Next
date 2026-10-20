@@ -19,7 +19,7 @@ try {
     $report.timed_out=$process.TimedOut
     if (-not $process.HasExited) { throw 'Build process did not finish within deadline' }
     $report.exit_code=$process.ExitCode
-    if ($process.TimedOut -or $process.ExitCode -ne 0) { throw 'Candidate build failed or timed out; see build.log and build-metadata.json' }
+    if ($process.TimedOut -or $process.ExitCode -ne 0) { throw 'Candidate build failed or timed out; see build.stdout.log, build.stderr.log and build-metadata.json' }
     $meta=Get-Content -Raw -LiteralPath (Join-Path $EvidenceDir 'build-metadata.json') | ConvertFrom-Json
     if ($meta.sha -ne $report.expected_run_sha -or $meta.src_tree -ne $report.expected_src_tree -or $meta.status -ne 'passed') { throw 'Build metadata identity mismatch' }
     $report.metadata=$meta

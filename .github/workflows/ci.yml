@@ -109,6 +109,6 @@ jobs:
           SMOKE_GATE: ${{ steps.smoke.outputs.smoke_gate }}
         run: |
           "Windows native probe: preflight=$env:PREFLIGHT_GATE; build_requested=$env:BUILD_REQUESTED; build=$env:BUILD_GATE; prelaunch=$env:RECHECK_GATE; capture=$env:SMOKE_GATE" | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
-          'No native mouse/keyboard interaction was tested. needs_visual_review is not a Windows rendering pass.' | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+          'Only the visible client intersection is captured; full-window layout is unverified. No native mouse/keyboard interaction was tested. needs_visual_review is not a Windows rendering pass.' | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
           if ($env:PREFLIGHT_GATE -ne 'passed') { throw 'BLOCKED: runner did not prove an interactive visible desktop; candidate not built.' }
           if ($env:BUILD_REQUESTED -eq 'true' -and ($env:BUILD_GATE -ne 'passed' -or $env:RECHECK_GATE -ne 'passed' -or $env:SMOKE_GATE -ne 'needs_visual_review')) { throw 'Windows candidate probe incomplete; inspect per-stage evidence.' }

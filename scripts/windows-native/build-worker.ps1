@@ -1,6 +1,7 @@
 param([Parameter(Mandatory=$true)][string]$SourceDir,[Parameter(Mandatory=$true)][string]$EvidenceDir)
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
+. (Join-Path $PSScriptRoot 'common.ps1')
 Set-Location -LiteralPath $SourceDir
 $report=[ordered]@{status='failed';sha=$null;src_tree=$null;reason=$null;product_source_sha='772da7651e0295c53d896ba04f90f0db078d8dc0';tested_baseline_sha='29349dd80e6f0ece9e50dbc832422a5fef053d6d'}
 $expectedObjects=[ordered]@{
@@ -31,26 +32,17 @@ try {
     $report.command='cargo +stable build --locked --target x86_64-pc-windows-msvc --jobs 2 --bin xenterm'
     # MSVC environment comes from the same official action already used by the repository.
     $report.msvc_cl=(& where.exe cl.exe | Out-String).Trim(); if ($LASTEXITCODE -ne 0) { throw 'MSVC compiler unavailable' }
-    # PowerShell 5.1 can promote redirected native stderr to ErrorRecords. Cargo
-    # normally writes progress there, so use .NET pipes and drain both concurrently.
-    # This worker and cargo inherit the already-installed 2400-second owning job.
-    $info=New-Object Diagnostics.ProcessStartInfo
-    $info.FileName=(Get-Command cargo -CommandType Application).Source
-    $info.Arguments='+stable build --locked --target x86_64-pc-windows-msvc --jobs 2 --bin xenterm'
-    $info.WorkingDirectory=$SourceDir
-    $info.UseShellExecute=$false; $info.CreateNoWindow=$true
-    $info.RedirectStandardOutput=$true; $info.RedirectStandardError=$true
-    $cargoProcess=New-Object Diagnostics.Process
-    $cargoProcess.StartInfo=$info
-    try {
-        if (-not $cargoProcess.Start()) { throw 'Could not start cargo' }
-        $stdout=$cargoProcess.StandardOutput.ReadToEndAsync()
-        $stderr=$cargoProcess.StandardError.ReadToEndAsync()
-        $cargoProcess.WaitForExit()
-        $report.cargo_exit_code=$cargoProcess.ExitCode
-        ('STDOUT:'+[Environment]::NewLine+$stdout.Result+[Environment]::NewLine+'STDERR:'+[Environment]::NewLine+$stderr.Result) | Set-Content -LiteralPath (Join-Path $EvidenceDir 'build.log') -Encoding UTF8
-        if ($cargoProcess.ExitCode -ne 0) { throw ('cargo build returned '+$cargoProcess.ExitCode) }
-    } finally { $cargoProcess.Dispose() }
+    # Do not aggregate ReadToEndAsync into RAM until exit: a job timeout would
+    # lose all build diagnostics. Pure .NET line callbacks flush each stream live.
+    # This worker and cargo inherit the existing 2400-second owning Job Object.
+    $report.log_files=@('build.stdout.log','build.stderr.log')
+    $report.status='building'
+    $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $EvidenceDir 'build-metadata.json') -Encoding UTF8
+    $report.cargo_exit_code=[XenTermNativeProbe.ProcessLogs]::Run(
+        (Get-Command cargo -CommandType Application).Source,
+        '+stable build --locked --target x86_64-pc-windows-msvc --jobs 2 --bin xenterm',
+        $SourceDir,(Join-Path $EvidenceDir 'build.stdout.log'),(Join-Path $EvidenceDir 'build.stderr.log'))
+    if ($report.cargo_exit_code -ne 0) { throw ('cargo build returned '+$report.cargo_exit_code) }
     $dirty=(& git status --porcelain --untracked-files=all | Out-String).Trim(); if ($LASTEXITCODE -ne 0 -or $dirty) { throw 'Candidate checkout changed during build' }
     $exe=Join-Path $SourceDir 'target\x86_64-pc-windows-msvc\debug\xenterm.exe'
     $report.binary_sha256=(Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -58,7 +50,7 @@ try {
     if (-not (Test-Path -LiteralPath (Join-Path $SourceDir 'version.json'))) { throw 'Build completed but scripts/version.sh metadata version.json is absent' }
     $report.version_metadata=Get-Content -Raw -LiteralPath (Join-Path $SourceDir 'version.json') | ConvertFrom-Json
     $report.status='passed'
-} catch { $report.reason=$_.Exception.Message }
+} catch { $report.status='failed'; $report.reason=$_.Exception.Message }
 finally { $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $EvidenceDir 'build-metadata.json') -Encoding UTF8 }
 if ($report.status -ne 'passed') { exit 1 }
 exit 0

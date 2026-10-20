@@ -5,6 +5,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
@@ -30,6 +31,8 @@ namespace XenTermNativeProbe {
         [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hwnd);
         [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hwnd);
         [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hwnd);
+        [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr hwnd, uint command);
+        [DllImport("user32.dll", SetLastError=true)] static extern bool GetWindowRect(IntPtr hwnd, out Rect rect);
         [DllImport("user32.dll", SetLastError=true)] static extern bool GetClientRect(IntPtr hwnd, out Rect rect);
         [DllImport("user32.dll", SetLastError=true)] static extern bool ClientToScreen(IntPtr hwnd, ref Point point);
         [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(Point point);
@@ -124,6 +127,50 @@ namespace XenTermNativeProbe {
                 return image;
             } catch { image.Dispose(); throw; }
         }
+        // App-only partial capture. CaptureClient above stays strict for the known control.
+        static void RequireUnoccludedAppRect(IntPtr hwnd, int expectedPid, Rectangle original, Rectangle visible) {
+            uint pid; GetWindowThreadProcessId(hwnd, out pid);
+            if (pid != expectedPid || !IsWindowVisible(hwnd) || IsIconic(hwnd)) throw new Exception("App window identity/visibility changed");
+            int cloaked;
+            if (DwmGetWindowAttribute(hwnd,14,out cloaked,4)!=0 || cloaked!=0) throw new Exception("App window DWM state unavailable or cloaked");
+            if (ClientBounds(hwnd)!=original) throw new Exception("App client moved during capture");
+            // Conservative full-rectangle exclusion in addition to point sampling:
+            // any visible higher-z window overlapping the crop blocks this capture.
+            // Do not inspect its title, PID, pixels or client content.
+            var seen=new HashSet<long>();
+            for (IntPtr above=GetWindow(hwnd,3); above!=IntPtr.Zero; above=GetWindow(above,3)) {
+                if (!seen.Add(above.ToInt64()) || seen.Count>4096) throw new Exception("Unstable window z-order");
+                if (!IsWindowVisible(above) || IsIconic(above)) continue;
+                int hidden;
+                if (DwmGetWindowAttribute(above,14,out hidden,4)!=0) throw new Exception("Cannot verify overlay state");
+                if (hidden!=0) continue;
+                Rect rectangle;
+                if (!GetWindowRect(above,out rectangle)) throw new Exception("Cannot verify overlay bounds");
+                var overlay=Rectangle.FromLTRB(rectangle.Left,rectangle.Top,rectangle.Right,rectangle.Bottom);
+                if (overlay.IntersectsWith(visible)) throw new Exception("Higher-z window overlaps the visible app client");
+            }
+            for (int yi=0;yi<5;yi++) for (int xi=0;xi<5;xi++) {
+                Point point=new Point { X=visible.Left+(xi+1)*visible.Width/6, Y=visible.Top+(yi+1)*visible.Height/6 };
+                IntPtr actual=WindowFromPoint(point);
+                if (actual!=hwnd && !IsChild(hwnd,actual)) throw new Exception("Visible app client occluded at a sampled point");
+            }
+        }
+        public static VisibleClientCapture CaptureVisibleClient(IntPtr hwnd,int expectedPid) {
+            Rectangle original=ClientBounds(hwnd);
+            Rectangle desktop=new Rectangle(GetSystemMetrics(76),GetSystemMetrics(77),GetSystemMetrics(78),GetSystemMetrics(79));
+            Rectangle workArea=Screen.FromHandle(hwnd).WorkingArea; // Read-only; excludes reserved taskbar space.
+            Rectangle visible=Rectangle.Intersect(Rectangle.Intersect(original,desktop),workArea);
+            if (original.Width>8192 || original.Height>8192 || visible.Width<400 || visible.Height<250) throw new Exception("Visible app client smaller than 400x250 or invalid bounds");
+            RequireUnoccludedAppRect(hwnd,expectedPid,original,visible);
+            var image=new Bitmap(visible.Width,visible.Height,PixelFormat.Format32bppArgb);
+            try {
+                using(var graphics=Graphics.FromImage(image)) graphics.CopyFromScreen(visible.Left,visible.Top,0,0,image.Size,CopyPixelOperation.SourceCopy);
+                // Discard the bitmap, without saving it, if an overlay or identity change
+                // was observed after capture. No desktop-wide or other-window fallback.
+                RequireUnoccludedAppRect(hwnd,expectedPid,original,visible);
+                return new VisibleClientCapture(image,original,visible,desktop,workArea);
+            } catch { image.Dispose(); throw; }
+        }
         public static Dictionary<string, object> PixelMetrics(Bitmap image) {
             int samples=0, bright=0; var bins = new HashSet<int>();
             for (int y=0; y<image.Height; y+=3) for (int x=0; x<image.Width; x+=3) {
@@ -150,6 +197,48 @@ namespace XenTermNativeProbe {
                 if (matched<75) return false;
             }
             return true;
+        }
+    }
+    public sealed class VisibleClientCapture : IDisposable {
+        public Bitmap Image {get;private set;}
+        public Rectangle OriginalBounds {get;private set;}
+        public Rectangle VisibleBounds {get;private set;}
+        public Rectangle DesktopBounds {get;private set;}
+        public Rectangle WorkAreaBounds {get;private set;}
+        public bool Partial {get { return OriginalBounds!=VisibleBounds; }}
+        public VisibleClientCapture(Bitmap image,Rectangle original,Rectangle visible,Rectangle desktop,Rectangle workArea) {
+            Image=image; OriginalBounds=original; VisibleBounds=visible; DesktopBounds=desktop; WorkAreaBounds=workArea;
+        }
+        public void Dispose() { Image.Dispose(); }
+    }
+    // System .NET only. Called inside the owning, timeout-limited process job.
+    // C# callbacks do not require a PowerShell runspace. Each emitted line is
+    // flushed to its own file before build exit, preserving timeout diagnostics.
+    public static class ProcessLogs {
+        public static int Run(string executable,string arguments,string cwd,string stdoutPath,string stderrPath) {
+            using(var stdout=new StreamWriter(stdoutPath,false,new UTF8Encoding(false)))
+            using(var stderr=new StreamWriter(stderrPath,false,new UTF8Encoding(false)))
+            using(var process=new Process()) {
+                stdout.AutoFlush=true; stderr.AutoFlush=true;
+                var sync=new object(); Exception loggingFailure=null;
+                process.StartInfo=new ProcessStartInfo(executable,arguments) {
+                    WorkingDirectory=cwd,UseShellExecute=false,CreateNoWindow=true,
+                    RedirectStandardOutput=true,RedirectStandardError=true
+                };
+                process.OutputDataReceived+=delegate(object sender,DataReceivedEventArgs e) {
+                    if(e.Data==null) return;
+                    try { stdout.WriteLine(e.Data); } catch(Exception error) { lock(sync) { loggingFailure=error; } }
+                };
+                process.ErrorDataReceived+=delegate(object sender,DataReceivedEventArgs e) {
+                    if(e.Data==null) return;
+                    try { stderr.WriteLine(e.Data); } catch(Exception error) { lock(sync) { loggingFailure=error; } }
+                };
+                if(!process.Start()) throw new Exception("Cannot start logged process");
+                process.BeginOutputReadLine(); process.BeginErrorReadLine();
+                process.WaitForExit(); // Outer job deadline also terminates this worker.
+                lock(sync) { if(loggingFailure!=null) throw new IOException("Build log write failed",loggingFailure); }
+                return process.ExitCode;
+            }
         }
     }
     public sealed class ControlForm : Form {

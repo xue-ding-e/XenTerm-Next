@@ -4,7 +4,7 @@ $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'common.ps1')
 Assert-HostedDisposableRunner
 New-Item -ItemType Directory -Force -Path $EvidenceDir | Out-Null
-$report=[ordered]@{stage='application_startup_render';status='blocked';startup='not_run';map='not_run';render='not_run';interaction='not_run';reason=$null;screenshots=@()}
+$report=[ordered]@{stage='visible_application_startup';capture_scope='visible_client_intersection_only';full_window_verified=$false;status='blocked';startup='not_run';map='not_run';render='not_run';interaction='not_run';reason=$null;screenshots=@()}
 $process=$null; $oldDpi=[IntPtr]::Zero
 # Keep the synthetic profile outside uploaded evidence. Never inspect its key/database.
 $sandboxRoot=Join-Path $env:RUNNER_TEMP ('xenterm-native-empty-'+[Guid]::NewGuid().ToString('N'))
@@ -61,26 +61,27 @@ try {
             if ($bounds.Width -lt 400 -or $bounds.Height -lt 250) { continue }
             $report.map='visible_top_level_window_observed'
             if ($watch.Elapsed.TotalSeconds-$lastCapture -lt 5) { continue }
-            $image=$null
+            $capture=$null
             try {
-                $image=[XenTermNativeProbe.Desktop]::CaptureClient($handle)
+                $capture=[XenTermNativeProbe.Desktop]::CaptureVisibleClient($handle,$process.Pid)
+                $image=$capture.Image
                 $metrics=[XenTermNativeProbe.Desktop]::PixelMetrics($image)
-                $name='app-client-'+($report.screenshots.Count+1).ToString('00')+'.png'
+                $name='app-visible-client-'+($report.screenshots.Count+1).ToString('00')+'.png'
                 $image.Save((Join-Path $EvidenceDir $name),[Drawing.Imaging.ImageFormat]::Png)
-                $report.screenshots+=@([ordered]@{file=$name;elapsed_seconds=[Math]::Round($watch.Elapsed.TotalSeconds,2);window_handle=$window;window_class=$class;window_dpi=[XenTermNativeProbe.Desktop]::GetDpiForWindow($handle);bounds=$bounds;metrics=$metrics})
+                $report.screenshots+=@([ordered]@{file=$name;elapsed_seconds=[Math]::Round($watch.Elapsed.TotalSeconds,2);window_handle=$window;window_class=$class;window_dpi=[XenTermNativeProbe.Desktop]::GetDpiForWindow($handle);original_client_bounds=$capture.OriginalBounds;visible_client_bounds=$capture.VisibleBounds;desktop_bounds=$capture.DesktopBounds;work_area_bounds=$capture.WorkAreaBounds;partial=$capture.Partial;full_window_verified=$false;metrics=$metrics})
                 $lastCapture=$watch.Elapsed.TotalSeconds
                 if ($metrics.nonblank_heuristic) { $richFrames++ }
             } catch { $lastError=$_.Exception.Message }
-            finally { if ($image) { $image.Dispose() } }
+            finally { if ($capture) { $capture.Dispose() } }
         }
         if ($richFrames -ge 3) { break }
         Start-Sleep -Milliseconds 250
     }
     if ($process.HasExited) { $report.exit_code=$process.ExitCode; throw 'Application exited before observation completed' }
     $report.last_capture_error=$lastError
-    if ($report.screenshots.Count -eq 0) { throw 'No unoccluded on-screen application client capture; cannot attribute failure to renderer' }
-    if ($richFrames -eq 0) { $report.status='failed'; $report.render='blank_or_insufficient_pixel_variation'; $report.reason='Control passed but captured app clients did not satisfy nonblank heuristic. Inspect screenshots; this is not an interaction result.' }
-    else { $report.status='needs_visual_review'; $report.render='nonblank_pixels_captured_semantics_unverified'; $report.reason='Inspect all client PNGs for actual XenTerm shell text/layout. Pixel variation is not proof of correct rendering; no keyboard/mouse flow was exercised.' }
+    if ($report.screenshots.Count -eq 0) { throw 'No unoccluded visible application client intersection capture; cannot attribute failure to renderer' }
+    if ($richFrames -eq 0) { $report.status='failed'; $report.render='visible_region_blank_or_insufficient_pixel_variation'; $report.reason='Control passed but captured visible app regions did not satisfy nonblank heuristic. Inspect screenshots; this is not an interaction result.' }
+    else { $report.status='needs_visual_review'; $report.render='visible_region_nonblank_semantics_unverified'; $report.reason='Inspect visible-client PNGs for XenTerm text/layout. Off-screen client content and full-window layout are unverified even if this crop is legible. Pixel variation is not proof of correct rendering; no keyboard/mouse flow was exercised.' }
 } catch { $report.reason=$_.Exception.Message; if ($report.startup -eq 'process_created' -and $process -and $process.HasExited) { $report.status='failed' } }
 finally {
     if ($process) { $process.Dispose(); $report.cleanup_confirmed=$process.CleanupConfirmed; if (-not $process.CleanupConfirmed) { $report.status='blocked'; $report.reason='Application job cleanup could not be confirmed' } }
