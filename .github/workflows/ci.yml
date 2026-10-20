@@ -60,3 +60,56 @@ jobs:
           grep -F 'test result: ok. 2 passed; 0 failed; 0 ignored;' russh064-regression.log
           cargo +1.89.0 test --locked --no-default-features --features headless --bin xenterm --jobs 2 utf8_boundary_tests -- --test-threads=1 2>&1 | tee utf8-regression.log
           grep -F 'test result: ok. 3 passed; 0 failed; 0 ignored;' utf8-regression.log
+      - name: Verify and run actual forwarding protocol cases
+        env:
+          XDG_CONFIG_HOME: ${{ runner.temp }}/russh064-config
+          XDG_DATA_HOME: ${{ runner.temp }}/russh064-data
+          XDG_RUNTIME_DIR: ${{ runner.temp }}/russh064-runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +1.89.0 test --locked --no-default-features --features headless --bin xenterm --jobs 2 forwarding_protocol_tests -- --list > forwarding-tests.txt
+          for name in forwarded_tcpip_confirms_and_splices_loopback forwarded_tcpip_confirms_before_local_connect_failure forwarded_tcpip_confirms_without_mapping forwarded_tcpip_confirms_at_cap_without_dialing; do
+            grep -Fx "ssh::ssh::forwarding_protocol_tests::$name: test" forwarding-tests.txt
+          done
+          test "$(grep -c ': test$' forwarding-tests.txt)" = 4
+          timeout 120s cargo +1.89.0 test --locked --no-default-features --features headless --bin xenterm --jobs 2 forwarding_protocol_tests -- --test-threads=1 --nocapture 2>&1 | tee forwarding-green.log
+          grep -F 'test result: ok. 4 passed; 0 failed; 0 ignored;' forwarding-green.log
+      - name: Prove removal of acceptance fails the protocol assertion
+        env:
+          XDG_CONFIG_HOME: ${{ runner.temp }}/russh064-config
+          XDG_DATA_HOME: ${{ runner.temp }}/russh064-data
+          XDG_RUNTIME_DIR: ${{ runner.temp }}/russh064-runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          source=src/ssh/impls/ssh.rs
+          before=$(sha256sum "$source" | cut -d ' ' -f 1)
+          cp "$source" "$RUNNER_TEMP/ssh-before-mutation.rs"
+          trap 'cp "$RUNNER_TEMP/ssh-before-mutation.rs" "$source"' EXIT
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          p = Path('src/ssh/impls/ssh.rs')
+          s = p.read_text()
+          needle = '        reply.accept().await;'
+          assert s.count(needle) == 1, 'accept mutation must target exactly one production call'
+          p.write_text(s.replace(needle, '        drop(reply); // CI-only negative control: explicit rejection on drop', 1))
+          PYCODE
+          # Compile separately: compilation failure is never the expected RED.
+          cargo +1.89.0 test --locked --no-default-features --features headless --bin xenterm --jobs 2 forwarding_protocol_tests --no-run
+          set +e
+          timeout 120s cargo +1.89.0 test --locked --no-default-features --features headless --bin xenterm --jobs 2 ssh::ssh::forwarding_protocol_tests::forwarded_tcpip_confirms_and_splices_loopback -- --exact --test-threads=1 --nocapture > forwarding-mutation.log 2>&1
+          result=$?
+          set -e
+          cat forwarding-mutation.log
+          test "$result" = 101
+          grep -F 'forwarded channel must be confirmed' forwarding-mutation.log
+          grep -F 'test result: FAILED. 0 passed; 1 failed; 0 ignored;' forwarding-mutation.log
+          if grep -Ei 'timed out|cleanup failed|could not compile|error\[E[0-9]+\]' forwarding-mutation.log; then
+            echo 'Negative control failed outside the required protocol assertion' >&2
+            exit 1
+          fi
+          cp "$RUNNER_TEMP/ssh-before-mutation.rs" "$source"
+          test "$(sha256sum "$source" | cut -d ' ' -f 1)" = "$before"
+          git diff --exit-code -- "$source"
+          trap - EXIT
