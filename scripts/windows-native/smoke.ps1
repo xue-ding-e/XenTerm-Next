@@ -13,7 +13,7 @@ try {
     $gate=Get-Content -Raw -LiteralPath (Join-Path $PreflightDir 'preflight.json') | ConvertFrom-Json
     if ($gate.status -ne 'passed' -or ([DateTime]::UtcNow-[DateTime]::Parse($gate.finished_utc)).TotalMinutes -gt 3) { throw 'Immediate prelaunch desktop control is missing, failed, or stale' }
     $build=Get-Content -Raw -LiteralPath (Join-Path $BuildEvidenceDir 'build-metadata.json') | ConvertFrom-Json
-    if ($build.status -ne 'passed' -or $build.sha -ne $env:GITHUB_SHA -or $build.src_tree -ne 'c068475846a19b8289e1eead56ac50d2a0cdaa74') { throw 'No validated candidate build' }
+    if ($build.status -ne 'passed' -or $build.sha -ne $env:GITHUB_SHA -or $build.src_tree -ne 'a8f4de26c9c0b0782b5cce12e629133664ce5a5d') { throw 'No validated candidate build' }
     $exe=Join-Path $SourceDir 'target\x86_64-pc-windows-msvc\debug\xenterm.exe'
     $binaryHash=(Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($binaryHash -ne $build.binary_sha256) { throw 'Binary changed after build' }

@@ -3,9 +3,9 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'common.ps1')
 Set-Location -LiteralPath $SourceDir
-$report=[ordered]@{status='failed';sha=$null;src_tree=$null;reason=$null;product_source_sha='772da7651e0295c53d896ba04f90f0db078d8dc0';tested_baseline_sha='29349dd80e6f0ece9e50dbc832422a5fef053d6d'}
+$report=[ordered]@{status='failed';sha=$null;src_tree=$null;reason=$null;product_source_sha='88536f15dfb4fd18057631d450ae48d561f9b2bb';tested_baseline_sha='461fd85774ae8e98c0bcf6e788226c8d52c32b58'}
 $expectedObjects=[ordered]@{
-    'src'='c068475846a19b8289e1eead56ac50d2a0cdaa74'
+    'src'='a8f4de26c9c0b0782b5cce12e629133664ce5a5d'
     'Cargo.toml'='6646afc7299b2f533d9fdf4ea028f70866a2712f'
     'Cargo.lock'='b233737afbdb2126bb7be9bdb90360a5e961619a'
     'build.rs'='71fab7fb90ffab62e7111ef5b0d256976b6bd197'

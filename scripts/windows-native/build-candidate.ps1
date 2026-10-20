@@ -4,7 +4,7 @@ $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'common.ps1')
 Assert-HostedDisposableRunner
 New-Item -ItemType Directory -Force -Path $EvidenceDir | Out-Null
-$report=[ordered]@{stage='candidate_build';status='failed';expected_run_sha=$env:GITHUB_SHA;product_source_sha='772da7651e0295c53d896ba04f90f0db078d8dc0';expected_src_tree='c068475846a19b8289e1eead56ac50d2a0cdaa74';target='x86_64-pc-windows-msvc';features='default desktop + remote-mcp';profile='dev';reason=$null}
+$report=[ordered]@{stage='candidate_build';status='failed';expected_run_sha=$env:GITHUB_SHA;product_source_sha='88536f15dfb4fd18057631d450ae48d561f9b2bb';expected_src_tree='a8f4de26c9c0b0782b5cce12e629133664ce5a5d';target='x86_64-pc-windows-msvc';features='default desktop + remote-mcp';profile='dev';reason=$null}
 $process=$null
 try {
     $gate=Get-Content -Raw -LiteralPath (Join-Path $PreflightDir 'preflight.json') | ConvertFrom-Json

@@ -12,7 +12,7 @@ $sha=(& git -C $SourceDir rev-parse HEAD | Out-String).Trim()
 if ($LASTEXITCODE -ne 0 -or $sha -ne $env:GITHUB_SHA -or $build.sha -ne $sha -or $app.sha -ne $sha -or $build.status -ne 'passed' -or $app.cleanup_confirmed -ne $true -or $app.profile_cleanup -ne 'confirmed') { throw 'Build identity or owned-process/profile cleanup not proven' }
 $exe=Join-Path $SourceDir 'target\x86_64-pc-windows-msvc\debug\xenterm.exe'
 $hash=(Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
-if ($hash -ne $build.binary_sha256 -or $hash -ne $app.binary_sha256 -or $build.src_tree -ne 'c068475846a19b8289e1eead56ac50d2a0cdaa74') { throw 'Validation binary identity mismatch' }
+if ($hash -ne $build.binary_sha256 -or $hash -ne $app.binary_sha256 -or $build.src_tree -ne 'a8f4de26c9c0b0782b5cce12e629133664ce5a5d') { throw 'Validation binary identity mismatch' }
 if (Test-Path -LiteralPath $OutputDir) { throw 'Artifact staging directory must be new' }
 New-Item -ItemType Directory -Path $OutputDir | Out-Null
 Copy-Item -LiteralPath $exe -Destination (Join-Path $OutputDir 'xenterm.exe')
