@@ -1,9 +1,9 @@
 # Dot-sourced by smoke.ps1 only for an explicit opt-in, using the same owned app process.
-# Three reviewed navigation clicks, then Ctrl+K observation only; no Enter, data input or Escape.
+# Three reviewed navigation clicks, Ctrl+K, and one guarded Escape; no Enter, text or connection selection.
 function Invoke-LimitedInteractions([object]$OwnedProcess,[string]$OutputDir) {
     Add-Type -Path (Join-Path $PSScriptRoot 'LimitedInput.cs') -ReferencedAssemblies System.dll,System.Core.dll,System.Drawing.dll
     $result=[ordered]@{status='blocked';scope='visible_client_only_not_full_window';full_window_verified=$false;semantic_status='requires_visual_review';reason=$null;flows=@();steps=@();screenshots=@();input_cleanup='not_started'}
-    $layoutBounds=$null; $sessionsReference=$null; $settingsReference=$null; $reference=$null; $injector=$null; $handle=[IntPtr]::Zero; $frame=$null; $after=$null
+    $layoutBounds=$null; $paletteReference=$null; $sessionsReference=$null; $settingsReference=$null; $reference=$null; $injector=$null; $handle=[IntPtr]::Zero; $frame=$null; $after=$null
     $elapsed=[Diagnostics.Stopwatch]::StartNew()
     function Assert-Geometry($capture) {
         $o=$capture.OriginalBounds; $v=$capture.VisibleBounds
@@ -82,11 +82,12 @@ function Invoke-LimitedInteractions([object]$OwnedProcess,[string]$OutputDir) {
         return $measurement
     }
     function Assert-Overlay($capture) {
-        # Source pins width=420 and nominal centered top=88 (client=1100x720).
-        # Conservative geometry only, not OCR or proof of palette semantics.
-        $inside=[XenTermNativeProbe.LimitedPixels]::Light($capture.Image,[Drawing.Rectangle]::new(350,150,400,420))
-        $outside=[XenTermNativeProbe.LimitedPixels]::Light($capture.Image,[Drawing.Rectangle]::new(800,150,160,420))
-        if ($inside -lt 0.65 -or $outside -gt 0.35 -or ($inside-$outside) -lt 0.40) { throw 'Quick-connect overlay shape was not established; do not send Esc blindly' }
+        # Actual release palette reviewed from run39482084115. Do not infer a dark
+        # backdrop: this release uses a pale scrim. Exclude the blinking input caret
+        # and dynamic system-resource background. Keep the same strict match threshold.
+        foreach ($r in @([Drawing.Rectangle]::new(350,96,395,32),[Drawing.Rectangle]::new(392,135,320,28),[Drawing.Rectangle]::new(357,170,385,120),[Drawing.Rectangle]::new(357,300,385,230),[Drawing.Rectangle]::new(357,540,385,35),[Drawing.Rectangle]::new(800,100,180,150))) {
+            if ([XenTermNativeProbe.LimitedPixels]::Match($capture.Image,$paletteReference,$r) -lt 0.98) { throw 'Fresh page does not match reviewed empty quick-connect palette; no Escape' }
+        }
     }
     try {
         $referencePath=Join-Path $PSScriptRoot 'reviewed-release-home-77ce731.png'
@@ -95,6 +96,9 @@ function Invoke-LimitedInteractions([object]$OwnedProcess,[string]$OutputDir) {
         if ((Get-FileHash -LiteralPath $settingsPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne '1a536d736ad9fe4224ecd2643494469ef152bfc9a50c8993c83071a26fdb0eb8') { throw 'Reviewed release Settings reference changed' }
         $sessionsPath=Join-Path $PSScriptRoot 'reviewed-release-sessions-77ce731.png'
         if ((Get-FileHash -LiteralPath $sessionsPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'd7f99db30da9ac79d2a195a079c419fedd18efb9932201ae05c3835246201db4') { throw 'Reviewed release Sessions reference changed' }
+        $palettePath=Join-Path $PSScriptRoot 'reviewed-release-palette-77ce731.png'
+        if ((Get-FileHash -LiteralPath $palettePath -Algorithm SHA256).Hash.ToLowerInvariant() -ne '0c1813f7f9bad85daff5c60f8dbae57055224c2d9eebd012e6f3e060b48eeb63') { throw 'Reviewed release palette reference changed' }
+        $paletteReference=[Drawing.Bitmap]::new($palettePath)
         $sessionsReference=[Drawing.Bitmap]::new($sessionsPath)
         $settingsReference=[Drawing.Bitmap]::new($settingsPath)
         $reference=[Drawing.Bitmap]::new($referencePath)
@@ -204,26 +208,41 @@ function Invoke-LimitedInteractions([object]$OwnedProcess,[string]$OutputDir) {
         # Ctrl down, K down, K up, Ctrl up only. Never types text, Enter, or selects a connection.
         Assert-ActionFresh $frame; $injector.QuickConnect()
         Record-Phase 'after-ctrl-k' 20
-        $overlayObserved=$false
-        foreach ($sample in 0..4) {
+        $overlayStable=0
+        foreach ($sample in 0..7) {
             $frame.Dispose(); $frame=$null
             if ($sample -gt 0) { Start-Sleep -Milliseconds 250 }
             $frame=Read-FreshFrame ('10-quick-connect-'+$sample)
-            $shape=$false
-            try { Assert-Overlay $frame; $shape=$true; $overlayObserved=$true } catch { }
-            $result.steps+=@([ordered]@{name=('quick-connect-'+$sample);overlay_shape_observed=$shape})
+            $matched=$false
+            try { Assert-Overlay $frame; $matched=$true; $overlayStable++ } catch { $overlayStable=0 }
+            $result.steps+=@([ordered]@{name=('quick-connect-'+$sample);reviewed_empty_palette_matched=$matched})
             Write-Report $result (Join-Path $OutputDir 'interactions.json')
+            if ($overlayStable -ge 2) { break }
         }
-        # No Escape in this increment: shape alone is not a reviewed semantic overlay.
-        if (-not $overlayObserved) { throw 'Ctrl+K overlay shape not established; screenshots saved, no retry or Escape' }
+        if ($overlayStable -lt 2) { throw 'Two stable reviewed palette frames not established; no retry or Escape' }
+        # Only after the actual reviewed empty palette is stable and freshly owned.
+        Assert-Overlay $frame; Assert-ActionFresh $frame; $injector.Escape()
+        Record-Phase 'after-escape' 20
+        $restoredStable=0
+        foreach ($sample in 0..7) {
+            $frame.Dispose(); $frame=$null
+            if ($sample -gt 0) { Start-Sleep -Milliseconds 250 }
+            $frame=Read-FreshFrame ('11-escape-home-'+$sample)
+            $matched=$false
+            try { Assert-Home $frame; Assert-Nav $frame 20; $matched=$true; $restoredStable++ } catch { $restoredStable=0 }
+            $result.steps+=@([ordered]@{name=('escape-home-'+$sample);reviewed_home_restored=$matched})
+            Write-Report $result (Join-Path $OutputDir 'interactions.json')
+            if ($restoredStable -ge 2) { break }
+        }
+        if ($restoredStable -lt 2) { throw 'Escape did not restore two reviewed home frames; stop without retry' }
         $result.status='needs_visual_review'
-        $result.reason='Three navigation clicks and Ctrl+K only; inspect the actual palette. No text, Enter, connection selection, Escape or subsequent input.'
+        $result.reason='Three navigation clicks, Ctrl+K and one Escape only; inspect actual palette and restored home. No text, Enter, connection selection or subsequent input.'
 
     } catch { $result.reason=$_.Exception.Message }
     finally {
         if ($frame) { $frame.Dispose() }; if ($after) { $after.Dispose() }
         if ($injector) { $injector.Dispose(); $result.accepted_input_events=$injector.AcceptedEvents; $result.input_cleanup=$injector.CleanupConfirmed; if (-not $injector.CleanupConfirmed) { $result.status='blocked'; $result.reason=$injector.CleanupError } }
-        if ($reference) { $reference.Dispose() }; if ($settingsReference) { $settingsReference.Dispose() }; if ($sessionsReference) { $sessionsReference.Dispose() }
+        if ($reference) { $reference.Dispose() }; if ($settingsReference) { $settingsReference.Dispose() }; if ($sessionsReference) { $sessionsReference.Dispose() }; if ($paletteReference) { $paletteReference.Dispose() }
         $result.elapsed_seconds=[Math]::Round($elapsed.Elapsed.TotalSeconds,2)
         Write-Report $result (Join-Path $OutputDir 'interactions.json')
     }

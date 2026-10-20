@@ -1,4 +1,4 @@
-name: Published Windows release reviewed navigation and Ctrl+K (manual)
+name: Published Windows release reviewed navigation and palette cancellation (manual)
 # Isolated diagnostic only: never integrate this harness over product CI.
 on:
   workflow_dispatch:
@@ -47,7 +47,7 @@ jobs:
         run: |
           & ./scripts/windows-native/preflight.ps1 -EvidenceDir "$env:RUNNER_TEMP/native-evidence/prelaunch"
           exit $LASTEXITCODE
-      - name: Three guarded navigation clicks then Ctrl+K observation
+      - name: Reviewed navigation and guarded Ctrl+K Escape cancellation
         id: smoke
         if: steps.preflight.outputs.desktop_gate == 'passed'
         timeout-minutes: 2

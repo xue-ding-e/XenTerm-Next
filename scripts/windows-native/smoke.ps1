@@ -5,7 +5,7 @@ $ErrorActionPreference='Stop'
 Assert-HostedDisposableRunner
 New-Item -ItemType Directory -Force -Path $EvidenceDir | Out-Null
 $report=[ordered]@{stage='visible_application_startup';capture_scope='visible_client_intersection_only';full_window_verified=$false;status='blocked';startup='not_run';map='not_run';render='not_run';interaction='not_run';reason=$null;screenshots=@()}
-$report.accepted_input_events=0; $report.input_policy='three reviewed navigation clicks then Ctrl+K only; thirteen events maximum; no text/Enter/Escape or retry'
+$report.accepted_input_events=0; $report.input_policy='three reviewed navigation clicks, Ctrl+K and guarded Escape; fifteen events maximum; no text/Enter/selection or retry'
 $report.stderr_capture='child stderr only; retain first 65536 bytes while draining; stdin/stdout NUL'
 $process=$null; $oldDpi=[IntPtr]::Zero
 # Keep the synthetic profile outside uploaded evidence. Never inspect its key/database.
