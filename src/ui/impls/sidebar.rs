@@ -350,8 +350,13 @@ impl SidebarView {
     /// workspace out. The save itself is the caller's — a drag calls this on
     /// every move and saves once, on release.
     pub(crate) fn set_width(&mut self, width: f32, cx: &mut Context<Self>) {
+        // An explicit resize supersedes an in-flight expansion, including a
+        // same-width grab. Its old target must not overwrite the new width.
+        self.anim = None;
         let clamped = width.clamp(MIN_WIDTH, MAX_WIDTH);
-        if (self.shown_width - clamped).abs() < 0.5 {
+        if (self.shown_width - clamped).abs() < 0.5
+            && (self.width - clamped).abs() < 0.5
+        {
             return;
         }
         self.store.borrow_mut().set_sidebar_width(clamped);

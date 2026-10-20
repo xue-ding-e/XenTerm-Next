@@ -1516,7 +1516,7 @@ impl TerminalPage {
             .overflow_hidden()
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, event: &MouseDownEvent, _, _| {
+                cx.listener(|this, event: &MouseDownEvent, _, cx| {
                     let (x, y) = (
                         f32::from(event.position.x),
                         f32::from(event.position.y),
@@ -1527,6 +1527,7 @@ impl TerminalPage {
                     let (left, right) = this.sidebar_edge.get();
                     if right > left
                         && this.sidebar_width > 40.0
+                        && !this.sidebar.read(cx).is_collapsed()
                         && x >= right - RESIZE_BAND
                         && x <= right + RESIZE_BAND
                     {
@@ -1549,6 +1550,17 @@ impl TerminalPage {
                 }),
             )
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                if event.pressed_button != Some(MouseButton::Left) {
+                    // A release outside this window may not deliver MouseUp.
+                    // Finish either resize before an ordinary hover can move it.
+                    let sidebar_drag = this.sidebar_drag.take().is_some();
+                    let dock_drag = this.dock_drag.take().is_some();
+                    if sidebar_drag || dock_drag {
+                        let _ = this.state.store.borrow_mut().save();
+                        cx.notify();
+                    }
+                    return;
+                }
                 if let Some((start_x, start_width)) = this.sidebar_drag {
                     let width = start_width + (f32::from(event.position.x) - start_x);
                     this.sidebar.update(cx, |sidebar, cx| sidebar.set_width(width, cx));
@@ -2065,6 +2077,43 @@ mod dock_tests {
             "a session with no SFTP channel shows no file dock"
         );
         assert!(!view.read_with(cx, |page, _| page.sftp_available()));
+    }
+
+    #[gpui_kit::gpui::test]
+    fn file_panel_bottom_resize_stops_after_a_lost_mouse_release(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let (state, _receiver) = fixture_state(false, false);
+        let (view, cx) = cx.add_window_view(move |window, cx| {
+            let width = Rc::new(Cell::new(f32::from(window.viewport_size().width)));
+            let mut page = TerminalPage::new(state, width, window, cx);
+            let tab = TerminalPage::open_tab(&page.state, "fixture", "fixture", "Fixture", page.appearance.clone(), cx);
+            PENDING_SINKS.with(|sinks| sinks.borrow_mut().remove("fixture"));
+            page.tabs.push(tab);
+            page.active_tab = Some("fixture".into());
+            page.panes = crate::layout::Layout::new(vec!["fixture".into()], "fixture".into());
+            page
+        });
+        for _ in 0..3 {
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            });
+        }
+        let (top, height) = view.read_with(cx, |page, _| (page.dock_edge.get(), page.strip_height()));
+        assert!(top > 0., "bottom SFTP dock is rendered");
+        let edge = gpui_kit::point(px(200.), px(top));
+        cx.simulate_mouse_down(edge, MouseButton::Left, Default::default());
+        view.read_with(cx, |page, _| assert!(page.dock_drag.is_some(), "actual bottom resize edge receives pointer"));
+        cx.simulate_mouse_move(gpui_kit::point(edge.x, edge.y - px(40.)), MouseButton::Left, Default::default());
+        let resized = (height + 40.).clamp(DOCK_MIN_HEIGHT, DOCK_MAX_HEIGHT);
+        view.read_with(cx, |page, _| assert_eq!(page.strip_height(), resized));
+        // Missing MouseUp followed by a buttonless move must preserve the last
+        // valid drag extent, not interpret ordinary hovering as another resize.
+        cx.simulate_mouse_move(gpui_kit::point(edge.x, edge.y - px(100.)), None, Default::default());
+        view.read_with(cx, |page, _| {
+            assert_eq!(page.strip_height(), resized, "dock hover after lost release must not resize");
+            assert!(page.dock_drag.is_none(), "lost release clears dock resize state");
+        });
     }
 
     #[gpui_kit::gpui::test]
