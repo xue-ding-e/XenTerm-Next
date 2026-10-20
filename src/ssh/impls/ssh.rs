@@ -3327,6 +3327,11 @@ impl Handler for ClientHandler {
         let target = self.remote_forwards.get(&connected_port).cloned();
         let events = self.events.clone();
         let bind = connected_address.to_string();
+        // Unmapped channels create no local connection and must not consume a slot.
+        let Some((host, port)) = target else {
+            tracing::warn!("forwarded-tcpip on {bind}:{connected_port} with no mapping");
+            return Ok(());
+        };
         // Cap the connections spawned per forwarded port: a server can open
         // channels as fast as it likes, and each one dials the local target —
         // unbounded, that is a local connection flood / handle exhaustion
@@ -3346,10 +3351,6 @@ impl Handler for ClientHandler {
         counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let counter = counter.clone();
         tokio::spawn(async move {
-            let Some((host, port)) = target else {
-                tracing::warn!("forwarded-tcpip on {bind}:{connected_port} with no mapping");
-                return;
-            };
             match tokio::net::TcpStream::connect((host.as_str(), port)).await {
                 Ok(mut tcp) => {
                     let mut stream = channel.into_stream();
@@ -4002,5 +4003,264 @@ mod mfa_tests {
         ] {
             assert!(looks_like_mfa(p), "missed an MFA prompt: {p:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod unmapped_forwarding_tests {
+    use super::*;
+    use russh::keys::ssh_key::private::Ed25519Keypair;
+    use russh::server;
+    use std::future::Future;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    const FORWARDED_PORT: u32 = 40_000;
+    const STAGE_TIMEOUT: Duration = Duration::from_secs(5);
+
+    async fn bounded<F: Future>(stage: &str, future: F) -> Result<F::Output> {
+        tokio::time::timeout(STAGE_TIMEOUT, future)
+            .await
+            .with_context(|| format!("forwarding fixture timed out: {stage}"))
+    }
+
+    fn finish_result(body: Result<()>, cleanup: Result<()>) -> Result<()> {
+        match (body, cleanup) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(error), Ok(())) => Err(error),
+            (Ok(()), Err(error)) => Err(error.context("forwarding fixture cleanup failed")),
+            (Err(body), Err(cleanup)) => Err(anyhow!(
+                "{body:#}; forwarding fixture cleanup failed: {cleanup:#}"
+            )),
+        }
+    }
+
+    struct TestServer;
+
+    impl server::Handler for TestServer {
+        type Error = russh::Error;
+
+        async fn auth_none(&mut self, _user: &str) -> Result<server::Auth, Self::Error> {
+            Ok(server::Auth::Accept)
+        }
+    }
+
+    // Only bypass the application trust store, pinning this fixture's public key.
+    // Forwarding itself must run through the production handler unchanged.
+    struct ForwardingClient {
+        inner: ClientHandler,
+        expected_key: PublicKey,
+        callback_done: UnboundedSender<(usize, Option<usize>)>,
+        disconnect_seen: UnboundedSender<()>,
+    }
+
+    impl Handler for ForwardingClient {
+        type Error = russh::Error;
+
+        async fn disconnected(
+            &mut self,
+            reason: client::DisconnectReason<Self::Error>,
+        ) -> Result<(), Self::Error> {
+            match reason {
+                client::DisconnectReason::ReceivedDisconnect(info)
+                    if matches!(info.reason_code, Disconnect::ByApplication)
+                        && info.message == "fixture finished"
+                        && info.lang_tag.is_empty() =>
+                {
+                    let _ = self.disconnect_seen.send(());
+                    Ok(())
+                }
+                client::DisconnectReason::Error(error) => Err(error),
+                client::DisconnectReason::ReceivedDisconnect(_) => Err(russh::Error::Disconnect),
+            }
+        }
+
+        async fn check_server_key(
+            &mut self,
+            presented: &PublicKey,
+        ) -> Result<bool, Self::Error> {
+            // Binary SSH packets omit the local key comment; pin cryptographic
+            // key data rather than the comment-bearing PublicKey wrapper.
+            Ok(presented.key_data() == self.expected_key.key_data())
+        }
+
+        async fn server_channel_open_forwarded_tcpip(
+            &mut self,
+            channel: Channel<Msg>,
+            connected_address: &str,
+            connected_port: u32,
+            originator_address: &str,
+            originator_port: u32,
+            session: &mut client::Session,
+        ) -> Result<(), Self::Error> {
+            let result = Handler::server_channel_open_forwarded_tcpip(
+                &mut self.inner,
+                channel,
+                connected_address,
+                connected_port,
+                originator_address,
+                originator_port,
+                session,
+            )
+            .await;
+            let count = self
+                .inner
+                .forwarded_open
+                .get(&connected_port)
+                .map(|counter| counter.load(Ordering::Relaxed));
+            let _ = self
+                .callback_done
+                .send((self.inner.forwarded_open.len(), count));
+            result
+        }
+    }
+
+    struct Fixture {
+        client: Handle<ForwardingClient>,
+        server: server::RunningSession<TestServer>,
+        callback_done: UnboundedReceiver<(usize, Option<usize>)>,
+        disconnect_seen: UnboundedReceiver<()>,
+    }
+
+    impl Fixture {
+        async fn new(initial_count: Option<usize>) -> Result<Self> {
+            // Public, deterministic test seed, never read from credential storage.
+            let key = PrivateKey::new(
+                Ed25519Keypair::from_seed(&[7; 32]).into(),
+                "forwarding fixture",
+            )?;
+            let expected_key = key.public_key().clone();
+            let server_config = server::Config {
+                keys: vec![key],
+                ..Default::default()
+            };
+            let (events, _event_rx) = mpsc::unbounded_channel();
+            let (callback_done, callback_rx) = mpsc::unbounded_channel();
+            let (disconnect_seen, disconnect_rx) = mpsc::unbounded_channel();
+            let forwarded_open = initial_count
+                .into_iter()
+                .map(|count| (FORWARDED_PORT, Arc::new(AtomicUsize::new(count))))
+                .collect();
+            let handler = ForwardingClient {
+                expected_key,
+                callback_done,
+                disconnect_seen,
+                inner: ClientHandler {
+                    host_key_wait: HostKeyWait::default(),
+                    host: "forwarding-test.invalid".into(),
+                    port: 22,
+                    remote_forwards: Default::default(),
+                    events,
+                    forwarded_open,
+                },
+            };
+            let (client_stream, server_stream) = tokio::io::duplex(65_536);
+            // Both sides must progress together during SSH identification/KEX.
+            let (server, client) = bounded("SSH setup", async {
+                tokio::try_join!(
+                    server::run_stream(Arc::new(server_config), server_stream, TestServer),
+                    client::connect_stream(Arc::new(client::Config::default()), client_stream, handler),
+                )
+            })
+            .await??;
+            Ok(Self {
+                client,
+                server,
+                callback_done: callback_rx,
+                disconnect_seen: disconnect_rx,
+            })
+        }
+
+        async fn open(&mut self) -> Result<(Channel<server::Msg>, (usize, Option<usize>))> {
+            let auth = bounded("authentication", self.client.authenticate_none("forwarding-test"))
+                .await??;
+            anyhow::ensure!(
+                matches!(auth, client::AuthResult::Success),
+                "test authentication failed"
+            );
+            let server = self.server.handle();
+            let channel = bounded(
+                "server channel confirmation (russh 0.61)",
+                server.channel_open_forwarded_tcpip("127.0.0.1", FORWARDED_PORT, "127.0.0.1", 40_001),
+            )
+            .await?
+            .context("forwarded channel must be confirmed")?;
+            let snapshot = bounded("production callback completion", self.callback_done.recv())
+                .await?
+                .context("callback notification closed")?;
+            Ok((channel, snapshot))
+        }
+
+        async fn shutdown(mut self) -> Result<()> {
+            // Do not detach a test JoinHandle: this fixture does not spawn any.
+            // russh/production internal tasks have no exposed abort handles. Each
+            // test owns its runtime, containing those tasks even on setup failure.
+            // russh 0.61 reports a locally initiated client disconnect as an
+            // error. Use the protocol's server-initiated graceful close instead;
+            // require its exact peer-observed reason, not a blanket Err allowance.
+            let server_handle = self.server.handle();
+            let disconnect = bounded(
+                "server disconnect enqueue",
+                server_handle.disconnect(
+                    Disconnect::ByApplication, "fixture finished".into(), "".into()
+                ),
+            )
+            .await;
+            let (server_finished, client_finished) = tokio::join!(
+                bounded("server shutdown", &mut self.server),
+                bounded("client shutdown", &mut self.client),
+            );
+            // Enqueue/transport errors are not silently interpreted as cleanup success.
+            let disconnect = disconnect
+                .and_then(|result| result.map_err(Into::into))
+                .context("server disconnect enqueue");
+            let server_finished = server_finished
+                .and_then(|result| result.map_err(Into::into))
+                .context("server task completion");
+            let client_finished = client_finished
+                .and_then(|result| result.map_err(Into::into))
+                .context("client task completion");
+            let observed = bounded("peer disconnect observation", self.disconnect_seen.recv())
+                .await
+                .and_then(|message| message.context("expected disconnect was not observed"));
+            finish_result(
+                disconnect,
+                finish_result(server_finished, finish_result(client_finished, observed))
+            )
+        }
+    }
+
+    async fn unmapped_count_stays(initial_count: Option<usize>) -> Result<()> {
+        let mut fixture = Fixture::new(initial_count).await?;
+        let result: Result<()> = async {
+            let (channel, snapshot) = fixture.open().await?;
+            // Snapshot is taken only after the real production callback returns.
+            // No mapping means no local connection: neither a new entry nor an
+            // increment of an existing count is valid.
+            let expected_entries = usize::from(initial_count.is_some());
+            anyhow::ensure!(snapshot == (expected_entries, initial_count),
+                "unmapped forwarding changed accounting: expected {:?}, observed {:?}",
+                (expected_entries, initial_count), snapshot);
+            bounded("unmapped channel close", channel.close()).await??;
+            Ok(())
+        }
+        .await;
+        let cleanup = fixture.shutdown().await;
+        finish_result(result, cleanup)
+    }
+
+    #[tokio::test]
+    async fn unmapped_channel_does_not_create_counter() -> Result<()> {
+        tokio::time::timeout(Duration::from_secs(45), unmapped_count_stays(None)).await?
+    }
+
+    #[tokio::test]
+    async fn unmapped_channel_preserves_zero_counter() -> Result<()> {
+        tokio::time::timeout(Duration::from_secs(45), unmapped_count_stays(Some(0))).await?
+    }
+
+    #[tokio::test]
+    async fn unmapped_channel_preserves_existing_counter() -> Result<()> {
+        tokio::time::timeout(Duration::from_secs(45), unmapped_count_stays(Some(7))).await?
     }
 }
