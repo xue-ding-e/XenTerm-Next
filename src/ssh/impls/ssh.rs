@@ -4266,9 +4266,10 @@ mod forwarding_protocol_tests {
         let mut fixture = Fixture::new(None, 0).await?;
         let result: Result<()> = async {
             let channel = fixture.open().await?;
-            // Legacy characterization only: no mapping returns before decrement.
-            // Fixing this existing count leak is outside the russh API adaptation.
-            anyhow::ensure!(fixture.counter.load(Ordering::Relaxed) == 1, "legacy no-mapping count");
+            // An unmapped channel creates no local connection and must not
+            // consume a forwarded-connection slot after the callback returns.
+            anyhow::ensure!(fixture.counter.load(Ordering::Relaxed) == 0,
+                "unmapped forwarding must not consume a connection slot");
             bounded("unmapped channel close", channel.close()).await??;
             Ok(())
         }
