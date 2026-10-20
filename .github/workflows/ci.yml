@@ -1,64 +1,114 @@
-name: Validate interrupted UI flows (isolated)
-# Topic-only validation: never integrate this replacement over product CI.
+name: Windows native desktop preflight (manual)
+# DRAFT ONLY. Copy alongside reviewed scripts only after authorization.
+# No push, pull_request, schedule, workflow_run, release, or deployment trigger.
 on:
   workflow_dispatch:
+    inputs:
+      build_candidate:
+        description: 'After native desktop control passes, build exact candidate and capture startup (not interaction QA)'
+        required: true
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
-  group: xenterm-sidebar-resize-validation
+  group: windows-native-preflight-${{ github.ref }}
   cancel-in-progress: false
 jobs:
-  regression:
+  native-desktop:
     if: github.repository == 'xue-ding-e/XenTerm-Next' && github.ref == 'refs/heads/test/sidebar-resize-gap-20261020' && github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-22.04
-    timeout-minutes: 60
-    env:
-      CARGO_BUILD_JOBS: '2'
-      FILTER: ui::pages::terminal_page::sidebar_resize_tests
-      DOCK: ui::pages::terminal_page::dock_tests::file_panel_bottom_resize_stops_after_a_lost_mouse_release
-      LOST: ui::pages::terminal_page::sidebar_resize_tests::sidebar_release_outside_window_does_not_leave_hover_resizing
-      ANIMATION: ui::pages::terminal_page::sidebar_resize_tests::sidebar_resize_during_expand_keeps_the_new_width_after_animation
+    runs-on: windows-latest
+    timeout-minutes: 50
+    defaults:
+      run:
+        # Deliberately no ExecutionPolicy Bypass. If existing policy refuses the
+        # reviewed script, report blocked; do not weaken that policy.
+        shell: powershell -NoLogo -NoProfile -NonInteractive -STA -File {0}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # existing repository pin
         with:
+          ref: ${{ github.sha }}
+          path: harness
           persist-credentials: false
-      - name: Isolate GUI state
-        shell: bash
+      - name: Parse every probe script before native execution
+        timeout-minutes: 1
         run: |
-          echo "XDG_CONFIG_HOME=$RUNNER_TEMP/sidebar-config" >> "$GITHUB_ENV"
-          echo "XDG_DATA_HOME=$RUNNER_TEMP/sidebar-data" >> "$GITHUB_ENV"
-          echo "XDG_RUNTIME_DIR=$RUNNER_TEMP/sidebar-runtime" >> "$GITHUB_ENV"
-      - name: Install desktop development libraries
+          $ErrorActionPreference = 'Stop'
+          foreach ($file in Get-ChildItem ./harness/scripts/windows-native/*.ps1) {
+            $tokens = $null; $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$errors)
+            if ($errors.Count) { throw ($file.Name + ': ' + (($errors | ForEach-Object Message) -join '; ')) }
+          }
+      - name: Native session and visible WinForms control (no product build)
+        id: preflight
+        continue-on-error: true
+        timeout-minutes: 2
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential pkg-config cmake libfontconfig1-dev libfreetype6-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libgl1-mesa-dev libegl1-mesa-dev libgtk-3-dev libudev-dev xvfb xauth x11-utils x11-apps mesa-vulkan-drivers libgl1-mesa-dri imagemagick openbox
-      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249
+          & ./harness/scripts/windows-native/preflight.ps1 -EvidenceDir "$env:RUNNER_TEMP/native-evidence/initial"
+          exit $LASTEXITCODE
+      - name: Checkout exact candidate only after native preflight
+        if: steps.preflight.outputs.desktop_gate == 'passed' && inputs.build_candidate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # existing repository pin
+        with:
+          ref: ${{ github.sha }}
+          path: candidate
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # existing stable pin
+        if: steps.preflight.outputs.desktop_gate == 'passed' && inputs.build_candidate
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # existing v1.13.0 pin
+        if: steps.preflight.outputs.desktop_gate == 'passed' && inputs.build_candidate
+        with:
+          arch: x64
       - uses: Swatinem/rust-cache@v2
+        if: steps.preflight.outputs.desktop_gate == 'passed' && inputs.build_candidate
         with:
-          key: desktop-check-x86_64-unknown-linux-gnu
-          cache-on-failure: true
-      - name: Diagnose native window mapping and rendered pixels
-        shell: bash
+          key: desktop-check-x86_64-pc-windows-msvc
+          workspaces: candidate -> target
+          save-if: false
+      - name: Build exact candidate with bounded process job
+        id: build
+        if: steps.preflight.outputs.desktop_gate == 'passed' && inputs.build_candidate
+        continue-on-error: true
+        timeout-minutes: 42
         run: |
-          set -euo pipefail
-          timeout 1800 cargo build --locked --target x86_64-unknown-linux-gnu --bin xenterm --jobs 2
-          python3 .github/scripts/gpui-window-source.py > native-gpui-window-source.txt
-          bash .github/scripts/native-smoke.sh
-      - name: Preserve regression evidence
+          & ./harness/scripts/windows-native/build-candidate.ps1 -SourceDir "$env:GITHUB_WORKSPACE/candidate" -EvidenceDir "$env:RUNNER_TEMP/native-evidence/build" -PreflightDir "$env:RUNNER_TEMP/native-evidence/initial"
+          exit $LASTEXITCODE
+      - name: Reverify visible control immediately before product launch
+        id: recheck
+        if: steps.build.outputs.build_gate == 'passed'
+        continue-on-error: true
+        timeout-minutes: 2
+        run: |
+          & ./harness/scripts/windows-native/preflight.ps1 -EvidenceDir "$env:RUNNER_TEMP/native-evidence/prelaunch"
+          exit $LASTEXITCODE
+      - name: Empty profile startup and on-screen client capture (no synthetic input)
+        id: smoke
+        if: steps.recheck.outputs.desktop_gate == 'passed'
+        continue-on-error: true
+        timeout-minutes: 2
+        run: |
+          & ./harness/scripts/windows-native/smoke.ps1 -SourceDir "$env:GITHUB_WORKSPACE/candidate" -EvidenceDir "$env:RUNNER_TEMP/native-evidence/app" -BuildEvidenceDir "$env:RUNNER_TEMP/native-evidence/build" -PreflightDir "$env:RUNNER_TEMP/native-evidence/prelaunch"
+          exit $LASTEXITCODE
+      - name: Upload only bounded probe evidence (never the synthetic profile)
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # existing v4 pin
         with:
-          name: interrupted-flow-red-green-evidence
-          path: |
-            native-*.txt
-            native-*.log
-            native-*.png
-            flow-*.txt
-            flow-*.json
-            flow-*.log
-            sidebar*.log
-            sidebar*.exit
-            dock*.log
-            dock*.exit
+          name: windows-native-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/native-evidence/
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: 7
+      - name: Summarize exact stage outcome
+        if: always()
+        env:
+          PREFLIGHT_GATE: ${{ steps.preflight.outputs.desktop_gate }}
+          BUILD_REQUESTED: ${{ inputs.build_candidate }}
+          BUILD_GATE: ${{ steps.build.outputs.build_gate }}
+          RECHECK_GATE: ${{ steps.recheck.outputs.desktop_gate }}
+          SMOKE_GATE: ${{ steps.smoke.outputs.smoke_gate }}
+        run: |
+          "Windows native probe: preflight=$env:PREFLIGHT_GATE; build_requested=$env:BUILD_REQUESTED; build=$env:BUILD_GATE; prelaunch=$env:RECHECK_GATE; capture=$env:SMOKE_GATE" | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+          'No native mouse/keyboard interaction was tested. needs_visual_review is not a Windows rendering pass.' | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+          if ($env:PREFLIGHT_GATE -ne 'passed') { throw 'BLOCKED: runner did not prove an interactive visible desktop; candidate not built.' }
+          if ($env:BUILD_REQUESTED -eq 'true' -and ($env:BUILD_GATE -ne 'passed' -or $env:RECHECK_GATE -ne 'passed' -or $env:SMOKE_GATE -ne 'needs_visual_review')) { throw 'Windows candidate probe incomplete; inspect per-stage evidence.' }
