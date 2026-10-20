@@ -42,7 +42,7 @@ jobs:
           chmod 700 "$XDG_RUNTIME_DIR"
           rustc -Vv
           git rev-parse HEAD
-          timeout 2400 cargo test --locked --target x86_64-unknown-linux-gnu --bin xenterm --jobs 2 "$TEST" -- --list --exact | tee sidebar-tests.txt
+          timeout 2400 cargo test --locked --target x86_64-unknown-linux-gnu --bin xenterm --jobs 2 "$TEST" -- --list --exact 2>&1 | tee sidebar-tests.txt
           grep -Fx "$TEST: test" sidebar-tests.txt
       - name: Require baseline failure at resized content assertion
         shell: bash
@@ -67,6 +67,18 @@ jobs:
           p.write_text(text.replace(old, old.replace('        self.shown_width', '        self.width = clamped;\n        self.shown_width')))
           PY
           git diff -- src/ui/impls/sidebar.rs
-          timeout 600 cargo test --locked --target x86_64-unknown-linux-gnu --bin xenterm --jobs 2 "$TEST" -- --exact --test-threads=1 --nocapture | tee sidebar-green.log
+          timeout 600 cargo test --locked --target x86_64-unknown-linux-gnu --bin xenterm --jobs 2 "$TEST" -- --exact --test-threads=1 --nocapture 2>&1 | tee sidebar-green.log
           grep -F '1 passed; 0 failed;' sidebar-green.log
-          timeout 120 cargo test --locked --target x86_64-unknown-linux-gnu --bin xenterm --jobs 2 ui::sidebar::resource_tests -- --test-threads=1
+          timeout 120 cargo test --locked --target x86_64-unknown-linux-gnu --bin xenterm --jobs 2 ui::sidebar::resource_tests -- --test-threads=1 2>&1 | tee sidebar-resources.log
+      - name: Preserve regression evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: sidebar-resize-evidence
+          path: |
+            sidebar-tests.txt
+            sidebar-red.log
+            sidebar-green.log
+            sidebar-resources.log
+          if-no-files-found: warn
+          retention-days: 14
