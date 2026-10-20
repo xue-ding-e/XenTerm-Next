@@ -4019,3 +4019,276 @@ mod host_certificate_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod forwarding_protocol_tests {
+    use super::*;
+    use russh::keys::ssh_key::private::Ed25519Keypair;
+    use russh::server;
+    use std::future::Future;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    const FORWARDED_PORT: u32 = 40_000;
+    const STAGE_TIMEOUT: Duration = Duration::from_secs(5);
+
+    async fn bounded<F: Future>(stage: &str, future: F) -> Result<F::Output> {
+        tokio::time::timeout(STAGE_TIMEOUT, future)
+            .await
+            .with_context(|| format!("forwarding fixture timed out: {stage}"))
+    }
+
+    fn finish_result(body: Result<()>, cleanup: Result<()>) -> Result<()> {
+        match (body, cleanup) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(error), Ok(())) => Err(error),
+            (Ok(()), Err(error)) => Err(error.context("forwarding fixture cleanup failed")),
+            (Err(body), Err(cleanup)) => Err(anyhow!(
+                "{body:#}; forwarding fixture cleanup failed: {cleanup:#}"
+            )),
+        }
+    }
+
+    struct TestServer;
+
+    impl server::Handler for TestServer {
+        type Error = russh::Error;
+
+        async fn auth_none(&mut self, _user: &str) -> Result<server::Auth, Self::Error> {
+            Ok(server::Auth::Accept)
+        }
+    }
+
+    // Only bypass the application trust store, pinning this fixture's public key.
+    // Forwarding itself must run through the production handler unchanged.
+    struct ForwardingClient {
+        inner: ClientHandler,
+        expected_key: PublicKey,
+        callback_done: UnboundedSender<()>,
+    }
+
+    impl Handler for ForwardingClient {
+        type Error = russh::Error;
+
+        async fn check_server_key(
+            &mut self,
+            presented: &PublicKeyOrCertificate,
+        ) -> Result<bool, Self::Error> {
+            Ok(matches!(presented,
+                PublicKeyOrCertificate::PublicKey { key, .. } if key == &self.expected_key))
+        }
+
+        async fn server_channel_open_forwarded_tcpip(
+            &mut self,
+            channel: Channel<Msg>,
+            connected_address: &str,
+            connected_port: u32,
+            originator_address: &str,
+            originator_port: u32,
+            reply: client::ChannelOpenHandle,
+            session: &mut client::Session,
+        ) -> Result<(), Self::Error> {
+            let result = Handler::server_channel_open_forwarded_tcpip(
+                &mut self.inner,
+                channel,
+                connected_address,
+                connected_port,
+                originator_address,
+                originator_port,
+                reply,
+                session,
+            )
+            .await;
+            let _ = self.callback_done.send(());
+            result
+        }
+    }
+
+    struct Fixture {
+        client: Handle<ForwardingClient>,
+        server: server::RunningSession<TestServer>,
+        events: UnboundedReceiver<SessionEvent>,
+        callback_done: UnboundedReceiver<()>,
+        counter: Arc<AtomicUsize>,
+    }
+
+    impl Fixture {
+        async fn new(target: Option<u16>, initial_count: usize) -> Result<Self> {
+            // Public, deterministic test seed, never read from credential storage.
+            let key = PrivateKey::new(
+                Ed25519Keypair::from_seed(&[7; 32]).into(),
+                "forwarding fixture",
+            )?;
+            let expected_key = key.public_key().clone();
+            let server_config = server::Config {
+                keys: vec![key],
+                ..Default::default()
+            };
+            let (events, event_rx) = mpsc::unbounded_channel();
+            let (callback_done, callback_rx) = mpsc::unbounded_channel();
+            let counter = Arc::new(AtomicUsize::new(initial_count));
+            let mut remote_forwards = std::collections::HashMap::new();
+            if let Some(port) = target {
+                remote_forwards.insert(FORWARDED_PORT, ("127.0.0.1".into(), port));
+            }
+            let handler = ForwardingClient {
+                expected_key,
+                callback_done,
+                inner: ClientHandler {
+                    host_key_wait: HostKeyWait::default(),
+                    host: "forwarding-test.invalid".into(),
+                    port: 22,
+                    remote_forwards,
+                    events,
+                    forwarded_open: [(FORWARDED_PORT, counter.clone())].into_iter().collect(),
+                },
+            };
+            let (client_stream, server_stream) = tokio::io::duplex(65_536);
+            // Both sides must progress together during SSH identification/KEX.
+            let (server, client) = bounded("SSH setup", async {
+                tokio::try_join!(
+                    server::run_stream(Arc::new(server_config), server_stream, TestServer),
+                    client::connect_stream(Arc::new(client::Config::default()), client_stream, handler),
+                )
+            })
+            .await??;
+            Ok(Self {
+                client,
+                server,
+                events: event_rx,
+                callback_done: callback_rx,
+                counter,
+            })
+        }
+
+        async fn open(&mut self) -> Result<Channel<server::Msg>> {
+            let auth = bounded("authentication", self.client.authenticate_none("forwarding-test"))
+                .await??;
+            anyhow::ensure!(matches!(auth, client::AuthResult::Success), "test authentication failed");
+            let server = self.server.handle();
+            let channel = bounded(
+                "server channel confirmation (requires reply.accept)",
+                server.channel_open_forwarded_tcpip("127.0.0.1", FORWARDED_PORT, "127.0.0.1", 40_001),
+            )
+            .await?
+            .context("forwarded channel must be confirmed")?;
+            bounded("production callback completion", self.callback_done.recv())
+                .await?
+                .context("callback notification closed")?;
+            Ok(channel)
+        }
+
+        async fn counter_is(&self, expected: usize) -> Result<()> {
+            bounded("forwarded counter convergence", async {
+                while self.counter.load(Ordering::Relaxed) != expected {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .with_context(|| format!("counter expected {expected}, observed {}", self.counter.load(Ordering::Relaxed)))
+        }
+
+        async fn shutdown(mut self) -> Result<()> {
+            // Do not detach a test JoinHandle: this fixture does not spawn any.
+            // russh/production internal tasks have no exposed abort handles. Each
+            // test owns its runtime, containing those tasks even on setup failure.
+            let disconnect = bounded(
+                "disconnect enqueue",
+                self.client.disconnect(Disconnect::ByApplication, "fixture finished", ""),
+            )
+            .await;
+            let finished = bounded("server shutdown", &mut self.server).await;
+            // Enqueue/transport errors are not silently interpreted as cleanup success.
+            disconnect??;
+            finished??;
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn forwarded_tcpip_confirms_and_splices_loopback() -> Result<()> {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+        let mut fixture = Fixture::new(Some(listener.local_addr()?.port()), 0).await?;
+        let result: Result<()> = async {
+            let channel = fixture.open().await?;
+            let (mut target, _) = bounded("local target accept", listener.accept()).await??;
+            anyhow::ensure!(fixture.counter.load(Ordering::Relaxed) == 1, "splice must be counted");
+            let mut remote = channel.into_stream();
+            bounded("forward payload", remote.write_all(b"from server")).await??;
+            let mut received = [0; 11];
+            bounded("target read", target.read_exact(&mut received)).await??;
+            anyhow::ensure!(&received == b"from server", "forward payload changed");
+            bounded("reverse payload", target.write_all(b"from target")).await??;
+            bounded("remote read", remote.read_exact(&mut received)).await??;
+            anyhow::ensure!(&received == b"from target", "reverse payload changed");
+            bounded("remote EOF", remote.shutdown()).await??;
+            bounded("target EOF", target.shutdown()).await??;
+            fixture.counter_is(0).await?;
+            Ok(())
+        }
+        .await;
+        let cleanup = fixture.shutdown().await;
+        finish_result(result, cleanup)
+    }
+
+    #[tokio::test]
+    async fn forwarded_tcpip_confirms_before_local_connect_failure() -> Result<()> {
+        let reservation = TcpListener::bind(("127.0.0.1", 0)).await?;
+        let port = reservation.local_addr()?.port();
+        let mut fixture = Fixture::new(Some(port), 0).await?;
+        // Small bind/drop/reconnect race: an unexpected reuse fails this test;
+        // it must not be mistaken for evidence of the failure branch.
+        drop(reservation);
+        let result: Result<()> = async {
+            let channel = fixture.open().await?;
+            let event = bounded("local connect failure output", fixture.events.recv())
+                .await?
+                .context("events closed before local connect failure")?;
+            anyhow::ensure!(matches!(event, SessionEvent::Output(ref text)
+                if text.contains("connect failed") && text.contains(&format!("127.0.0.1:{port}"))),
+                "expected target-specific connect failure output");
+            fixture.counter_is(0).await?;
+            bounded("failed target channel close", channel.close()).await??;
+            Ok(())
+        }
+        .await;
+        let cleanup = fixture.shutdown().await;
+        finish_result(result, cleanup)
+    }
+
+    #[tokio::test]
+    async fn forwarded_tcpip_confirms_without_mapping() -> Result<()> {
+        let mut fixture = Fixture::new(None, 0).await?;
+        let result: Result<()> = async {
+            let channel = fixture.open().await?;
+            // Legacy characterization only: no mapping returns before decrement.
+            // Fixing this existing count leak is outside the russh API adaptation.
+            anyhow::ensure!(fixture.counter.load(Ordering::Relaxed) == 1, "legacy no-mapping count");
+            bounded("unmapped channel close", channel.close()).await??;
+            Ok(())
+        }
+        .await;
+        let cleanup = fixture.shutdown().await;
+        finish_result(result, cleanup)
+    }
+
+    #[tokio::test]
+    async fn forwarded_tcpip_confirms_at_cap_without_dialing() -> Result<()> {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+        let mut fixture = Fixture::new(Some(listener.local_addr()?.port()), 256).await?;
+        let result: Result<()> = async {
+            let channel = fixture.open().await?;
+            anyhow::ensure!(fixture.counter.load(Ordering::Relaxed) == 256, "cap must not increment");
+            // Finite negative observation after the real callback has returned.
+            anyhow::ensure!(tokio::time::timeout(Duration::from_millis(100), listener.accept()).await.is_err(),
+                "capped forwarding unexpectedly dialed its target");
+            bounded("capped channel close", channel.close()).await??;
+            Ok(())
+        }
+        .await;
+        let cleanup = fixture.shutdown().await;
+        finish_result(result, cleanup)
+    }
+}
