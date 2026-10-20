@@ -2872,3 +2872,7 @@ mod reconnect_tests {
         });
     }
 }
+
+#[cfg(test)]
+#[path = "sidebar_resize_tests.rs"]
+mod sidebar_resize_tests;
