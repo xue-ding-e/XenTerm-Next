@@ -77,7 +77,25 @@ fn open_file(
     editable: bool,
 ) -> Entity<super::super::file_viewer::FileViewerView> {
     shell.update(cx, |shell, cx| {
+        // Dialog lifecycle tests still use a genuine source tab/attempt, but
+        // invalid jump resolution prevents starting any transport.
+        let tab_id = "file-dialog-source";
+        if !shell.pages.terminal.read(cx).has_tab(tab_id) {
+            let mut profile = crate::config::Session::new_empty();
+            profile.id = tab_id.into();
+            profile.host = "127.0.0.1".into();
+            profile.port = 0;
+            profile.jump_session_ids = vec!["missing-file-dialog-hop".into()];
+            shell.state.store.borrow_mut().upsert(profile);
+            shell.pages.terminal.update(cx, |page, cx| {
+                page.open_session_tab(tab_id, tab_id, cx);
+            });
+            assert!(shell.state.handles.borrow().is_empty());
+        }
+        let generation = shell.state.statuses.lock().unwrap()[tab_id].monitor_generation;
         *shell.state.opened_file.lock().unwrap() = Some(super::super::session_state::OpenedFile {
+            tab_id: tab_id.into(),
+            generation,
             path: format!("/synthetic/{name}"),
             name: name.into(),
             content: "synthetic content\nsecond line".into(),

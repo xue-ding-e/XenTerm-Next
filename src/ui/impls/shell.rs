@@ -487,6 +487,9 @@ fn join_remote(dir: &str, name: &str) -> String {
 mod overlay_geometry_tests;
 #[path = "sftp_copy_path_tests.rs"]
 mod sftp_copy_path_tests;
+#[cfg(test)]
+#[path = "sftp_editor_routing_tests.rs"]
+mod sftp_editor_routing_tests;
 #[path = "group_dialog_tests.rs"]
 mod group_dialog_tests;
 #[path = "quick_popover_tests.rs"]
@@ -2238,26 +2241,35 @@ impl Shell {
                         window.close_dialog(cx);
                     }
                 }
-                // Written the way every other file write is: the session owns the channel,
-                // and the shell knows which tab the file belongs to.
                 Some(super::file_viewer::FileViewerAction::Save { path, content }) => {
-                    let sender = self
-                        .pages
-                        .terminal
-                        .read(cx)
-                        .active_tab_id()
-                        .and_then(|id| {
-                            self.state
-                                .sftp_handles
-                                .lock()
-                                .ok()?
-                                .get(&id)
-                                .map(|handle| handle.commands.clone())
-                        });
-                    if let Some(sender) = sender {
-                        let _ = sender.send(crate::sftp::SftpCommand::WriteText {
+                    let target = viewer.read(cx).save_target().cloned();
+                    let sender = target.and_then(|target| {
+                        if !self.pages.terminal.read(cx).has_tab(&target.tab_id) {
+                            return None;
+                        }
+                        let generation = self.state.statuses.lock().ok()?
+                            .get(&target.tab_id).map(|status| status.monitor_generation);
+                        let handles = self.state.sftp_handles.lock().ok()?;
+                        target.sender_if_current(
+                            generation,
+                            handles.get(&target.tab_id).map(|handle| &handle.commands),
+                        )
+                    });
+                    let saved = sender.is_some_and(|sender| {
+                        sender.send(crate::sftp::SftpCommand::WriteText {
                             remote: path,
                             content,
+                        }).is_ok()
+                    });
+                    if !saved {
+                        viewer.update(cx, |viewer, cx| {
+                            viewer.save_failed(
+                                crate::i18n::t(
+                                    "原文件连接已关闭或变化，未保存。请保留草稿并重新打开文件。",
+                                    "The original connection closed or changed. Nothing was saved. Keep your draft and reopen the file.",
+                                ).into(),
+                                cx,
+                            );
                         });
                     }
                     cx.notify();
@@ -2274,6 +2286,22 @@ impl Shell {
         else {
             return;
         };
+        // The event pump checked this before enqueueing the slot. Check again
+        // when consuming it: a close/reconnect may have happened in between.
+        let generation = self.state.statuses.lock().ok()
+            .and_then(|statuses| statuses.get(&opened.tab_id).map(|status| status.monitor_generation));
+        if !self.pages.terminal.read(cx).has_tab(&opened.tab_id)
+            || generation != Some(opened.generation)
+        {
+            return;
+        }
+        let save_target = self.state.sftp_handles.lock().ok().and_then(|handles| {
+            handles.get(&opened.tab_id).map(|handle| super::file_viewer::FileSaveTarget {
+                tab_id: opened.tab_id.clone(),
+                generation: opened.generation,
+                commands: handle.commands.downgrade(),
+            })
+        });
         let viewer = cx.new(|cx| {
             super::file_viewer::FileViewerView::new(
                 opened.path,
@@ -2283,7 +2311,7 @@ impl Shell {
                 opened.error,
                 window,
                 cx,
-            )
+            ).with_save_target(save_target)
         });
         self.open_file = Some(viewer.clone());
         self.overlay = Overlay::File(viewer.clone());

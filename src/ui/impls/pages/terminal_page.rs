@@ -456,6 +456,15 @@ impl TerminalPage {
         self.active_tab.clone()
     }
 
+    /// Expose the production delivery route to event-level tests without opening a transport.
+    #[cfg(test)]
+    pub(crate) fn event_sink_for_test(&self, tab_id: &str) -> Option<std::sync::Arc<dyn crate::core::EventSink>> {
+        self.tabs
+            .iter()
+            .find(|tab| tab.id.as_str() == tab_id)
+            .map(|tab| tab.sink.clone())
+    }
+
     /// The tab strip's own file dock, whose actions the shell drains alongside
     /// the files page's panel.
     pub(crate) fn dock_panel(&self) -> &Entity<SftpPanelView> {
