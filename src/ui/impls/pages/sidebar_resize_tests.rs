@@ -61,6 +61,10 @@ fn drag_to(page: &Entity<TerminalPage>, cx: &mut VisualTestContext, target: f32)
 }
 
 fn fixture(cx: &mut TestAppContext) -> (Entity<TerminalPage>, &mut VisualTestContext, std::path::PathBuf) {
+    fixture_with_tab(cx, true)
+}
+
+fn fixture_with_tab(cx: &mut TestAppContext, with_tab: bool) -> (Entity<TerminalPage>, &mut VisualTestContext, std::path::PathBuf) {
     cx.update(gpui_kit::init);
     cx.update(crate::ui::actions::init);
     let path = std::env::temp_dir().join(format!("xenterm-sidebar-resize-{}.db", uuid::Uuid::new_v4()));
@@ -77,12 +81,14 @@ fn fixture(cx: &mut TestAppContext) -> (Entity<TerminalPage>, &mut VisualTestCon
     );
     let (page, cx) = cx.add_window_view(move |window, cx| {
         let mut page = TerminalPage::new(state, Rc::new(Cell::new(1280.)), window, cx);
-        let mut tab = TerminalPage::open_tab(&page.state, "resize-fixture", "synthetic-profile", "Resize fixture", page.appearance.clone(), cx);
-        PENDING_SINKS.with(|sinks| sinks.borrow_mut().remove("resize-fixture"));
-        tab.sink = Arc::new(TestSink);
-        page.tabs.push(tab);
-        page.active_tab = Some("resize-fixture".into());
-        page.panes = crate::layout::Layout::new(vec!["resize-fixture".into()], "resize-fixture".into());
+        if with_tab {
+            let mut tab = TerminalPage::open_tab(&page.state, "resize-fixture", "synthetic-profile", "Resize fixture", page.appearance.clone(), cx);
+            PENDING_SINKS.with(|sinks| sinks.borrow_mut().remove("resize-fixture"));
+            tab.sink = Arc::new(TestSink);
+            page.tabs.push(tab);
+            page.active_tab = Some("resize-fixture".into());
+            page.panes = crate::layout::Layout::new(vec!["resize-fixture".into()], "resize-fixture".into());
+        }
         page
     });
     (page, cx, path)
@@ -218,5 +224,35 @@ fn sidebar_same_width_grab_during_expand_retargets_content_and_animation(cx: &mu
     std::thread::sleep(Duration::from_millis(220));
     cx.executor().advance_clock(Duration::from_millis(32));
     assert_width(&page, cx, width);
+    let _ = std::fs::remove_file(path);
+}
+
+/// The empty landing page draws the same resize affordance as an open session.
+/// Exercise that production branch without inserting a tab or opening a transport.
+#[gpui_kit::gpui::test]
+fn empty_landing_sidebar_drag_updates_content_and_stops_after_release(cx: &mut TestAppContext) {
+    let (page, cx, path) = fixture_with_tab(cx, false);
+    assert_width(&page, cx, 220.);
+    page.read_with(cx, |page, _| assert!(page.tabs.is_empty()));
+    let right = page.read_with(cx, |page, _| page.sidebar_edge.get().1);
+    let start = point(px(right - 1.), px(500.));
+    let end = point(start.x + px(80.), start.y);
+    cx.simulate_mouse_move(start, None, Default::default());
+    cx.simulate_mouse_down(start, MouseButton::Left, Default::default());
+    page.read_with(cx, |page, _| assert!(page.sidebar_drag.is_some(), "empty landing resize affordance must receive the actual pointer press"));
+    cx.simulate_mouse_move(end, MouseButton::Left, Default::default());
+    cx.simulate_mouse_up(end, MouseButton::Left, Default::default());
+    assert_width(&page, cx, 300.);
+    // A normal release must leave the pointer free to hover without resizing.
+    cx.simulate_mouse_move(point(end.x + px(40.), end.y), None, Default::default());
+    assert_width(&page, cx, 300.);
+    page.read_with(cx, |page, _| {
+        assert!(page.sidebar_drag.is_none());
+        assert_eq!(page.state.store.borrow().sidebar_width(), 300.);
+        assert!(page.tabs.is_empty());
+        assert!(page.state.handles.borrow().is_empty(), "empty fixture never opens a transport");
+    });
+    drag_to(&page, cx, 220.);
+    assert_width(&page, cx, 220.);
     let _ = std::fs::remove_file(path);
 }
