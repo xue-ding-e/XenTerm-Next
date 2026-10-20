@@ -14,14 +14,17 @@ jobs:
     timeout-minutes: 60
     env:
       CARGO_BUILD_JOBS: '2'
-      XDG_CONFIG_HOME: ${{ runner.temp }}/sidebar-config
-      XDG_DATA_HOME: ${{ runner.temp }}/sidebar-data
-      XDG_RUNTIME_DIR: ${{ runner.temp }}/sidebar-runtime
       TEST: ui::pages::terminal_page::sidebar_resize_tests::sidebar_drag_keeps_content_aligned_and_restores_resized_width
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+      - name: Isolate GUI state
+        shell: bash
+        run: |
+          echo "XDG_CONFIG_HOME=$RUNNER_TEMP/sidebar-config" >> "$GITHUB_ENV"
+          echo "XDG_DATA_HOME=$RUNNER_TEMP/sidebar-data" >> "$GITHUB_ENV"
+          echo "XDG_RUNTIME_DIR=$RUNNER_TEMP/sidebar-runtime" >> "$GITHUB_ENV"
       - name: Install desktop development libraries
         run: |
           sudo apt-get update
