@@ -11,22 +11,71 @@ git rev-parse HEAD > native-source.txt
 sha256sum "$binary" > native-binary-sha256.txt
 "$binary" --version > native-version.txt
 export XENTERM_SMOKE_BINARY="$binary" XENTERM_SMOKE_PROFILE="$root/profile"
-timeout 45 xvfb-run -a -s '-screen 0 1280x900x24' bash <<'NATIVE'
+timeout --kill-after=5s 45s xvfb-run -a -s '-screen 0 1280x900x24' bash <<'NATIVE'
 set -euo pipefail
+app= control= wm=
+cleanup() {
+  for pid in "$app" "$control" "$wm"; do
+    if [ -n "$pid" ]; then kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; fi
+  done
+}
+trap cleanup EXIT
+echo "stage=window-manager-start"
+openbox --sm-disable > native-wm.log 2>&1 &
+wm=$!
+for attempt in $(seq 1 30); do
+  kill -0 "$wm"
+  xprop -root _NET_SUPPORTING_WM_CHECK > native-wm-ready.txt
+  if grep -Eq 'window id # 0x[1-9a-fA-F]' native-wm-ready.txt; then break; fi
+  sleep 0.1
+done
+grep -Eq 'window id # 0x[1-9a-fA-F]' native-wm-ready.txt
+echo "stage=control-window-map-and-render"
+xmessage -name xenterm-control -title "XenTerm Smoke Control" -buttons OK:0 -default OK -geometry 400x120+50+50 "Synthetic native window control" > native-control.log 2>&1 &
+control=$!
+control_id=
+for attempt in $(seq 1 30); do
+  kill -0 "$control"
+  xwininfo -root -tree > native-control-tree.txt
+  control_id=$(awk '/"XenTerm Smoke Control"/ {print $1; exit}' native-control-tree.txt)
+  if [ -n "$control_id" ]; then
+    xwininfo -id "$control_id" -all > native-control-details.txt
+    if grep -q 'Map State: IsViewable' native-control-details.txt; then break; fi
+  fi
+  sleep 0.1
+done
+test -n "$control_id"
+grep -q 'Map State: IsViewable' native-control-details.txt
+xwd -id "$control_id" -silent -out native-control.xwd
+convert native-control.xwd native-control.png
+test "$(identify -format %k native-control.png)" -gt 1
+cat native-control-details.txt
+kill "$control" 2>/dev/null || true
+wait "$control" 2>/dev/null || true
+control=
+echo "stage=xenterm-start-map-and-render"
 "$XENTERM_SMOKE_BINARY" --data-dir "$XENTERM_SMOKE_PROFILE" > native-startup.log 2>&1 &
 app=$!
-trap 'kill "$app" 2>/dev/null || true; wait "$app" 2>/dev/null || true' EXIT
 visible=0
 for attempt in $(seq 1 30); do
   kill -0 "$app" || { cat native-startup.log; exit 1; }
   xwininfo -root -tree > native-windows.txt
-  if grep -F '"XenTerm"' native-windows.txt; then visible=1; break; fi
+  window_id=$(awk '/"XenTerm"/ {print $1; exit}' native-windows.txt)
+  if [ -n "$window_id" ]; then
+    xwininfo -id "$window_id" -all > native-window-details.txt
+    if grep -q 'Map State: IsViewable' native-window-details.txt; then visible=1; break; fi
+  fi
   sleep 0.5
 done
-test "$visible" -eq 1
-window_id=$(awk '/"XenTerm"/ {print $1; exit}' native-windows.txt)
+cat native-window-details.txt 2>/dev/null || true
+if [ -z "${window_id:-}" ]; then
+  cat native-startup.log
+  echo "No XenTerm window was created"
+  exit 1
+fi
 xwininfo -id "$window_id" -all > native-window-details.txt
 cat native-window-details.txt
+# Even an unmapped client is diagnostic evidence: capture it before failing.
 sleep 2
 kill -0 "$app"
 xwd -root -silent -out native-root.xwd
@@ -38,5 +87,6 @@ identify -format 'root colors=%k\n' native-root.png > native-pixels.txt
 identify -format 'window colors=%k\n' native-window.png >> native-pixels.txt
 cat native-pixels.txt
 colors=$(identify -format %k native-window.png)
+test "$visible" -eq 1 || { echo "Native window was created but remained unmapped"; exit 1; }
 test "$colors" -gt 1 || { echo "Native window screenshot is monochrome; rendering remains unverified"; exit 1; }
 NATIVE
