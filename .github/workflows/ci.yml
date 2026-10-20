@@ -31,6 +31,49 @@ jobs:
           git rev-parse HEAD
           rustc +1.89.0 --version
           cargo +1.89.0 --version
+      - name: Prove exact unmapped counter regression on frozen old implementation
+        env:
+          XDG_CONFIG_HOME: ${{ runner.temp }}/russh064-config
+          XDG_DATA_HOME: ${{ runner.temp }}/russh064-data
+          XDG_RUNTIME_DIR: ${{ runner.temp }}/russh064-runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          source=src/ssh/impls/ssh.rs
+          test "$(sha256sum "$source" | cut -d ' ' -f 1)" = '541ad2ee9d56cd0c9baede5c881a1790df61204615adeafd8c2deb1df40a5d54'
+          cp "$source" "$RUNNER_TEMP/ssh-counter-green.rs"
+          trap 'cp "$RUNNER_TEMP/ssh-counter-green.rs" "$source"' EXIT
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          p = Path('src/ssh/impls/ssh.rs')
+          s = p.read_text()
+          early = '        // Unmapped channels create no local connection and must not consume a slot.\n        let Some((host, port)) = target else {\n            tracing::warn!("forwarded-tcpip on {bind}:{connected_port} with no mapping");\n            return Ok(());\n        };\n'
+          current = '        tokio::spawn(async move {\n            match tokio::net::TcpStream::connect((host.as_str(), port)).await {'
+          legacy = '        tokio::spawn(async move {\n            let Some((host, port)) = target else {\n                tracing::warn!("forwarded-tcpip on {bind}:{connected_port} with no mapping");\n                return;\n            };\n            match tokio::net::TcpStream::connect((host.as_str(), port)).await {'
+          assert s.count(early) == 1 and s.count(current) == 1
+          p.write_text(s.replace(early, '', 1).replace(current, legacy, 1))
+          PYCODE
+          # The entire source must equal the frozen tests-first commit 9eb31777.
+          test "$(sha256sum "$source" | cut -d ' ' -f 1)" = '658733d4c6a2588fea8cde8484644c7374abed93b85f7e93bd6aef572aa0ef25'
+          cargo +1.89.0 test --locked --no-default-features --features headless --bin xenterm --jobs 2 ssh::ssh::forwarding_protocol_tests::forwarded_tcpip_confirms_without_mapping -- --exact --list > counter-red-tests.txt
+          grep -Fx 'ssh::ssh::forwarding_protocol_tests::forwarded_tcpip_confirms_without_mapping: test' counter-red-tests.txt
+          test "$(grep -c ': test$' counter-red-tests.txt)" = 1
+          set +e
+          timeout 120s cargo +1.89.0 test --locked --no-default-features --features headless --bin xenterm --jobs 2 ssh::ssh::forwarding_protocol_tests::forwarded_tcpip_confirms_without_mapping -- --exact --test-threads=1 --nocapture > counter-red.log 2>&1
+          result=$?
+          set -e
+          cat counter-red.log
+          test "$result" = 101
+          grep -F 'unmapped forwarding must not consume a connection slot' counter-red.log
+          grep -F 'test result: FAILED. 0 passed; 1 failed; 0 ignored;' counter-red.log
+          if grep -Ei 'timed out|cleanup failed|could not compile|error\[E[0-9]+\]' counter-red.log; then
+            echo 'RED failed outside the required counter assertion' >&2
+            exit 1
+          fi
+          cp "$RUNNER_TEMP/ssh-counter-green.rs" "$source"
+          test "$(sha256sum "$source" | cut -d ' ' -f 1)" = '541ad2ee9d56cd0c9baede5c881a1790df61204615adeafd8c2deb1df40a5d54'
+          git diff --exit-code -- "$source"
+          trap - EXIT
       - name: Compile and verify exact regression selection
         env:
           XDG_CONFIG_HOME: ${{ runner.temp }}/russh064-config
@@ -75,41 +118,3 @@ jobs:
           test "$(grep -c ': test$' forwarding-tests.txt)" = 4
           timeout 120s cargo +1.89.0 test --locked --no-default-features --features headless --bin xenterm --jobs 2 forwarding_protocol_tests -- --test-threads=1 --nocapture 2>&1 | tee forwarding-green.log
           grep -F 'test result: ok. 4 passed; 0 failed; 0 ignored;' forwarding-green.log
-      - name: Prove removal of acceptance fails the protocol assertion
-        env:
-          XDG_CONFIG_HOME: ${{ runner.temp }}/russh064-config
-          XDG_DATA_HOME: ${{ runner.temp }}/russh064-data
-          XDG_RUNTIME_DIR: ${{ runner.temp }}/russh064-runtime
-        shell: bash
-        run: |
-          set -euo pipefail
-          source=src/ssh/impls/ssh.rs
-          before=$(sha256sum "$source" | cut -d ' ' -f 1)
-          cp "$source" "$RUNNER_TEMP/ssh-before-mutation.rs"
-          trap 'cp "$RUNNER_TEMP/ssh-before-mutation.rs" "$source"' EXIT
-          python3 - <<'PYCODE'
-          from pathlib import Path
-          p = Path('src/ssh/impls/ssh.rs')
-          s = p.read_text()
-          needle = '        reply.accept().await;'
-          assert s.count(needle) == 1, 'accept mutation must target exactly one production call'
-          p.write_text(s.replace(needle, '        drop(reply); // CI-only negative control: explicit rejection on drop', 1))
-          PYCODE
-          # Compile separately: compilation failure is never the expected RED.
-          cargo +1.89.0 test --locked --no-default-features --features headless --bin xenterm --jobs 2 forwarding_protocol_tests --no-run
-          set +e
-          timeout 120s cargo +1.89.0 test --locked --no-default-features --features headless --bin xenterm --jobs 2 ssh::ssh::forwarding_protocol_tests::forwarded_tcpip_confirms_and_splices_loopback -- --exact --test-threads=1 --nocapture > forwarding-mutation.log 2>&1
-          result=$?
-          set -e
-          cat forwarding-mutation.log
-          test "$result" = 101
-          grep -F 'forwarded channel must be confirmed' forwarding-mutation.log
-          grep -F 'test result: FAILED. 0 passed; 1 failed; 0 ignored;' forwarding-mutation.log
-          if grep -Ei 'timed out|cleanup failed|could not compile|error\[E[0-9]+\]' forwarding-mutation.log; then
-            echo 'Negative control failed outside the required protocol assertion' >&2
-            exit 1
-          fi
-          cp "$RUNNER_TEMP/ssh-before-mutation.rs" "$source"
-          test "$(sha256sum "$source" | cut -d ' ' -f 1)" = "$before"
-          git diff --exit-code -- "$source"
-          trap - EXIT
