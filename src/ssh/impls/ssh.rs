@@ -4076,8 +4076,11 @@ mod forwarding_protocol_tests {
             &mut self,
             presented: &PublicKeyOrCertificate,
         ) -> Result<bool, Self::Error> {
+            // Binary SSH packets omit the local key comment; pin cryptographic
+            // key data rather than the comment-bearing PublicKey wrapper.
             Ok(matches!(presented,
-                PublicKeyOrCertificate::PublicKey { key, .. } if key == &self.expected_key))
+                PublicKeyOrCertificate::PublicKey { key, .. }
+                    if key.key_data() == self.expected_key.key_data()))
         }
 
         async fn server_channel_open_forwarded_tcpip(
