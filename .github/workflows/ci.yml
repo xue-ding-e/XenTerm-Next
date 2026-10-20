@@ -37,7 +37,7 @@ jobs:
         with:
           key: desktop-check-x86_64-unknown-linux-gnu
           cache-on-failure: true
-      - name: Reproduce empty landing resize and retain populated control
+      - name: Validate shared landing and workspace resize lifecycle
         shell: bash
         run: |
           set -euo pipefail
@@ -49,21 +49,19 @@ jobs:
           binary=$(cat flow-binary.txt)
           "$binary" --list > flow-tests.txt
           failed=0
-          red=ui::pages::terminal_page::sidebar_resize_tests::empty_landing_sidebar_drag_updates_content_and_stops_after_release
-          control=ui::pages::terminal_page::sidebar_resize_tests::sidebar_drag_keeps_content_aligned_and_restores_resized_width
-          result=0
-          timeout 90 "$binary" "$red" --exact --test-threads=1 --nocapture > flow-empty-red.log 2>&1 || result=$?
-          echo "$result" > flow-empty-red-exit.txt
-          cat flow-empty-red.log
-          if [ "$result" -ne 101 ]; then failed=1; fi
-          grep -F 'test result: FAILED. 0 passed; 1 failed;' flow-empty-red.log || failed=1
-          grep -F 'empty landing resize affordance must receive the actual pointer press' flow-empty-red.log || failed=1
-          result=0
-          timeout 90 "$binary" "$control" --exact --test-threads=1 --nocapture > flow-populated-control.log 2>&1 || result=$?
-          echo "$result" > flow-populated-control-exit.txt
-          cat flow-populated-control.log
-          if [ "$result" -ne 0 ]; then failed=1; fi
-          grep -F 'test result: ok. 1 passed; 0 failed;' flow-populated-control.log || failed=1
+          case=ui::pages::terminal_page::sidebar_resize_tests::empty_landing_sidebar_drag_updates_content_and_stops_after_release
+          timeout 90 "$binary" "$case" --exact --test-threads=1 --nocapture > flow-empty-green.log 2>&1 || failed=1
+          cat flow-empty-green.log
+          grep -F 'test result: ok. 1 passed; 0 failed;' flow-empty-green.log || failed=1
+          timeout 180 "$binary" "$FILTER" --test-threads=1 --nocapture > flow-sidebar-green.log 2>&1 || failed=1
+          cat flow-sidebar-green.log
+          grep -F 'test result: ok. 6 passed; 0 failed;' flow-sidebar-green.log || failed=1
+          timeout 90 "$binary" "$DOCK" --exact --test-threads=1 --nocapture > flow-dock-green.log 2>&1 || failed=1
+          cat flow-dock-green.log
+          grep -F 'test result: ok. 1 passed; 0 failed;' flow-dock-green.log || failed=1
+          timeout 600 "$binary" ui:: --test-threads=1 > flow-ui-green.log 2>&1 || failed=1
+          cat flow-ui-green.log
+          grep -E 'test result: ok\. [1-9][0-9]+ passed; 0 failed;' flow-ui-green.log || failed=1
           exit "$failed"
       - name: Preserve regression evidence
         if: always()
