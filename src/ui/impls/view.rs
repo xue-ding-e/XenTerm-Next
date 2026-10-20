@@ -1916,6 +1916,7 @@ async fn pump_messages(
                                 &transfers,
                                 &tunnels,
                                 &tab_id,
+                                generation,
                                 event,
                             );
                         }
@@ -1961,6 +1962,7 @@ fn apply_event(
     transfers: &crate::core::TransferRecords,
     tunnels: &super::session_state::TabTunnels,
     tab_id: &str,
+    generation: Option<u64>,
     event: SessionEvent,
 ) {
     match event {
@@ -2098,8 +2100,21 @@ fn apply_event(
             edit,
             error,
         } => {
+            // A file may arrive while another tab is selected. Preserve the
+            // producing attempt, not a later lookup of whichever tab is active.
+            // Production SFTP pumps always supply this generation; an unscoped
+            // reply cannot safely authorize a write and is not opened.
+            let Some(generation) = generation else {
+                view.status = Some(crate::i18n::t(
+                    "无法确认文件所属连接，未打开文件。请重新读取。",
+                    "The file's source connection could not be verified. Read the file again.",
+                ).into());
+                return;
+            };
             if let Ok(mut slot) = opened_file.lock() {
                 *slot = Some(super::session_state::OpenedFile {
+                    tab_id: tab_id.to_string(),
+                    generation,
                     path,
                     name,
                     content,

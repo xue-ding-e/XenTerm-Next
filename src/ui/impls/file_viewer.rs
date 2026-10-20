@@ -89,6 +89,32 @@ pub(crate) enum FileViewerAction {
     Close,
 }
 
+/// The exact connection that supplied the editor's bytes, never the active tab.
+/// A weak sender must not keep a closed transport alive just because a draft is open.
+#[derive(Clone)]
+pub(crate) struct FileSaveTarget {
+    pub(crate) tab_id: String,
+    pub(crate) generation: u64,
+    pub(crate) commands: tokio::sync::mpsc::WeakUnboundedSender<crate::sftp::SftpCommand>,
+}
+
+impl FileSaveTarget {
+    /// Validate a current source snapshot, then retain the original channel for
+    /// the send. Re-reading a handle after validation could select a replacement.
+    pub(crate) fn sender_if_current(
+        &self,
+        generation: Option<u64>,
+        current: Option<&tokio::sync::mpsc::UnboundedSender<crate::sftp::SftpCommand>>,
+    ) -> Option<tokio::sync::mpsc::UnboundedSender<crate::sftp::SftpCommand>> {
+        if generation != Some(self.generation) {
+            return None;
+        }
+        let original = self.commands.upgrade()?;
+        let current = current?;
+        (original.same_channel(current) && !original.is_closed()).then_some(original)
+    }
+}
+
 /// One remote file, open in a text area.
 pub(crate) struct FileViewerView {
     /// The remote path, which is what a save goes back to.
@@ -108,6 +134,9 @@ pub(crate) struct FileViewerView {
     /// so a write that dies silently would otherwise leave the button busy
     /// forever. The timeout bounds that.
     saving_since: Option<std::time::Instant>,
+    save_target: Option<FileSaveTarget>,
+    /// Save failures leave the draft visible; read failures still occupy the body.
+    save_error: Option<String>,
     pending: Option<FileViewerAction>,
     /// Kept alive so the input keeps its focus behaviour across frames.
     _task: Option<Task<()>>,
@@ -142,9 +171,26 @@ impl FileViewerView {
             text,
             error: (!error.is_empty()).then_some(error),
             saving_since: None,
+            save_target: None,
+            save_error: None,
             pending: None,
             _task: None,
         }
+    }
+
+    pub(crate) fn with_save_target(mut self, target: Option<FileSaveTarget>) -> Self {
+        self.save_target = target;
+        self
+    }
+
+    pub(crate) fn save_target(&self) -> Option<&FileSaveTarget> {
+        self.save_target.as_ref()
+    }
+
+    pub(crate) fn save_failed(&mut self, message: String, cx: &mut Context<Self>) {
+        self.saving_since = None;
+        self.save_error = Some(message);
+        cx.notify();
     }
 
     pub(crate) fn take_action(&mut self) -> Option<FileViewerAction> {
@@ -193,6 +239,7 @@ impl FileViewerView {
                 .disabled(saving)
                 .on_click(cx.listener(move |this, _, _, cx| {
                     let content = this.text.read(cx).value().to_string();
+                    this.save_error = None;
                     this.pending = Some(FileViewerAction::Save {
                         path: this.path.clone(),
                         content,
@@ -285,6 +332,18 @@ impl Render for FileViewerView {
             .size_full()
             .bg(cx.theme().background)
             .child(self.header(cx))
+            .when_some(self.save_error.as_ref(), |this, error| {
+                this.child(
+                    div()
+                        .debug_selector(|| "file-viewer-save-error".into())
+                        .w_full()
+                        .px_3()
+                        .py_2()
+                        .text_sm()
+                        .text_color(cx.theme().danger)
+                        .child(SharedString::from(error.clone())),
+                )
+            })
             .child(body)
     }
 }
@@ -293,6 +352,80 @@ impl Render for FileViewerView {
 mod tests {
     use super::*;
     use gpui_kit::gpui::{Modifiers, TestAppContext};
+
+    fn target_for(
+        commands: &tokio::sync::mpsc::UnboundedSender<crate::sftp::SftpCommand>,
+    ) -> FileSaveTarget {
+        FileSaveTarget {
+            tab_id: "source".into(),
+            generation: 7,
+            commands: commands.downgrade(),
+        }
+    }
+
+    // These are lifecycle boundary tests, not claims that modal UI exposes
+    // reconnect/close controls. The real UI route is covered in Shell's tests.
+    #[test]
+    fn retired_or_reconnected_source_cannot_reuse_an_old_save_target() {
+        let (commands, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let target = target_for(&commands);
+        assert!(target.sender_if_current(Some(7), Some(&commands)).is_some());
+        assert!(target.sender_if_current(None, Some(&commands)).is_none());
+        assert!(target.sender_if_current(Some(8), Some(&commands)).is_none());
+        assert!(target.sender_if_current(Some(7), None).is_none());
+    }
+
+    #[test]
+    fn replacement_channel_or_recreated_tab_cannot_receive_an_old_draft() {
+        let (commands, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let target = target_for(&commands);
+        let (replacement, _replacement_receiver) = tokio::sync::mpsc::unbounded_channel();
+        // Even a mistakenly reused epoch must not authorize a different channel.
+        assert!(target.sender_if_current(Some(7), Some(&replacement)).is_none());
+        // Recreating the same tab id correctly gives a new epoch as well.
+        assert!(target.sender_if_current(Some(8), Some(&replacement)).is_none());
+        drop(commands);
+        assert!(target.commands.upgrade().is_none(), "an open draft must not keep the retired sender alive");
+    }
+
+    #[test]
+    fn validated_sender_is_original_and_late_transport_failure_is_reported() {
+        let (commands, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let target = target_for(&commands);
+        let validated = target.sender_if_current(Some(7), Some(&commands)).unwrap();
+        assert!(validated.same_channel(&commands));
+        // The receiver may stop after validation. Shell checks send's Result,
+        // rather than equating a validated handle with a completed write.
+        receiver.close();
+        assert!(validated.send(crate::sftp::SftpCommand::WriteText {
+            remote: "/synthetic/file.txt".into(),
+            content: "draft".into(),
+        }).is_err());
+        assert!(target.sender_if_current(Some(7), Some(&commands)).is_none());
+    }
+
+    #[gpui_kit::gpui::test]
+    fn rejected_save_preserves_draft_shows_failure_and_resets_busy(cx: &mut TestAppContext) {
+        let (viewer, cx) = open_fixture(cx, true, false, "original".into());
+        focus_text(&viewer, cx);
+        cx.simulate_keystrokes(&shortcut("a"));
+        cx.simulate_input("unsaved draft\nsecond line");
+        let save = cx.debug_bounds("file-viewer-save").unwrap();
+        cx.simulate_click(save.center(), Modifiers::default());
+        assert!(viewer.read_with(cx, |viewer, _| viewer.is_saving()));
+        assert!(matches!(viewer.update(cx, |viewer, _| viewer.take_action()), Some(FileViewerAction::Save { .. })));
+        viewer.update(cx, |viewer, cx| viewer.save_failed("Original connection changed".into(), cx));
+        draw(cx);
+        assert!(!viewer.read_with(cx, |viewer, _| viewer.is_saving()));
+        assert!(cx.debug_bounds("file-viewer-save-error").is_some());
+        assert_eq!(viewer.read_with(cx, |viewer, cx| viewer.text.read(cx).value().to_string()), "unsaved draft\nsecond line");
+        let save = cx.debug_bounds("file-viewer-save").unwrap();
+        cx.simulate_click(save.center(), Modifiers::default());
+        assert_eq!(viewer.update(cx, |viewer, _| viewer.take_action()), Some(FileViewerAction::Save {
+            path: "/synthetic/fixture.txt".into(),
+            content: "unsaved draft\nsecond line".into(),
+        }));
+    }
 
     /// A save carries the text the box holds, to the path the file was opened from.
     ///
