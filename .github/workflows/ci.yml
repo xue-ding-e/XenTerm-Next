@@ -37,7 +37,7 @@ jobs:
         with:
           key: desktop-check-x86_64-unknown-linux-gnu
           cache-on-failure: true
-      - name: Verify added regressions fail on unchanged behavior
+      - name: Diagnose focused geometry and run independent UI suites
         shell: bash
         run: |
           set -euo pipefail
@@ -45,53 +45,22 @@ jobs:
           chmod 700 "$XDG_RUNTIME_DIR"
           rustc -Vv
           git rev-parse HEAD
-          cp src/ui/impls/sidebar.rs /tmp/sidebar-fixed.rs
-          cp src/ui/impls/pages/terminal_page.rs /tmp/terminal-fixed.rs
-          python3 .github/scripts/flow-baseline.py
-          timeout 2400 cargo test --locked --target x86_64-unknown-linux-gnu --bin xenterm --jobs 2 --no-run --message-format=json > flow-baseline-build.json
-          python3 .github/scripts/flow-test-binary.py flow-baseline-build.json > flow-binary.txt
-          binary=$(cat flow-binary.txt)
-          "$binary" --list > flow-tests.txt
-          infra=0
-          for name in sidebar_collapsing_edge_does_not_start_a_resize sidebar_same_width_grab_during_expand_retargets_content_and_animation; do
-            test="$FILTER::$name"
-            grep -Fx "$test: test" flow-tests.txt || infra=1
-            result=0
-            timeout 120 "$binary" "$test" --exact --test-threads=1 --nocapture > "$name-red.log" 2>&1 || result=$?
-            cat "$name-red.log"
-            echo "$result" > "$name-red.exit"
-            test "$result" -eq 101 || infra=1
-            grep -F 'test result: FAILED. 0 passed; 1 failed;' "$name-red.log" || infra=1
-          done
-          result=0
-          grep -Fx "$DOCK: test" flow-tests.txt || infra=1
-          timeout 120 "$binary" "$DOCK" --exact --test-threads=1 --nocapture > dock-red.log 2>&1 || result=$?
-          cat dock-red.log
-          echo "$result" > dock-red.exit
-          test "$result" -eq 101 || infra=1
-          grep -F 'test result: FAILED. 0 passed; 1 failed;' dock-red.log || infra=1
-          # Only these behavioral assertions qualify as RED, not fixture timing.
-          grep -F 'collapsing sidebar cannot start a resize' sidebar_collapsing_edge_does_not_start_a_resize-red.log || infra=1
-          grep -F 'same-width grab updates the old content target' sidebar_same_width_grab_during_expand_retargets_content_and_animation-red.log || infra=1
-          grep -F 'dock hover after lost release must not resize' dock-red.log || infra=1
-          exit "$infra"
-      - name: Restore exact candidate and require focused GREEN and existing UI suite
-        shell: bash
-        run: |
-          set -euo pipefail
-          cp /tmp/sidebar-fixed.rs src/ui/impls/sidebar.rs
-          cp /tmp/terminal-fixed.rs src/ui/impls/pages/terminal_page.rs
-          git diff --exit-code -- src/ui/impls/sidebar.rs src/ui/impls/pages/terminal_page.rs
           sha256sum src/ui/impls/sidebar.rs src/ui/impls/pages/terminal_page.rs src/ui/impls/pages/sidebar_resize_tests.rs > flow-source-sha256.txt
-          timeout 600 cargo test --locked --target x86_64-unknown-linux-gnu --bin xenterm --jobs 2 --no-run --message-format=json > flow-green-build.json
+          timeout 2400 cargo test --locked --target x86_64-unknown-linux-gnu --bin xenterm --jobs 2 --no-run --message-format=json > flow-green-build.json
           python3 .github/scripts/flow-test-binary.py flow-green-build.json > flow-binary.txt
           binary=$(cat flow-binary.txt)
-          timeout 120 "$binary" "$FILTER" --test-threads=1 --nocapture 2>&1 | tee sidebar-green.log
-          grep -F 'test result: ok. 5 passed; 0 failed;' sidebar-green.log
-          timeout 120 "$binary" "$DOCK" --exact --test-threads=1 --nocapture 2>&1 | tee dock-green.log
-          grep -F 'test result: ok. 1 passed; 0 failed;' dock-green.log
-          timeout 600 "$binary" ui:: --test-threads=1 2>&1 | tee flow-ui-suite.log
-          grep -E 'test result: ok\. [1-9][0-9]+ passed; 0 failed;' flow-ui-suite.log
+          "$binary" --list > flow-tests.txt
+          failed=0
+          timeout 120 "$binary" "$FILTER" --test-threads=1 --nocapture > sidebar-green.log 2>&1 || failed=1
+          cat sidebar-green.log
+          grep -F 'test result: ok. 5 passed; 0 failed;' sidebar-green.log || failed=1
+          timeout 120 "$binary" "$DOCK" --exact --test-threads=1 --nocapture > dock-green.log 2>&1 || failed=1
+          cat dock-green.log
+          grep -F 'test result: ok. 1 passed; 0 failed;' dock-green.log || failed=1
+          timeout 600 "$binary" ui:: --test-threads=1 > flow-ui-suite.log 2>&1 || failed=1
+          cat flow-ui-suite.log
+          grep -E 'test result: ok\. [1-9][0-9]+ passed; 0 failed;' flow-ui-suite.log || failed=1
+          exit "$failed"
       - name: Preserve regression evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

@@ -21,14 +21,25 @@ fn draw(cx: &mut VisualTestContext) {
 }
 
 fn assert_width(page: &Entity<TerminalPage>, cx: &mut VisualTestContext, expected: f32) {
-    draw(cx);
+    for frame in 0..3 {
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        page.read_with(cx, |page, cx| {
+            let sidebar = page.sidebar.read(cx);
+            let (left, right) = page.sidebar_edge.get();
+            eprintln!("resize frame={frame} expected={expected} shown={} content={} observer={} left={left} right={right}", sidebar.width(), sidebar.content_width(), page.sidebar_width);
+        });
+    }
     page.read_with(cx, |page, cx| {
         let sidebar = page.sidebar.read(cx);
         assert_eq!(sidebar.width(), expected, "outer sidebar width");
         assert_eq!(sidebar.content_width(), expected, "sidebar content must follow resized column");
         assert_eq!(page.sidebar_width, expected, "workspace observer width");
         let (left, right) = page.sidebar_edge.get();
-        assert!((right - left - expected).abs() < 1.1, "rendered column width");
+        assert!((right - left - expected).abs() < 1.1, "rendered column width: left={left}, right={right}, expected={expected}, delta={}", right - left - expected);
     });
 }
 
