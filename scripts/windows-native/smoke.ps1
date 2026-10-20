@@ -16,9 +16,9 @@ try {
     if ($gate.status -ne 'passed' -or ([DateTime]::UtcNow-[DateTime]::Parse($gate.finished_utc)).TotalMinutes -gt 3) { throw 'Immediate prelaunch desktop control is missing, failed, or stale' }
     $identity=Get-Content -Raw -LiteralPath "$env:RUNNER_TEMP/native-evidence/release-identity.json" | ConvertFrom-Json
     $harnessSha=(& git -C $SourceDir rev-parse HEAD | Out-String).Trim()
-    $expectedPackage=Join-Path $env:RUNNER_TEMP 'xenterm-published-77ce731/XenTerm-Next-beta-77ce7313b71d176c26f62ec199b34aaad91c2251-windows-x86_64'
+    $expectedPackage=Join-Path $env:RUNNER_TEMP 'xenterm-published-7393417/XenTerm-Next-beta-7393417b28e6eb8c2e3e9bc9a8608805225f8b38-windows-x86_64'
     if ($LASTEXITCODE -ne 0 -or $harnessSha -ne $env:GITHUB_SHA -or $identity.harness_sha -ne $harnessSha -or $identity.status -ne 'published_release_identity_verified_not_execution_pass' -or [IO.Path]::GetFullPath($VerifiedDir) -ne [IO.Path]::GetFullPath($expectedPackage) -or $identity.package_dir -ne $VerifiedDir) { throw 'Published package or harness identity mismatch' }
-    if ($identity.build_sha -ne '77ce7313b71d176c26f62ec199b34aaad91c2251' -or $identity.zip_sha256 -ne '2739215d5555a7819ac390ce08372fcaff6fe44ca2e6830e8df2b1cbf87f86c6' -or $identity.runtime_version -ne 'xt-beta-77ce731-T1792516261') { throw 'Pinned published source/version mismatch' }
+    if ($identity.build_sha -ne '7393417b28e6eb8c2e3e9bc9a8608805225f8b38' -or $identity.zip_sha256 -ne '127f475b23dd83af4d3c9fcbd9745e9606312d59bd9e203fc19662e61826fca8' -or $identity.runtime_version -ne 'xt-beta-7393417-T1792531203') { throw 'Pinned published source/version mismatch' }
     $exe=Join-Path $VerifiedDir 'xenterm.exe'
     $binaryHash=(Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($binaryHash -ne $identity.binary_sha256 -or (Get-Item -LiteralPath $exe).Length -ne $identity.binary_bytes -or ((Get-Item -LiteralPath $exe).Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Published executable changed after byte verification' }
