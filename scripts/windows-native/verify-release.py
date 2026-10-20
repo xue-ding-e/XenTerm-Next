@@ -1,5 +1,5 @@
 """Verify only the fixed published Windows portable; no tokens or builds."""
-import hashlib, json, os, pathlib, stat, urllib.parse, urllib.request, zipfile
+import hashlib, json, os, pathlib, stat, urllib.parse, urllib.request, urllib.error, zipfile, datetime
 SHA = '77ce7313b71d176c26f62ec199b34aaad91c2251'
 REPO = 'xue-ding-e/XenTerm-Next'
 PREFIX = 'XenTerm-Next-beta-' + SHA + '-'
@@ -20,10 +20,24 @@ class PublicRedirects(urllib.request.HTTPRedirectHandler):
 OPENER = urllib.request.build_opener(PublicRedirects())
 def read(url, limit):
     request = urllib.request.Request(url, headers={'User-Agent': 'XenTerm-Next-bounded-release-QA'})
-    with OPENER.open(request, timeout=30) as response:
-        data = response.read(limit + 1)
-        if len(data) > limit: raise RuntimeError('Response size bound exceeded')
-        return data
+    try:
+        with OPENER.open(request, timeout=30) as response:
+            data = response.read(limit + 1)
+            if len(data) > limit: raise RuntimeError('Response size bound exceeded')
+            return data
+    except urllib.error.HTTPError as error:
+        # Public request only. Never record redirects, cookies, credentials or response body.
+        parsed = urllib.parse.urlparse(url)
+        evidence = pathlib.Path(os.environ['RUNNER_TEMP']) / 'native-evidence'
+        allowed = ('x-ratelimit-limit', 'x-ratelimit-remaining', 'x-ratelimit-reset', 'retry-after', 'date')
+        record = {'stage': 'public-release-verification-before-input', 'status': 'http-error-no-retry',
+                  'host': parsed.hostname, 'path': parsed.path, 'http_status': error.code,
+                  'observed_utc': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                  'headers': {k: error.headers[k][:128] for k in allowed if error.headers.get(k)},
+                  'product_started': False, 'accepted_input_events': 0}
+        (evidence / 'public-http-error.json').write_text(json.dumps(record, indent=2), encoding='utf-8')
+        error.close()
+        raise
 
 def api(path):
     return json.loads(read('https://api.github.com/repos/' + REPO + path, 2 * 1024 * 1024))
