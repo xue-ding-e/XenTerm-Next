@@ -259,6 +259,7 @@ namespace XenTermNativeProbe {
     // spawn outside containment before assignment. Timeout and cleanup only affect our job.
     public sealed class OwnedProcess : IDisposable {
         [StructLayout(LayoutKind.Sequential)] struct STARTUPINFO { public int cb; public IntPtr reserved, desktop, title; public int x,y,cx,cy,xc,yc,fill,flags; public short show,reserved2; public IntPtr reservedPtr,input,output,error; }
+        [StructLayout(LayoutKind.Sequential)] struct STARTUPINFOEX { public STARTUPINFO startup; public IntPtr attributes; }
         [StructLayout(LayoutKind.Sequential)] struct PROCESS_INFORMATION { public IntPtr process,thread; public uint pid,tid; }
         [StructLayout(LayoutKind.Sequential)] struct BASIC_LIMIT { public long processTime,jobTime; public uint flags; public UIntPtr minWorking,maxWorking; public uint activeLimit; public UIntPtr affinity; public uint priority,scheduling; }
         [StructLayout(LayoutKind.Sequential)] struct IO_COUNTERS { public ulong readOps,writeOps,otherOps,readBytes,writeBytes,otherBytes; }
@@ -275,10 +276,17 @@ namespace XenTermNativeProbe {
         [DllImport("kernel32.dll")] static extern uint WaitForSingleObject(IntPtr handle,uint milliseconds);
         [DllImport("kernel32.dll",SetLastError=true)] static extern bool GetExitCodeProcess(IntPtr process,out uint code);
         [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
-        IntPtr job,process; System.Threading.Timer timer; public int Pid {get;private set;}
+        [DllImport("kernel32.dll",EntryPoint="CreateProcessW",CharSet=CharSet.Unicode,SetLastError=true)] static extern bool CreateProcessExtended(string app,StringBuilder command,IntPtr processAttrs,IntPtr threadAttrs,bool inherit,uint flags,IntPtr environment,string cwd,ref STARTUPINFOEX startup,out PROCESS_INFORMATION info);
+        IntPtr job,process; System.Threading.Timer timer; BoundedStderr stderr;
+        public string StderrText { get { return stderr==null ? "" : stderr.Text; } }
+        public bool StderrTruncated { get { return stderr!=null && stderr.Truncated; } }
+        public bool StderrReaderStopped { get { return stderr==null || stderr.ReaderStopped; } }
+        public string StderrError { get { return stderr==null ? null : stderr.Error; } }
+         public int Pid {get;private set;}
         public bool TimedOut {get;private set;}
         public bool CleanupConfirmed {get;private set;}
-        public OwnedProcess(string executable,string arguments,string cwd,int timeoutSeconds) {
+        public OwnedProcess(string executable,string arguments,string cwd,int timeoutSeconds) : this(executable,arguments,cwd,timeoutSeconds,false) {}
+        public OwnedProcess(string executable,string arguments,string cwd,int timeoutSeconds,bool captureStderr) {
             if (timeoutSeconds<1 || timeoutSeconds>3600) throw new ArgumentException("Invalid timeout");
             job=CreateJobObject(IntPtr.Zero,null);
             if(job==IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
@@ -286,7 +294,23 @@ namespace XenTermNativeProbe {
             if(!SetInformationJobObject(job,9,ref limits,Marshal.SizeOf(typeof(EXTENDED_LIMIT)))) { int e=Marshal.GetLastWin32Error(); CloseHandle(job); job=IntPtr.Zero; throw new Win32Exception(e); }
             var startup=new STARTUPINFO(); startup.cb=Marshal.SizeOf(typeof(STARTUPINFO));
             PROCESS_INFORMATION pi;
-            if(!CreateProcess(executable,new StringBuilder("\""+executable+"\" "+arguments),IntPtr.Zero,IntPtr.Zero,false,0x08000004,IntPtr.Zero,cwd,ref startup,out pi)) { int e=Marshal.GetLastWin32Error(); Dispose(); throw new Win32Exception(e); }
+            bool created;
+            try {
+                if(captureStderr) {
+                    stderr=new BoundedStderr();
+                    var extended=new STARTUPINFOEX(); extended.startup=startup;
+                    extended.startup.cb=Marshal.SizeOf(typeof(STARTUPINFOEX));
+                    extended.startup.flags=0x100; // STARTF_USESTDHANDLES
+                    extended.startup.input=stderr.Input; extended.startup.output=stderr.Output; extended.startup.error=stderr.Write;
+                    extended.attributes=stderr.Attributes;
+                    created=CreateProcessExtended(executable,new StringBuilder("\""+executable+"\" "+arguments),IntPtr.Zero,IntPtr.Zero,true,0x08080004,IntPtr.Zero,cwd,ref extended,out pi);
+                } else {
+                    created=CreateProcess(executable,new StringBuilder("\""+executable+"\" "+arguments),IntPtr.Zero,IntPtr.Zero,false,0x08000004,IntPtr.Zero,cwd,ref startup,out pi);
+                }
+                int createError=Marshal.GetLastWin32Error();
+                if(stderr!=null) stderr.CloseParentWrites();
+                if(!created) throw new Win32Exception(createError);
+            } catch { Dispose(); throw; }
             process=pi.process; Pid=(int)pi.pid;
             try {
                 if(!AssignProcessToJobObject(job,process)) { int e=Marshal.GetLastWin32Error(); TerminateProcess(process,125); throw new Win32Exception(e,"Private job assignment failed; child never resumed"); }
@@ -310,6 +334,80 @@ namespace XenTermNativeProbe {
                 CloseHandle(job); job=IntPtr.Zero;
             }
             if(process!=IntPtr.Zero) { CloseHandle(process); process=IntPtr.Zero; }
+            if(stderr!=null) stderr.Dispose();
+        }
+    }
+
+    // Observation only. Explicit inherited handle list, no host handle inheritance.
+    // Drain continuously after 64 KiB is retained; never block the child on output.
+    internal sealed class BoundedStderr : IDisposable {
+        [StructLayout(LayoutKind.Sequential)] struct SECURITY_ATTRIBUTES { public int length; public IntPtr descriptor; public int inherit; }
+        [DllImport("kernel32.dll",SetLastError=true)] static extern bool CreatePipe(out IntPtr read,out IntPtr write,ref SECURITY_ATTRIBUTES attrs,uint size);
+        [DllImport("kernel32.dll",SetLastError=true)] static extern bool SetHandleInformation(IntPtr handle,uint mask,uint flags);
+        [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern IntPtr CreateFile(string name,uint access,uint sharing,ref SECURITY_ATTRIBUTES attrs,uint disposition,uint flags,IntPtr template);
+        [DllImport("kernel32.dll",SetLastError=true)] static extern bool InitializeProcThreadAttributeList(IntPtr list,int count,uint flags,ref IntPtr size);
+        [DllImport("kernel32.dll",SetLastError=true)] static extern bool UpdateProcThreadAttribute(IntPtr list,uint flags,IntPtr attribute,IntPtr value,IntPtr size,IntPtr previous,IntPtr returned);
+        [DllImport("kernel32.dll")] static extern void DeleteProcThreadAttributeList(IntPtr list);
+        [DllImport("kernel32.dll",SetLastError=true)] static extern bool PeekNamedPipe(IntPtr pipe,IntPtr buffer,uint size,IntPtr read,out uint available,IntPtr left);
+        [DllImport("kernel32.dll",SetLastError=true)] static extern bool ReadFile(IntPtr file,byte[] buffer,uint size,out uint read,IntPtr overlapped);
+        [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+        IntPtr read,write,input,output,attributes,handles; bool attributesInitialized;
+        Thread reader; volatile bool stop; readonly object gate=new object();
+        readonly MemoryStream retained=new MemoryStream();
+        public bool Truncated {get;private set;} public bool ReaderStopped {get;private set;} public string Error {get;private set;}
+        public IntPtr Write {get{return write;}} public IntPtr Input {get{return input;}} public IntPtr Output {get{return output;}} public IntPtr Attributes {get{return attributes;}}
+        public string Text {get{lock(gate) return Encoding.UTF8.GetString(retained.ToArray());}}
+        public BoundedStderr() {
+            try {
+                var sa=new SECURITY_ATTRIBUTES(); sa.length=Marshal.SizeOf(typeof(SECURITY_ATTRIBUTES)); sa.inherit=1;
+                if(!CreatePipe(out read,out write,ref sa,4096) || !SetHandleInformation(read,1,0)) throw new Win32Exception(Marshal.GetLastWin32Error());
+                input=CreateFile("NUL",0x80000000,3,ref sa,3,0,IntPtr.Zero);
+                output=CreateFile("NUL",0x40000000,3,ref sa,3,0,IntPtr.Zero);
+                if(input==new IntPtr(-1)||output==new IntPtr(-1)) throw new Win32Exception(Marshal.GetLastWin32Error());
+                IntPtr size=IntPtr.Zero; InitializeProcThreadAttributeList(IntPtr.Zero,1,0,ref size);
+                if(size.ToInt64()<=0 || size.ToInt64()>65536) throw new InvalidOperationException("Unexpected attribute allocation size");
+                attributes=Marshal.AllocHGlobal(size);
+                if(!InitializeProcThreadAttributeList(attributes,1,0,ref size)) throw new Win32Exception(Marshal.GetLastWin32Error());
+                attributesInitialized=true; handles=Marshal.AllocHGlobal(IntPtr.Size*3);
+                Marshal.WriteIntPtr(handles,0,write); Marshal.WriteIntPtr(handles,IntPtr.Size,input); Marshal.WriteIntPtr(handles,IntPtr.Size*2,output);
+                if(!UpdateProcThreadAttribute(attributes,0,new IntPtr(0x20002),handles,new IntPtr(IntPtr.Size*3),IntPtr.Zero,IntPtr.Zero)) throw new Win32Exception(Marshal.GetLastWin32Error());
+                reader=new Thread(Drain); reader.IsBackground=true; reader.Start();
+            } catch { Dispose(); throw; }
+        }
+        void Drain() {
+            try {
+                var buffer=new byte[4096];
+                while(!stop) {
+                    uint available;
+                    if(!PeekNamedPipe(read,IntPtr.Zero,0,IntPtr.Zero,out available,IntPtr.Zero)) {
+                        int e=Marshal.GetLastWin32Error(); if(e!=109) Error="PeekNamedPipe Win32 "+e; break;
+                    }
+                    if(available==0) { Thread.Sleep(10); continue; }
+                    uint count;
+                    if(!ReadFile(read,buffer,Math.Min(available,(uint)buffer.Length),out count,IntPtr.Zero)) {
+                        int e=Marshal.GetLastWin32Error(); if(e!=109) Error="ReadFile Win32 "+e; break;
+                    }
+                    lock(gate) {
+                        int keep=Math.Min((int)count,65536-(int)retained.Length);
+                        if(keep>0) retained.Write(buffer,0,keep);
+                        if(keep<count) Truncated=true;
+                    }
+                }
+            } catch(Exception e) { Error=e.GetType().Name+": "+e.Message; }
+            finally { ReaderStopped=true; }
+        }
+        static void Close(ref IntPtr h) { if(h!=IntPtr.Zero && h!=new IntPtr(-1)) CloseHandle(h); h=IntPtr.Zero; }
+        public void CloseParentWrites() {
+            Close(ref write); Close(ref input); Close(ref output);
+            if(attributesInitialized) { DeleteProcThreadAttributeList(attributes); attributesInitialized=false; }
+            if(attributes!=IntPtr.Zero) { Marshal.FreeHGlobal(attributes); attributes=IntPtr.Zero; }
+            if(handles!=IntPtr.Zero) { Marshal.FreeHGlobal(handles); handles=IntPtr.Zero; }
+        }
+        public void Dispose() {
+            CloseParentWrites();
+            if(reader!=null && !reader.Join(2000)) { stop=true; if(!reader.Join(2000)) Error="Stderr reader did not stop within cleanup bound"; }
+            if(reader==null || ReaderStopped) Close(ref read);
+            // Never close a pipe under an active reader; report failure instead.
         }
     }
 }

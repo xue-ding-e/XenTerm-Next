@@ -6,7 +6,7 @@ Assert-HostedDisposableRunner
 New-Item -ItemType Directory -Force -Path $EvidenceDir | Out-Null
 $report=[ordered]@{stage='visible_application_startup';capture_scope='visible_client_intersection_only';full_window_verified=$false;status='blocked';startup='not_run';map='not_run';render='not_run';interaction='not_run';reason=$null;screenshots=@()}
 $report.accepted_input_events=0; $report.input_policy='no input code loaded or invoked'
-$report.stderr_capture='not available in existing OwnedProcess; no redirected pipe introduced'
+$report.stderr_capture='child stderr only; retain first 65536 bytes while draining; stdin/stdout NUL'
 $process=$null; $oldDpi=[IntPtr]::Zero
 # Keep the synthetic profile outside uploaded evidence. Never inspect its key/database.
 $sandboxRoot=Join-Path $env:RUNNER_TEMP ('xenterm-native-empty-'+[Guid]::NewGuid().ToString('N'))
@@ -44,7 +44,9 @@ try {
             New-Item -ItemType Directory -Path $isolated -Force | Out-Null
             [Environment]::SetEnvironmentVariable($name,$isolated,'Process')
         }
-        $process=[XenTermNativeProbe.OwnedProcess]::new($exe,$arguments,$SourceDir,70)
+        $savedEnvironment['RUST_BACKTRACE']=[Environment]::GetEnvironmentVariable('RUST_BACKTRACE','Process')
+        [Environment]::SetEnvironmentVariable('RUST_BACKTRACE','1','Process')
+        $process=[XenTermNativeProbe.OwnedProcess]::new($exe,$arguments,$SourceDir,70,$true)
     } finally {
         foreach ($name in $savedEnvironment.Keys) { [Environment]::SetEnvironmentVariable($name,$savedEnvironment[$name],'Process') }
     }
@@ -99,7 +101,7 @@ try {
     }
 }
 finally {
-    if ($process) { $process.Dispose(); $report.cleanup_confirmed=$process.CleanupConfirmed; if (-not $process.CleanupConfirmed) { $report.status='blocked'; $report.reason='Application job cleanup could not be confirmed' } }
+    if ($process) { $process.Dispose(); $report.stderr_text=$process.StderrText; $report.stderr_truncated=$process.StderrTruncated; $report.stderr_reader_stopped=$process.StderrReaderStopped; $report.stderr_error=$process.StderrError; if (-not $process.StderrReaderStopped) { $report.status='blocked'; $report.reason='Stderr reader cleanup was not confirmed' }; $report.cleanup_confirmed=$process.CleanupConfirmed; if (-not $process.CleanupConfirmed) { $report.status='blocked'; $report.reason='Application job cleanup could not be confirmed' } }
     if ($oldDpi -ne [IntPtr]::Zero) { [void][XenTermNativeProbe.Desktop]::SetThreadDpiAwarenessContext($oldDpi) }
     # The profile was created by this run, never a user profile or uploaded artifact.
     try {
