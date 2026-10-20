@@ -1409,6 +1409,98 @@ impl TerminalPage {
             )
     }
 
+    /// Both the empty landing view and an open-session workspace display the
+    /// resource sidebar resize affordance. Keep their pointer lifecycle identical
+    /// by attaching the handlers to the shared outer container, not only the
+    /// branch that has terminal tabs.
+    fn render_resize_container(&self, cx: &Context<Self>) -> gpui_kit::Div {
+        // The resize drags live here, on the container, because a five-pixel
+        // band never receives a press in this window — the pane splitter
+        // measured that — while the container receives the press, the moves
+        // and the release. The bands the sidebar and the dock draw say where
+        // to grab; the hit-test below says what a grab does.
+        h_flex()
+            .size_full()
+            .min_h_0()
+            .overflow_hidden()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                    let (x, y) = (
+                        f32::from(event.position.x),
+                        f32::from(event.position.y),
+                    );
+                    // The sidebar's right edge, only while the column is shown —
+                    // a folded column is the fold animation's to move, not the
+                    // drag's.
+                    let (left, right) = this.sidebar_edge.get();
+                    if right > left
+                        && this.sidebar_width > 40.0
+                        && !this.sidebar.read(cx).is_collapsed()
+                        && x >= right - RESIZE_BAND
+                        && x <= right + RESIZE_BAND
+                    {
+                        this.sidebar_drag = Some((x, this.sidebar_width));
+                        return;
+                    }
+                    // The bottom dock's top edge, only while it docks below.
+                    let top = this.dock_edge.get();
+                    let dock_below = !this
+                        .state
+                        .store
+                        .borrow()
+                        .sftp_panel_on_the_right()
+                        && !this.sftp_collapsed
+                        && this.sftp_available();
+                    if dock_below && top > 0.0 && y >= top - RESIZE_BAND && y <= top + RESIZE_BAND
+                    {
+                        this.dock_drag = Some((y, this.strip_height()));
+                    }
+                }),
+            )
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                if event.pressed_button != Some(MouseButton::Left) {
+                    // A release outside this window may not deliver MouseUp.
+                    // Finish either resize before an ordinary hover can move it.
+                    let sidebar_drag = this.sidebar_drag.take().is_some();
+                    let dock_drag = this.dock_drag.take().is_some();
+                    if sidebar_drag || dock_drag {
+                        let _ = this.state.store.borrow_mut().save();
+                        cx.notify();
+                    }
+                    return;
+                }
+                if let Some((start_x, start_width)) = this.sidebar_drag {
+                    let width = start_width + (f32::from(event.position.x) - start_x);
+                    this.sidebar.update(cx, |sidebar, cx| sidebar.set_width(width, cx));
+                }
+                if let Some((start_y, start_height)) = this.dock_drag {
+                    let height = start_height - (f32::from(event.position.y) - start_y);
+                    let clamped = height.clamp(DOCK_MIN_HEIGHT, DOCK_MAX_HEIGHT);
+                    let mut store = this.state.store.borrow_mut();
+                    if (store.quick_panel_height() - clamped).abs() > 0.5 {
+                        store.set_quick_panel_height(clamped);
+                        cx.notify();
+                    }
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                    if this.sidebar_drag.take().is_some() {
+                        // The moves wrote the width into the store's cache; the
+                        // release is what pays for the write to disk.
+                        let _ = this.state.store.borrow_mut().save();
+                        cx.notify();
+                    }
+                    if this.dock_drag.take().is_some() {
+                        let _ = this.state.store.borrow_mut().save();
+                        cx.notify();
+                    }
+                }),
+            )
+    }
+
     fn render_workspace(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         // The strip is a child entity now: this hands the element a reference
         // rather than building the tree, which is what keeps a terminal frame
@@ -1424,10 +1516,7 @@ impl TerminalPage {
         // them there either way.
         if self.tabs.is_empty() {
             let empty = self.render_empty_state(cx);
-            return h_flex()
-                .size_full()
-                .min_h_0()
-                .overflow_hidden()
+            return self.render_resize_container(cx)
                 .child(self.render_sidebar_column(border, cx))
                 .child(
                     v_flex()
@@ -1515,91 +1604,7 @@ impl TerminalPage {
         let pane_press = self.pane_press.clone();
         let pane_pointer = self.pane_pointer.clone();
 
-        // The resize drags live here, on the container, because a five-pixel
-        // band never receives a press in this window — the pane splitter
-        // measured that — while the container receives the press, the moves
-        // and the release. The bands the sidebar and the dock draw say where
-        // to grab; the hit-test below says what a grab does.
-        h_flex()
-            .size_full()
-            .min_h_0()
-            .overflow_hidden()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, event: &MouseDownEvent, _, cx| {
-                    let (x, y) = (
-                        f32::from(event.position.x),
-                        f32::from(event.position.y),
-                    );
-                    // The sidebar's right edge, only while the column is shown —
-                    // a folded column is the fold animation's to move, not the
-                    // drag's.
-                    let (left, right) = this.sidebar_edge.get();
-                    if right > left
-                        && this.sidebar_width > 40.0
-                        && !this.sidebar.read(cx).is_collapsed()
-                        && x >= right - RESIZE_BAND
-                        && x <= right + RESIZE_BAND
-                    {
-                        this.sidebar_drag = Some((x, this.sidebar_width));
-                        return;
-                    }
-                    // The bottom dock's top edge, only while it docks below.
-                    let top = this.dock_edge.get();
-                    let dock_below = !this
-                        .state
-                        .store
-                        .borrow()
-                        .sftp_panel_on_the_right()
-                        && !this.sftp_collapsed
-                        && this.sftp_available();
-                    if dock_below && top > 0.0 && y >= top - RESIZE_BAND && y <= top + RESIZE_BAND
-                    {
-                        this.dock_drag = Some((y, this.strip_height()));
-                    }
-                }),
-            )
-            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
-                if event.pressed_button != Some(MouseButton::Left) {
-                    // A release outside this window may not deliver MouseUp.
-                    // Finish either resize before an ordinary hover can move it.
-                    let sidebar_drag = this.sidebar_drag.take().is_some();
-                    let dock_drag = this.dock_drag.take().is_some();
-                    if sidebar_drag || dock_drag {
-                        let _ = this.state.store.borrow_mut().save();
-                        cx.notify();
-                    }
-                    return;
-                }
-                if let Some((start_x, start_width)) = this.sidebar_drag {
-                    let width = start_width + (f32::from(event.position.x) - start_x);
-                    this.sidebar.update(cx, |sidebar, cx| sidebar.set_width(width, cx));
-                }
-                if let Some((start_y, start_height)) = this.dock_drag {
-                    let height = start_height - (f32::from(event.position.y) - start_y);
-                    let clamped = height.clamp(DOCK_MIN_HEIGHT, DOCK_MAX_HEIGHT);
-                    let mut store = this.state.store.borrow_mut();
-                    if (store.quick_panel_height() - clamped).abs() > 0.5 {
-                        store.set_quick_panel_height(clamped);
-                        cx.notify();
-                    }
-                }
-            }))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _: &MouseUpEvent, _, cx| {
-                    if this.sidebar_drag.take().is_some() {
-                        // The moves wrote the width into the store's cache; the
-                        // release is what pays for the write to disk.
-                        let _ = this.state.store.borrow_mut().save();
-                        cx.notify();
-                    }
-                    if this.dock_drag.take().is_some() {
-                        let _ = this.state.store.borrow_mut().save();
-                        cx.notify();
-                    }
-                }),
-            )
+        self.render_resize_container(cx)
 
             .child(sidebar_column)
             .child(
