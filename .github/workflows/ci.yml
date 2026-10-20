@@ -9,6 +9,11 @@ on:
         required: true
         type: boolean
         default: false
+      run_interactions:
+        description: 'After one bounded build, exercise reviewed drag/navigation/Esc and retain hash-bound CI exe for 3 days (not release)'
+        required: true
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -34,10 +39,14 @@ jobs:
         timeout-minutes: 1
         run: |
           $ErrorActionPreference = 'Stop'
+          if ('${{ inputs.run_interactions }}' -eq 'true' -and '${{ inputs.build_candidate }}' -ne 'true') { throw 'Interactions require one build in this job' }
           foreach ($file in Get-ChildItem ./harness/scripts/windows-native/*.ps1) {
             $tokens = $null; $errors = $null
             [void][System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$errors)
             if ($errors.Count) { throw ($file.Name + ': ' + (($errors | ForEach-Object Message) -join '; ')) }
+          }
+          if ('${{ inputs.run_interactions }}' -eq 'true') {
+            Add-Type -Path ./harness/scripts/windows-native/LimitedInput.cs -ReferencedAssemblies System.dll,System.Core.dll,System.Drawing.dll
           }
       - name: Native session and visible WinForms control (no product build)
         id: preflight
@@ -83,13 +92,15 @@ jobs:
         run: |
           & ./harness/scripts/windows-native/preflight.ps1 -EvidenceDir "$env:RUNNER_TEMP/native-evidence/prelaunch"
           exit $LASTEXITCODE
-      - name: Empty profile startup and on-screen client capture (no synthetic input)
+      - name: Empty profile startup with opt-in bounded native input
         id: smoke
+        env:
+          RUN_LIMITED: ${{ inputs.run_interactions }}
         if: steps.recheck.outputs.desktop_gate == 'passed'
         continue-on-error: true
         timeout-minutes: 2
         run: |
-          & ./harness/scripts/windows-native/smoke.ps1 -SourceDir "$env:GITHUB_WORKSPACE/candidate" -EvidenceDir "$env:RUNNER_TEMP/native-evidence/app" -BuildEvidenceDir "$env:RUNNER_TEMP/native-evidence/build" -PreflightDir "$env:RUNNER_TEMP/native-evidence/prelaunch"
+          & ./harness/scripts/windows-native/smoke.ps1 -SourceDir "$env:GITHUB_WORKSPACE/candidate" -EvidenceDir "$env:RUNNER_TEMP/native-evidence/app" -BuildEvidenceDir "$env:RUNNER_TEMP/native-evidence/build" -PreflightDir "$env:RUNNER_TEMP/native-evidence/prelaunch" -RunLimitedInteractions:($env:RUN_LIMITED -eq 'true')
           exit $LASTEXITCODE
       - name: Upload only bounded probe evidence (never the synthetic profile)
         if: always()
@@ -99,6 +110,26 @@ jobs:
           path: ${{ runner.temp }}/native-evidence/
           if-no-files-found: warn
           retention-days: 7
+      # Exact two-file staging, never a wildcard over target/profile/evidence.
+      # A flow failure may still retain a verified build; this is not a QA-pass claim.
+      - name: Bind disposable validation executable to exact build and run
+        id: validation_binary
+        if: always() && inputs.run_interactions && steps.build.outputs.build_gate == 'passed'
+        continue-on-error: true
+        timeout-minutes: 1
+        run: |
+          & ./harness/scripts/windows-native/prepare-validation-artifact.ps1 -SourceDir "$env:GITHUB_WORKSPACE/candidate" -BuildEvidenceDir "$env:RUNNER_TEMP/native-evidence/build" -AppEvidenceDir "$env:RUNNER_TEMP/native-evidence/app" -PreflightDir "$env:RUNNER_TEMP/native-evidence/prelaunch" -OutputDir "$env:RUNNER_TEMP/native-validation-binary"
+      - name: Retain only verified CI executable and manifest (not release)
+        if: always() && inputs.run_interactions && steps.validation_binary.outputs.validation_binary_gate == 'verified'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # same existing pin
+        with:
+          name: xenterm-validation-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/native-validation-binary/xenterm.exe
+            ${{ runner.temp }}/native-validation-binary/manifest.json
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
       - name: Summarize exact stage outcome
         if: always()
         env:
@@ -106,9 +137,12 @@ jobs:
           BUILD_REQUESTED: ${{ inputs.build_candidate }}
           BUILD_GATE: ${{ steps.build.outputs.build_gate }}
           RECHECK_GATE: ${{ steps.recheck.outputs.desktop_gate }}
+          VALIDATION_BINARY_GATE: ${{ steps.validation_binary.outputs.validation_binary_gate }}
+          INTERACTIONS_REQUESTED: ${{ inputs.run_interactions }}
           SMOKE_GATE: ${{ steps.smoke.outputs.smoke_gate }}
         run: |
           "Windows native probe: preflight=$env:PREFLIGHT_GATE; build_requested=$env:BUILD_REQUESTED; build=$env:BUILD_GATE; prelaunch=$env:RECHECK_GATE; capture=$env:SMOKE_GATE" | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
-          'Only the visible client intersection is captured; full-window layout is unverified. No native mouse/keyboard interaction was tested. needs_visual_review is not a Windows rendering pass.' | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+          "Only visible client intersection tested; full window unverified. Limited interaction requested=$env:INTERACTIONS_REQUESTED. needs_visual_review is not a semantic or comprehensive Windows QA pass; inspect interactions.json and PNGs." | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
           if ($env:PREFLIGHT_GATE -ne 'passed') { throw 'BLOCKED: runner did not prove an interactive visible desktop; candidate not built.' }
           if ($env:BUILD_REQUESTED -eq 'true' -and ($env:BUILD_GATE -ne 'passed' -or $env:RECHECK_GATE -ne 'passed' -or $env:SMOKE_GATE -ne 'needs_visual_review')) { throw 'Windows candidate probe incomplete; inspect per-stage evidence.' }
+          if ($env:INTERACTIONS_REQUESTED -eq 'true' -and $env:VALIDATION_BINARY_GATE -ne 'verified') { throw 'Requested short-lived validation binary was not identity-verified; no upload allowed.' }

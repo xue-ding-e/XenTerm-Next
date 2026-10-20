@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$SourceDir,[Parameter(Mandatory=$true)][string]$EvidenceDir,[Parameter(Mandatory=$true)][string]$BuildEvidenceDir,[Parameter(Mandatory=$true)][string]$PreflightDir)
+param([Parameter(Mandatory=$true)][string]$SourceDir,[Parameter(Mandatory=$true)][string]$EvidenceDir,[Parameter(Mandatory=$true)][string]$BuildEvidenceDir,[Parameter(Mandatory=$true)][string]$PreflightDir,[switch]$RunLimitedInteractions)
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'common.ps1')
@@ -48,6 +48,16 @@ try {
     try { $report.process_session_id=$sessionProcess.SessionId } finally { $sessionProcess.Dispose() }
     if ($report.process_session_id -ne $report.desktop.process_session_id) { throw 'Application started in a different session' }
     $report.pid=$process.Pid; $report.startup='process_created'; $report.map='not_observed'; $report.render='not_observed'
+    if ($RunLimitedInteractions) {
+        . (Join-Path $PSScriptRoot 'limited-interactions.ps1')
+        $interaction=Invoke-LimitedInteractions $process $EvidenceDir
+        $report.stage='visible_startup_and_limited_native_input'
+        $report.status=$interaction.status; $report.reason=$interaction.reason
+        $report.interaction=$interaction.status
+        $report.screenshots=$interaction.screenshots
+        if ($interaction.screenshots.Count -gt 0) { $report.map='visible_top_level_window_observed'; $report.render='trusted_home_roi_match_observed' }
+        if ($interaction.status -ne 'needs_visual_review') { throw $interaction.reason }
+    } else {
     $watch=[Diagnostics.Stopwatch]::StartNew(); $lastCapture=-100.0; $lastError=$null; $richFrames=0
     while ($watch.Elapsed.TotalSeconds -lt 55) {
         if ($process.HasExited) { $report.exit_code=$process.ExitCode; throw 'Application exited during startup observation' }
@@ -82,6 +92,7 @@ try {
     if ($report.screenshots.Count -eq 0) { throw 'No unoccluded visible application client intersection capture; cannot attribute failure to renderer' }
     if ($richFrames -eq 0) { $report.status='failed'; $report.render='visible_region_blank_or_insufficient_pixel_variation'; $report.reason='Control passed but captured visible app regions did not satisfy nonblank heuristic. Inspect screenshots; this is not an interaction result.' }
     else { $report.status='needs_visual_review'; $report.render='visible_region_nonblank_semantics_unverified'; $report.reason='Inspect visible-client PNGs for XenTerm text/layout. Off-screen client content and full-window layout are unverified even if this crop is legible. Pixel variation is not proof of correct rendering; no keyboard/mouse flow was exercised.' }
+    }
 } catch { $report.reason=$_.Exception.Message; if ($report.startup -eq 'process_created' -and $process -and $process.HasExited) { $report.status='failed' } }
 finally {
     if ($process) { $process.Dispose(); $report.cleanup_confirmed=$process.CleanupConfirmed; if (-not $process.CleanupConfirmed) { $report.status='blocked'; $report.reason='Application job cleanup could not be confirmed' } }
