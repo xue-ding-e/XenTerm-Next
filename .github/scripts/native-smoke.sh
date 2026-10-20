@@ -24,9 +24,20 @@ timeout 45 xvfb-run -a -s '-screen 0 1280x900x24' bash -c '
     sleep 0.5
   done
   test "$visible" -eq 1
+  window_id=$(awk '''/"XenTerm"/ {print $1; exit}''' native-windows.txt)
+  xwininfo -id "$window_id" -all > native-window-details.txt
+  cat native-window-details.txt
   sleep 2
   kill -0 "$app"
-  xwd -root -silent -out native-window.xwd
+  xwd -root -silent -out native-root.xwd
+  convert native-root.xwd native-root.png
+  xwd -id "$window_id" -silent -out native-window.xwd
   convert native-window.xwd native-window.png
+  # A title in the X tree only proves creation, not mapping or rendered pixels.
+  identify -format '''root colors=%k\n''' native-root.png > native-pixels.txt
+  identify -format '''window colors=%k\n''' native-window.png >> native-pixels.txt
+  cat native-window-details.txt native-pixels.txt
+  colors=$(identify -format %k native-window.png)
+  test "$colors" -gt 1 || { echo "Native window screenshot is monochrome; rendering remains unverified"; exit 1; }
 '
 # A valid visible native window + screenshot is smoke evidence, not interaction coverage.
