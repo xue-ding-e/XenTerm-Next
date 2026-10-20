@@ -1517,7 +1517,7 @@ impl TerminalPage {
             .overflow_hidden()
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, event: &MouseDownEvent, _, _| {
+                cx.listener(|this, event: &MouseDownEvent, _, cx| {
                     let (x, y) = (
                         f32::from(event.position.x),
                         f32::from(event.position.y),
@@ -1528,6 +1528,7 @@ impl TerminalPage {
                     let (left, right) = this.sidebar_edge.get();
                     if right > left
                         && this.sidebar_width > 40.0
+                        && !this.sidebar.read(cx).is_collapsed()
                         && x >= right - RESIZE_BAND
                         && x <= right + RESIZE_BAND
                     {

@@ -136,3 +136,87 @@ fn sidebar_release_outside_window_does_not_leave_hover_resizing(cx: &mut TestApp
     let _ = std::fs::remove_file(path);
 }
 
+/// Clicking expand and grabbing the moving edge is reachable through real UI
+/// events. A stale fold animation must not undo the newer explicit resize.
+#[gpui_kit::gpui::test]
+fn sidebar_resize_during_expand_keeps_the_new_width_after_animation(cx: &mut TestAppContext) {
+    let (page, cx, path) = fixture(cx);
+    assert_width(&page, cx, 220.);
+    let collapse = cx.debug_bounds("collapse-resource-sidebar").expect("visible collapse control");
+    cx.simulate_click(collapse.center(), Default::default());
+    cx.run_until_parked();
+    std::thread::sleep(Duration::from_millis(220));
+    cx.executor().advance_clock(Duration::from_millis(32));
+    assert_width(&page, cx, 36.);
+    let expand = cx.debug_bounds("expand-resource-sidebar").expect("visible expand control");
+    cx.simulate_click(expand.center(), Default::default());
+    cx.run_until_parked();
+    std::thread::sleep(Duration::from_millis(50));
+    cx.executor().advance_clock(Duration::from_millis(16));
+    draw(cx);
+    page.read_with(cx, |page, _| assert!(page.sidebar_width > 40. && page.sidebar_width < 220., "drag starts during the actual expansion"));
+    drag_to(&page, cx, 320.);
+    assert_width(&page, cx, 320.);
+    // Let the previous animation finish. It must not restore its old target.
+    std::thread::sleep(Duration::from_millis(220));
+    cx.executor().advance_clock(Duration::from_millis(32));
+    draw(cx);
+    page.read_with(cx, |page, cx| assert_eq!(page.sidebar.read(cx).width(), 320., "stale expansion must not overwrite the newer drag target"));
+    assert_width(&page, cx, 320.);
+    page.read_with(cx, |page, _| assert_eq!(page.state.store.borrow().sidebar_width(), 320.));
+    let _ = std::fs::remove_file(path);
+}
+
+/// Folding still shows a wide column for a few frames, but the user has
+/// explicitly requested the strip: grabbing its moving edge must not cancel it.
+#[gpui_kit::gpui::test]
+fn sidebar_collapsing_edge_does_not_start_a_resize(cx: &mut TestAppContext) {
+    let (page, cx, path) = fixture(cx);
+    assert_width(&page, cx, 220.);
+    let collapse = cx.debug_bounds("collapse-resource-sidebar").unwrap();
+    cx.simulate_click(collapse.center(), Default::default());
+    draw(cx);
+    let right = page.read_with(cx, |page, _| page.sidebar_edge.get().1);
+    let edge = point(px(right - 1.), px(100.));
+    cx.simulate_mouse_down(edge, MouseButton::Left, Default::default());
+    page.read_with(cx, |page, _| assert!(page.sidebar_drag.is_none(), "collapsing sidebar cannot start a resize"));
+    cx.simulate_mouse_move(point(edge.x + px(80.), edge.y), MouseButton::Left, Default::default());
+    cx.simulate_mouse_up(edge, MouseButton::Left, Default::default());
+    cx.run_until_parked();
+    std::thread::sleep(Duration::from_millis(220));
+    cx.executor().advance_clock(Duration::from_millis(32));
+    assert_width(&page, cx, 36.);
+    page.read_with(cx, |page, _| assert_eq!(page.state.store.borrow().sidebar_width(), 220.));
+    let _ = std::fs::remove_file(path);
+}
+
+#[gpui_kit::gpui::test]
+fn sidebar_same_width_grab_during_expand_retargets_content_and_animation(cx: &mut TestAppContext) {
+    let (page, cx, path) = fixture(cx);
+    assert_width(&page, cx, 220.);
+    drag_to(&page, cx, 420.);
+    assert_width(&page, cx, 420.);
+    let collapse = cx.debug_bounds("collapse-resource-sidebar").unwrap();
+    cx.simulate_click(collapse.center(), Default::default());
+    cx.run_until_parked();
+    std::thread::sleep(Duration::from_millis(220));
+    cx.executor().advance_clock(Duration::from_millis(32));
+    assert_width(&page, cx, 36.);
+    let expand = cx.debug_bounds("expand-resource-sidebar").unwrap();
+    cx.simulate_click(expand.center(), Default::default());
+    cx.run_until_parked();
+    std::thread::sleep(Duration::from_millis(60));
+    cx.executor().advance_clock(Duration::from_millis(16));
+    draw(cx);
+    let (right, width) = page.read_with(cx, |page, _| (page.sidebar_edge.get().1, page.sidebar_width));
+    assert!(width > 180. && width < 420., "same-width grab starts during expansion above the minimum");
+    let edge = point(px(right - 1.), px(100.));
+    cx.simulate_mouse_down(edge, MouseButton::Left, Default::default());
+    cx.simulate_mouse_move(edge, MouseButton::Left, Default::default());
+    cx.simulate_mouse_up(edge, MouseButton::Left, Default::default());
+    page.read_with(cx, |page, cx| assert_eq!(page.sidebar.read(cx).content_width(), width, "same-width grab updates the old content target"));
+    std::thread::sleep(Duration::from_millis(220));
+    cx.executor().advance_clock(Duration::from_millis(32));
+    assert_width(&page, cx, width);
+    let _ = std::fs::remove_file(path);
+}
