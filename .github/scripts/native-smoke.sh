@@ -11,7 +11,7 @@ git rev-parse HEAD > native-source.txt
 sha256sum "$binary" > native-binary-sha256.txt
 "$binary" --version > native-version.txt
 export XENTERM_SMOKE_BINARY="$binary" XENTERM_SMOKE_PROFILE="$root/profile"
-timeout --kill-after=5s 45s xvfb-run -a -s '-screen 0 1280x900x24' bash <<'NATIVE'
+timeout --kill-after=5s 75s xvfb-run -a -s '-screen 0 1280x900x24' bash <<'NATIVE'
 set -euo pipefail
 app= control= wm=
 cleanup() {
@@ -75,18 +75,28 @@ if [ -z "${window_id:-}" ]; then
 fi
 xwininfo -id "$window_id" -all > native-window-details.txt
 cat native-window-details.txt
-# Even an unmapped client is diagnostic evidence: capture it before failing.
-sleep 2
-kill -0 "$app"
+# Keep the same WM/driver/product and observe the first client frame for at most
+# 30 seconds. A software GPU can take longer than two seconds to paint its UI.
+started=$SECONDS
+colors=1
+: > native-pixels.txt
+while true; do
+  kill -0 "$app"
+  elapsed=$((SECONDS - started))
+  printf -v sample '%02d' "$elapsed"
+  xwd -id "$window_id" -silent -out native-window.xwd
+  convert native-window.xwd "native-frame-$sample.png"
+  cp "native-frame-$sample.png" native-window.png
+  colors=$(identify -format %k native-window.png)
+  printf 'elapsed_seconds=%s client_colors=%s\n' "$elapsed" "$colors" | tee -a native-pixels.txt
+  if [ "$colors" -gt 1 ] || [ "$elapsed" -ge 30 ]; then break; fi
+  sleep 2
+done
 xwd -root -silent -out native-root.xwd
 convert native-root.xwd native-root.png
-xwd -id "$window_id" -silent -out native-window.xwd
-convert native-window.xwd native-window.png
-# A title in the X tree proves creation, not mapping or rendered pixels.
-identify -format 'root colors=%k\n' native-root.png > native-pixels.txt
-identify -format 'window colors=%k\n' native-window.png >> native-pixels.txt
+identify -format 'root colors=%k\n' native-root.png >> native-pixels.txt
 cat native-pixels.txt
-colors=$(identify -format %k native-window.png)
 test "$visible" -eq 1 || { echo "Native window was created but remained unmapped"; exit 1; }
-test "$colors" -gt 1 || { echo "Native window screenshot is monochrome; rendering remains unverified"; exit 1; }
+test "$colors" -gt 1 || { echo "Native client remained monochrome after the bounded first-frame observation"; exit 1; }
+
 NATIVE
