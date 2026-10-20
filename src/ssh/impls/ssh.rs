@@ -75,11 +75,63 @@ impl TriggerEngine {
             let keep = trigger.rule.expect.len().saturating_sub(1).max(256);
             if trigger.buffer.len() > keep {
                 let split = trigger.buffer.len() - keep;
-                let split = trigger.buffer.ceil_char_boundary(split);
+                let split = ceil_utf8_boundary(&trigger.buffer, split);
                 trigger.buffer.drain(..split);
             }
         }
         replies
+    }
+}
+
+// Equivalent to str::ceil_char_boundary without requiring a newer Rust MSRV.
+fn ceil_utf8_boundary(text: &str, index: usize) -> usize {
+    let mut boundary = index.min(text.len());
+    while !text.is_char_boundary(boundary) {
+        boundary += 1;
+    }
+    boundary
+}
+
+#[cfg(test)]
+mod utf8_boundary_tests {
+    use super::{ceil_utf8_boundary, TriggerEngine};
+    use crate::config::{Secret, SessionTrigger};
+
+    #[test]
+    fn ascii_boundaries_are_unchanged() {
+        for index in 0..=3 {
+            assert_eq!(ceil_utf8_boundary("abc", index), index);
+        }
+    }
+
+    #[test]
+    fn multibyte_boundaries_round_up_and_trigger_tail_stays_valid() {
+        let text = "aé中💻z";
+        let expected = [0, 1, 3, 3, 6, 6, 6, 10, 10, 10, 10, 11];
+        for (index, boundary) in expected.into_iter().enumerate() {
+            assert_eq!(ceil_utf8_boundary(text, index), boundary);
+            assert!(text.is_char_boundary(boundary));
+        }
+        let mut engine = TriggerEngine::new(&[SessionTrigger {
+            expect: "Password:".into(),
+            response: Secret::new("synthetic response"),
+            append_enter: true,
+            repeat: false,
+        }]);
+        assert!(engine.feed(&"中".repeat(100)).is_empty());
+        // 300 - 256 lands inside a three-byte character; round up to 45.
+        assert_eq!(engine.0[0].buffer, "中".repeat(85));
+        assert!(engine.feed("Pass").is_empty());
+        assert_eq!(engine.feed("word:").len(), 1);
+    }
+
+    #[test]
+    fn out_of_range_and_empty_indices_clamp_to_length() {
+        for text in ["", "abc", "é中💻"] {
+            for index in [text.len(), text.len() + 1, usize::MAX] {
+                assert_eq!(ceil_utf8_boundary(text, index), text.len());
+            }
+        }
     }
 }
 
