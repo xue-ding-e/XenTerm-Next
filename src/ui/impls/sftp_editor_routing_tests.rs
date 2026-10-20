@@ -291,3 +291,100 @@ fn delayed_view_reply_stays_readonly_and_close_sends_no_write(cx: &mut TestAppCo
     assert!(fixture.source_commands.try_recv().is_err());
     assert!(fixture.other_commands.try_recv().is_err());
 }
+
+#[gpui_kit::gpui::test]
+fn transport_stopping_with_editor_open_rejects_save_and_keeps_the_draft(cx: &mut TestAppContext) {
+    let (mut fixture, cx) = fixture(cx);
+    request_file(&mut fixture, true, cx);
+    reply_from_source(&fixture, true, cx);
+    // A transport can stop in the background while the modal owns input.
+    // Deliver its real lifecycle event and close the synthetic SFTP receiver;
+    // do not pretend a user can click a reconnect control behind the modal.
+    fixture.source_sink.deliver_for_generation(
+        SOURCE,
+        fixture.source_generation,
+        vec![crate::session::protocol::SessionEvent::Closed("synthetic transport stopped".into())],
+    );
+    fixture.source_commands.close();
+    settle(cx);
+    edit_and_save(&fixture, cx);
+    assert!(fixture.source_commands.try_recv().is_err());
+    assert!(fixture.other_commands.try_recv().is_err());
+    assert!(cx.debug_bounds("file-viewer-save-error").is_some(), "a rejected save must explain the failure inside the editor");
+    let save = cx.debug_bounds("file-viewer-save").unwrap();
+    cx.simulate_click(
+        gpui_kit::point(save.left() - px(120.), save.bottom() + px(100.)),
+        Default::default(),
+    );
+    draw(cx);
+    assert_eq!(cx.update(|window, cx| window.focused_input(cx).unwrap().value(cx).to_string()), EDITED,
+        "a failed save must preserve the draft for recovery");
+    cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-a cmd-c" } else { "ctrl-a ctrl-c" });
+    assert_eq!(cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text())).as_deref(), Some(EDITED));
+    cx.simulate_input("recovered local draft");
+    assert_eq!(cx.update(|window, cx| window.focused_input(cx).unwrap().value(cx).to_string()), "recovered local draft");
+    assert!(fixture.source_commands.try_recv().is_err());
+    assert!(fixture.other_commands.try_recv().is_err());
+}
+
+#[gpui_kit::gpui::test]
+fn unscoped_file_reply_cannot_open_a_writable_editor(cx: &mut TestAppContext) {
+    let (mut fixture, cx) = fixture(cx);
+    request_file(&mut fixture, true, cx);
+    // Unlike the real SFTP pump, this sender omits the connection epoch.
+    // It must not be rebound to whichever generation happens to be current.
+    fixture.source_sink.deliver(
+        SOURCE,
+        vec![crate::session::protocol::SessionEvent::SftpFileText {
+            path: REMOTE.into(),
+            name: "配置.txt".into(),
+            content: ORIGINAL.into(),
+            edit: true,
+            error: String::new(),
+        }],
+    );
+    settle(cx);
+    assert!(fixture.shell.read_with(cx, |shell, _| shell.open_file.is_none()));
+    assert!(cx.debug_bounds("file-viewer-save").is_none());
+    assert!(fixture.source_commands.try_recv().is_err());
+    assert!(fixture.other_commands.try_recv().is_err());
+}
+
+#[gpui_kit::gpui::test]
+fn failed_read_reply_must_never_write_empty_content_back_to_the_remote_file(cx: &mut TestAppContext) {
+    let (mut fixture, cx) = fixture(cx);
+    request_file(&mut fixture, true, cx);
+    fixture.source_sink.deliver_for_generation(
+        SOURCE,
+        fixture.source_generation,
+        vec![crate::session::protocol::SessionEvent::SftpFileText {
+            path: REMOTE.into(),
+            name: "配置.txt".into(),
+            content: String::new(),
+            edit: true,
+            error: "synthetic read failure".into(),
+        }],
+    );
+    settle(cx);
+    assert!(fixture.shell.read_with(cx, |shell, _| shell.open_file.is_some()),
+        "the failed read must reach the real file dialog");
+    // A safe implementation may omit or disable Save. If a Save hitbox is
+    // present, click it normally and observe the actual transport commands.
+    // Merely hiding text or drawing an error is not evidence that no write ran.
+    if let Some(save) = cx.debug_bounds("file-viewer-save") {
+        cx.simulate_click(save.center(), Default::default());
+        settle(cx);
+    }
+    let mut writes = Vec::new();
+    for (tab, commands) in [
+        (SOURCE, &mut fixture.source_commands),
+        (OTHER, &mut fixture.other_commands),
+    ] {
+        while let Ok(command) = commands.try_recv() {
+            if let crate::sftp::SftpCommand::WriteText { remote, content } = command {
+                writes.push((tab, remote, content));
+            }
+        }
+    }
+    assert!(writes.is_empty(), "a failed read must not overwrite either remote with unverified/empty content: {writes:?}");
+}

@@ -48,19 +48,24 @@ jobs:
           python3 .github/scripts/flow-test-binary.py flow-green-build.json > flow-binary.txt
           binary=$(cat flow-binary.txt)
           failed=0
-          for test in same_tab_edit_reply_typing_and_save_keep_the_source_destination delayed_source_reply_after_switching_tabs_must_never_write_to_the_new_tab closing_source_before_its_reply_cannot_open_or_save_a_stale_editor delayed_view_reply_stays_readonly_and_close_sends_no_write; do
-            result=0
-            timeout 120 "$binary" "ui::shell::sftp_editor_routing_tests::$test" --exact --test-threads=1 --nocapture > "flow-$test.log" 2>&1 || result=$?
-            cat "flow-$test.log"
-            echo "$result" > "flow-$test-exit.txt"
-            if [ "$result" = 0 ]; then
-              grep -F 'test result: ok. 1 passed; 0 failed;' "flow-$test.log" || failed=1
-            elif [ "$result" = 101 ]; then
-              grep -F 'test result: FAILED. 0 passed; 1 failed;' "flow-$test.log" || failed=1
-            else
-              failed=1
-            fi
-          done
+          candidate=ui::shell::sftp_editor_routing_tests::failed_read_reply_must_never_write_empty_content_back_to_the_remote_file
+          result=0
+          timeout 120 "$binary" "$candidate" --exact --test-threads=1 --nocapture > flow-read-error-baseline.log 2>&1 || result=$?
+          cat flow-read-error-baseline.log
+          echo "$result" > flow-read-error-exit.txt
+          if [ "$result" = 0 ]; then
+            grep -F 'test result: ok. 1 passed; 0 failed;' flow-read-error-baseline.log || failed=1
+          elif [ "$result" = 101 ]; then
+            grep -F 'test result: FAILED. 0 passed; 1 failed;' flow-read-error-baseline.log || failed=1
+          else
+            failed=1
+          fi
+          timeout 180 "$binary" ui::shell::sftp_editor_routing_tests --skip failed_read_reply_must_never_write_empty_content_back_to_the_remote_file --test-threads=1 --nocapture > flow-source-green.log 2>&1 || failed=1
+          cat flow-source-green.log
+          grep -F 'test result: ok. 6 passed; 0 failed;' flow-source-green.log || failed=1
+          timeout 180 "$binary" ui::file_viewer::tests --test-threads=1 --nocapture > flow-viewer-green.log 2>&1 || failed=1
+          cat flow-viewer-green.log
+          grep -E 'test result: ok\. [1-9][0-9]* passed; 0 failed;' flow-viewer-green.log || failed=1
           exit "$failed"
       - name: Preserve regression evidence
         if: always()

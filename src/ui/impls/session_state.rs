@@ -116,6 +116,9 @@ pub(crate) struct SessionState {
 /// The session reports the text; the shell builds the view, because a view needs a window
 /// and a session's event handler has only the view it is drawing.
 pub(crate) struct OpenedFile {
+    /// The tab and connection attempt that actually returned these bytes.
+    pub(crate) tab_id: String,
+    pub(crate) generation: u64,
     pub(crate) path: String,
     pub(crate) name: String,
     pub(crate) content: String,
