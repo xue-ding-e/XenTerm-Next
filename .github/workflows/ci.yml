@@ -31,7 +31,7 @@ jobs:
       - name: Install desktop development libraries
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential pkg-config cmake libfontconfig1-dev libfreetype6-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libgl1-mesa-dev libegl1-mesa-dev libgtk-3-dev libudev-dev
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config cmake libfontconfig1-dev libfreetype6-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libgl1-mesa-dev libegl1-mesa-dev libgtk-3-dev libudev-dev xvfb xauth x11-utils x11-apps mesa-vulkan-drivers libgl1-mesa-dri imagemagick
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249
       - uses: Swatinem/rust-cache@v2
         with:
@@ -61,12 +61,20 @@ jobs:
           cat flow-ui-suite.log
           grep -E 'test result: ok\. [1-9][0-9]+ passed; 0 failed;' flow-ui-suite.log || failed=1
           exit "$failed"
+      - name: Build exact candidate and smoke native Linux window
+        shell: bash
+        run: |
+          timeout 1800 cargo build --locked --target x86_64-unknown-linux-gnu --bin xenterm --jobs 2
+          bash .github/scripts/native-smoke.sh
       - name: Preserve regression evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: interrupted-flow-red-green-evidence
           path: |
+            native-*.txt
+            native-*.log
+            native-*.png
             flow-*.txt
             flow-*.json
             flow-*.log

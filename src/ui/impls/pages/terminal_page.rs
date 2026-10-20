@@ -1263,6 +1263,7 @@ impl TerminalPage {
         let content_width = self.sidebar.read(cx).content_width();
         let sidebar_edge = self.sidebar_edge.clone();
         div()
+            .debug_selector(|| "resource-sidebar-column".to_string())
             .w(px(self.sidebar_width))
             .h_full()
             .flex_shrink_0()

@@ -33,13 +33,18 @@ fn assert_width(page: &Entity<TerminalPage>, cx: &mut VisualTestContext, expecte
             eprintln!("resize frame={frame} expected={expected} shown={} content={} observer={} left={left} right={right}", sidebar.width(), sidebar.content_width(), page.sidebar_width);
         });
     }
+    let outer = cx.debug_bounds("resource-sidebar-column").expect("sidebar column is rendered");
+    let outer_width = f32::from(outer.size.width);
     page.read_with(cx, |page, cx| {
         let sidebar = page.sidebar.read(cx);
         assert_eq!(sidebar.width(), expected, "outer sidebar width");
         assert_eq!(sidebar.content_width(), expected, "sidebar content must follow resized column");
         assert_eq!(page.sidebar_width, expected, "workspace observer width");
         let (left, right) = page.sidebar_edge.get();
-        assert!((right - left - expected).abs() < 1.1, "rendered column width: left={left}, right={right}, expected={expected}, delta={}", right - left - expected);
+        // The canvas is inside the column's one-pixel right border. Compare
+        // the outer box to the requested width, and the inner box separately.
+        assert!((outer_width - expected).abs() < 1.1, "rendered outer column: actual={outer_width}, expected={expected}");
+        assert!((right - left - (outer_width - 1.)).abs() < 1.1, "rendered inner canvas: left={left}, right={right}, outer={outer_width}");
     });
 }
 
@@ -87,7 +92,7 @@ fn fixture(cx: &mut TestAppContext) -> (Entity<TerminalPage>, &mut VisualTestCon
 fn sidebar_drag_keeps_content_aligned_and_restores_resized_width(cx: &mut TestAppContext) {
     let (page, cx, path) = fixture(cx);
     assert_width(&page, cx, 220.);
-    for (requested, expected) in [(420., 420.), (180., 180.), (500., 420.), (100., 180.), (320., 320.)] {
+    for (requested, expected) in [(420., 420.), (180., 180.), (500., 420.), (100., 180.), (310.25, 310.25), (310.75, 310.75), (320., 320.)] {
         drag_to(&page, cx, requested);
         assert_width(&page, cx, expected);
         page.read_with(cx, |page, _| assert_eq!(page.state.store.borrow().sidebar_width(), expected));
