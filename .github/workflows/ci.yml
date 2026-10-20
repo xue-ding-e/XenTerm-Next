@@ -47,25 +47,17 @@ jobs:
           timeout 2400 cargo test --locked --target x86_64-unknown-linux-gnu --bin xenterm --jobs 2 --no-run --message-format=json > flow-green-build.json
           python3 .github/scripts/flow-test-binary.py flow-green-build.json > flow-binary.txt
           binary=$(cat flow-binary.txt)
+          "$binary" --list > flow-tests.txt
           failed=0
-          candidate=ui::shell::sftp_editor_routing_tests::failed_read_reply_must_never_write_empty_content_back_to_the_remote_file
-          result=0
-          timeout 120 "$binary" "$candidate" --exact --test-threads=1 --nocapture > flow-read-error-baseline.log 2>&1 || result=$?
-          cat flow-read-error-baseline.log
-          echo "$result" > flow-read-error-exit.txt
-          if [ "$result" = 0 ]; then
-            grep -F 'test result: ok. 1 passed; 0 failed;' flow-read-error-baseline.log || failed=1
-          elif [ "$result" = 101 ]; then
-            grep -F 'test result: FAILED. 0 passed; 1 failed;' flow-read-error-baseline.log || failed=1
-          else
-            failed=1
-          fi
-          timeout 180 "$binary" ui::shell::sftp_editor_routing_tests --skip failed_read_reply_must_never_write_empty_content_back_to_the_remote_file --test-threads=1 --nocapture > flow-source-green.log 2>&1 || failed=1
+          timeout 180 "$binary" ui::shell::sftp_editor_routing_tests --test-threads=1 --nocapture > flow-source-green.log 2>&1 || failed=1
           cat flow-source-green.log
-          grep -F 'test result: ok. 6 passed; 0 failed;' flow-source-green.log || failed=1
+          grep -F 'test result: ok. 7 passed; 0 failed;' flow-source-green.log || failed=1
           timeout 180 "$binary" ui::file_viewer::tests --test-threads=1 --nocapture > flow-viewer-green.log 2>&1 || failed=1
           cat flow-viewer-green.log
-          grep -E 'test result: ok\. [1-9][0-9]* passed; 0 failed;' flow-viewer-green.log || failed=1
+          grep -F 'test result: ok. 10 passed; 0 failed;' flow-viewer-green.log || failed=1
+          timeout 900 "$binary" --test-threads=1 > flow-full-bin.log 2>&1 || failed=1
+          cat flow-full-bin.log
+          grep -E 'test result: ok\. [1-9][0-9]+ passed; 0 failed;' flow-full-bin.log || failed=1
           exit "$failed"
       - name: Preserve regression evidence
         if: always()
