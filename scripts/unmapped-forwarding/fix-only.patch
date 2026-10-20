@@ -1,0 +1,25 @@
+--- a/src/ssh/impls/ssh.rs
++++ b/src/ssh/impls/ssh.rs
+@@ -3327,6 +3327,11 @@
+         let target = self.remote_forwards.get(&connected_port).cloned();
+         let events = self.events.clone();
+         let bind = connected_address.to_string();
++        // Unmapped channels create no local connection and must not consume a slot.
++        let Some((host, port)) = target else {
++            tracing::warn!("forwarded-tcpip on {bind}:{connected_port} with no mapping");
++            return Ok(());
++        };
+         // Cap the connections spawned per forwarded port: a server can open
+         // channels as fast as it likes, and each one dials the local target —
+         // unbounded, that is a local connection flood / handle exhaustion
+@@ -3346,10 +3351,6 @@
+         counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+         let counter = counter.clone();
+         tokio::spawn(async move {
+-            let Some((host, port)) = target else {
+-                tracing::warn!("forwarded-tcpip on {bind}:{connected_port} with no mapping");
+-                return;
+-            };
+             match tokio::net::TcpStream::connect((host.as_str(), port)).await {
+                 Ok(mut tcp) => {
+                     let mut stream = channel.into_stream();
