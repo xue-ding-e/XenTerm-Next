@@ -43,6 +43,11 @@ jobs:
           grep -Fx 'ssh::ssh::host_certificate_tests::rejects_host_certificate_without_prompting: test' russh064-tests.txt
           grep -Fx 'sftp::sftp::host_certificate_tests::rejects_host_certificate_without_prompting: test' russh064-tests.txt
           test "$(grep -c ': test$' russh064-tests.txt)" = 2
+          cargo +1.89.0 test --locked --no-default-features --features headless --bin xenterm --jobs 2 utf8_boundary_tests -- --list > utf8-tests.txt
+          grep -Fx 'ssh::ssh::utf8_boundary_tests::ascii_boundaries_are_unchanged: test' utf8-tests.txt
+          grep -Fx 'ssh::ssh::utf8_boundary_tests::multibyte_boundaries_round_up_and_trigger_tail_stays_valid: test' utf8-tests.txt
+          grep -Fx 'ssh::ssh::utf8_boundary_tests::out_of_range_and_empty_indices_clamp_to_length: test' utf8-tests.txt
+          test "$(grep -c ': test$' utf8-tests.txt)" = 3
       - name: Run both actual host-key handlers
         env:
           XDG_CONFIG_HOME: ${{ runner.temp }}/russh064-config
@@ -53,3 +58,5 @@ jobs:
           set -euo pipefail
           env -u ALL_PROXY -u all_proxy -u HTTP_PROXY -u http_proxy -u HTTPS_PROXY -u https_proxy cargo +1.89.0 test --locked --no-default-features --features headless --bin xenterm --jobs 2 host_certificate_tests::rejects_host_certificate_without_prompting -- --test-threads=1 2>&1 | tee russh064-regression.log
           grep -F 'test result: ok. 2 passed; 0 failed; 0 ignored;' russh064-regression.log
+          cargo +1.89.0 test --locked --no-default-features --features headless --bin xenterm --jobs 2 utf8_boundary_tests -- --test-threads=1 2>&1 | tee utf8-regression.log
+          grep -F 'test result: ok. 3 passed; 0 failed; 0 ignored;' utf8-regression.log
