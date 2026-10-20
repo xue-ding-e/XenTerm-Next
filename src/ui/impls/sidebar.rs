@@ -355,6 +355,7 @@ impl SidebarView {
             return;
         }
         self.store.borrow_mut().set_sidebar_width(clamped);
+        self.width = clamped;
         self.shown_width = clamped;
         cx.notify();
     }
