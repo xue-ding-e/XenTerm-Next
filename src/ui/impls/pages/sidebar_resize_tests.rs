@@ -44,8 +44,7 @@ fn drag_to(page: &Entity<TerminalPage>, cx: &mut VisualTestContext, target: f32)
     draw(cx);
 }
 
-#[gpui_kit::gpui::test]
-fn sidebar_drag_keeps_content_aligned_and_restores_resized_width(cx: &mut TestAppContext) {
+fn fixture(cx: &mut TestAppContext) -> (Entity<TerminalPage>, &mut VisualTestContext, std::path::PathBuf) {
     cx.update(gpui_kit::init);
     cx.update(crate::ui::actions::init);
     let path = std::env::temp_dir().join(format!("xenterm-sidebar-resize-{}.db", uuid::Uuid::new_v4()));
@@ -70,6 +69,12 @@ fn sidebar_drag_keeps_content_aligned_and_restores_resized_width(cx: &mut TestAp
         page.panes = crate::layout::Layout::new(vec!["resize-fixture".into()], "resize-fixture".into());
         page
     });
+    (page, cx, path)
+}
+
+#[gpui_kit::gpui::test]
+fn sidebar_drag_keeps_content_aligned_and_restores_resized_width(cx: &mut TestAppContext) {
+    let (page, cx, path) = fixture(cx);
     assert_width(&page, cx, 220.);
     for (requested, expected) in [(420., 420.), (180., 180.), (500., 420.), (100., 180.), (320., 320.)] {
         drag_to(&page, cx, requested);
@@ -85,5 +90,63 @@ fn sidebar_drag_keeps_content_aligned_and_restores_resized_width(cx: &mut TestAp
         assert_width(&page, cx, expected);
     }
     page.read_with(cx, |page, _| assert!(page.state.handles.borrow().is_empty(), "fixture never starts a transport"));
+    let _ = std::fs::remove_file(path);
+}
+
+/// Operating systems can report the next pointer move without delivering the
+/// release when the user releases outside the window. That move must end the
+/// resize, rather than turning ordinary hovering into a second drag.
+#[gpui_kit::gpui::test]
+fn sidebar_release_outside_window_does_not_leave_hover_resizing(cx: &mut TestAppContext) {
+    let (page, cx, path) = fixture(cx);
+    assert_width(&page, cx, 220.);
+    let right = page.read_with(cx, |page, _| page.sidebar_edge.get().1);
+    let start = point(px(right - 1.), px(100.));
+    cx.simulate_mouse_down(start, MouseButton::Left, Default::default());
+    cx.simulate_mouse_move(point(start.x + px(80.), start.y), MouseButton::Left, Default::default());
+    assert_width(&page, cx, 300.);
+    // No in-window MouseUp is delivered. The next in-window move carries the
+    // authoritative button state, exactly as after release outside the window.
+    cx.simulate_mouse_move(point(start.x + px(130.), start.y), None, Default::default());
+    page.read_with(cx, |page, cx| assert_eq!(page.sidebar.read(cx).width(), 300., "hover after lost release must not resize"));
+    assert_width(&page, cx, 300.);
+    page.read_with(cx, |page, _| assert!(page.sidebar_drag.is_none(), "lost release clears resize state"));
+    cx.simulate_mouse_move(point(start.x + px(180.), start.y), None, Default::default());
+    assert_width(&page, cx, 300.);
+    // Cancellation must not disable a subsequent intentional resize.
+    drag_to(&page, cx, 240.);
+    assert_width(&page, cx, 240.);
+    page.read_with(cx, |page, _| assert!(page.state.handles.borrow().is_empty()));
+    let _ = std::fs::remove_file(path);
+}
+
+/// Clicking expand and grabbing the moving edge is reachable through real UI
+/// events. A stale fold animation must not undo the newer explicit resize.
+#[gpui_kit::gpui::test]
+fn sidebar_resize_during_expand_keeps_the_new_width_after_animation(cx: &mut TestAppContext) {
+    let (page, cx, path) = fixture(cx);
+    assert_width(&page, cx, 220.);
+    let collapse = cx.debug_bounds("collapse-resource-sidebar").expect("visible collapse control");
+    cx.simulate_click(collapse.center(), Default::default());
+    cx.run_until_parked();
+    std::thread::sleep(Duration::from_millis(220));
+    cx.executor().advance_clock(Duration::from_millis(32));
+    assert_width(&page, cx, 36.);
+    let expand = cx.debug_bounds("expand-resource-sidebar").expect("visible expand control");
+    cx.simulate_click(expand.center(), Default::default());
+    cx.run_until_parked();
+    std::thread::sleep(Duration::from_millis(50));
+    cx.executor().advance_clock(Duration::from_millis(16));
+    draw(cx);
+    page.read_with(cx, |page, _| assert!(page.sidebar_width > 40. && page.sidebar_width < 220., "drag starts during the actual expansion"));
+    drag_to(&page, cx, 320.);
+    assert_width(&page, cx, 320.);
+    // Let the previous animation finish. It must not restore its old target.
+    std::thread::sleep(Duration::from_millis(220));
+    cx.executor().advance_clock(Duration::from_millis(32));
+    draw(cx);
+    page.read_with(cx, |page, cx| assert_eq!(page.sidebar.read(cx).width(), 320., "stale expansion must not overwrite the newer drag target"));
+    assert_width(&page, cx, 320.);
+    page.read_with(cx, |page, _| assert_eq!(page.state.store.borrow().sidebar_width(), 320.));
     let _ = std::fs::remove_file(path);
 }

@@ -1,4 +1,4 @@
-name: Validate sidebar resize (isolated)
+name: Validate interrupted UI flows (isolated)
 # Topic-only validation: never integrate this replacement over product CI.
 on:
   workflow_dispatch:
@@ -14,7 +14,9 @@ jobs:
     timeout-minutes: 60
     env:
       CARGO_BUILD_JOBS: '2'
-      TEST: ui::pages::terminal_page::sidebar_resize_tests::sidebar_drag_keeps_content_aligned_and_restores_resized_width
+      FILTER: ui::pages::terminal_page::sidebar_resize_tests
+      LOST: ui::pages::terminal_page::sidebar_resize_tests::sidebar_release_outside_window_does_not_leave_hover_resizing
+      ANIMATION: ui::pages::terminal_page::sidebar_resize_tests::sidebar_resize_during_expand_keeps_the_new_width_after_animation
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -34,7 +36,7 @@ jobs:
         with:
           key: desktop-check-x86_64-unknown-linux-gnu
           cache-on-failure: true
-      - name: Compile regression and verify selection
+      - name: Compile and verify exact selection
         shell: bash
         run: |
           set -euo pipefail
@@ -42,43 +44,39 @@ jobs:
           chmod 700 "$XDG_RUNTIME_DIR"
           rustc -Vv
           git rev-parse HEAD
-          timeout 2400 cargo test --locked --target x86_64-unknown-linux-gnu --bin xenterm --jobs 2 "$TEST" -- --list --exact 2>&1 | tee sidebar-tests.txt
-          grep -Fx "$TEST: test" sidebar-tests.txt
-      - name: Require baseline failure at resized content assertion
+          timeout 2400 cargo test --locked --target x86_64-unknown-linux-gnu --bin xenterm --jobs 2 "$FILTER" -- --list 2>&1 | tee flow-tests.txt
+          grep -Fx "$LOST: test" flow-tests.txt
+          grep -Fx "$ANIMATION: test" flow-tests.txt
+      - name: Evaluate baseline interrupted user flows independently
         shell: bash
         run: |
           set -euo pipefail
-          result=0
-          timeout 120 cargo test --locked --target x86_64-unknown-linux-gnu --bin xenterm --jobs 2 "$TEST" -- --exact --test-threads=1 --nocapture > sidebar-red.log 2>&1 || result=$?
-          cat sidebar-red.log
-          test "$result" -eq 101 || exit 1
-          grep -F 'sidebar content must follow resized column' sidebar-red.log || exit 1
-          grep -F '0 passed; 1 failed;' sidebar-red.log || exit 1
-      - name: Apply minimal width synchronization and require green
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('src/ui/impls/sidebar.rs')
-          old = '        self.store.borrow_mut().set_sidebar_width(clamped);\n        self.shown_width = clamped;'
-          text = p.read_text()
-          assert text.count(old) == 1
-          p.write_text(text.replace(old, old.replace('        self.shown_width', '        self.width = clamped;\n        self.shown_width')))
-          PY
-          git diff -- src/ui/impls/sidebar.rs
-          timeout 600 cargo test --locked --target x86_64-unknown-linux-gnu --bin xenterm --jobs 2 "$TEST" -- --exact --test-threads=1 --nocapture 2>&1 | tee sidebar-green.log
-          grep -F '1 passed; 0 failed;' sidebar-green.log
-          timeout 120 cargo test --locked --target x86_64-unknown-linux-gnu --bin xenterm --jobs 2 ui::sidebar::resource_tests -- --test-threads=1 2>&1 | tee sidebar-resources.log
+          infra=0
+          for entry in "$LOST" "$ANIMATION"; do
+            name="${entry##*::}"
+            result=0
+            timeout 120 cargo test --locked --target x86_64-unknown-linux-gnu --bin xenterm --jobs 2 "$entry" -- --exact --test-threads=1 --nocapture > "$name.log" 2>&1 || result=$?
+            cat "$name.log"
+            echo "$result" > "$name.exit"
+            # A timeout, compiler failure or missing test is not bug evidence.
+            if test "$result" -eq 0; then
+              grep -F 'test result: ok. 1 passed; 0 failed;' "$name.log" || infra=1
+            elif test "$result" -eq 101; then
+              grep -F 'test result: FAILED. 0 passed; 1 failed;' "$name.log" || infra=1
+            else
+              echo "Infrastructure/timeout exit: $result" >&2
+              infra=1
+            fi
+          done
+          exit "$infra"
       - name: Preserve regression evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: sidebar-resize-evidence
+          name: interrupted-flow-baseline-evidence
           path: |
-            sidebar-tests.txt
-            sidebar-red.log
-            sidebar-green.log
-            sidebar-resources.log
+            flow-tests.txt
+            sidebar_*.log
+            sidebar_*.exit
           if-no-files-found: warn
           retention-days: 14

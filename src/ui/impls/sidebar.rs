@@ -355,6 +355,7 @@ impl SidebarView {
             return;
         }
         self.store.borrow_mut().set_sidebar_width(clamped);
+        self.width = clamped;
         self.shown_width = clamped;
         cx.notify();
     }
@@ -657,6 +658,7 @@ impl SidebarView {
                     )
                     .child(
                         Button::new("collapse-sidebar")
+                            .debug_selector(|| "collapse-resource-sidebar".to_string())
                             .icon(Icon::new(IconName::ChevronRight))
                             .ghost()
                             .tooltip(crate::i18n::t(
@@ -1003,6 +1005,7 @@ impl SidebarView {
             .border_color(theme.border)
             .child(
                 Button::new("expand-sidebar")
+                    .debug_selector(|| "expand-resource-sidebar".to_string())
                     .icon(Icon::new(IconName::ChevronLeft))
                     .ghost()
                     .tooltip(crate::i18n::t("展开资源面板", "Expand the resource panel"))
