@@ -167,7 +167,9 @@ impl FileViewerView {
         Self {
             path,
             name,
-            editable,
+            // An unreadable file is not an empty editable file. Only read
+            // failures revoke editing; a later save failure keeps its draft.
+            editable: editable && error.is_empty(),
             text,
             error: (!error.is_empty()).then_some(error),
             saving_since: None,
@@ -424,6 +426,17 @@ mod tests {
         assert_eq!(viewer.update(cx, |viewer, _| viewer.take_action()), Some(FileViewerAction::Save {
             path: "/synthetic/fixture.txt".into(),
             content: "unsaved draft\nsecond line".into(),
+        }));
+    }
+
+    #[gpui_kit::gpui::test]
+    fn successful_empty_file_read_can_still_save_empty_content(cx: &mut TestAppContext) {
+        let (viewer, cx) = open_fixture(cx, true, false, String::new());
+        let save = cx.debug_bounds("file-viewer-save").expect("successfully read empty files remain editable");
+        cx.simulate_click(save.center(), Modifiers::default());
+        assert_eq!(viewer.update(cx, |viewer, _| viewer.take_action()), Some(FileViewerAction::Save {
+            path: "/synthetic/fixture.txt".into(),
+            content: String::new(),
         }));
     }
 

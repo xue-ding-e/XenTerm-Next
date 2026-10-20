@@ -350,3 +350,41 @@ fn unscoped_file_reply_cannot_open_a_writable_editor(cx: &mut TestAppContext) {
     assert!(fixture.other_commands.try_recv().is_err());
 }
 
+#[gpui_kit::gpui::test]
+fn failed_read_reply_must_never_write_empty_content_back_to_the_remote_file(cx: &mut TestAppContext) {
+    let (mut fixture, cx) = fixture(cx);
+    request_file(&mut fixture, true, cx);
+    fixture.source_sink.deliver_for_generation(
+        SOURCE,
+        fixture.source_generation,
+        vec![crate::session::protocol::SessionEvent::SftpFileText {
+            path: REMOTE.into(),
+            name: "配置.txt".into(),
+            content: String::new(),
+            edit: true,
+            error: "synthetic read failure".into(),
+        }],
+    );
+    settle(cx);
+    assert!(fixture.shell.read_with(cx, |shell, _| shell.open_file.is_some()),
+        "the failed read must reach the real file dialog");
+    // A safe implementation may omit or disable Save. If a Save hitbox is
+    // present, click it normally and observe the actual transport commands.
+    // Merely hiding text or drawing an error is not evidence that no write ran.
+    if let Some(save) = cx.debug_bounds("file-viewer-save") {
+        cx.simulate_click(save.center(), Default::default());
+        settle(cx);
+    }
+    let mut writes = Vec::new();
+    for (tab, commands) in [
+        (SOURCE, &mut fixture.source_commands),
+        (OTHER, &mut fixture.other_commands),
+    ] {
+        while let Ok(command) = commands.try_recv() {
+            if let crate::sftp::SftpCommand::WriteText { remote, content } = command {
+                writes.push((tab, remote, content));
+            }
+        }
+    }
+    assert!(writes.is_empty(), "a failed read must not overwrite either remote with unverified/empty content: {writes:?}");
+}
