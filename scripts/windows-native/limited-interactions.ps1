@@ -31,6 +31,7 @@ function Invoke-LimitedInteractions([object]$OwnedProcess,[string]$OutputDir) {
         } catch { $capture.Dispose(); throw }
     }
     function Test-Home($capture) {
+        # Exact published 77ce731 home from run39469301493, visually reviewed.
         # Excludes changing CPU/memory/network values/curves and bottom version text.
         foreach ($r in @([Drawing.Rectangle]::new(5,0,45,104),[Drawing.Rectangle]::new(60,10,200,60),[Drawing.Rectangle]::new(510,305,360,70),[Drawing.Rectangle]::new(570,387,238,34))) {
             if ([XenTermNativeProbe.LimitedPixels]::Match($capture.Image,$reference,$r) -lt 0.98) { return $false }
@@ -75,8 +76,8 @@ function Invoke-LimitedInteractions([object]$OwnedProcess,[string]$OutputDir) {
         if ($inside -lt 0.65 -or $outside -gt 0.35 -or ($inside-$outside) -lt 0.40) { throw 'Quick-connect overlay shape was not established; do not send Esc blindly' }
     }
     try {
-        $referencePath=Join-Path $PSScriptRoot 'trusted-home-03.png'
-        if ((Get-FileHash -LiteralPath $referencePath -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'e1a94d5ac2ab5e3f317b1b5bd342a3419f83b9291a504fac0604a3776ec28de4') { throw 'Reviewed home reference changed' }
+        $referencePath=Join-Path $PSScriptRoot 'reviewed-release-home-77ce731.png'
+        if ((Get-FileHash -LiteralPath $referencePath -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'd81a84f4c49e331969196c9bd859ab6435511e3cb323f656b3fa67e95b67a7b6') { throw 'Reviewed home reference changed' }
         $reference=[Drawing.Bitmap]::new($referencePath)
         # Read-only first-frame wait, at most 20 seconds. Never save/map the rich
         # but unrendered host-background frame 01 as a trusted application frame.
