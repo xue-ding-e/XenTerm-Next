@@ -47,7 +47,7 @@ namespace XenTermNativeProbe {
         }
         void Send(INPUT value) {
             AssertForeground();
-            if(AcceptedEvents>=3) throw new Exception("Input event budget exceeded");
+            if(AcceptedEvents>=6) throw new Exception("Input event budget exceeded");
             uint count=SendInput(1,new INPUT[]{value},Marshal.SizeOf(typeof(INPUT)));
             if(count!=1) throw new Exception("SendInput short write: "+count+"; Win32="+Marshal.GetLastWin32Error()+" (cause including UIPI is unproven)");
             AcceptedEvents++;

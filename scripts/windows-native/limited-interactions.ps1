@@ -1,9 +1,9 @@
 # Dot-sourced by smoke.ps1 only for an explicit opt-in, using the same owned app process.
-# Single settings click diagnostic; no drag, navigation loop, keyboard, connection or data input.
+# Two bounded navigation clicks: home to Settings, then Sessions; no connection or data input.
 function Invoke-LimitedInteractions([object]$OwnedProcess,[string]$OutputDir) {
     Add-Type -Path (Join-Path $PSScriptRoot 'LimitedInput.cs') -ReferencedAssemblies System.dll,System.Core.dll,System.Drawing.dll
     $result=[ordered]@{status='blocked';scope='visible_client_only_not_full_window';full_window_verified=$false;semantic_status='requires_visual_review';reason=$null;flows=@();steps=@();screenshots=@();input_cleanup='not_started'}
-    $layoutBounds=$null; $reference=$null; $injector=$null; $handle=[IntPtr]::Zero; $frame=$null; $after=$null
+    $layoutBounds=$null; $settingsReference=$null; $reference=$null; $injector=$null; $handle=[IntPtr]::Zero; $frame=$null; $after=$null
     $elapsed=[Diagnostics.Stopwatch]::StartNew()
     function Assert-Geometry($capture) {
         $o=$capture.OriginalBounds; $v=$capture.VisibleBounds
@@ -51,6 +51,13 @@ function Invoke-LimitedInteractions([object]$OwnedProcess,[string]$OutputDir) {
         # Known rail divider must remain at x55, independent of the body page.
         if ([XenTermNativeProbe.LimitedPixels]::Match($capture.Image,$reference,[Drawing.Rectangle]::new(45,110,12,550)) -lt 0.98) { throw 'Navigation rail geometry changed' }
     }
+    function Assert-Settings($capture) {
+        # Fresh stable text/menu regions from the reviewed actual release Settings page.
+        foreach ($r in @([Drawing.Rectangle]::new(65,8,150,302),[Drawing.Rectangle]::new(240,15,560,350))) {
+            if ([XenTermNativeProbe.LimitedPixels]::Match($capture.Image,$settingsReference,$r) -lt 0.98) { throw 'Fresh page does not match reviewed release Settings; no Sessions input' }
+        }
+        Assert-Nav $capture 84
+    }
     function Assert-ActionFresh($capture) {
         if (([DateTime]::UtcNow-[DateTime]$capture.Image.Tag).TotalSeconds -gt 1) { throw 'Input authorization screenshot is older than one second' }
         if ([XenTermNativeProbe.Desktop]::ClientBounds($handle) -ne $capture.OriginalBounds) { throw 'App moved after the fresh input screenshot' }
@@ -78,6 +85,9 @@ function Invoke-LimitedInteractions([object]$OwnedProcess,[string]$OutputDir) {
     try {
         $referencePath=Join-Path $PSScriptRoot 'reviewed-release-home-77ce731.png'
         if ((Get-FileHash -LiteralPath $referencePath -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'd81a84f4c49e331969196c9bd859ab6435511e3cb323f656b3fa67e95b67a7b6') { throw 'Reviewed home reference changed' }
+        $settingsPath=Join-Path $PSScriptRoot 'reviewed-release-settings-77ce731.png'
+        if ((Get-FileHash -LiteralPath $settingsPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne '1a536d736ad9fe4224ecd2643494469ef152bfc9a50c8993c83071a26fdb0eb8') { throw 'Reviewed release Settings reference changed' }
+        $settingsReference=[Drawing.Bitmap]::new($settingsPath)
         $reference=[Drawing.Bitmap]::new($referencePath)
         # Read-only first-frame wait, at most 20 seconds. Never save/map the rich
         # but unrendered host-background frame 01 as a trusted application frame.
@@ -98,8 +108,8 @@ function Invoke-LimitedInteractions([object]$OwnedProcess,[string]$OutputDir) {
         $injector=[XenTermNativeProbe.LimitedInput]::new($handle,$OwnedProcess.Pid,$frame.VisibleBounds,$frame.DesktopBounds)
         $layoutBounds=$frame.OriginalBounds
         $origin=$frame.OriginalBounds.Location
-        function Record-Phase([string]$phase) {
-            $result.steps+=@([ordered]@{name=$phase;evidence=$injector.DiagnosticSnapshot(($origin.X+27),($origin.Y+84))})
+        function Record-Phase([string]$phase,[int]$targetY=84) {
+            $result.steps+=@([ordered]@{name=$phase;evidence=$injector.DiagnosticSnapshot(($origin.X+27),($origin.Y+$targetY))})
             Write-Report $result (Join-Path $OutputDir 'interactions.json')
         }
         # One same-coordinate click, with evidence between input phases. Never retries.
@@ -130,13 +140,43 @@ function Invoke-LimitedInteractions([object]$OwnedProcess,[string]$OutputDir) {
             if($selected) { $observed=$true; break }
         }
         if(-not $observed) { throw 'One diagnostic click did not establish settings selection within one second; no retry or later input' }
+        Assert-Settings $frame
+        $result.flows+=@([ordered]@{name='home-to-settings';status='reviewed-page-regions-matched';semantic_status='requires_visual_review'})
+        # Exactly one further click on the visible Sessions icon (client x27/y52).
+        # No action is taken on the resulting unreviewed page.
+        Record-Phase 'sessions-before-move' 52
+        Assert-ActionFresh $frame; $injector.Hover(($origin.X+27),($origin.Y+52))
+        $frame.Dispose(); $frame=$null; Start-Sleep -Milliseconds 120
+        $frame=Read-FreshFrame '04-sessions-hover'; Assert-Settings $frame
+        Record-Phase 'sessions-after-move' 52
+        Assert-ActionFresh $frame; $injector.PressDiagnostic(($origin.X+27),($origin.Y+52))
+        Start-Sleep -Milliseconds 120
+        $frame.Dispose(); $frame=$null; $frame=Read-FreshFrame '05-sessions-held'
+        Record-Phase 'sessions-after-down' 52
+        $result.steps+=@([ordered]@{name='sessions-left-held';observed=$injector.DiagnosticLeftHeld()})
+        Write-Report $result (Join-Path $OutputDir 'interactions.json')
+        Assert-ActionFresh $frame; $injector.ReleaseDiagnostic()
+        Record-Phase 'sessions-after-up' 52
+        $sessionsObserved=$false
+        foreach ($sample in 0..4) {
+            $frame.Dispose(); $frame=$null
+            if ($sample -gt 0) { Start-Sleep -Milliseconds 250 }
+            $frame=Read-FreshFrame ('06-sessions-released-'+$sample)
+            $selected=$false
+            try { Assert-Nav $frame 52; $selected=$true } catch { }
+            $result.steps+=@([ordered]@{name=('sessions-released-'+$sample);sessions_selection_observed=$selected})
+            Write-Report $result (Join-Path $OutputDir 'interactions.json')
+            if ($selected) { $sessionsObserved=$true; break }
+        }
+        if (-not $sessionsObserved) { throw 'One Sessions click did not establish selection within one second; stop without retry' }
         $result.status='needs_visual_review'
-        $result.reason='Single settings click selection observed; inspect hover/held/released screenshots for semantic page change. No subsequent input.'
+        $result.reason='Two navigation clicks only; inspect actual Settings and Sessions screenshots. No connection/new/delete/import or subsequent input.'
+
     } catch { $result.reason=$_.Exception.Message }
     finally {
         if ($frame) { $frame.Dispose() }; if ($after) { $after.Dispose() }
         if ($injector) { $injector.Dispose(); $result.accepted_input_events=$injector.AcceptedEvents; $result.input_cleanup=$injector.CleanupConfirmed; if (-not $injector.CleanupConfirmed) { $result.status='blocked'; $result.reason=$injector.CleanupError } }
-        if ($reference) { $reference.Dispose() }
+        if ($reference) { $reference.Dispose() }; if ($settingsReference) { $settingsReference.Dispose() }
         $result.elapsed_seconds=[Math]::Round($elapsed.Elapsed.TotalSeconds,2)
         Write-Report $result (Join-Path $OutputDir 'interactions.json')
     }

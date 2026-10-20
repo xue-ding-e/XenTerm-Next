@@ -1,4 +1,4 @@
-name: Published Windows release single Settings click (manual)
+name: Published Windows release Settings then Sessions (manual)
 # Isolated diagnostic only: never integrate this harness over product CI.
 on:
   workflow_dispatch:
@@ -47,7 +47,7 @@ jobs:
         run: |
           & ./scripts/windows-native/preflight.ps1 -EvidenceDir "$env:RUNNER_TEMP/native-evidence/prelaunch"
           exit $LASTEXITCODE
-      - name: One guarded published Settings click with phase evidence
+      - name: Two guarded navigation clicks with phase evidence
         id: smoke
         if: steps.preflight.outputs.desktop_gate == 'passed'
         timeout-minutes: 2
@@ -81,5 +81,5 @@ jobs:
           DESKTOP_GATE: ${{ steps.preflight.outputs.desktop_gate }}
           SMOKE_GATE: ${{ steps.smoke.outputs.smoke_gate }}
         run: |
-          "Artifact identity=$env:IDENTITY_GATE; visible desktop=$env:DESKTOP_GATE; single-click diagnostic=$env:SMOKE_GATE. Inspect phase screenshots for page semantics; selection alone is not complete navigation QA." | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+          "Artifact identity=$env:IDENTITY_GATE; visible desktop=$env:DESKTOP_GATE; two-click diagnostic=$env:SMOKE_GATE. Inspect phase screenshots for page semantics; selection alone is not complete navigation QA." | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
           if ($env:IDENTITY_GATE -ne 'verified' -or $env:DESKTOP_GATE -ne 'passed' -or $env:SMOKE_GATE -ne 'needs_visual_review') { throw 'Diagnostic incomplete or failed; do not infer a navigation fix or retry input.' }
