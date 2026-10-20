@@ -1496,7 +1496,7 @@ async fn write_text_file(sftp: &SftpSession, remote: &str, content: &str) -> Res
         .await
         .context("write remote file")?;
     f.flush().await.context("flush remote file")?;
-    let _ = f.shutdown().await;
+    f.shutdown().await.context("close remote file")?;
     Ok(())
 }
 
@@ -2606,5 +2606,312 @@ mod connection_failure_tests {
         assert_eq!(errors.len(), 1, "connection failure must emit one SFTP error");
         assert!(last_was_error, "the terminal event must be SftpError");
         assert!(errors[0].contains("invalid session proxy URL"));
+    }
+}
+
+#[cfg(test)]
+mod write_text_close_tests {
+    use super::*;
+    use std::{
+        future::Future,
+        pin::Pin,
+        task::{Context as TaskContext, Poll},
+        time::Duration,
+    };
+    use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, ReadBuf};
+    use tokio::sync::oneshot;
+
+    const STEP: Duration = Duration::from_secs(5);
+    const PATH: &[u8] = b"/fixture.txt";
+    const DATA: &[u8] = b"fixture text";
+    const HANDLE: &[u8] = b"fixture-handle";
+
+    #[derive(Clone, Copy)]
+    enum Case {
+        CloseFailure,
+        Success,
+        WriteFailure,
+        FsyncFailure,
+    }
+
+    // Observing this stream's Drop proves both transport split halves were
+    // released. It does not join File::drop's detached CLOSE future; each test
+    // runtime cancels any remaining dependency-owned tasks when it terminates.
+    struct TrackedStream(DuplexStream, Option<oneshot::Sender<()>>);
+
+    impl Drop for TrackedStream {
+        fn drop(&mut self) {
+            if let Some(tx) = self.1.take() {
+                let _ = tx.send(());
+            }
+        }
+    }
+
+    impl AsyncRead for TrackedStream {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut TaskContext<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Pin::new(&mut self.0).poll_read(cx, buf)
+        }
+    }
+
+    impl AsyncWrite for TrackedStream {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            cx: &mut TaskContext<'_>,
+            buf: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            Pin::new(&mut self.0).poll_write(cx, buf)
+        }
+        fn poll_flush(
+            mut self: Pin<&mut Self>,
+            cx: &mut TaskContext<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Pin::new(&mut self.0).poll_flush(cx)
+        }
+        fn poll_shutdown(
+            mut self: Pin<&mut Self>,
+            cx: &mut TaskContext<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Pin::new(&mut self.0).poll_shutdown(cx)
+        }
+    }
+
+    async fn bounded<T>(stage: &str, future: impl Future<Output = Result<T>>) -> Result<T> {
+        tokio::time::timeout(STEP, future)
+            .await
+            .with_context(|| format!("{stage} timeout"))?
+            .with_context(|| stage.to_owned())
+    }
+
+    fn string(out: &mut Vec<u8>, value: &[u8]) {
+        out.extend_from_slice(&(value.len() as u32).to_be_bytes());
+        out.extend_from_slice(value);
+    }
+
+    fn take<'a>(input: &mut &'a [u8], len: usize) -> Result<&'a [u8]> {
+        anyhow::ensure!(input.len() >= len, "short fixture packet");
+        let (value, rest) = input.split_at(len);
+        *input = rest;
+        Ok(value)
+    }
+
+    fn number(input: &mut &[u8]) -> Result<u32> {
+        Ok(u32::from_be_bytes(take(input, 4)?.try_into()?))
+    }
+
+    fn field<'a>(input: &mut &'a [u8]) -> Result<&'a [u8]> {
+        let len = number(input)? as usize;
+        take(input, len)
+    }
+
+    async fn packet(stream: &mut DuplexStream) -> Result<Vec<u8>> {
+        bounded("peer packet", async {
+            let len = stream.read_u32().await? as usize;
+            anyhow::ensure!((1..=4096).contains(&len), "fixture packet length out of bounds");
+            let mut bytes = vec![0; len];
+            stream.read_exact(&mut bytes).await?;
+            Ok(bytes)
+        })
+        .await
+    }
+
+    async fn reply(stream: &mut DuplexStream, bytes: Vec<u8>) -> Result<()> {
+        bounded("peer reply", async {
+            anyhow::ensure!(bytes.len() <= 4096, "fixture reply too large");
+            stream.write_u32(bytes.len() as u32).await?;
+            stream.write_all(&bytes).await?;
+            stream.flush().await?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn status(stream: &mut DuplexStream, id: u32, failed: bool) -> Result<()> {
+        let mut bytes = vec![101];
+        bytes.extend_from_slice(&id.to_be_bytes());
+        bytes.extend_from_slice(&(if failed { 4_u32 } else { 0_u32 }).to_be_bytes());
+        string(&mut bytes, if failed { b"fixture failure" } else { b"ok" });
+        string(&mut bytes, b"");
+        reply(stream, bytes).await
+    }
+
+    async fn peer(mut stream: DuplexStream, case: Case, closed: oneshot::Sender<()>) -> Result<()> {
+        // Only the minimal SFTP v3 sequence is accepted. No remote filesystem,
+        // SSH authentication, network socket, sleeps or unbounded packet loop.
+        anyhow::ensure!(packet(&mut stream).await? == [1, 0, 0, 0, 3], "expected INIT v3");
+        let mut version = vec![2, 0, 0, 0, 3];
+        if matches!(case, Case::FsyncFailure) {
+            string(&mut version, b"fsync@openssh.com");
+            string(&mut version, b"1");
+        }
+        reply(&mut stream, version).await?;
+        let bytes = packet(&mut stream).await?;
+        let mut p = bytes.as_slice();
+        anyhow::ensure!(take(&mut p, 1)? == [3], "expected OPEN");
+        let id = number(&mut p)?;
+        anyhow::ensure!(field(&mut p)? == PATH, "wrong path");
+        anyhow::ensure!(number(&mut p)? == 0x1a, "expected WRITE|CREATE|TRUNCATE");
+        anyhow::ensure!(number(&mut p)? == 0 && p.is_empty(), "unexpected attributes");
+        let mut handle = vec![102];
+        handle.extend_from_slice(&id.to_be_bytes());
+        string(&mut handle, HANDLE);
+        reply(&mut stream, handle).await?;
+        let bytes = packet(&mut stream).await?;
+        let mut p = bytes.as_slice();
+        anyhow::ensure!(take(&mut p, 1)? == [6], "expected WRITE");
+        let id = number(&mut p)?;
+        anyhow::ensure!(
+            field(&mut p)? == HANDLE && take(&mut p, 8)? == [0; 8],
+            "wrong handle/offset",
+        );
+        anyhow::ensure!(field(&mut p)? == DATA && p.is_empty(), "wrong payload");
+        status(&mut stream, id, matches!(case, Case::WriteFailure)).await?;
+        if matches!(case, Case::FsyncFailure) {
+            let bytes = packet(&mut stream).await?;
+            let mut p = bytes.as_slice();
+            anyhow::ensure!(take(&mut p, 1)? == [200], "expected EXTENDED");
+            let id = number(&mut p)?;
+            anyhow::ensure!(
+                field(&mut p)? == b"fsync@openssh.com" && field(&mut p)? == HANDLE && p.is_empty(),
+                "wrong fsync request",
+            );
+            status(&mut stream, id, true).await?;
+        }
+        // WRITE/fsync error paths also close via File::drop. Wait for the
+        // actual CLOSE packet before allowing session teardown.
+        let bytes = packet(&mut stream).await?;
+        let mut p = bytes.as_slice();
+        anyhow::ensure!(take(&mut p, 1)? == [4], "expected CLOSE");
+        let id = number(&mut p)?;
+        anyhow::ensure!(field(&mut p)? == HANDLE && p.is_empty(), "wrong close handle");
+        status(&mut stream, id, matches!(case, Case::CloseFailure)).await?;
+        closed
+            .send(())
+            .map_err(|_| anyhow::anyhow!("close barrier receiver dropped"))?;
+        // Keep the read side alive until the client explicitly closes its
+        // session. Returning immediately could race delivery of CLOSE STATUS.
+        bounded("peer EOF", async {
+            let mut byte = [0];
+            anyhow::ensure!(stream.read(&mut byte).await? == 0, "unexpected packet after CLOSE");
+            Ok(())
+        })
+        .await
+    }
+
+    async fn exercise(case: Case) -> Result<()> {
+        let (client, server) = tokio::io::duplex(8192);
+        let (drop_tx, drop_rx) = oneshot::channel();
+        let (closed_tx, closed_rx) = oneshot::channel();
+        let mut task = tokio::spawn(peer(server, case, closed_tx));
+        let session = bounded("client init", async {
+            Ok(SftpSession::new_opts(TrackedStream(client, Some(drop_tx)), Some(2)).await?)
+        })
+        .await;
+        let result = match session.as_ref() {
+            Ok(session) => bounded(
+                "production write",
+                write_text_file(session, "/fixture.txt", "fixture text"),
+            )
+            .await,
+            Err(_) => Err(anyhow::anyhow!("client initialization failed")),
+        };
+        // On early WRITE/fsync failure, File::drop enqueues CLOSE asynchronously.
+        // This barrier confirms CLOSE STATUS was written, not consumed. The
+        // dependency does not expose a join handle for the detached CLOSE future.
+        let barrier = bounded("CLOSE reply barrier", async {
+            closed_rx.await.context("close barrier notification")
+        })
+        .await;
+        let close = match session.as_ref() {
+            Ok(s) => bounded("session close enqueue", async { Ok(s.close().await?) }).await,
+            Err(_) => Ok(()),
+        };
+        drop(session);
+        let joined = match tokio::time::timeout(STEP, &mut task).await {
+            Ok(value) => value.context("peer join").and_then(|value| value),
+            Err(_) => {
+                task.abort();
+                match tokio::time::timeout(STEP, &mut task).await {
+                    Ok(Err(error)) if error.is_cancelled() => Err(anyhow::anyhow!(
+                        "peer cleanup timeout; cancellation confirmed",
+                    )),
+                    Ok(Ok(Ok(()))) => Err(anyhow::anyhow!(
+                        "peer cleanup timeout; normal completion confirmed after abort",
+                    )),
+                    Ok(Ok(Err(error))) => Err(error.context("peer failed after cleanup timeout")),
+                    Ok(Err(error)) => Err(
+                        anyhow::Error::from(error).context("peer join failed after abort"),
+                    ),
+                    Err(_) => Err(anyhow::anyhow!(
+                        "peer abort join timeout; termination unconfirmed",
+                    )),
+                }
+            }
+        };
+        let released = bounded("client stream released", async {
+            drop_rx.await.context("stream drop notification")
+        })
+        .await;
+        close.context("session close enqueue")?;
+        joined.context("peer protocol/cleanup")?;
+        barrier?;
+        released?;
+        match case {
+            Case::Success => result.context("successful CLOSE must succeed"),
+            Case::CloseFailure => {
+                anyhow::ensure!(result.is_err(), "CLOSE failure was reported as save success");
+                let error = format!("{:#}", result.unwrap_err());
+                anyhow::ensure!(
+                    error.contains("close remote file") && error.contains("fixture failure"),
+                    "wrong CLOSE failure: {error}",
+                );
+                Ok(())
+            }
+            Case::WriteFailure => {
+                let error = format!(
+                    "{:#}",
+                    result.expect_err("WRITE failure was reported as save success"),
+                );
+                anyhow::ensure!(
+                    error.contains("write remote file") && error.contains("fixture failure"),
+                    "wrong WRITE failure: {error}",
+                );
+                Ok(())
+            }
+            Case::FsyncFailure => {
+                let error = format!(
+                    "{:#}",
+                    result.expect_err("fsync failure was reported as save success"),
+                );
+                anyhow::ensure!(
+                    error.contains("flush remote file") && error.contains("fixture failure"),
+                    "wrong fsync failure: {error}",
+                );
+                Ok(())
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn close_failure_is_not_save_success() -> Result<()> {
+        exercise(Case::CloseFailure).await
+    }
+
+    #[tokio::test]
+    async fn acknowledged_close_succeeds() -> Result<()> {
+        exercise(Case::Success).await
+    }
+
+    #[tokio::test]
+    async fn write_failure_is_preserved() -> Result<()> {
+        exercise(Case::WriteFailure).await
+    }
+
+    #[tokio::test]
+    async fn fsync_failure_is_preserved() -> Result<()> {
+        exercise(Case::FsyncFailure).await
     }
 }
