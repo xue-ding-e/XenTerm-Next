@@ -387,7 +387,7 @@ class WorkflowTests(unittest.TestCase):
     def test_candidate_packaging_cannot_publish(self):
         ci = (ROOT / '.github/workflows/ci.yml').read_text(encoding='utf-8').split('  next-beta-dry-run:', 1)[1]
         self.assertIn("github.ref == 'refs/heads/ci/next-beta-preview-20261014'", ci)
-        self.assertIn('needs: [desktop, migration-e2e, headless-e2e, windows-ssh, installer, installer-windows, installer-macos]', ci)
+        self.assertIn('needs: [desktop, migration-e2e, headless-e2e, msrv-headless, windows-ssh, installer, installer-windows, installer-macos]', ci)
         self.assertNotIn('contents: write', ci)
         build = (ROOT / '.github/workflows/next-beta-build.yml').read_text(encoding='utf-8')
         self.assertNotIn('contents: write', build)
