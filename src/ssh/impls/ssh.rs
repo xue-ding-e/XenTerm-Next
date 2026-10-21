@@ -4120,10 +4120,15 @@ mod unmapped_forwarding_tests {
         server: server::RunningSession<TestServer>,
         callback_done: UnboundedReceiver<(usize, Option<usize>)>,
         disconnect_seen: UnboundedReceiver<()>,
+        counter: Option<Arc<AtomicUsize>>,
     }
 
     impl Fixture {
         async fn new(initial_count: Option<usize>) -> Result<Self> {
+            Self::with_target(initial_count, None).await
+        }
+
+        async fn with_target(initial_count: Option<usize>, target_port: Option<u16>) -> Result<Self> {
             // Public, deterministic test seed, never read from credential storage.
             let key = PrivateKey::new(
                 Ed25519Keypair::from_seed(&[7; 32]).into(),
@@ -4137,9 +4142,10 @@ mod unmapped_forwarding_tests {
             let (events, _event_rx) = mpsc::unbounded_channel();
             let (callback_done, callback_rx) = mpsc::unbounded_channel();
             let (disconnect_seen, disconnect_rx) = mpsc::unbounded_channel();
-            let forwarded_open = initial_count
-                .into_iter()
-                .map(|count| (FORWARDED_PORT, Arc::new(AtomicUsize::new(count))))
+            let counter = initial_count.map(|count| Arc::new(AtomicUsize::new(count)));
+            let forwarded_open = counter
+                .iter()
+                .map(|counter| (FORWARDED_PORT, counter.clone()))
                 .collect();
             let handler = ForwardingClient {
                 expected_key,
@@ -4149,7 +4155,10 @@ mod unmapped_forwarding_tests {
                     host_key_wait: HostKeyWait::default(),
                     host: "forwarding-test.invalid".into(),
                     port: 22,
-                    remote_forwards: Default::default(),
+                    remote_forwards: target_port
+                        .into_iter()
+                        .map(|port| (FORWARDED_PORT, ("127.0.0.1".to_owned(), port)))
+                        .collect(),
                     events,
                     forwarded_open,
                 },
@@ -4168,6 +4177,7 @@ mod unmapped_forwarding_tests {
                 server,
                 callback_done: callback_rx,
                 disconnect_seen: disconnect_rx,
+                counter,
             })
         }
 
@@ -4262,5 +4272,93 @@ mod unmapped_forwarding_tests {
     #[tokio::test]
     async fn unmapped_channel_preserves_existing_counter() -> Result<()> {
         tokio::time::timeout(Duration::from_secs(45), unmapped_count_stays(Some(7))).await?
+    }
+
+    // The production mapped path dials TcpStream, so only the local target uses
+    // loopback. Keep its ephemeral listener bound for the entire fixture; there
+    // is no reserve/drop/reconnect port race and no external SSH connection.
+    #[tokio::test(flavor = "current_thread")]
+    async fn mapped_channel_splices_and_releases_connection_count() -> Result<()> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        tokio::time::timeout(Duration::from_secs(45), async {
+            const REQUEST: &[u8] = b"forwarded request\0\xff";
+            const RESPONSE: &[u8] = b"local response\0\xfe";
+            let listener = bounded(
+                "bind owned loopback target",
+                tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)),
+            )
+            .await??;
+            let mut fixture =
+                Fixture::with_target(Some(0), Some(listener.local_addr()?.port())).await?;
+            let result: Result<()> = async {
+                let (mut channel, snapshot) = fixture.open().await?;
+                anyhow::ensure!(
+                    snapshot == (1, Some(1)),
+                    "mapped callback did not reserve exactly one slot"
+                );
+                let (mut target, address) = bounded("accept mapped target", listener.accept()).await??;
+                anyhow::ensure!(address.ip().is_loopback(), "unexpected non-loopback peer");
+                bounded("SSH request", channel.data(REQUEST)).await??;
+                let mut received = vec![0; REQUEST.len()];
+                bounded("target exact request", target.read_exact(&mut received)).await??;
+                anyhow::ensure!(received == REQUEST, "forwarded request bytes differ");
+                bounded("target response", target.write_all(RESPONSE)).await??;
+                bounded("target write EOF", target.shutdown()).await??;
+                bounded("SSH request EOF", channel.eof()).await??;
+                let mut extra = [0];
+                anyhow::ensure!(
+                    bounded("target read EOF", target.read(&mut extra)).await?? == 0,
+                    "unexpected trailing request bytes"
+                );
+                let mut response = Vec::new();
+                let mut eof = false;
+                let mut closed = false;
+                // Bounded packet count and stage timeout; accept no extra payload
+                // or message type, and observe CLOSE rather than polling a counter.
+                // Allow even one byte per Data packet, plus exactly EOF and CLOSE.
+                for _ in 0..RESPONSE.len() + 2 {
+                    let message = bounded("SSH response/close", channel.wait())
+                        .await?
+                        .context("channel ended without CLOSE")?;
+                    match message {
+                        russh::ChannelMsg::Data { data } if !eof => {
+                            anyhow::ensure!(!data.is_empty(), "unexpected empty response packet");
+                            anyhow::ensure!(
+                                response.len() + data.len() <= RESPONSE.len(),
+                                "oversized response"
+                            );
+                            response.extend_from_slice(&data);
+                        }
+                        russh::ChannelMsg::Eof if !eof => eof = true,
+                        russh::ChannelMsg::Close => {
+                            closed = true;
+                            break;
+                        }
+                        other => anyhow::bail!("unexpected forwarded response: {other:?}"),
+                    }
+                }
+                anyhow::ensure!(
+                    closed && eof && response == RESPONSE,
+                    "incomplete forwarded response/close"
+                );
+                // russh 0.61.2 ChannelCloseOnDrop spawns the CLOSE sender. On this
+                // explicit current-thread runtime, it cannot run until production's
+                // current poll finishes: stream drop is followed by fetch_sub with
+                // no await. Thus the received CLOSE is a completion barrier for the
+                // counter decrement, unlike TCP EOF or a timing-based delay.
+                let count = fixture.counter.as_ref().context("missing mapped counter")?;
+                anyhow::ensure!(
+                    count.load(Ordering::Relaxed) == 0,
+                    "mapped connection slot was not released"
+                );
+                Ok(())
+            }
+            .await;
+            let cleanup = fixture.shutdown().await;
+            drop(listener);
+            finish_result(result, cleanup)
+        })
+        .await?
     }
 }
