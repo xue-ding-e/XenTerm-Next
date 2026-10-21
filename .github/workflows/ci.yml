@@ -59,7 +59,7 @@ jobs:
       - name: Remove only this job's fixed downloaded release staging
         if: always()
         run: |
-          $path=Join-Path $env:RUNNER_TEMP 'xenterm-published-7393417'
+          $path=Join-Path $env:RUNNER_TEMP 'xenterm-published-b59003f'
           if (Test-Path -LiteralPath $path) {
             if ((Get-Item -LiteralPath $path).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Unexpected staging reparse point; no recursive cleanup' }
             $marker=Join-Path $path '.owned-native-release'

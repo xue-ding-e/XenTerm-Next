@@ -1,15 +1,15 @@
 """Verify only the fixed published Windows portable; no tokens or builds."""
 import hashlib, json, os, pathlib, stat, urllib.parse, urllib.request, urllib.error, zipfile, datetime
-SHA = '7393417b28e6eb8c2e3e9bc9a8608805225f8b38'
+SHA = 'b59003f674b7fc4a17c7b389ea0af252e08d2ecf'
 REPO = 'xue-ding-e/XenTerm-Next'
 PREFIX = 'XenTerm-Next-beta-' + SHA + '-'
-RUNTIME = 'xt-beta-7393417-T1792531203'
+RUNTIME = 'xt-beta-b59003f-T1792541318'
 ASSETS = {
-    'BUILD.json': (660562364, 538, '982d6d8e8fec69f9660119a28de4761fa0da0a8285fbf6edd5d9909857829960'),
-    'SHA256SUMS': (660562459, 568, 'e508b69ebd6747aeff7d7097c2fe2a1634d4850f94261b7a9ac5378aef21d7de'),
-    'windows-x86_64.zip': (660563003, 43709387, '127f475b23dd83af4d3c9fcbd9745e9606312d59bd9e203fc19662e61826fca8'),
-    'linux-x86_64.tar.gz': (660562554, 50198623, '315272b9d8342c953f247515d14316c28c1ff814feaf08e46bfab4543b9c1d7f'),
-    'macos-aarch64.zip': (660562770, 43294205, '74af07653b1c615a16d6a14880b55e60ee22712289fc22959c5c722d719c7178'),
+    'BUILD.json': (660893044, 538, '6f773594941abe9366fd5540a8d620d7acf241a0c4b53d4c0c01cff526463140'),
+    'SHA256SUMS': (660893103, 568, '9c4842b72685166397b521237983ec0f9ab605e52745c5ac56f84afb152c424d'),
+    'windows-x86_64.zip': (660893536, 43709284, '0c2a7af0d8e21f09c6bdbd542ce08683fb87ab18930ef96a8205ef991d9973ec'),
+    'linux-x86_64.tar.gz': (660893160, 50198695, '63eb35ce713fc7ce715a0d0b6711ccba3828edd843a1f2e6f4eb72910a1ffa7f'),
+    'macos-aarch64.zip': (660893354, 43294098, '7684fc1385e6ea44fe20727d9c6df8b91efe643d607c9211974c7a9aa3d76841'),
 }
 class PublicRedirects(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
@@ -60,11 +60,11 @@ def main():
             raise RuntimeError('Unexpected public asset URL')
         if (asset['id'], asset['size'], asset['digest'], asset['state']) != (asset_id, size, 'sha256:' + sha256, 'uploaded'):
             raise RuntimeError('Published asset identity changed')
-    for run_id, name, event in [(39497790279, 'CI', 'push'), (39499454766, 'XenTerm Next beta', 'workflow_run')]:
+    for run_id, name, event in [(39518269978, 'CI', 'push'), (39519470032, 'XenTerm Next beta', 'workflow_run')]:
         run = api('/actions/runs/' + str(run_id))
         if (run['head_sha'], run['head_branch'], run['status'], run['conclusion'], run['name'], run['event'], run['repository']['full_name']) != (SHA, 'main', 'completed', 'success', name, event, REPO):
             raise RuntimeError('Release or CI provenance mismatch')
-    root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'xenterm-published-7393417'
+    root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'xenterm-published-b59003f'
     root.mkdir(exist_ok=False)
     (root / '.owned-native-release').write_text('/'.join(os.environ[k] for k in ('GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'GITHUB_SHA')), encoding='utf-8')
     downloaded = {}
@@ -74,7 +74,7 @@ def main():
         if len(data) != size or digest(data) != sha256: raise RuntimeError('Downloaded asset byte mismatch')
         (root / suffix).write_bytes(data); downloaded[suffix] = data
     build = json.loads(downloaded['BUILD.json'])
-    if (build['repository'], build['commit'], build['ci_run'], build['build_run'], build['runtime_version'], build['package_version']) != (REPO, SHA, '39497790279', '39499454766', RUNTIME, '0.7.3'):
+    if (build['repository'], build['commit'], build['ci_run'], build['build_run'], build['runtime_version'], build['package_version']) != (REPO, SHA, '39518269978', '39519470032', RUNTIME, '0.7.3'):
         raise RuntimeError('BUILD manifest mismatch')
     sums = dict(line.split('  ', 1)[::-1] for line in downloaded['SHA256SUMS'].decode('utf-8').splitlines())
     if sums != {PREFIX + suffix: info[2] for suffix, info in ASSETS.items() if suffix != 'SHA256SUMS'}:
@@ -96,12 +96,12 @@ def main():
             target.parent.mkdir(parents=True, exist_ok=True)
             with target.open('xb') as out: out.write(z.read(member))
     inner = json.loads((package / 'BUILD.json').read_text(encoding='utf-8'))
-    if (inner['repository'], inner['sha'], inner['platform'], inner['ci_run'], inner['build_run'], inner['runtime_version'], inner['package_version']) != (REPO, SHA, 'windows-x86_64', '39497790279', '39499454766', RUNTIME, '0.7.3'):
+    if (inner['repository'], inner['sha'], inner['platform'], inner['ci_run'], inner['build_run'], inner['runtime_version'], inner['package_version']) != (REPO, SHA, 'windows-x86_64', '39518269978', '39519470032', RUNTIME, '0.7.3'):
         raise RuntimeError('Inner package provenance mismatch')
     exe = package / 'xenterm.exe'
     identity = {'status': 'published_release_identity_verified_not_execution_pass', 'repository': REPO, 'build_sha': SHA,
                 'harness_sha': os.environ['GITHUB_SHA'], 'harness_source_is_not_application_source': True,
-                'ci_run': 39497790279, 'build_run': 39499454766, 'runtime_version': RUNTIME,
+                'ci_run': 39518269978, 'build_run': 39519470032, 'runtime_version': RUNTIME,
                 'zip_sha256': ASSETS['windows-x86_64.zip'][2], 'binary_sha256': digest(exe.read_bytes()),
                 'binary_bytes': exe.stat().st_size, 'package_dir': str(package), 'windows_signing': 'unsigned'}
     evidence = pathlib.Path(os.environ['RUNNER_TEMP']) / 'native-evidence'
