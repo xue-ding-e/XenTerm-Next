@@ -1,288 +1,42 @@
-name: CI
-
-# Consolidated push/PR gate (formerly desktop-check.yml, profile-consistency.yml,
-# remote-mcp.yml and installer-check.yml):
-#   - desktop: compile + isolated GUI tests on all three OSes
-#   - headless-e2e: headless unit tests + Python end-to-end regressions
-#   - migration-e2e: isolated migration CLI regressions on all three OSes
-#   - installer: Linux install-script syntax + regressions
-# Release packaging lives in release.yml.
-
+name: Isolated Rust 1.88 compatibility feasibility (manual)
+# Validation branch only; never integrate this replacement into product main.
 on:
-  push:
-    paths: ["Cargo.toml", "Cargo.lock", "build.rs", "scripts/version.sh", "tests/version_metadata_test.py", "tests/version_build_test.py", "src/**", "tests/*_e2e.py", "tests/tls_proxy_fixture.py", "assets/install-linux.sh", "tests/install_linux_test.py", "wix/**", "packaging/macos/**", "tests/windows_installer*", "tests/macos_installer*", "tests/release_workflow_test.py", ".github/workflows/ci.yml", ".github/workflows/release.yml", ".github/workflows/next-beta.yml", ".github/workflows/next-beta-build.yml", "scripts/next_beta*.py", "scripts/packaging_version.py", "tests/test_packaging_version.py", "tests/next_beta*.py"]
-  pull_request:
-    paths: ["Cargo.toml", "Cargo.lock", "build.rs", "scripts/version.sh", "tests/version_metadata_test.py", "tests/version_build_test.py", "src/**", "tests/*_e2e.py", "tests/tls_proxy_fixture.py", "assets/install-linux.sh", "tests/install_linux_test.py", "wix/**", "packaging/macos/**", "tests/windows_installer*", "tests/macos_installer*", "tests/release_workflow_test.py", ".github/workflows/ci.yml", ".github/workflows/release.yml", ".github/workflows/next-beta.yml", ".github/workflows/next-beta-build.yml", "scripts/next_beta*.py", "scripts/packaging_version.py", "tests/test_packaging_version.py", "tests/next_beta*.py"]
   workflow_dispatch:
-
 permissions:
   contents: read
-
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
-
+  group: msrv-compat-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
-  desktop:
-    name: ${{ matrix.name }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, name: Linux desktop }
-          - { os: windows-latest, target: x86_64-pc-windows-msvc, name: Windows desktop }
-          - { os: macos-14, target: aarch64-apple-darwin, name: macOS desktop }
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install Linux desktop development libraries
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential pkg-config cmake \
-            libfontconfig1-dev libfreetype6-dev \
-            libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
-            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
-            libgl1-mesa-dev libegl1-mesa-dev libgtk-3-dev libudev-dev
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: desktop-check-${{ matrix.target }}
-      # Keep the upstream stable/MSVC Windows configuration. Debug checking
-      # avoids the release-only fxc.exe shader compilation and package tooling.
-      - run: cargo check --locked --target ${{ matrix.target }} --jobs 2
-      # Separate invocations so PowerShell cannot hide a failing first command
-      # behind the second native command's successful exit status.
-      - name: Test session editor interactions
-        env:
-          XDG_CONFIG_HOME: ${{ runner.temp }}/xenterm-gui-config
-          XDG_DATA_HOME: ${{ runner.temp }}/xenterm-gui-data
-          XDG_RUNTIME_DIR: ${{ runner.temp }}/xenterm-gui-runtime
-        run: cargo test --locked --target ${{ matrix.target }} --jobs 2 ui::session_editor::tests
-      - name: Test native dialog interactions
-        env:
-          XDG_CONFIG_HOME: ${{ runner.temp }}/xenterm-gui-config
-          XDG_DATA_HOME: ${{ runner.temp }}/xenterm-gui-data
-          XDG_RUNTIME_DIR: ${{ runner.temp }}/xenterm-gui-runtime
-        run: cargo test --locked --target ${{ matrix.target }} --jobs 2 ui::dialog_parity_tests
-      # Keep Enter/IME and dialog dismissal regressions on every desktop OS;
-      # this reuses the test binary above rather than adding another runner.
-      - name: Test group rename and dismissal interactions
-        env:
-          XDG_CONFIG_HOME: ${{ runner.temp }}/xenterm-group-config
-          XDG_DATA_HOME: ${{ runner.temp }}/xenterm-group-data
-          XDG_RUNTIME_DIR: ${{ runner.temp }}/xenterm-group-runtime
-        run: cargo test --locked --target ${{ matrix.target }} --jobs 2 ui::shell::group_dialog_tests -- --test-threads=1
-      - name: Test execution history settings, viewer and revocation
-        env:
-          XDG_CONFIG_HOME: ${{ runner.temp }}/xenterm-history-config
-          XDG_DATA_HOME: ${{ runner.temp }}/xenterm-history-data
-          XDG_RUNTIME_DIR: ${{ runner.temp }}/xenterm-history-runtime
-        run: cargo test --locked --target ${{ matrix.target }} --jobs 2 execution_log -- --test-threads=1
-      # Run the GUI export policy against each platform's private publisher.
-      # Linux's full suite also covers it; Windows/macOS need this explicit
-      # filter because their remaining desktop steps run narrower subsets.
-      - name: Test private GUI export policy
-        env:
-          XDG_CONFIG_HOME: ${{ runner.temp }}/xenterm-export-config
-          XDG_DATA_HOME: ${{ runner.temp }}/xenterm-export-data
-          XDG_RUNTIME_DIR: ${{ runner.temp }}/xenterm-export-runtime
-        run: cargo test --locked --target ${{ matrix.target }} --jobs 2 ui::shell::file_dialog_tests::gui_export_ -- --test-threads=1
-      - name: Test terminal completion routing and focus regressions
-        env:
-          XDG_CONFIG_HOME: ${{ runner.temp }}/xenterm-tab-config
-          XDG_DATA_HOME: ${{ runner.temp }}/xenterm-tab-data
-          XDG_RUNTIME_DIR: ${{ runner.temp }}/xenterm-tab-runtime
-        run: cargo test --locked --target ${{ matrix.target }} --jobs 2 ui::shell::shell_close_focus_tests -- --test-threads=1
-      - name: Test Tab and Backtab byte encoding
-        run: cargo test --locked --target ${{ matrix.target }} --jobs 2 tab_encoding_tests -- --test-threads=1
-      # Exercise real GPUI layout and synthetic wheel events on every OS.
-      # The exact count rejects a renamed/missing test that would otherwise pass.
-      - name: Test SFTP listing and tree wheel scrolling
-        shell: bash
-        env:
-          XDG_CONFIG_HOME: ${{ runner.temp }}/xenterm-scroll-config
-          XDG_DATA_HOME: ${{ runner.temp }}/xenterm-scroll-data
-          XDG_RUNTIME_DIR: ${{ runner.temp }}/xenterm-scroll-runtime
-        run: |
-          set -euo pipefail
-          cargo test --locked --target ${{ matrix.target }} --jobs 2 ui::sftp_panel::tests::a_long_listing_and_tree_scroll_under_the_wheel -- --exact --test-threads=1 2>&1 | tee sftp-scroll-test.log
-          grep -F 'test result: ok. 1 passed; 0 failed;' sftp-scroll-test.log
-      - name: Test complete desktop regression suite on Linux
-        if: runner.os == 'Linux'
-        env:
-          XDG_CONFIG_HOME: ${{ runner.temp }}/xenterm-full-config
-          XDG_DATA_HOME: ${{ runner.temp }}/xenterm-full-data
-          XDG_RUNTIME_DIR: ${{ runner.temp }}/xenterm-full-runtime
-        # Include this PR's regressions and the tests merged from upstream.
-        run: cargo test --locked --target ${{ matrix.target }} --jobs 2 -- --test-threads=1
-      # Config profile transactions outside Linux (from the former
-      # profile-consistency.yml; on Linux the full suite above covers them).
-      - name: Test config profile transactions
-        if: runner.os != 'Linux'
-        run: cargo test --locked --no-default-features --features headless --target ${{ matrix.target }} --jobs 2 config::config
-
-  migration-e2e:
-    name: ${{ matrix.os }} migration CLI regression
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-22.04, windows-latest, macos-14]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Test version metadata serialization
-        shell: bash
-        run: |
-          export VERSION_TEST_BASH="$BASH"
-          if [ "$RUNNER_OS" = Windows ]; then
-            export VERSION_TEST_BASH="$(cygpath -w "$BASH")"
-          fi
-          python tests/version_metadata_test.py
-      - name: Test incremental build version inputs
-        if: runner.os == 'Linux'
-        run: python tests/version_build_test.py
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: migration-cli-${{ runner.os }}
-      - name: Test runtime version contract
-        run: cargo test --locked --no-default-features --features headless version::tests --jobs 2
-      # Synthetic independent profiles only; no GUI dependencies or real credentials.
-      - name: Build the headless CLI binary
-        run: cargo build --locked --no-default-features --features headless --jobs 2
-      - name: Install MCP client for live configuration gate regression
-        run: python -m pip install "mcp>=2.3,<3"
-      - name: Test live MCP configuration failure and recovery
-        run: python tests/access_policy_e2e.py --exe "${{ runner.os == 'Windows' && 'target/debug/xenterm.exe' || 'target/debug/xenterm' }}"
-      - name: Stable-ID import and native snapshot migration
-        run: python tests/migration_modes_e2e.py --exe "${{ runner.os == 'Windows' && 'target/debug/xenterm.exe' || 'target/debug/xenterm' }}"
-      - name: Read-only full CLI migration previews
-        run: python tests/migration_preview_e2e.py --exe "${{ runner.os == 'Windows' && 'target/debug/xenterm.exe' || 'target/debug/xenterm' }}"
-
-  headless-e2e:
-    name: Headless MCP regression
+  msrv_probe:
+    if: github.repository == 'xue-ding-e/XenTerm-Next' && github.ref == 'refs/heads/test/msrv-compat-188-v2-20261021' && github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          python-version: "3.12"
-      - run: sudo apt-get update && sudo apt-get install --no-install-recommends -y nginx
-      - run: python -m pip install cryptography paramiko "mcp>=2.3,<3"
-      - name: Headless unit tests (no GUI system dependencies)
-        run: env -u ALL_PROXY -u all_proxy -u HTTP_PROXY -u http_proxy -u HTTPS_PROXY -u https_proxy cargo test --locked --no-default-features --features headless
-      - run: cargo build --locked --no-default-features --features headless
-      - run: python tests/config_import_e2e.py --exe target/debug/xenterm
-      - run: python tests/config_export_e2e.py --exe target/debug/xenterm
-      - run: python tests/cli_exec_e2e.py --exe target/debug/xenterm
-      - run: python tests/access_policy_e2e.py --exe target/debug/xenterm
-      - run: python tests/execution_log_e2e.py --exe target/debug/xenterm
-      - run: python tests/migration_modes_e2e.py --exe target/debug/xenterm
-      - run: python tests/migration_preview_e2e.py --exe target/debug/xenterm
-      - run: python tests/ssh_jump_chain_e2e.py --exe target/debug/xenterm
-      - run: python tests/ssh_stack_e2e.py --exe target/debug/xenterm
-      - run: python tests/ssh_jump_chain_e2e.py --exe target/debug/xenterm --stage-timeouts
-      - run: python tests/stdio_mcp_e2e.py --exe target/debug/xenterm
-      - run: python tests/remote_mcp_e2e.py --exe target/debug/xenterm --path /mcp
-      - run: python tests/remote_mcp_e2e.py --exe target/debug/xenterm --nginx /usr/sbin/nginx --path /xenterm/mcp
-      - run: python tests/remote_mcp_e2e.py --exe target/debug/xenterm --nginx /usr/sbin/nginx --path /xenterm/mcp --protocol-version 2025-11-25
-
-  windows-ssh:
-    name: Windows SSH command stack
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+          path: harness
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          key: windows-ssh-stack
-      - uses: actions/setup-python@v5
+          path: source
+          ref: 16ccb477efe01445c784d4c2ace198c4830f0b9a
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
-          python-version: "3.12"
-      - run: python -m pip install cryptography paramiko
-      - run: cargo test --locked --no-default-features --features headless command_stack_tests
-      - run: cargo build --locked --no-default-features --features headless
-      - run: python tests/ssh_stack_e2e.py --exe target/debug/xenterm.exe
-      - run: python tests/migration_modes_e2e.py --exe target/debug/xenterm.exe
-      - run: python tests/migration_preview_e2e.py --exe target/debug/xenterm.exe
-
-  installer:
-    name: Linux installer check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install desktop validation tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y desktop-file-utils python3-gi gir1.2-glib-2.0
-      - run: python3 tests/release_workflow_test.py
-      - run: python3 tests/next_beta_test.py
-      - run: python3 -m unittest discover -s tests -p 'test_packaging_version.py' -v
-      - name: Check installer syntax
-        run: bash -n assets/install-linux.sh
-      - name: Run isolated installer regressions
-        run: /usr/bin/python3 tests/install_linux_test.py
-
-  installer-windows:
-    name: Windows MSI install upgrade uninstall
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+          toolchain: stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
         with:
-          python-version: "3.12"
-      - run: python tests/windows_installer_test.py
-      - name: Install official WiX 3 toolset
-        shell: pwsh
-        run: |
-          $wix = "${env:ProgramFiles(x86)}\WiX Toolset v3.14\bin\candle.exe"
-          if (-not (Test-Path $wix)) { choco install wixtoolset -y --no-progress }
-          if (-not (Test-Path $wix)) { throw 'WiX 3.14 candle.exe is required' }
-      - uses: ilammy/msvc-dev-cmd@v1
+          toolchain: 1.88.0
+      - name: Validate derived AES-only lock then compile Rust 1.88 headless and exact helper tests
+        run: python3 harness/scripts/msrv-compat/verify.py
+      - name: Preserve verification logs and identities even after failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          arch: x64
-      - name: Verify isolated MSI lifecycle
-        shell: pwsh
-        run: ./tests/windows_installer_e2e.ps1
-      - name: Upload installer diagnostic logs
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-msi-diagnostics
-          path: ${{ runner.temp }}/xenterm-msi-*/msi-*.log
-
-  installer-macos:
-    name: macOS PKG choices and payload
-    runs-on: macos-14
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - run: python tests/macos_installer_test.py
-      - name: Build and inspect genuine Apple Installer packages
-        run: bash tests/macos_installer_build.sh
-
-
-  next-beta-dry-run:
-    # Candidate validation after every normal CI gate succeeds for this same
-    # SHA. Main keeps its separate completed-CI release gate; this job has no
-    # publish step and cannot write a tag or release.
-    if: github.repository == 'xue-ding-e/XenTerm-Next' && github.event_name == 'push' && github.ref == 'refs/heads/ci/next-beta-preview-20261014'
-    needs: [desktop, migration-e2e, headless-e2e, windows-ssh, installer, installer-windows, installer-macos]
-    permissions:
-      contents: read
-      actions: read
-    uses: ./.github/workflows/next-beta-build.yml
-    with:
-      source_sha: ${{ github.sha }}
-      ci_run: ${{ format('{0}', github.run_id) }}
+          name: msrv-compat-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/msrv-compat-evidence/
+          if-no-files-found: warn
+          retention-days: 3
