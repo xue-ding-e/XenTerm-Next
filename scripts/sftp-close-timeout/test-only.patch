@@ -1,0 +1,84 @@
+--- a/src/sftp/impls/sftp.rs
++++ b/src/sftp/impls/sftp.rs
+@@ -2629,6 +2629,7 @@
+     #[derive(Clone, Copy)]
+     enum Case {
+         CloseFailure,
++        CloseTimeout,
+         Success,
+         WriteFailure,
+         FsyncFailure,
+@@ -2787,12 +2788,17 @@
+         anyhow::ensure!(take(&mut p, 1)? == [4], "expected CLOSE");
+         let id = number(&mut p)?;
+         anyhow::ensure!(field(&mut p)? == HANDLE && p.is_empty(), "wrong close handle");
+-        status(&mut stream, id, matches!(case, Case::CloseFailure)).await?;
++        // Timeout coverage keeps the transport open but deliberately withholds
++        // STATUS after a fully parsed CLOSE. It must not become an EOF failure.
++        if !matches!(case, Case::CloseTimeout) {
++            status(&mut stream, id, matches!(case, Case::CloseFailure)).await?;
++        }
+         closed
+             .send(())
+             .map_err(|_| anyhow::anyhow!("close barrier receiver dropped"))?;
+         // Keep the read side alive until the client explicitly closes its
+-        // session. Returning immediately could race delivery of CLOSE STATUS.
++        // session. Returning immediately could race delivery of CLOSE STATUS
++        // or turn the intentional no-STATUS case into a transport EOF.
+         bounded("peer EOF", async {
+             let mut byte = [0];
+             anyhow::ensure!(stream.read(&mut byte).await? == 0, "unexpected packet after CLOSE");
+@@ -2819,9 +2825,10 @@
+             Err(_) => Err(anyhow::anyhow!("client initialization failed")),
+         };
+         // On early WRITE/fsync failure, File::drop enqueues CLOSE asynchronously.
+-        // This barrier confirms CLOSE STATUS was written, not consumed. The
+-        // dependency does not expose a join handle for the detached CLOSE future.
+-        let barrier = bounded("CLOSE reply barrier", async {
++        // This barrier confirms CLOSE was parsed and, except for CloseTimeout,
++        // STATUS was written, not consumed. The dependency does not expose a
++        // join handle for the detached CLOSE future.
++        let barrier = bounded("CLOSE handling barrier", async {
+             closed_rx.await.context("close barrier notification")
+         })
+         .await;
+@@ -2870,6 +2877,27 @@
+                 );
+                 Ok(())
+             }
++            Case::CloseTimeout => {
++                let error = result.expect_err("unacknowledged CLOSE was reported as save success");
++                // russh-sftp 2.1.1 converts its Timeout variant to an io::Error
++                // with kind Other and exact display text. The typed dependency
++                // error is not retained, so do not claim a typed SFTP downcast.
++                // The first context is added by this fixture's stage wrapper,
++                // not by production. A watchdog timeout has a different chain.
++                let causes: Vec<_> = error.chain().map(ToString::to_string).collect();
++                anyhow::ensure!(
++                    causes == ["production write", "close remote file", "Timeout"],
++                    "unexpected error chain: {error:#}",
++                );
++                let io_error = error
++                    .downcast_ref::<std::io::Error>()
++                    .context("CLOSE error must retain io::Error")?;
++                anyhow::ensure!(
++                    io_error.kind() == std::io::ErrorKind::Other && io_error.to_string() == "Timeout",
++                    "wrong CLOSE timeout: {error:#}",
++                );
++                Ok(())
++            }
+             Case::WriteFailure => {
+                 let error = format!(
+                     "{:#}",
+@@ -2901,6 +2929,11 @@
+     }
+ 
+     #[tokio::test]
++    async fn unacknowledged_close_times_out() -> Result<()> {
++        exercise(Case::CloseTimeout).await
++    }
++
++    #[tokio::test]
+     async fn acknowledged_close_succeeds() -> Result<()> {
+         exercise(Case::Success).await
+     }
