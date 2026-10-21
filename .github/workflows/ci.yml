@@ -196,6 +196,24 @@ jobs:
       - run: python tests/remote_mcp_e2e.py --exe target/debug/xenterm --nginx /usr/sbin/nginx --path /xenterm/mcp
       - run: python tests/remote_mcp_e2e.py --exe target/debug/xenterm --nginx /usr/sbin/nginx --path /xenterm/mcp --protocol-version 2025-11-25
 
+  msrv-headless:
+    name: Rust 1.88 Linux headless regression
+    # Keep the declared minimum compiler honest without replacing stable coverage.
+    # This gate covers Linux headless, not GUI or other target MSRV support.
+    needs: headless-e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: 1.88.0
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+        with:
+          key: msrv-1.88-headless
+      - name: Test locked headless source on the declared minimum Rust version
+        run: env -u ALL_PROXY -u all_proxy -u HTTP_PROXY -u http_proxy -u HTTPS_PROXY -u https_proxy cargo +1.88.0 test --locked --no-default-features --features headless --jobs 2
+
   windows-ssh:
     name: Windows SSH command stack
     runs-on: windows-latest
@@ -278,7 +296,7 @@ jobs:
     # SHA. Main keeps its separate completed-CI release gate; this job has no
     # publish step and cannot write a tag or release.
     if: github.repository == 'xue-ding-e/XenTerm-Next' && github.event_name == 'push' && github.ref == 'refs/heads/ci/next-beta-preview-20261014'
-    needs: [desktop, migration-e2e, headless-e2e, windows-ssh, installer, installer-windows, installer-macos]
+    needs: [desktop, migration-e2e, headless-e2e, msrv-headless, windows-ssh, installer, installer-windows, installer-macos]
     permissions:
       contents: read
       actions: read
