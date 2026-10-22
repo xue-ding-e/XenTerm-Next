@@ -464,6 +464,70 @@ class PublisherTests(unittest.TestCase):
             self.assertEqual(api.ref, OLD)
             self.assertFalse(any(e.startswith(('PATCH:', 'DELETE:')) for e in api.events))
 
+    def test_identity_diagnostics_are_bounded_and_allowlisted(self):
+        import json
+        api = FakeGitHub()
+        api.upload_diagnostic = {'asset_id': 3, 'name': 'asset', 'http_status': 201, 'request_id': 'ABCD:1234:AB:CD:1234', 'Authorization': 'private-header'}
+        expected = {'id': 3, 'name': 'asset', 'size': 4, 'state': 'uploaded',
+                    'url': 'https://api.github.com/repos/a/b/releases/assets/3',
+                    'browser_download_url': 'https://github.com/a/b/releases/download/beta/asset'}
+        value = {'id': 3, 'name': 'x' * 2000, 'state': 'starter', 'size': 0,
+                 'url': 'https://api.github.com/repos/a/b/releases/assets/3?secret=query#private-fragment',
+                 'browser_download_url': 'https://user:password@other.invalid/path?secret=value',
+                 'token': 'private-token', 'uploader': {'secret': 'private-uploader'}}
+        error = release.asset_failure(api, value, expected, 'upload_response', 'selected_asset', 'first', 1)
+        text = str(error)
+        evidence = json.loads(text.split(': ', 1)[1])
+        self.assertEqual(evidence['origin'], 'upload_response')
+        self.assertEqual(evidence['upload'], {'http_status': 201, 'request_id': 'ABCD:1234:AB:CD:1234'})
+        existing = str(release.asset_failure(api, value, expected, 'existing_list', 'selected_asset', 'first', 1))
+        self.assertNotIn('http_status', existing)
+        other_name = str(release.asset_failure(api, value, expected | {'name': 'other'}, 'upload_response', 'selected_asset', 'first', 1))
+        self.assertNotIn('http_status', other_name)
+        self.assertNotIn('value', evidence['actual']['name'])
+        self.assertIn('name', evidence['mismatch_fields'])
+        self.assertLess(len(text), 2500)
+        for secret in ('private-header', 'private-token', 'private-uploader', 'password', 'secret=', 'private-fragment'):
+            self.assertNotIn(secret, text)
+        api.upload_diagnostic['request_id'] = 'private-request-secret'
+        unsafe = value | {'name': 'private-name-secret', 'state': 'private-state-secret',
+                          'url': 'https://api.github.com/private-path-secret', 'size': 10 ** 1000}
+        text = str(release.asset_failure(api, unsafe, expected, 'upload_response', 'selected_asset', 'first', 1))
+        for secret in ('private-request-secret', 'private-name-secret', 'private-state-secret', 'private-path-secret', str(10 ** 1000)):
+            self.assertNotIn(secret, text)
+        self.assertLess(len(text), 2500)
+        giant = 10 ** 1000
+        with self.assertRaises(RuntimeError) as raised:
+            release.verify_asset(api, value | {'id': giant}, 'asset', 'unused', 4, 'upload_response', 'first', 1)
+        text = str(raised.exception)
+        self.assertNotIn(str(giant), text)
+        self.assertLess(len(text), 2500)
+        self.assertEqual(json.loads(text.split(': ', 1)[1])['expected']['id'], '<out of range>')
+
+    def test_identity_failure_records_source_without_promotion(self):
+        import json
+        for origin in ('existing_list', 'upload_response'):
+            class WrongState(FakeGitHub):
+                def upload(self, path, info):
+                    return super().upload(path, info) | {'state': 'starter'}
+
+                def assets(self, rid):
+                    return [a | {'state': 'starter'} if a['name'].startswith(release.prefix(SHA)) else a
+                            for a in super().assets(rid)]
+            with self.subTest(origin=origin), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp); archives(path); expected = release.prepare_assets(path, SHA, '12', '34')
+                api = WrongState()
+                if origin == 'existing_list':
+                    name = next(iter(expected)); api.ids[name] = 3; api.files[name] = (path / name).read_bytes()
+                with self.assertRaises(RuntimeError) as raised:
+                    release.publish(api, path, SHA, '12', '34')
+                evidence = json.loads(str(raised.exception).split(': ', 1)[1])
+                self.assertEqual(evidence['origin'], origin)
+                self.assertEqual(evidence['stage'], 'selected_asset')
+                self.assertEqual(api.events.count('upload'), int(origin == 'upload_response'))
+                self.assertNotIn('move_tag', api.events)
+                self.assertFalse(any(e.startswith(('PATCH:', 'DELETE:')) for e in api.events))
+
     def test_success_keeps_manual_attachment_and_replaces_only_managed_old_assets(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp); archives(path); api = FakeGitHub()
