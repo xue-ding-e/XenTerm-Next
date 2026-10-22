@@ -4,6 +4,9 @@ import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
+import time
+import subprocess
+from unittest.mock import patch
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 
@@ -255,6 +258,116 @@ class AssetTests(unittest.TestCase):
 
 
 class PublisherTests(unittest.TestCase):
+    def test_final_readback_visibility_is_bounded_and_precedes_promotion(self):
+        for missing_forever in (False, True):
+            class FinalReadGitHub(FakeGitHub):
+                final_reads = 0
+
+                def assets(self, rid):
+                    assets = super().assets(rid)
+                    if self.events.count('verify') == 5:
+                        self.final_reads += 1
+                        if missing_forever or self.final_reads <= 2:
+                            return [a for a in assets if a['name'] != release.prefix(SHA) + 'BUILD.json']
+                    return assets
+
+            with self.subTest(missing_forever=missing_forever), tempfile.TemporaryDirectory() as tmp, patch.object(time, 'sleep') as sleep:
+                path = Path(tmp); archives(path); api = FinalReadGitHub()
+                if missing_forever:
+                    with self.assertRaisesRegex(RuntimeError, 'not visible'):
+                        release.publish(api, path, SHA, '12', '34')
+                    self.assertEqual(api.final_reads, 4)
+                    self.assertEqual(api.ref, OLD)
+                    self.assertFalse(any(e.startswith(('PATCH:', 'DELETE:')) or e == 'move_tag' for e in api.events))
+                    self.assertIn(release.prefix(OLD) + 'windows-x86_64.zip', api.files)
+                    self.assertEqual([c.args[0] for c in sleep.call_args_list], [1, 2, 4])
+                else:
+                    release.publish(api, path, SHA, '12', '34')
+                    self.assertEqual(api.final_reads, 3)
+                    self.assertEqual(api.ref, SHA)
+                    self.assertEqual([c.args[0] for c in sleep.call_args_list], [1, 2])
+                self.assertEqual(api.events.count('upload'), 5)
+
+    def test_asset_list_timeout_is_not_retried(self):
+        api = release.GitHub()
+        with patch.object(api, 'command', side_effect=subprocess.TimeoutExpired('gh', 15)) as command, patch.object(time, 'sleep') as sleep:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                release.visible_assets(api, 1, ('missing',))
+            command.assert_called_once_with('gh', 'api', '--paginate', '--slurp',
+                                           f'repos/{release.REPOSITORY}/releases/1/assets?per_page=100', timeout=15)
+            sleep.assert_not_called()
+
+    def test_upload_visibility_delay_retries_reads_not_uploads(self):
+        class DelayedGitHub(FakeGitHub):
+            hidden = None
+            remaining = 0
+
+            def upload(self, path):
+                super().upload(path)
+                self.hidden = path.name
+                self.remaining = 2
+
+            def assets(self, rid):
+                assets = super().assets(rid)
+                if self.remaining:
+                    self.remaining -= 1
+                    return [a for a in assets if a['name'] != self.hidden]
+                return assets
+
+        with tempfile.TemporaryDirectory() as tmp, patch.object(time, 'sleep') as sleep:
+            path = Path(tmp); archives(path); api = DelayedGitHub()
+            release.publish(api, path, SHA, '12', '34')
+            self.assertEqual(api.ref, SHA)
+            self.assertEqual(api.events.count('upload'), 5)
+            self.assertEqual([call.args[0] for call in sleep.call_args_list], [1, 2] * 5)
+
+    def test_missing_uploaded_asset_stops_without_promotion_or_cleanup(self):
+        class MissingGitHub(FakeGitHub):
+            def assets(self, rid):
+                return [a for a in super().assets(rid)
+                        if not a['name'].startswith(release.prefix(SHA))]
+
+        with tempfile.TemporaryDirectory() as tmp, patch.object(time, 'sleep') as sleep:
+            path = Path(tmp); archives(path); api = MissingGitHub()
+            with self.assertRaisesRegex(RuntimeError, 'not visible'):
+                release.publish(api, path, SHA, '12', '34')
+            self.assertEqual(api.events.count('upload'), 1)
+            self.assertEqual([call.args[0] for call in sleep.call_args_list], [1, 2, 4])
+            self.assertEqual(api.ref, OLD)
+            self.assertFalse(any(e.startswith(('PATCH:', 'DELETE:')) for e in api.events))
+            self.assertIn(release.prefix(OLD) + 'windows-x86_64.zip', api.files)
+
+    def test_conflicting_visible_asset_fails_without_retry(self):
+        class ConflictingGitHub(FakeGitHub):
+            def upload(self, path):
+                super().upload(path)
+                self.files[path.name] = b'conflicting bytes'
+
+        with tempfile.TemporaryDirectory() as tmp, patch.object(time, 'sleep') as sleep:
+            path = Path(tmp); archives(path); api = ConflictingGitHub()
+            with self.assertRaisesRegex(RuntimeError, 'checksum mismatch'):
+                release.publish(api, path, SHA, '12', '34')
+            self.assertEqual(api.events.count('upload'), 1)
+            sleep.assert_not_called()
+            self.assertEqual(api.ref, OLD)
+            self.assertFalse(any(e.startswith(('PATCH:', 'DELETE:')) for e in api.events))
+
+    def test_duplicate_asset_names_fail_without_retry(self):
+        api = FakeGitHub()
+        assets = api.assets(1)
+        with patch.object(api, 'assets', return_value=assets + assets[:1]), patch.object(time, 'sleep') as sleep:
+            with self.assertRaisesRegex(RuntimeError, 'Duplicate'):
+                release.visible_assets(api, 1, ())
+            sleep.assert_not_called()
+
+    def test_asset_list_errors_are_not_retried(self):
+        api = FakeGitHub()
+        with patch.object(api, 'assets', side_effect=RuntimeError('list failed')) as read, patch.object(time, 'sleep') as sleep:
+            with self.assertRaisesRegex(RuntimeError, 'list failed'):
+                release.visible_assets(api, 1, ('missing',))
+            self.assertEqual(read.call_count, 1)
+            sleep.assert_not_called()
+
     def test_success_keeps_manual_attachment_and_replaces_only_managed_old_assets(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp); archives(path); api = FakeGitHub()
