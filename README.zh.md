@@ -280,6 +280,19 @@ PREFIX="$HOME/Apps/XenTerm" ./install-linux.sh /path/to/xenterm
 
 ## 快速开始
 
+### Rust 工具链支持范围
+验证证据：[Rust 1.99.1 Linux 桌面 CI](https://github.com/xue-ding-e/XenTerm-Next/actions/runs/39570649230/job/119123663957)、[1.88 失败](https://github.com/xue-ding-e/XenTerm-Next/actions/runs/39698435848)、[1.92 失败](https://github.com/xue-ding-e/XenTerm-Next/actions/runs/39709879675)、[1.93 失败](https://github.com/xue-ding-e/XenTerm-Next/actions/runs/39711092025)。
+
+
+包的 Rust 1.88 声明是按特性划分的基础门槛，不表示所有特性和平台均支持 Rust 1.88：
+
+- Linux 无界面：已验证 Rust 1.88，使用 `--locked --no-default-features --features headless`。
+- 默认 Linux 桌面：当前锁定的 GUI 依赖声明至少需要 Rust 1.92，但实际检查已确认 Rust 1.88 被拒绝、Rust 1.92 因 `gpui-pre-util` 使用 `slice::as_array` 编译失败；该 API 在 Rust 1.93 稳定。Rust 1.93 的实际检查也因 `gpui-pre` 使用 `std::hint::cold_path` 失败，该 API 在 Rust 1.95 稳定。同源码现有 Linux 桌面 CI 已在 Rust 1.99.1 通过；这是已验证工具链，不是最低版本证明。
+- Windows、macOS 桌面：现有 CI 验证 stable Rust，未验证固定最低 Rust 版本。编译也不替代原生交互测试。
+
+保留 `Cargo.lock` 并使用 `--locked`，不要忽略 Rust 版本检查或仅为套用无界面最低版本而降低 GPUI 依赖。
+跟踪与精确证据见 [issue #11](https://github.com/xue-ding-e/XenTerm-Next/issues/11)。
+
 ```bash
 git clone --branch main https://github.com/xue-ding-e/XenTerm-Next.git
 cd XenTerm-Next
