@@ -9,7 +9,7 @@ import stat
 from pathlib import PurePosixPath
 import subprocess
 import tempfile
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 import tarfile
 import zipfile
 from packaging_version import prepared_metadata, validate_manifest_version
@@ -182,7 +182,15 @@ class GitHub:
         parts = re.split(r'\r?\n\r?\n', raw, maxsplit=1)
         if len(parts) != 2 or not re.fullmatch(r'HTTP/\d(?:\.\d)? 201(?: [^\r\n]*)?', parts[0].splitlines()[0]):
             raise RuntimeError('Upload did not return HTTP 201; outcome must be inspected')
-        return json.loads(parts[1])
+        asset = json.loads(parts[1])
+        self.upload_diagnostic = {'http_status': 201, 'request_id': None, 'asset_id': None, 'name': path.name}
+        for line in parts[0].splitlines()[1:]:
+            key, sep, value = line.partition(':')
+            if sep and key.lower() == 'x-github-request-id':
+                self.upload_diagnostic['request_id'] = value.strip()[:128]
+        if isinstance(asset, dict) and type(asset.get('id')) is int:
+            self.upload_diagnostic['asset_id'] = asset['id']
+        return asset
 
     def asset(self, asset_id):
         return json.loads(self.command('gh', 'api',
@@ -215,21 +223,64 @@ class GitHub:
                      f'{sha}:refs/tags/beta')
 
 
-def verify_asset(api, asset, name, checksum, size):
-    def identity(value, asset_id):
+def asset_failure(api, value, expected, origin, stage, phase, release_id):
+    # Do not serialize arbitrary response text, URL paths, headers or secrets.
+    fields = ('id', 'name', 'state', 'size', 'url', 'browser_download_url')
+    actual = {}
+    for key in fields:
+        item = value.get(key) if isinstance(value, dict) else None
+        entry = {'present': isinstance(value, dict) and key in value,
+                 'type': type(item).__name__,
+                 'matches': type(item) is type(expected[key]) and item == expected[key]}
+        if key in ('id', 'size') and type(item) is int and 0 <= item <= 2 ** 63 - 1:
+            entry['value'] = item
+        elif key == 'name' and isinstance(item, str) and MANAGED.fullmatch(item):
+            entry['value'] = item
+        elif key == 'state' and item in ('uploaded', 'starter'):
+            entry['value'] = item
+        elif key in ('url', 'browser_download_url') and isinstance(item, str):
+            try:
+                parsed, target = urlsplit(item), urlsplit(expected[key])
+                entry.update({'scheme_matches': parsed.scheme == target.scheme,
+                              'host_matches': parsed.netloc == target.netloc,
+                              'path_matches': parsed.path == target.path,
+                              'has_query': bool(parsed.query), 'has_fragment': bool(parsed.fragment),
+                              'has_userinfo': '@' in parsed.netloc})
+            except ValueError:
+                entry['parse_error'] = True
+        actual[key] = entry
+    safe_expected = {key: expected[key] for key in ('name', 'state', 'size')}
+    safe_expected['id'] = expected['id'] if type(expected['id']) is int and 0 < expected['id'] <= 2 ** 63 - 1 else '<out of range>'
+    evidence = {'origin': origin, 'stage': stage, 'phase': phase,
+                'release_id': release_id if type(release_id) is int and 0 < release_id <= 2 ** 63 - 1 else '<invalid>',
+                'actual': actual, 'expected': safe_expected,
+                'mismatch_fields': [key for key in fields if not actual[key]['matches']]}
+    context = getattr(api, 'upload_diagnostic', None)
+    if (origin == 'upload_response' and isinstance(context, dict) and
+            context.get('asset_id') == expected['id'] and context.get('name') == expected['name']):
+        request_id = context.get('request_id')
+        evidence['upload'] = {'http_status': 201, 'request_id': request_id if isinstance(request_id, str)
+            and re.fullmatch(r'[0-9A-F]{1,16}(?::[0-9A-F]{1,16}){4}', request_id) else '<missing or invalid>'}
+    return RuntimeError('Release asset identity mismatch: ' + json.dumps(evidence, ensure_ascii=True, sort_keys=True))
+
+
+def verify_asset(api, asset, name, checksum, size, origin, phase, release_id):
+    def identity(value, asset_id, stage):
         if (not isinstance(value, dict) or type(value.get('id')) is not int or
                 value['id'] != asset_id or value.get('name') != name or
                 value.get('url') != f'https://api.github.com/repos/{REPOSITORY}/releases/assets/{asset_id}' or
                 value.get('browser_download_url') != f'https://github.com/{REPOSITORY}/releases/download/beta/{name}' or
                 value.get('state') != 'uploaded' or type(value.get('size')) is not int or value['size'] != size):
-            raise RuntimeError('Release asset identity mismatch: ' + name)
+            raise asset_failure(api, value, {'id': asset_id, 'name': name, 'state': 'uploaded', 'size': size,
+                'url': f'https://api.github.com/repos/{REPOSITORY}/releases/assets/{asset_id}',
+                'browser_download_url': f'https://github.com/{REPOSITORY}/releases/download/beta/{name}'}, origin, stage, phase, release_id)
 
     asset_id = asset.get('id') if isinstance(asset, dict) else None
     if type(asset_id) is not int or asset_id <= 0:
         raise RuntimeError('Missing release asset ID: ' + name)
-    identity(asset, asset_id)
+    identity(asset, asset_id, 'selected_asset')
     current = api.asset(asset_id)
-    identity(current, asset_id)
+    identity(current, asset_id, 'get_by_id')
     api.verify(current, checksum, size)
 
 
@@ -250,18 +301,20 @@ def publish(api, directory, sha, ci_id, build_id):
     if len(assets) != len(listed):
         raise RuntimeError('Duplicate release asset names')
     selected_ids = set()
+    origins = {}
     for name, checksum in expected.items():
         api.check(sha, ci_id)
         path = directory / name
+        origins[name] = 'existing_list' if name in assets else 'upload_response'
         if name not in assets:
             assets[name] = api.upload(path, release)
-        verify_asset(api, assets[name], name, checksum, path.stat().st_size)
+        verify_asset(api, assets[name], name, checksum, path.stat().st_size, origins[name], 'first', rid)
         if assets[name]['id'] in selected_ids:
             raise RuntimeError('Different release assets reused the same ID')
         selected_ids.add(assets[name]['id'])
     # Re-read every known asset by ID; list visibility is not publication proof.
     for name, checksum in expected.items():
-        verify_asset(api, assets[name], name, checksum, (directory / name).stat().st_size)
+        verify_asset(api, assets[name], name, checksum, (directory / name).stat().st_size, origins[name], 'final', rid)
     old = api.tag()
     api.check(sha, ci_id)
     api.move_tag(sha, old)
