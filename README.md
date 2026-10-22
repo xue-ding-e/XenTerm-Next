@@ -333,6 +333,27 @@ launcher before retrying.
 
 ## Quick start
 
+### Rust toolchain support
+Evidence: [Rust 1.99.1 Linux desktop CI](https://github.com/xue-ding-e/XenTerm-Next/actions/runs/39570649230/job/119123663957), [1.88 failure](https://github.com/xue-ding-e/XenTerm-Next/actions/runs/39698435848), [1.92 failure](https://github.com/xue-ding-e/XenTerm-Next/actions/runs/39709879675), [1.93 failure](https://github.com/xue-ding-e/XenTerm-Next/actions/runs/39711092025).
+
+
+The package's Rust 1.88 declaration is a feature-specific baseline, not a promise
+that every feature and platform supports Rust 1.88:
+
+- Linux headless: Rust 1.88 is verified with `--locked --no-default-features --features headless`.
+- Default Linux desktop: the current locked GUI dependencies declare a minimum of
+  at least Rust 1.92. Actual checks reject Rust 1.88 and fail on Rust 1.92 because
+  `gpui-pre-util` uses `slice::as_array`, stabilized in Rust 1.93. Rust 1.93 is
+  not sufficient either: its check fails on `std::hint::cold_path` in `gpui-pre`,
+  an API stabilized in Rust 1.95. Existing same-source Linux desktop CI passed
+  on Rust 1.99.1; this is a verified toolchain, not proof of the minimum version.
+- Windows and macOS desktop: existing CI verifies stable Rust, not a fixed minimum
+  Rust version. Compilation does not replace native interaction testing.
+
+Keep `Cargo.lock` and use `--locked`. Do not ignore Rust-version checks or downgrade
+GPUI dependencies merely to force the headless minimum onto desktop builds.
+Tracking and exact evidence: [issue #11](https://github.com/xue-ding-e/XenTerm-Next/issues/11).
+
 ```bash
 git clone --branch main https://github.com/xue-ding-e/XenTerm-Next.git
 cd XenTerm-Next

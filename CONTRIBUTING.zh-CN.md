@@ -99,6 +99,10 @@ AI 辅助开发同样需要核对 API 版本：旧版本能用的接口，不一
 4. 优先使用 `--locked` 验证。若失败原因是清单与锁文件不一致，应检查并修正有意的依赖变更；不要直接去掉 `--locked`，把重新解析后的成功当作原锁文件已经通过验证。
 5. 区分桌面与无界面构建。当前 feature 定义见 [Cargo.toml](Cargo.toml)：默认构建包含桌面功能，无界面路径使用 `--no-default-features --features headless`。无界面测试通过不能证明桌面 UI 或各平台 API 正确；也不要无意中把可选 GUI 依赖引入无界面路径。
 
+### 按特性区分 Rust 支持范围
+
+遵循 [工具链支持规则](README.zh.md#rust-工具链支持范围)：Rust 1.88 仅已验证 Linux 无界面路径。默认 Linux GUI 锁定依赖声明至少需要 Rust 1.92，但实际 1.92 检查因 `gpui-pre-util` 使用 `slice::as_array` 失败；该 API 在 Rust 1.93 稳定，1.93 实际检查也因 `std::hint::cold_path`（Rust 1.95 稳定）失败。同源码 Linux 桌面 CI 已在 Rust 1.99.1 通过，但最低版本仍未证明；Windows、macOS 桌面只验证 stable，未验证固定最低版本。分别报告精确编译器、目标、特性与锁文件，不能将无界面通过外推到桌面，也不能将依赖声明下限写成构建通过。
+
 ### 按实际改动验证
 
 - Rust 或桌面代码：建议运行 `cargo check --locked`，并执行覆盖改动的测试；本机缺少系统开发库时应说明，不能把环境阻塞写成检查通过

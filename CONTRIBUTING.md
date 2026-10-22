@@ -212,6 +212,18 @@ record what was not done.
    passing does not prove the desktop UI or platform APIs are correct; do not
    accidentally pull optional GUI dependencies into headless paths.
 
+### Feature-specific Rust support
+
+Follow the [toolchain support policy](README.md#rust-toolchain-support): Rust 1.88
+is verified for Linux headless only. The locked default Linux GUI graph requires
+at least Rust 1.92 by declaration, but its actual 1.92 check fails on
+`slice::as_array` in `gpui-pre-util`. That API stabilized in Rust 1.93; 1.93
+also fails on `std::hint::cold_path` (stable since Rust 1.95). Same-source Linux
+desktop CI passed on Rust 1.99.1; the minimum version remains unproven. Windows and
+macOS desktop are verified on stable, not at a fixed minimum. Report the exact
+compiler, target, features and lockfile separately; do not extrapolate a headless
+pass to desktop, or a dependency minimum to a successful build.
+
 ### Verify what you actually changed
 
 - Rust or desktop code: run `cargo check --locked` and execute tests covering the

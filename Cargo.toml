@@ -7,6 +7,8 @@ description = "A lightweight FinalShell-style SSH/terminal client written in Rus
 license = "MIT"
 repository = "https://github.com/ixbaicn/XenTerm"
 readme = "README.md"
+# Base MSRV: verified for Linux headless only; desktop has higher requirements.
+# See README.md#rust-toolchain-support for the feature-specific support policy.
 rust-version = "1.88"
 
 [features]
