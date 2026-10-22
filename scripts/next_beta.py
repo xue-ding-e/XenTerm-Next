@@ -9,6 +9,7 @@ import stat
 from pathlib import PurePosixPath
 import subprocess
 import tempfile
+import time
 import tarfile
 import zipfile
 from packaging_version import prepared_metadata, validate_manifest_version
@@ -163,7 +164,7 @@ class GitHub:
 
     def assets(self, release_id):
         pages = json.loads(self.command('gh', 'api', '--paginate', '--slurp',
-                         f'repos/{REPOSITORY}/releases/{release_id}/assets?per_page=100'))
+                         f'repos/{REPOSITORY}/releases/{release_id}/assets?per_page=100', timeout=15))
         return [asset for page in pages for asset in page]
 
     def upload(self, path):
@@ -194,6 +195,22 @@ class GitHub:
                      f'{sha}:refs/tags/beta')
 
 
+def visible_assets(api, release_id, required):
+    # Upload success need not be immediately visible in the asset list. Retry
+    # only reads, never uploads or checksum failures; missing assets fail closed.
+    for delay in (0, 1, 2, 4):
+        if delay:
+            time.sleep(delay)
+        listed = api.assets(release_id)
+        assets = {asset['name']: asset for asset in listed}
+        if len(assets) != len(listed):
+            raise RuntimeError('Duplicate release asset names')
+        if set(required) <= assets.keys():
+            return assets
+    raise RuntimeError('Release assets not visible after bounded readback: ' +
+                       ', '.join(sorted(set(required) - assets.keys())))
+
+
 def publish(api, directory, sha, ci_id, build_id):
     expected = prepare_assets(directory, sha, ci_id, build_id)
     api.check(sha, ci_id)
@@ -206,16 +223,16 @@ def publish(api, directory, sha, ci_id, build_id):
     if release.get('immutable'):
         raise RuntimeError('Immutable beta cannot be rolled; no settings will be changed')
     rid = release['id']
-    assets = {a['name']: a for a in api.assets(rid)}
+    assets = visible_assets(api, rid, ())
     for name, checksum in expected.items():
         api.check(sha, ci_id)
         path = directory / name
         if name not in assets:
             api.upload(path)
-            assets = {a['name']: a for a in api.assets(rid)}
+            assets = visible_assets(api, rid, (name,))
         api.verify(assets[name], checksum, path.stat().st_size)
     # Re-read every new asset before touching either ref or release metadata.
-    assets = {a['name']: a for a in api.assets(rid)}
+    assets = visible_assets(api, rid, expected)
     for name, checksum in expected.items():
         api.verify(assets[name], checksum, (directory / name).stat().st_size)
     old = api.tag()
