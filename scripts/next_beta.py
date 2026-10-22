@@ -9,7 +9,7 @@ import stat
 from pathlib import PurePosixPath
 import subprocess
 import tempfile
-import time
+from urllib.parse import urlencode
 import tarfile
 import zipfile
 from packaging_version import prepared_metadata, validate_manifest_version
@@ -167,8 +167,26 @@ class GitHub:
                          f'repos/{REPOSITORY}/releases/{release_id}/assets?per_page=100', timeout=15))
         return [asset for page in pages for asset in page]
 
-    def upload(self, path):
-        self.command('gh', 'release', 'upload', 'beta', str(path), '--repo', REPOSITORY)
+    def upload(self, path, release):
+        rid = release['id']
+        if type(rid) is not int or rid <= 0:
+            raise RuntimeError('Invalid release ID')
+        endpoint = f'https://uploads.github.com/repos/{REPOSITORY}/releases/{rid}/assets'
+        if release.get('upload_url') != endpoint + '{?name,label}':
+            raise RuntimeError('Unexpected release upload URL')
+        # One authenticated official upload only. An ambiguous failure must not
+        # retry the write; a later attempt can discover and verify the asset.
+        raw = self.command('gh', 'api', endpoint + '?' + urlencode({'name': path.name}),
+                           '--method', 'POST', '--include', '--input', str(path),
+                           '-H', 'Content-Type: application/octet-stream', timeout=120)
+        parts = re.split(r'\r?\n\r?\n', raw, maxsplit=1)
+        if len(parts) != 2 or not re.fullmatch(r'HTTP/\d(?:\.\d)? 201(?: [^\r\n]*)?', parts[0].splitlines()[0]):
+            raise RuntimeError('Upload did not return HTTP 201; outcome must be inspected')
+        return json.loads(parts[1])
+
+    def asset(self, asset_id):
+        return json.loads(self.command('gh', 'api',
+                          f'repos/{REPOSITORY}/releases/assets/{asset_id}', timeout=15))
 
     def verify(self, asset, expected, size):
         if asset.get('state') != 'uploaded' or asset.get('size') != size:
@@ -176,6 +194,8 @@ class GitHub:
         with tempfile.TemporaryFile() as dest:
             subprocess.run(['gh', 'api', f'repos/{REPOSITORY}/releases/assets/{asset["id"]}',
                             '-H', 'Accept: application/octet-stream'], stdout=dest, check=True)
+            if dest.tell() != size:
+                raise RuntimeError('Remote size mismatch: ' + asset['name'])
             dest.seek(0)
             h = hashlib.sha256()
             for block in iter(lambda: dest.read(1024 * 1024), b''):
@@ -195,20 +215,22 @@ class GitHub:
                      f'{sha}:refs/tags/beta')
 
 
-def visible_assets(api, release_id, required):
-    # Upload success need not be immediately visible in the asset list. Retry
-    # only reads, never uploads or checksum failures; missing assets fail closed.
-    for delay in (0, 1, 2, 4):
-        if delay:
-            time.sleep(delay)
-        listed = api.assets(release_id)
-        assets = {asset['name']: asset for asset in listed}
-        if len(assets) != len(listed):
-            raise RuntimeError('Duplicate release asset names')
-        if set(required) <= assets.keys():
-            return assets
-    raise RuntimeError('Release assets not visible after bounded readback: ' +
-                       ', '.join(sorted(set(required) - assets.keys())))
+def verify_asset(api, asset, name, checksum, size):
+    def identity(value, asset_id):
+        if (not isinstance(value, dict) or type(value.get('id')) is not int or
+                value['id'] != asset_id or value.get('name') != name or
+                value.get('url') != f'https://api.github.com/repos/{REPOSITORY}/releases/assets/{asset_id}' or
+                value.get('browser_download_url') != f'https://github.com/{REPOSITORY}/releases/download/beta/{name}' or
+                value.get('state') != 'uploaded' or type(value.get('size')) is not int or value['size'] != size):
+            raise RuntimeError('Release asset identity mismatch: ' + name)
+
+    asset_id = asset.get('id') if isinstance(asset, dict) else None
+    if type(asset_id) is not int or asset_id <= 0:
+        raise RuntimeError('Missing release asset ID: ' + name)
+    identity(asset, asset_id)
+    current = api.asset(asset_id)
+    identity(current, asset_id)
+    api.verify(current, checksum, size)
 
 
 def publish(api, directory, sha, ci_id, build_id):
@@ -223,18 +245,23 @@ def publish(api, directory, sha, ci_id, build_id):
     if release.get('immutable'):
         raise RuntimeError('Immutable beta cannot be rolled; no settings will be changed')
     rid = release['id']
-    assets = visible_assets(api, rid, ())
+    listed = api.assets(rid)
+    assets = {a['name']: a for a in listed}
+    if len(assets) != len(listed):
+        raise RuntimeError('Duplicate release asset names')
+    selected_ids = set()
     for name, checksum in expected.items():
         api.check(sha, ci_id)
         path = directory / name
         if name not in assets:
-            api.upload(path)
-            assets = visible_assets(api, rid, (name,))
-        api.verify(assets[name], checksum, path.stat().st_size)
-    # Re-read every new asset before touching either ref or release metadata.
-    assets = visible_assets(api, rid, expected)
+            assets[name] = api.upload(path, release)
+        verify_asset(api, assets[name], name, checksum, path.stat().st_size)
+        if assets[name]['id'] in selected_ids:
+            raise RuntimeError('Different release assets reused the same ID')
+        selected_ids.add(assets[name]['id'])
+    # Re-read every known asset by ID; list visibility is not publication proof.
     for name, checksum in expected.items():
-        api.verify(assets[name], checksum, (directory / name).stat().st_size)
+        verify_asset(api, assets[name], name, checksum, (directory / name).stat().st_size)
     old = api.tag()
     api.check(sha, ci_id)
     api.move_tag(sha, old)

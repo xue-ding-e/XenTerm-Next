@@ -4,7 +4,6 @@ import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
-import time
 import subprocess
 from unittest.mock import patch
 import sys
@@ -26,7 +25,7 @@ class FakeGitHub:
         self.fail = fail
         self.events = []
         self.ref = OLD
-        self.current = {'id': 1, 'tag_name': 'beta', 'draft': False, 'body': 'old'} if existing else None
+        self.current = {'id': 1, 'tag_name': 'beta', 'draft': False, 'body': 'old', 'upload_url': f'https://uploads.github.com/repos/{release.REPOSITORY}/releases/1/assets{{?name,label}}'} if existing else None
         self.files = {release.prefix(OLD) + 'windows-x86_64.zip': b'old', 'manual.txt': b'keep'}
         self.ids = {name: i + 1 for i, name in enumerate(self.files)}
 
@@ -41,7 +40,7 @@ class FakeGitHub:
     def api(self, endpoint, method='GET', body=None):
         self.events.append(method + ':' + endpoint)
         if method == 'POST':
-            self.current = body | {'id': 1}
+            self.current = body | {'id': 1, 'upload_url': f'https://uploads.github.com/repos/{release.REPOSITORY}/releases/1/assets{{?name,label}}'}
             return self.current
         if method == 'PATCH':
             if self.fail == 'metadata':
@@ -54,14 +53,26 @@ class FakeGitHub:
         return self.current
 
     def assets(self, rid):
-        return [{'id': self.ids[name], 'name': name, 'size': len(data), 'state': 'uploaded'} for name, data in self.files.items()]
+        return [self.record(name) for name in self.files]
 
-    def upload(self, path):
+    def record(self, name):
+        asset_id = self.ids[name]
+        return {'id': asset_id, 'name': name, 'size': len(self.files[name]), 'state': 'uploaded',
+                'url': f'https://api.github.com/repos/{release.REPOSITORY}/releases/assets/{asset_id}',
+                'browser_download_url': f'https://github.com/{release.REPOSITORY}/releases/download/beta/{name}'}
+
+    def asset(self, asset_id):
+        self.events.append('asset')
+        name = next(n for n in self.files if self.ids[n] == asset_id)
+        return self.record(name)
+
+    def upload(self, path, release_info):
         self.events.append('upload')
         if self.fail == 'upload' and self.events.count('upload') == 2:
             raise RuntimeError('upload failed')
         self.ids[path.name] = max(self.ids.values(), default=0) + 1
         self.files[path.name] = path.read_bytes()
+        return self.record(path.name)
 
     def verify(self, asset, expected, size):
         self.events.append('verify')
@@ -258,115 +269,200 @@ class AssetTests(unittest.TestCase):
 
 
 class PublisherTests(unittest.TestCase):
-    def test_final_readback_visibility_is_bounded_and_precedes_promotion(self):
-        for missing_forever in (False, True):
-            class FinalReadGitHub(FakeGitHub):
-                final_reads = 0
-
-                def assets(self, rid):
-                    assets = super().assets(rid)
-                    if self.events.count('verify') == 5:
-                        self.final_reads += 1
-                        if missing_forever or self.final_reads <= 2:
-                            return [a for a in assets if a['name'] != release.prefix(SHA) + 'BUILD.json']
-                    return assets
-
-            with self.subTest(missing_forever=missing_forever), tempfile.TemporaryDirectory() as tmp, patch.object(time, 'sleep') as sleep:
-                path = Path(tmp); archives(path); api = FinalReadGitHub()
-                if missing_forever:
-                    with self.assertRaisesRegex(RuntimeError, 'not visible'):
-                        release.publish(api, path, SHA, '12', '34')
-                    self.assertEqual(api.final_reads, 4)
-                    self.assertEqual(api.ref, OLD)
-                    self.assertFalse(any(e.startswith(('PATCH:', 'DELETE:')) or e == 'move_tag' for e in api.events))
-                    self.assertIn(release.prefix(OLD) + 'windows-x86_64.zip', api.files)
-                    self.assertEqual([c.args[0] for c in sleep.call_args_list], [1, 2, 4])
-                else:
-                    release.publish(api, path, SHA, '12', '34')
-                    self.assertEqual(api.final_reads, 3)
-                    self.assertEqual(api.ref, SHA)
-                    self.assertEqual([c.args[0] for c in sleep.call_args_list], [1, 2])
-                self.assertEqual(api.events.count('upload'), 5)
-
-    def test_asset_list_timeout_is_not_retried(self):
-        api = release.GitHub()
-        with patch.object(api, 'command', side_effect=subprocess.TimeoutExpired('gh', 15)) as command, patch.object(time, 'sleep') as sleep:
-            with self.assertRaises(subprocess.TimeoutExpired):
-                release.visible_assets(api, 1, ('missing',))
-            command.assert_called_once_with('gh', 'api', '--paginate', '--slurp',
-                                           f'repos/{release.REPOSITORY}/releases/1/assets?per_page=100', timeout=15)
-            sleep.assert_not_called()
-
-    def test_upload_visibility_delay_retries_reads_not_uploads(self):
-        class DelayedGitHub(FakeGitHub):
-            hidden = None
-            remaining = 0
-
-            def upload(self, path):
-                super().upload(path)
-                self.hidden = path.name
-                self.remaining = 2
-
-            def assets(self, rid):
-                assets = super().assets(rid)
-                if self.remaining:
-                    self.remaining -= 1
-                    return [a for a in assets if a['name'] != self.hidden]
-                return assets
-
-        with tempfile.TemporaryDirectory() as tmp, patch.object(time, 'sleep') as sleep:
-            path = Path(tmp); archives(path); api = DelayedGitHub()
-            release.publish(api, path, SHA, '12', '34')
-            self.assertEqual(api.ref, SHA)
-            self.assertEqual(api.events.count('upload'), 5)
-            self.assertEqual([call.args[0] for call in sleep.call_args_list], [1, 2] * 5)
-
-    def test_missing_uploaded_asset_stops_without_promotion_or_cleanup(self):
-        class MissingGitHub(FakeGitHub):
+    def test_upload_ids_work_when_lists_never_show_new_assets(self):
+        class StaleList(FakeGitHub):
             def assets(self, rid):
                 return [a for a in super().assets(rid)
                         if not a['name'].startswith(release.prefix(SHA))]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp); archives(path); api = StaleList()
+            release.publish(api, path, SHA, '12', '34')
+            self.assertEqual(api.ref, SHA)
+            self.assertEqual(api.events.count('upload'), 5)
+            self.assertEqual(api.events.count('asset'), 10)
+            self.assertEqual(api.events.count('verify'), 10)
 
-        with tempfile.TemporaryDirectory() as tmp, patch.object(time, 'sleep') as sleep:
-            path = Path(tmp); archives(path); api = MissingGitHub()
-            with self.assertRaisesRegex(RuntimeError, 'not visible'):
+    def test_asset_response_and_readback_identity_must_match(self):
+        bad_fields = {'id': [True, 0, 999], 'name': ['wrong'], 'size': [-1],
+                      'state': ['starter'], 'url': ['https://other.invalid/asset'],
+                      'browser_download_url': ['https://github.com/other/repo/releases/download/beta/asset']}
+        for where in ('upload', 'asset'):
+            for field, values in bad_fields.items():
+                for value in values:
+                    class WrongIdentity(FakeGitHub):
+                        def upload(self, path, release_info):
+                            result = super().upload(path, release_info)
+                            return result | {field: value} if where == 'upload' else result
+
+                        def asset(self, asset_id):
+                            result = super().asset(asset_id)
+                            return result | {field: value} if where == 'asset' else result
+                    with self.subTest(where=where, field=field, value=value), tempfile.TemporaryDirectory() as tmp:
+                        path = Path(tmp); archives(path); api = WrongIdentity()
+                        with self.assertRaises(RuntimeError):
+                            release.publish(api, path, SHA, '12', '34')
+                        self.assertEqual(api.ref, OLD)
+                        self.assertFalse(any(e.startswith(('PATCH:', 'DELETE:')) for e in api.events))
+                        self.assertEqual(api.events.count('upload'), 1)
+
+    def test_unknown_upload_outcome_is_not_retransmitted(self):
+        class UnknownUpload(FakeGitHub):
+            def upload(self, path, release_info):
+                super().upload(path, release_info)
+                raise subprocess.TimeoutExpired('gh', 120)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp); archives(path); api = UnknownUpload()
+            with self.assertRaises(subprocess.TimeoutExpired):
                 release.publish(api, path, SHA, '12', '34')
             self.assertEqual(api.events.count('upload'), 1)
-            self.assertEqual([call.args[0] for call in sleep.call_args_list], [1, 2, 4])
             self.assertEqual(api.ref, OLD)
             self.assertFalse(any(e.startswith(('PATCH:', 'DELETE:')) for e in api.events))
+
+    def test_final_id_readback_failure_preserves_old_assets(self):
+        class ChangedAsset(FakeGitHub):
+            def asset(self, asset_id):
+                result = super().asset(asset_id)
+                return result | {'size': 0} if self.events.count('verify') == 5 else result
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp); archives(path); api = ChangedAsset()
+            with self.assertRaisesRegex(RuntimeError, 'identity mismatch'):
+                release.publish(api, path, SHA, '12', '34')
+            self.assertEqual(api.events.count('upload'), 5)
+            self.assertEqual(api.ref, OLD)
             self.assertIn(release.prefix(OLD) + 'windows-x86_64.zip', api.files)
 
-    def test_conflicting_visible_asset_fails_without_retry(self):
-        class ConflictingGitHub(FakeGitHub):
-            def upload(self, path):
-                super().upload(path)
-                self.files[path.name] = b'conflicting bytes'
+    def test_official_upload_url_and_json_response_contract(self):
+        import json
+        api = release.GitHub()
+        endpoint = f'https://uploads.github.com/repos/{release.REPOSITORY}/releases/1/assets'
+        response = FakeGitHub().record('manual.txt')
+        with patch.object(api, 'command', return_value='HTTP/2.0 201 Created\r\nContent-Type: application/json\r\n\r\n' + json.dumps(response)) as command:
+            self.assertEqual(api.upload(Path('a b.zip'), {'id': 1, 'upload_url': endpoint + '{?name,label}'}), response)
+            command.assert_called_once_with('gh', 'api', endpoint + '?name=a+b.zip', '--method', 'POST',
+                                           '--include', '--input', 'a b.zip', '-H', 'Content-Type: application/octet-stream', timeout=120)
+        for rid, url in ((True, endpoint + '{?name,label}'), (1, 'https://other.invalid/assets'),
+                         (1, endpoint + '?name=x'), (1, endpoint.replace('/1/', '/2/') + '{?name,label}')):
+            with self.subTest(rid=rid, url=url), patch.object(api, 'command') as command:
+                with self.assertRaises(RuntimeError):
+                    api.upload(Path('a.zip'), {'id': rid, 'upload_url': url})
+                command.assert_not_called()
 
-        with tempfile.TemporaryDirectory() as tmp, patch.object(time, 'sleep') as sleep:
-            path = Path(tmp); archives(path); api = ConflictingGitHub()
+    def test_id_read_uses_fixed_endpoint_and_timeout(self):
+        import json
+        api = release.GitHub()
+        with patch.object(api, 'command', return_value=json.dumps({'id': 3})) as command:
+            self.assertEqual(api.asset(3), {'id': 3})
+            command.assert_called_once_with('gh', 'api', f'repos/{release.REPOSITORY}/releases/assets/3', timeout=15)
+
+    def test_upload_bad_or_unknown_response_is_never_retried(self):
+        api = release.GitHub()
+        info = {'id': 1, 'upload_url': f'https://uploads.github.com/repos/{release.REPOSITORY}/releases/1/assets{{?name,label}}'}
+        for raw in ('', '{}', 'HTTP/2.0 200 OK\n\n{}', 'HTTP/2.0 204 No Content\n\n',
+                    'HTTP/2.0 201 Created\n\nbroken'):
+            with self.subTest(raw=raw), patch.object(api, 'command', return_value=raw) as command:
+                with self.assertRaises((RuntimeError, ValueError)):
+                    api.upload(Path('asset.zip'), info)
+                self.assertEqual(command.call_count, 1)
+        for error in (subprocess.TimeoutExpired('gh', 120), subprocess.CalledProcessError(1, 'gh')):
+            with self.subTest(error=type(error).__name__), patch.object(api, 'command', side_effect=error) as command:
+                with self.assertRaises(type(error)):
+                    api.upload(Path('asset.zip'), info)
+                self.assertEqual(command.call_count, 1)
+
+    def test_existing_conflict_and_missing_list_conflict_stop_without_overwrite(self):
+        for hidden in (False, True):
+            class Conflict(FakeGitHub):
+                def assets(self, rid):
+                    return [a for a in super().assets(rid) if not hidden or not a['name'].startswith(release.prefix(SHA))]
+
+                def upload(self, path, release_info):
+                    if path.name in self.files:
+                        self.events.append('upload')
+                        raise RuntimeError('HTTP 422 already_exists')
+                    return super().upload(path, release_info)
+            with self.subTest(hidden=hidden), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp); archives(path); expected = release.prepare_assets(path, SHA, '12', '34')
+                name = next(iter(expected)); api = Conflict(); api.files[name] = b'conflict'; api.ids[name] = 3
+                with self.assertRaises(RuntimeError): release.publish(api, path, SHA, '12', '34')
+                self.assertEqual(api.files[name], b'conflict')
+                self.assertEqual(api.events.count('upload'), int(hidden))
+                self.assertEqual(api.ref, OLD)
+                self.assertFalse(any(e.startswith(('PATCH:', 'DELETE:')) for e in api.events))
+
+    def test_final_id_missing_or_content_changed_prevents_promotion(self):
+        for failure in ('404', 'content'):
+            class Changed(FakeGitHub):
+                def asset(self, asset_id):
+                    result = super().asset(asset_id)
+                    if self.events.count('verify') == 5:
+                        if failure == '404': raise RuntimeError('HTTP 404')
+                        data = self.files[result['name']]
+                        self.files[result['name']] = bytes([data[0] ^ 1]) + data[1:]
+                    return result
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp); archives(path); api = Changed()
+                with self.assertRaises(RuntimeError): release.publish(api, path, SHA, '12', '34')
+                self.assertEqual(api.ref, OLD)
+                self.assertFalse(any(e.startswith(('PATCH:', 'DELETE:')) for e in api.events))
+
+    def test_real_download_hash_is_checked_by_id(self):
+        api = release.GitHub(); record = FakeGitHub().record('manual.txt')
+        def download(args, **kwargs):
+            self.assertEqual(args, ['gh', 'api', f'repos/{release.REPOSITORY}/releases/assets/2',
+                                    '-H', 'Accept: application/octet-stream'])
+            self.assertTrue(kwargs['check'])
+            kwargs['stdout'].write(b'keep')
+        with patch.object(release.subprocess, 'run', side_effect=download):
+            api.verify(record, release.hashlib.sha256(b'keep').hexdigest(), 4)
             with self.assertRaisesRegex(RuntimeError, 'checksum mismatch'):
+                api.verify(record, release.hashlib.sha256(b'nope').hexdigest(), 4)
+            with self.assertRaisesRegex(RuntimeError, 'size mismatch'):
+                api.verify(record | {'size': 5}, release.hashlib.sha256(b'keep').hexdigest(), 5)
+
+    def test_initial_list_duplicate_or_error_prevents_upload(self):
+        for failure in ('duplicate', 'error'):
+            class BrokenList(FakeGitHub):
+                def assets(self, rid):
+                    self.events.append('list')
+                    if failure == 'error': raise RuntimeError('list unavailable')
+                    result = super().assets(rid)
+                    return result + [result[0]]
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp); archives(path); api = BrokenList()
+                with self.assertRaises(RuntimeError): release.publish(api, path, SHA, '12', '34')
+                self.assertEqual(api.events.count('list'), 1)
+                self.assertNotIn('upload', api.events)
+                self.assertNotIn('move_tag', api.events)
+                self.assertFalse(any(e.startswith(('PATCH:', 'DELETE:')) for e in api.events))
+
+    def test_asset_list_timeout_is_bounded_and_not_retried(self):
+        api = release.GitHub()
+        with patch.object(api, 'command', return_value='[[]]') as command:
+            self.assertEqual(api.assets(1), [])
+            command.assert_called_once_with('gh', 'api', '--paginate', '--slurp',
+                f'repos/{release.REPOSITORY}/releases/1/assets?per_page=100', timeout=15)
+        with patch.object(api, 'command', side_effect=subprocess.TimeoutExpired('gh', 15)) as command:
+            with self.assertRaises(subprocess.TimeoutExpired): api.assets(1)
+            self.assertEqual(command.call_count, 1)
+
+    def test_different_expected_names_cannot_reuse_one_id(self):
+        class ReusedID(FakeGitHub):
+            def upload(self, path, release_info):
+                super().upload(path, release_info)
+                self.ids[path.name] = 3
+                self.latest = path.name
+                return self.record(path.name)
+
+            def asset(self, asset_id):
+                self.events.append('asset')
+                return self.record(self.latest)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp); archives(path); api = ReusedID()
+            with self.assertRaisesRegex(RuntimeError, 'reused the same ID'):
                 release.publish(api, path, SHA, '12', '34')
-            self.assertEqual(api.events.count('upload'), 1)
-            sleep.assert_not_called()
+            self.assertEqual(api.events.count('upload'), 2)
             self.assertEqual(api.ref, OLD)
             self.assertFalse(any(e.startswith(('PATCH:', 'DELETE:')) for e in api.events))
-
-    def test_duplicate_asset_names_fail_without_retry(self):
-        api = FakeGitHub()
-        assets = api.assets(1)
-        with patch.object(api, 'assets', return_value=assets + assets[:1]), patch.object(time, 'sleep') as sleep:
-            with self.assertRaisesRegex(RuntimeError, 'Duplicate'):
-                release.visible_assets(api, 1, ())
-            sleep.assert_not_called()
-
-    def test_asset_list_errors_are_not_retried(self):
-        api = FakeGitHub()
-        with patch.object(api, 'assets', side_effect=RuntimeError('list failed')) as read, patch.object(time, 'sleep') as sleep:
-            with self.assertRaisesRegex(RuntimeError, 'list failed'):
-                release.visible_assets(api, 1, ('missing',))
-            self.assertEqual(read.call_count, 1)
-            sleep.assert_not_called()
 
     def test_success_keeps_manual_attachment_and_replaces_only_managed_old_assets(self):
         with tempfile.TemporaryDirectory() as tmp:
