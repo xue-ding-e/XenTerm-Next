@@ -117,6 +117,69 @@ def archives(path, manifest_sha=SHA, versions=None):
                     archive.addfile(item, io.BytesIO(data))
 
 
+class ReleaseSelectionTests(unittest.TestCase):
+    def record(self, rid=1, draft=False):
+        return {'id': rid, 'tag_name': 'beta', 'draft': draft,
+                'url': f'https://api.github.com/repos/{release.REPOSITORY}/releases/{rid}',
+                'html_url': f'https://github.com/{release.REPOSITORY}/releases/tag/beta',
+                'upload_url': f'https://uploads.github.com/repos/{release.REPOSITORY}/releases/{rid}/assets{{?name,label}}'}
+
+    def select(self, pages, exact):
+        import json
+        api = release.GitHub()
+        with patch.object(api, 'command', return_value=json.dumps(pages)) as listing, \
+                patch.object(api, 'api', return_value=exact) as get:
+            return api.release()
+
+    def test_release_reads_exact_tag_and_all_pages(self):
+        import json
+        api = release.GitHub()
+        with patch.object(api, 'command', return_value=json.dumps([[self.record()]])) as listing, \
+                patch.object(api, 'api', return_value=self.record()) as get:
+            self.assertEqual(api.release(), self.record())
+            listing.assert_called_once_with('gh', 'api', '--paginate', '--slurp',
+                f'repos/{release.REPOSITORY}/releases?per_page=100', timeout=15)
+            get.assert_called_once_with('releases/tags/beta')
+
+    def test_draft_first_and_pagination_select_exact_published(self):
+        expected = self.record()
+        for pages in ([[self.record(2, True), expected]],
+                      [[self.record(2, True)], [self.record(3, True), expected]]):
+            with self.subTest(pages=pages):
+                self.assertEqual(self.select(pages, expected), expected)
+
+    def test_missing_or_only_drafts_rejected(self):
+        for pages in ([[]], [[self.record(2, True)]]):
+            with self.subTest(pages=pages), self.assertRaises(RuntimeError):
+                self.select(pages, self.record())
+
+    def test_duplicate_published_rejected(self):
+        with self.assertRaises(RuntimeError):
+            self.select([[self.record()], [self.record(4)]], self.record())
+
+    def test_exact_tag_identity_must_match_unique_listed_release(self):
+        for change in ({'id': 2}, {'id': True}, {'tag_name': 'other'}, {'draft': True},
+                       {'url': 'https://api.github.com/repos/other/repo/releases/1'},
+                       {'html_url': 'https://github.com/other/repo/releases/tag/beta'},
+                       {'upload_url': 'https://uploads.github.com/repos/other/repo/releases/1/assets{?name,label}'}):
+            with self.subTest(change=change), self.assertRaises(RuntimeError):
+                self.select([[self.record()]], self.record() | change)
+
+    def test_malformed_listing_identity_rejected(self):
+        for change in ({'draft': None}, {'id': True}, {'url': 'wrong'}):
+            with self.subTest(change=change), self.assertRaises(RuntimeError):
+                self.select([[self.record() | change]], self.record())
+
+    def test_api_error_is_not_permission_to_create(self):
+        import json
+        api = release.GitHub()
+        with patch.object(api, 'command', return_value=json.dumps([[self.record()]])), \
+                patch.object(api, 'api', side_effect=RuntimeError('API failure')) as get:
+            with self.assertRaisesRegex(RuntimeError, 'API failure'):
+                api.release()
+            get.assert_called_once_with('releases/tags/beta')
+
+
 class GateTests(unittest.TestCase):
     def test_current_main_success_is_allowed(self):
         release.gate(release.REPOSITORY, SHA, SHA, RUN)
@@ -549,12 +612,12 @@ class PublisherTests(unittest.TestCase):
                 self.assertFalse(any(event.startswith('DELETE:') for event in api.events))
                 if failure != 'metadata': self.assertEqual(api.ref, OLD)
 
-    def test_initial_release_is_draft_until_assets_verified(self):
+    def test_missing_published_release_never_creates_or_uploads(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp); archives(path); api = FakeGitHub(existing=False, fail='upload')
             with self.assertRaises(RuntimeError): release.publish(api, path, SHA, '12', '34')
-            self.assertTrue(api.current['draft'])
-            self.assertEqual(api.current['target_commitish'], SHA)
+            self.assertIsNone(api.current)
+            self.assertEqual(api.events, ['check'])
 
     def test_immutable_release_is_not_modified(self):
         with tempfile.TemporaryDirectory() as tmp:
