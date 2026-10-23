@@ -156,11 +156,31 @@ class GitHub:
         gate(os.environ['GITHUB_REPOSITORY'], sha, main, run)
 
     def release(self):
-        # Listing distinguishes a missing beta from auth/server errors. Never turn
-        # an arbitrary failed GET into permission to create another release.
+        # Authenticated listings include drafts sharing the beta tag. Never
+        # select by order or create a replacement on missing/ambiguous reads.
         pages = json.loads(self.command('gh', 'api', '--paginate', '--slurp',
-                                       f'repos/{REPOSITORY}/releases?per_page=100'))
-        return next((r for page in pages for r in page if r['tag_name'] == 'beta'), None)
+                                       f'repos/{REPOSITORY}/releases?per_page=100', timeout=15))
+        tagged = [r for page in pages for r in page if r.get('tag_name') == 'beta']
+        if any(type(r.get('draft')) is not bool for r in tagged):
+            raise RuntimeError('Invalid beta release draft state')
+        published = [r for r in tagged if r['draft'] is False]
+        if len(published) != 1:
+            raise RuntimeError('Expected exactly one published beta release')
+        selected = published[0]
+        exact = self.api('releases/tags/beta')
+        rid = selected.get('id')
+        if type(rid) is not int or rid <= 0:
+            raise RuntimeError('Invalid published beta release ID')
+        expected = {'id': rid, 'tag_name': 'beta', 'draft': False,
+                    'url': f'https://api.github.com/repos/{REPOSITORY}/releases/{rid}',
+                    'html_url': f'https://github.com/{REPOSITORY}/releases/tag/beta',
+                    'upload_url': f'https://uploads.github.com/repos/{REPOSITORY}/releases/{rid}/assets{{?name,label}}'}
+        for record in (selected, exact):
+            if (not isinstance(record, dict) or type(record.get('id')) is not int
+                    or record.get('draft') is not False
+                    or any(record.get(key) != value for key, value in expected.items())):
+                raise RuntimeError('Published beta release identity mismatch')
+        return exact
 
     def assets(self, release_id):
         pages = json.loads(self.command('gh', 'api', '--paginate', '--slurp',
@@ -289,10 +309,7 @@ def publish(api, directory, sha, ci_id, build_id):
     api.check(sha, ci_id)
     release = api.release()
     if release is None:
-        api.check(sha, ci_id)
-        release = api.api('releases', 'POST', {'tag_name': 'beta', 'target_commitish': sha,
-                          'name': 'XenTerm Next beta (preparing)', 'draft': True,
-                          'prerelease': True, 'make_latest': 'false'})
+        raise RuntimeError('Published beta release is required; no release will be created')
     if release.get('immutable'):
         raise RuntimeError('Immutable beta cannot be rolled; no settings will be changed')
     rid = release['id']
