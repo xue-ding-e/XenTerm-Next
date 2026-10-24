@@ -354,6 +354,7 @@ impl SftpPanelView {
 
         v_flex()
             .id("sftp-tree")
+            .debug_selector(|| "sftp-tree-viewport".into())
             .w(px(TREE_WIDTH))
             .flex_shrink_0()
             .h_full()
@@ -494,6 +495,7 @@ impl Render for SftpPanelView {
                 // alone, which in a flex column resolves to zero height and
                 // mounts no rows at all.
                 .with_sizing_behavior(ListSizingBehavior::Infer)
+                .debug_selector(|| "sftp-list-viewport".into())
                 .track_scroll(&scroll)
                 .into_any_element(),
             )
@@ -914,6 +916,7 @@ impl Render for SftpPanelView {
                         // out past the bottom of the window, and nothing to scroll.
                         v_flex()
                             .id("sftp-rows")
+                            .debug_selector(|| "sftp-list-container".into())
                             .flex_1()
                             .min_h_0()
                             .overflow_hidden()
@@ -1029,6 +1032,7 @@ fn file_row(
     let tick_icon = file_row_icon(file);
 
     h_flex()
+        .debug_selector(move || format!("sftp-row-{index}"))
         .w_full()
         // Inset a touch and round: a hover fill that runs wall to wall on a
         // flush panel reads as a striping glitch, while a rounded row inside

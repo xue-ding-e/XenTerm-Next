@@ -2163,6 +2163,243 @@ mod dock_tests {
         }
     }
 
+    fn wheel_over(
+        cx: &mut gpui_kit::gpui::VisualTestContext,
+        viewport: gpui_kit::Bounds<gpui_kit::Pixels>,
+        delta: f32,
+    ) {
+        let position = viewport.center();
+        cx.simulate_mouse_move(position, None, Modifiers::default());
+        cx.simulate_event(gpui_kit::ScrollWheelEvent {
+            position,
+            delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(delta))),
+            modifiers: Modifiers::default(),
+            touch_phase: gpui_kit::TouchPhase::Moved,
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+    }
+
+    fn assert_within_height(
+        inner: gpui_kit::Bounds<gpui_kit::Pixels>,
+        outer: gpui_kit::Bounds<gpui_kit::Pixels>,
+    ) {
+        assert!(
+            inner.size.height > px(0.)
+                && inner.top() >= outer.top() - px(1.)
+                && inner.bottom() <= outer.bottom() + px(1.),
+            "expected {inner:?} inside the visible height of {outer:?}"
+        );
+    }
+
+    /// Exercise the mounted dock, not a panel occupying the whole test window.
+    /// Its toolbar, path and headings consume part of the configured height.
+    fn assert_sftp_bottom_dock_scrolls(cx: &mut TestAppContext, height: f32) {
+        use crate::session::protocol::{RemoteEntry, RemoteTreeNode};
+
+        const COUNT: usize = 200;
+        cx.update(gpui_kit::init);
+        let (state, _receiver) = fixture_state(true, false);
+        state.store.borrow_mut().set_quick_panel_height(height);
+        let (view, cx) = cx.add_window_view(move |window, cx| {
+            let mut page = TerminalPage::new(state, Rc::new(Cell::new(1000.)), window, cx);
+            let tab = TerminalPage::open_tab(
+                &page.state,
+                "fixture",
+                "fixture",
+                "Fixture",
+                page.appearance.clone(),
+                cx,
+            );
+            PENDING_SINKS.with(|sinks| sinks.borrow_mut().remove("fixture"));
+            page.tabs.push(tab);
+            page.active_tab = Some("fixture".into());
+            page.panes = crate::layout::Layout::new(vec!["fixture".into()], "fixture".into());
+            page.sftp.update(cx, |panel, cx| {
+                let entries: Vec<_> = (0..COUNT)
+                    .map(|i| RemoteEntry {
+                        name: format!("file-{i:03}.txt"),
+                        full_path: format!("/fixture/subdir/file-{i:03}.txt"),
+                        is_dir: false,
+                        size: i as u64,
+                        modified: 1_700_000_000,
+                        mode: 0o644,
+                    })
+                    .collect();
+                let mut listing = crate::core::SftpListing::default();
+                listing.load("/fixture/subdir".into(), &entries);
+                panel.set_listing(listing, cx);
+                let mut tree = vec![
+                    RemoteTreeNode {
+                        path: "/fixture".into(),
+                        name: "fixture".into(),
+                        depth: 0,
+                        expanded: true,
+                        has_children: true,
+                    },
+                    RemoteTreeNode {
+                        path: "/fixture/subdir".into(),
+                        name: "subdir".into(),
+                        depth: 1,
+                        expanded: true,
+                        has_children: true,
+                    },
+                ];
+                tree.extend((0..COUNT).map(|i| RemoteTreeNode {
+                    path: format!("/fixture/subdir/dir-{i:03}"),
+                    name: format!("dir-{i:03}"),
+                    depth: 2,
+                    expanded: false,
+                    has_children: false,
+                }));
+                panel.set_tree(tree, cx);
+            });
+            page
+        });
+        let window_size = gpui_kit::size(px(1000.), px(720.));
+        cx.simulate_resize(window_size);
+        cx.update(|window, cx| {
+            assert_eq!(window.viewport_size(), window_size);
+            window.activate_window();
+            window.draw(cx).clear(cx);
+        });
+        assert!(cx.debug_bounds("file-panel-dock").is_none());
+        let toggle = cx.debug_bounds("toggle-sftp-panel").expect("reopen control");
+        cx.simulate_click(toggle.center(), Modifiers::default());
+        // A mounted selector appears before the opening animation finishes.
+        // Wait for the real animation state, without sleeps or forcing progress.
+        pump_frames(cx, usize::from(DOCK_ANIM_FRAMES) + 3, |cx| {
+            view.read_with(cx, |page, _| {
+                page.dock_anim.get().is_none() && page.dock_progress.get() == 1.0
+            })
+        });
+        view.read_with(cx, |page, _| {
+            assert!(page.dock_anim.get().is_none(), "opening animation must finish");
+            assert_eq!(page.dock_progress.get(), 1.0);
+        });
+
+        let dock = cx.debug_bounds("file-panel-dock").expect("open bottom dock");
+        assert!((f32::from(dock.size.height) - height).abs() <= 1.);
+        let window_bounds = gpui_kit::Bounds::new(gpui_kit::point(px(0.), px(0.)), window_size);
+        assert_within_height(dock, window_bounds);
+        let container = cx.debug_bounds("sftp-list-container").expect("list clip");
+        let list = cx.debug_bounds("sftp-list-viewport").expect("uniform list viewport");
+        let tree = cx.debug_bounds("sftp-tree-viewport").expect("tree viewport");
+        assert_within_height(container, dock);
+        assert_within_height(list, container);
+        assert_within_height(tree, dock);
+        assert!(list.top() > dock.top(), "toolbar and headings must consume height");
+        assert!(list.size.height < dock.size.height);
+        // Selectors report raw layout bounds. Use the intersected, visible
+        // viewport for all pointer positions and reachability assertions.
+        let list = list.intersect(&container).intersect(&dock).intersect(&window_bounds);
+        let tree = tree.intersect(&dock).intersect(&window_bounds);
+        assert!(list.size.width > px(0.) && tree.size.width > px(0.));
+        assert!(list.size.height > px(0.) && tree.size.height > px(0.));
+
+        let first_row = cx.debug_bounds("sftp-row-0").expect("first file row");
+        let first_tree = cx.debug_bounds("sftp-tree-/fixture").expect("root tree row");
+        let last_tree_selector = "sftp-tree-/fixture/subdir/dir-199";
+        let last_tree = cx.debug_bounds(last_tree_selector).expect("last tree row");
+        assert!(cx.debug_bounds("sftp-row-199").is_none(), "last file starts unmounted");
+        assert!(last_tree.top() > tree.bottom(), "last tree node starts below the fold");
+
+        // Derive a bottom-reaching wheel delta from the measured row height.
+        // No scroll_to_item shortcut: this must follow the user's wheel route.
+        let list_distance = f32::from(first_row.size.height) * COUNT as f32;
+        wheel_over(cx, list, -list_distance);
+        let tail = cx.debug_bounds("sftp-row-199").expect("wheel mounts the last file");
+        // At the 120px minimum the content area may be shorter than one row.
+        // Require all the row that can fit, aligned to the bottom, rather than
+        // inventing a minimum row-height policy for the existing dock.
+        assert!((f32::from(tail.bottom() - list.bottom())).abs() <= 1.);
+        let visible = tail.bottom().min(list.bottom()) - tail.top().max(list.top());
+        assert!((f32::from(visible - tail.size.height.min(list.size.height))).abs() <= 1.);
+        assert!(visible > px(0.));
+        assert!(cx.debug_bounds("sftp-row-0").is_none());
+        assert_eq!(
+            cx.debug_bounds("sftp-tree-/fixture"),
+            Some(first_tree),
+            "list wheel must not move the tree"
+        );
+        wheel_over(cx, list, -list_distance);
+        assert_eq!(
+            cx.debug_bounds("sftp-row-199"),
+            Some(tail),
+            "list stops at its bottom"
+        );
+
+        // A bounds entry alone is not visibility: debug_bounds is unclipped.
+        // Click within the name's actual intersection with the measured list.
+        let name = cx.debug_bounds("sftp-name-199").expect("last file name");
+        let visible_name = name.intersect(&list);
+        assert!(
+            visible_name.size.width > px(0.) && visible_name.size.height > px(0.),
+            "last name must be reachable inside the list clip"
+        );
+        cx.simulate_click(visible_name.center(), Modifiers::default());
+        assert_eq!(
+            view.update(cx, |page, cx| page.sftp.update(cx, |panel, _| panel.take_action())),
+            Some(crate::ui::PanelAction::View("/fixture/subdir/file-199.txt".into()))
+        );
+
+        let tree_distance = f32::from(first_tree.size.height) * (COUNT + 2) as f32;
+        wheel_over(cx, tree, -tree_distance);
+        let tail_tree = cx.debug_bounds(last_tree_selector).expect("last nested tree node");
+        assert_within_height(tail_tree, tree);
+        assert!(tail_tree.top() < last_tree.top());
+        assert_eq!(
+            cx.debug_bounds("sftp-row-199"),
+            Some(tail),
+            "tree wheel must not move the list"
+        );
+        wheel_over(cx, tree, -tree_distance);
+        assert_eq!(
+            cx.debug_bounds(last_tree_selector),
+            Some(tail_tree),
+            "tree stops at its bottom"
+        );
+        cx.simulate_click(tail_tree.intersect(&tree).center(), Modifiers::default());
+        assert_eq!(
+            view.update(cx, |page, cx| page.sftp.update(cx, |panel, _| panel.take_action())),
+            Some(crate::ui::PanelAction::TreeToggle("/fixture/subdir/dir-199".into()))
+        );
+
+        wheel_over(cx, list, list_distance);
+        assert_eq!(
+            cx.debug_bounds("sftp-row-0"),
+            Some(first_row),
+            "reverse wheel returns to the first file"
+        );
+        assert_eq!(
+            cx.debug_bounds(last_tree_selector),
+            Some(tail_tree),
+            "reverse list wheel leaves the tree alone"
+        );
+        wheel_over(cx, tree, tree_distance);
+        assert_eq!(
+            cx.debug_bounds("sftp-tree-/fixture"),
+            Some(first_tree),
+            "reverse wheel returns to the tree root"
+        );
+        assert_eq!(cx.debug_bounds("sftp-row-0"), Some(first_row));
+    }
+
+    #[gpui_kit::gpui::test]
+    fn sftp_bottom_dock_scrolls_at_minimum_height(cx: &mut TestAppContext) {
+        assert_sftp_bottom_dock_scrolls(cx, DOCK_MIN_HEIGHT);
+    }
+
+    #[gpui_kit::gpui::test]
+    fn sftp_bottom_dock_scrolls_at_240_pixels(cx: &mut TestAppContext) {
+        assert_sftp_bottom_dock_scrolls(cx, 240.);
+    }
+
+    #[gpui_kit::gpui::test]
+    fn sftp_bottom_dock_scrolls_at_320_pixels(cx: &mut TestAppContext) {
+        assert_sftp_bottom_dock_scrolls(cx, 320.);
+    }
+
     #[gpui_kit::gpui::test]
     fn file_panel_close_and_reopen_reclaims_space_and_keeps_the_terminal(cx: &mut TestAppContext) {
         cx.update(gpui_kit::init);
