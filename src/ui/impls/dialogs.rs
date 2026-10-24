@@ -21,7 +21,7 @@ use gpui_kit::{
         dialog::{DialogAction, DialogButtonProps, DialogClose, DialogFooter},
         h_flex,
         input::{Input, InputState},
-        v_flex, WindowExt as _, Sizable as _,
+        v_flex, Sizable as _, WindowExt as _,
     },
     div,
     prelude::*,
@@ -62,12 +62,16 @@ pub(crate) fn answer_footer(
         .justify_end()
         .child(
             DialogFooter::new()
-                .child(
-                    DialogClose::new().trigger(move |button| button.label(cancel.clone()).small()),
-                )
+                .child(DialogClose::new().trigger(move |button| {
+                    button
+                        .debug_selector(|| "dialog-cancel".into())
+                        .label(cancel.clone())
+                        .small()
+                }))
                 .child(
                     DialogAction::new().child(
                         Button::new("dialog-confirm")
+                            .debug_selector(|| "dialog-confirm".into())
                             .label(confirm)
                             .small()
                             .when(confirm_is_danger, |this| this.danger()),

@@ -98,6 +98,14 @@ fn present_host_key(window: &mut Window, cx: &mut App) {
                     .child(div().child(SharedString::from(message.clone())))
                     .child(
                         div()
+                            .debug_selector(move || {
+                                if prompt_changed {
+                                    "host-key-changed"
+                                } else {
+                                    "host-key-unknown"
+                                }
+                                .into()
+                            })
                             .p_2()
                             .rounded_md()
                             .bg(cx.theme().muted)
@@ -120,7 +128,10 @@ fn present_host_key(window: &mut Window, cx: &mut App) {
 /// Answer the current host-key prompt and show the next one if there is one.
 fn advance_host_key(window: &mut Window, cx: &mut App, accept: bool) {
     if resolve_host_key(WINDOW_ID, accept) {
-        present_host_key(window, cx);
+        // The dialog closes itself after its answer callback returns. Opening
+        // the next one here would let that close pop the new dialog instead.
+        // Re-read the queue after closing; a window teardown may have aborted it.
+        window.defer(cx, present_host_key);
     }
 }
 
@@ -318,3 +329,7 @@ fn advance_mfa(window: &mut Window, cx: &mut App, answer: Option<String>) {
         present_mfa(window, cx);
     }
 }
+
+#[cfg(test)]
+#[path = "auth_dialogs_queue_tests.rs"]
+mod queue_tests;
