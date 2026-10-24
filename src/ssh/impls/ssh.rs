@@ -1953,7 +1953,7 @@ async fn run_session(
     // pid/user/pcpu/pmem/args, each line clipped to 200 chars so a giant command
     // line can't bloat the stream. A host whose `ps` lacks `--sort`/`-o` simply
     // yields nothing (2>/dev/null), degrading to an empty process list.
-    const MON_CMD: &[u8] = b"PATH=/usr/bin:/bin:/usr/sbin:/sbin; export PATH; while :; do awk '/^cpu /{print}' /proc/stat; awk '/^(MemTotal|MemAvailable|SwapTotal|SwapFree|Buffers|Cached):/{print}' /proc/meminfo; cat /proc/net/dev; echo __DF__; df -kP 2>/dev/null; echo __MSTICK__; sleep 2; done\n";
+    const MON_CMD: &[u8] = b"PATH=/usr/bin:/bin:/usr/sbin:/sbin; LC_ALL=C; export PATH LC_ALL; while :; do awk '/^cpu /{print}' /proc/stat; awk '/^(MemTotal|MemAvailable|SwapTotal|SwapFree|Buffers|Cached):/{print}' /proc/meminfo; cat /proc/net/dev; echo __DF__; df -kP 2>/dev/null && echo __DF_END__; echo __MOUNTS__; awk 'NR<=513{found=0; for(i=7;i<NF;i++) if($i==\"-\"){print $3,$4,$5,$(i+1); found=1; break} if(!found) print \"__INVALID_MOUNT__\"}' /proc/self/mountinfo 2>/dev/null && echo __MOUNT_END__; echo __MSTICK__; sleep 2; done\n";
     // Detailed system information is intentionally one-shot and last priority.
     // It includes commands such as lspci/hostname that may be slow on some hosts
     // and must never delay either the terminal or the lightweight sidebar sample.
@@ -2661,6 +2661,10 @@ fn parse_monitor_block(
     let mut net_now: Vec<(String, u64, u64)> = Vec::new();
     // Filesystems from `df -kP`: (mount, available_bytes, total_bytes).
     let mut disks: Vec<(String, u64, u64)> = Vec::new();
+    let mut mount_metadata = Vec::new();
+    let mut df_complete = false;
+    let mut mounts_complete = false;
+    let mut storage_truncated = false;
     // Equal capacity is not filesystem identity: preserve distinct and repeated
     // mounts for inspection. The UI must not sum them into physical capacity.
     // Processes from `ps` (#23): top-by-CPU rows.
@@ -2672,6 +2676,7 @@ fn parse_monitor_block(
     enum Section {
         Top,
         Df,
+        Mounts,
         Me,
         Ps,
         Sys,
@@ -2684,6 +2689,18 @@ fn parse_monitor_block(
     const MAX_MON_ENTRIES: usize = 64;
 
     for line in block.lines() {
+        if line == "__DF_END__" {
+            df_complete = true;
+            continue;
+        }
+        if line == "__MOUNTS__" {
+            section = Section::Mounts;
+            continue;
+        }
+        if line == "__MOUNT_END__" {
+            mounts_complete = true;
+            continue;
+        }
         if line == "__DF__" {
             section = Section::Df;
             continue;
@@ -2705,7 +2722,19 @@ fn parse_monitor_block(
                 if disks.len() < MAX_MON_ENTRIES {
                     if let Some((mount, avail, total)) = parse_df_line(line) {
                         disks.push((mount, avail, total));
+                    } else if !line.trim().is_empty() && !line.starts_with("Filesystem") {
+                        storage_truncated = true;
                     }
+                } else {
+                    storage_truncated = true;
+                }
+                continue;
+            }
+            Section::Mounts => {
+                if mount_metadata.len() < 512 {
+                    mount_metadata.push(line.to_string());
+                } else {
+                    storage_truncated = true;
                 }
                 continue;
             }
@@ -2839,6 +2868,11 @@ fn parse_monitor_block(
         details
     });
 
+    let local_storage = super::storage::mounted_local_capacity(
+        &disks,
+        &mount_metadata,
+        df_complete && mounts_complete && !storage_truncated,
+    );
     Some(SessionEvent::ResourceStats {
         cpu_sampled,
         cpu_percent,
@@ -2848,6 +2882,7 @@ fn parse_monitor_block(
         swap_total_kib: swap_total,
         net,
         disks,
+        local_storage,
         current_user,
         procs,
         sys,
@@ -3680,6 +3715,44 @@ mod monitor_hardening_tests {
                 assert_eq!(disks[2], ("/tmp".into(), 0, 0));
             }
             other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mounted_local_total_requires_complete_matching_metadata() {
+        let base =
+            "MemTotal: 1000 kB\n__DF__\n/dev/a 100 50 50 50% /\n/dev/b 100 50 50 50% /data\n";
+        let suffix = "__DF_END__\n__MOUNTS__\n8:1 / / ext4\n8:2 / /data xfs\n__MOUNT_END__\n";
+        for (block, expected) in [
+            (format!("{base}{suffix}"), Some((100 * 1024, 200 * 1024))),
+            (base.to_string(), None),
+            (
+                format!("{base}{}", suffix.replace("__MOUNT_END__", "")),
+                None,
+            ),
+            (
+                format!(
+                    "{base}{}",
+                    suffix.replace("8:2 / /data xfs", "8:2 / /data btrfs")
+                ),
+                None,
+            ),
+            (format!("{base}bad df row\n{suffix}"), None),
+        ] {
+            let mut prev = None;
+            let mut net = HashMap::new();
+            let mut at = Instant::now();
+            match parse_monitor_block(&block, &mut prev, &mut net, &mut at).unwrap() {
+                super::SessionEvent::ResourceStats {
+                    disks,
+                    local_storage,
+                    ..
+                } => {
+                    assert_eq!(disks.len(), 2);
+                    assert_eq!(local_storage, expected);
+                }
+                other => panic!("unexpected event: {other:?}"),
+            }
         }
     }
 

@@ -2231,6 +2231,7 @@ fn apply_event(
             swap_total_kib,
             net,
             disks,
+            local_storage,
             current_user: _,
             procs: _,
             sys,
@@ -2260,6 +2261,7 @@ fn apply_event(
                     status.swap_total_kib = swap_total_kib;
                     status.net = net;
                     status.disks = disks;
+                    status.local_storage = local_storage;
                     // A sample means the monitor channel is alive, which is a stronger
                     // statement than "the socket is up": it is what makes the tab's dot
                     // green even if the `Connected` event was missed.

@@ -136,6 +136,9 @@ pub enum SessionEvent {
         net: Vec<(String, u64, u64)>,
         /// Per-filesystem (mount_point, available_bytes, total_bytes).
         disks: Vec<(String, u64, u64)>,
+        /// Mounted local-filesystem (available, total), only with complete identity metadata.
+        /// None is unknown, not zero or physical hardware capacity.
+        local_storage: Option<(u64, u64)>,
         /// Effective login name reported by the remote host (`id -un`).
         current_user: String,
         /// Top processes by CPU (#23). Empty if the host's `ps` is unusable.

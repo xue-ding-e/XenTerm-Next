@@ -7,6 +7,8 @@ pub(crate) mod known_hosts;
 pub(crate) mod ppk;
 #[path = "impls/proxy.rs"]
 pub(crate) mod proxy;
+#[path = "impls/storage.rs"]
+mod storage;
 #[path = "impls/ssh.rs"]
 mod ssh;
 #[path = "impls/ssh_config.rs"]

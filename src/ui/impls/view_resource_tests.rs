@@ -67,6 +67,7 @@ fn sample(cpu_sampled: bool) -> SessionEvent {
         swap_total_kib: 0,
         net: vec![("eth0".into(), 0, 0)],
         disks: vec![],
+        local_storage: None,
         current_user: String::new(),
         procs: vec![],
         sys: None,

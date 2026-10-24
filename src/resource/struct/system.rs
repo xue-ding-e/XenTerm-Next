@@ -147,6 +147,7 @@ pub(crate) struct TabStatus {
     pub(crate) selected_iface: String,
     pub(crate) net_hist: Vec<f32>,
     pub(crate) disks: Vec<(String, u64, u64)>,
+    pub(crate) local_storage: Option<(u64, u64)>,
     pub(crate) procs: Vec<ProcInfo>,
     pub(crate) sys: SystemDetails,
 }

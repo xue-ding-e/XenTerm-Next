@@ -125,6 +125,7 @@ struct Resources {
     bot_down: SharedString,
     bot_history: Vec<f32>,
     disks: Vec<DiskUsage>,
+    local_storage: Option<(u64, u64)>,
 }
 
 impl Resources {
@@ -158,6 +159,7 @@ impl Resources {
             bot_down: SharedString::default(),
             bot_history: vec![0.0; NET_HISTORY_LEN],
             disks: Vec::new(),
+            local_storage: None,
         }
     }
 }
@@ -524,6 +526,7 @@ impl SidebarView {
                     .map(|(name, _, _)| name.as_str().into())
                     .collect();
                 view.disks = crate::resource::disk_usage(&status.disks);
+                view.local_storage = status.local_storage;
             }
             // Dropped or still connecting: the heading stays the server's — that is what
             // the panel is about — and the top graph holds a placeholder rather than
@@ -986,24 +989,23 @@ impl SidebarView {
     fn storage_summary(&self, cx: &Context<Self>) -> AnyElement {
         let shown = self.shown.clone();
         let theme = cx.theme();
-        let capacity = crate::resource::root_disk(&shown.disks).and_then(|disk| disk.capacity);
-        let total = capacity
-            .map(|(_, total)| crate::ssh::format_size(total))
-            .unwrap_or_else(|| "--".into());
-        let available = capacity
-            .map(|(available, _)| crate::ssh::format_size(available))
-            .unwrap_or_else(|| "--".into());
+        let root = crate::resource::root_disk(&shown.disks).and_then(|disk| disk.capacity);
+        let value = |capacity: Option<(u64, u64)>, total: bool| {
+            capacity
+                .map(|(a, t)| crate::ssh::format_size(if total { t } else { a }))
+                .unwrap_or_else(|| "--".into())
+        };
         v_flex()
             .id("storage-summary")
             .debug_selector(|| "storage-summary".into())
             .w_full()
-            .h(px(104.))
+            .h(px(188.))
             .flex_shrink_0()
             .overflow_hidden()
             .child(
                 h_flex()
                     .w_full()
-                    .h(px(28.))
+                    .h(px(24.))
                     .flex_shrink_0()
                     .items_center()
                     .child(
@@ -1012,31 +1014,60 @@ impl SidebarView {
                             .min_w_0()
                             .truncate()
                             .text_xs()
-                            .child(crate::i18n::t("系统文件系统 /", "System filesystem /")),
+                            .child(crate::i18n::t(
+                                "已挂载本地文件系统合计",
+                                "Mounted local filesystems",
+                            )),
                     ),
             )
             .child(storage_metric(
                 "storage-total",
                 crate::i18n::t("总容量", "Total"),
-                total,
+                value(shown.local_storage, true),
                 theme,
             ))
             .child(storage_metric(
                 "storage-available",
                 crate::i18n::t("剩余可用", "Available"),
-                available,
+                value(shown.local_storage, false),
                 theme,
             ))
             .child(
                 div()
-                    .h(px(28.))
+                    .h(px(24.))
+                    .flex_shrink_0()
+                    .text_xs()
+                    .child(crate::i18n::t("系统文件系统 /", "System filesystem /")),
+            )
+            .child(storage_metric(
+                "storage-root-total",
+                crate::i18n::t("总容量", "Total"),
+                value(root, true),
+                theme,
+            ))
+            .child(storage_metric(
+                "storage-root-available",
+                crate::i18n::t("剩余可用", "Available"),
+                value(root, false),
+                theme,
+            ))
+            .child(
+                div()
+                    .h(px(44.))
                     .flex_shrink_0()
                     .text_xs()
                     .text_color(theme.muted_foreground)
-                    .child(crate::i18n::t(
-                        "仅 /，非整机物理总量",
-                        "Root only; not physical total",
-                    )),
+                    .child(
+                        v_flex()
+                            .child(crate::i18n::t(
+                                "非物理容量 · 未知 --",
+                                "Not physical · Unknown --",
+                            ))
+                            .child(crate::i18n::t(
+                                "排除临时/远程/镜像",
+                                "No temp/remote/images",
+                            )),
+                    ),
             )
             .into_any_element()
     }

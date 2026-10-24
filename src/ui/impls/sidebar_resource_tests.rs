@@ -204,10 +204,16 @@ fn storage_numeric_anchors_do_not_move_with_mounts_or_monitor_state(cx: &mut Tes
             status.monitor_state = state;
             status.sampled_at = Some(std::time::Instant::now());
             status.mem_total_kib = 4096;
+            status.local_storage = (!mounts.is_empty()).then_some((50, 200));
             status.disks = mounts;
         }
         view.update(cx, |view, cx| view.refresh(cx));
         draw(cx);
+        view.read_with(cx, |view, _| {
+            if state != State::Available {
+                assert!(view.shown.local_storage.is_none());
+            }
+        });
         assert_eq!(cx.debug_bounds("storage-total").unwrap(), initial_total);
         assert_eq!(
             cx.debug_bounds("storage-available").unwrap(),
