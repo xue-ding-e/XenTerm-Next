@@ -178,7 +178,7 @@ pub fn normalized_history(buf: &[f32]) -> Vec<f32> {
 /// disagree about what exists. What is dropped is the *fraction's* reliance on a
 /// division that cannot be done.
 pub fn disk_usage(disks: &[(String, u64, u64)]) -> Vec<DiskUsage> {
-    disks
+    let mut rows: Vec<_> = disks
         .iter()
         .map(|(mount, avail, total)| {
             let used = total.saturating_sub(*avail);
@@ -189,15 +189,35 @@ pub fn disk_usage(disks: &[(String, u64, u64)]) -> Vec<DiskUsage> {
             };
             DiskUsage {
                 path: mount.clone(),
-                detail: format!(
-                    "{}/{}",
-                    crate::ssh::format_size(*avail),
-                    crate::ssh::format_size(*total)
-                ),
+                capacity: (*total > 0 && avail <= total).then_some((*avail, *total)),
+                detail: if *total > 0 && avail <= total {
+                    format!(
+                        "{}/{}",
+                        crate::ssh::format_size(*avail),
+                        crate::ssh::format_size(*total)
+                    )
+                } else {
+                    "--/--".into()
+                },
                 percent,
             }
         })
-        .collect()
+        .collect();
+    // Capacity equality does not establish filesystem identity. Keep all mounts,
+    // pin root, and order by path independently of df/sysinfo enumeration.
+    rows.sort_by(|a, b| {
+        (a.path != "/", &a.path, a.capacity).cmp(&(b.path != "/", &b.path, b.capacity))
+    });
+    rows
+}
+
+/// The root filesystem is not a server-wide physical-disk total. With no device
+/// identity or pool topology in the snapshot, summing mounts would double-count.
+/// Ambiguous roots are unknown rather than dependent on enumeration order.
+pub fn root_disk(disks: &[DiskUsage]) -> Option<&DiskUsage> {
+    let mut roots = disks.iter().filter(|disk| disk.path == "/");
+    let root = roots.next()?;
+    roots.next().is_none().then_some(root)
 }
 
 /// Resolve which interface drives the top network graph: the user's selection if it
@@ -409,6 +429,47 @@ mod tests {
         let rows = disk_usage(&[("proc".to_string(), 0, 0)]);
         assert_eq!(rows.len(), 1, "the mount is still listed");
         assert_eq!(rows[0].percent, 0.0, "and does not claim to be full");
+    }
+
+    #[test]
+    fn storage_order_is_stable_and_never_sums_or_hides_mounts() {
+        let mut mounts = vec![
+            ("/tmp".into(), 50, 100),
+            ("/data".into(), 50, 100),
+            ("/remote".into(), 100, 200),
+            ("/".into(), 25, 100),
+            ("/bind".into(), 50, 100),
+        ];
+        let expected = disk_usage(&mounts);
+        mounts.reverse();
+        assert_eq!(disk_usage(&mounts), expected);
+        assert_eq!(
+            expected.iter().map(|d| d.path.as_str()).collect::<Vec<_>>(),
+            vec!["/", "/bind", "/data", "/remote", "/tmp"]
+        );
+        assert_eq!(root_disk(&expected).unwrap().capacity, Some((25, 100)));
+        assert_eq!(
+            expected.len(),
+            5,
+            "equal sizes are not evidence of duplication"
+        );
+    }
+
+    #[test]
+    fn missing_ambiguous_or_invalid_root_is_not_fabricated_capacity() {
+        assert!(root_disk(&disk_usage(&[("/data".into(), 50, 100)])).is_none());
+        assert!(root_disk(&disk_usage(&[("/".into(), 50, 100), ("/".into(), 60, 100)])).is_none());
+        for (available, total) in [(0, 0), (101, 100)] {
+            let rows = disk_usage(&[("/".into(), available, total)]);
+            assert_eq!(root_disk(&rows).unwrap().capacity, None);
+            assert_eq!(rows[0].detail, "--/--");
+        }
+        assert_eq!(
+            root_disk(&disk_usage(&[("/".into(), 0, 100)]))
+                .unwrap()
+                .capacity,
+            Some((0, 100))
+        );
     }
 
     #[test]

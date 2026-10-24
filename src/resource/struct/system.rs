@@ -64,6 +64,8 @@ pub(crate) struct LocalGpuInfo {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DiskUsage {
     pub path: String,
+    /// None means absent or inconsistent capacity, not a measured zero.
+    pub capacity: Option<(u64, u64)>,
     /// "available/total", e.g. `12.3G/256G`.
     pub detail: String,
     /// Used fraction, 0.0..=1.0.

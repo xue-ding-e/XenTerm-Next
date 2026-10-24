@@ -165,3 +165,75 @@ fn resource_monitor_initial_silence_and_sample_age_have_distinct_states() {
         State::Stale
     );
 }
+
+/// Synthetic GPUI bounds, not native font or Windows rendering validation.
+#[gpui_kit::gpui::test]
+fn storage_numeric_anchors_do_not_move_with_mounts_or_monitor_state(cx: &mut TestAppContext) {
+    use crate::session::protocol::ResourceMonitorState as State;
+    let (view, statuses, cx) = fixture(cx);
+    let initial_total = cx
+        .debug_bounds("storage-total")
+        .expect("reserved total anchor");
+    let initial_available = cx
+        .debug_bounds("storage-available")
+        .expect("reserved available anchor");
+    let initial_summary = cx.debug_bounds("storage-summary").unwrap();
+    assert_eq!(initial_total.size.width, px(100.));
+    assert_eq!(initial_available.origin.y - initial_total.origin.y, px(24.));
+    for (state, mounts) in [
+        (
+            State::Available,
+            vec![("/data".into(), 50, 100), ("/".into(), 25, 100)],
+        ),
+        (
+            State::Available,
+            vec![
+                ("/".into(), 0, 100),
+                ("/a/long/synthetic/mount/path".into(), 1000, 2000),
+                ("/tmp".into(), 1, 2),
+            ],
+        ),
+        (State::Available, vec![]),
+        (State::Unavailable, vec![]),
+        (State::Stale, vec![]),
+        (State::Waiting, vec![]),
+    ] {
+        {
+            let mut map = statuses.lock().unwrap();
+            let status = map.get_mut("remote").unwrap();
+            status.monitor_state = state;
+            status.sampled_at = Some(std::time::Instant::now());
+            status.mem_total_kib = 4096;
+            status.disks = mounts;
+        }
+        view.update(cx, |view, cx| view.refresh(cx));
+        draw(cx);
+        assert_eq!(cx.debug_bounds("storage-total").unwrap(), initial_total);
+        assert_eq!(
+            cx.debug_bounds("storage-available").unwrap(),
+            initial_available
+        );
+        assert_eq!(cx.debug_bounds("storage-summary").unwrap(), initial_summary);
+    }
+}
+
+#[gpui_kit::gpui::test]
+fn storage_numeric_columns_keep_their_width_and_right_alignment_on_resize(cx: &mut TestAppContext) {
+    let (_, _, cx) = fixture(cx);
+    let mut top = None;
+    for width in [200., 260., 360., 480., 200.] {
+        cx.simulate_resize(gpui_kit::size(px(width), px(900.)));
+        draw(cx);
+        let total = cx.debug_bounds("storage-total").unwrap();
+        let available = cx.debug_bounds("storage-available").unwrap();
+        let summary = cx.debug_bounds("storage-summary").unwrap();
+        assert_eq!(total.size.width, px(100.));
+        assert_eq!(available.size.width, total.size.width);
+        assert_eq!(total.origin.x, available.origin.x);
+        assert_eq!(
+            total.origin.x + total.size.width,
+            summary.origin.x + summary.size.width
+        );
+        assert_eq!(*top.get_or_insert(total.origin.y), total.origin.y);
+    }
+}

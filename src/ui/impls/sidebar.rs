@@ -982,9 +982,66 @@ impl SidebarView {
         self.shown = self.project();
     }
 
-    /// The filesystem list: mount, how full, and the figure behind the fill.
-    fn disks(&self, cx: &Context<Self>) -> AnyElement {
+    /// Fixed root capacity anchors above the independently scrolling mount details.
+    fn storage_summary(&self, cx: &Context<Self>) -> AnyElement {
         let shown = self.shown.clone();
+        let theme = cx.theme();
+        let capacity = crate::resource::root_disk(&shown.disks).and_then(|disk| disk.capacity);
+        let total = capacity
+            .map(|(_, total)| crate::ssh::format_size(total))
+            .unwrap_or_else(|| "--".into());
+        let available = capacity
+            .map(|(available, _)| crate::ssh::format_size(available))
+            .unwrap_or_else(|| "--".into());
+        v_flex()
+            .id("storage-summary")
+            .debug_selector(|| "storage-summary".into())
+            .w_full()
+            .h(px(104.))
+            .flex_shrink_0()
+            .overflow_hidden()
+            .child(
+                h_flex()
+                    .w_full()
+                    .h(px(28.))
+                    .flex_shrink_0()
+                    .items_center()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_xs()
+                            .child(crate::i18n::t("系统文件系统 /", "System filesystem /")),
+                    ),
+            )
+            .child(storage_metric(
+                "storage-total",
+                crate::i18n::t("总容量", "Total"),
+                total,
+                theme,
+            ))
+            .child(storage_metric(
+                "storage-available",
+                crate::i18n::t("剩余可用", "Available"),
+                available,
+                theme,
+            ))
+            .child(
+                div()
+                    .h(px(28.))
+                    .flex_shrink_0()
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .child(crate::i18n::t(
+                        "仅 /，非整机物理总量",
+                        "Root only; not physical total",
+                    )),
+            )
+            .into_any_element()
+    }
+
+    fn disks(&self, cx: &Context<Self>) -> AnyElement {
         let theme = cx.theme();
         v_flex()
             .w_full()
@@ -992,22 +1049,14 @@ impl SidebarView {
             .min_h_0()
             .gap_1()
             .child(
-                h_flex()
-                    .w_full()
-                    .gap_2()
+                div()
                     .text_xs()
+                    .flex_shrink_0()
                     .text_color(theme.muted_foreground)
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(crate::i18n::t("路径", "Path")),
-                    )
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .child(crate::i18n::t("可用/大小", "Free/Total")),
-                    ),
+                    .child(crate::i18n::t(
+                        "全部挂载 · 剩余可用 / 总容量",
+                        "All mounts · Available / Total",
+                    )),
             )
             .child(
                 v_flex()
@@ -1017,7 +1066,7 @@ impl SidebarView {
                     .min_h_0()
                     .overflow_y_scroll()
                     .gap_0p5()
-                    .children(shown.disks.iter().map(|disk| disk_row(disk, theme))),
+                    .children(self.shown.disks.iter().map(|disk| disk_row(disk, theme))),
             )
             .into_any_element()
     }
@@ -1063,6 +1112,7 @@ impl Render for SidebarView {
         let stats = self.stats(cx);
         let networks = self.networks(cx);
         let disks = self.disks(cx);
+        let storage_summary = self.storage_summary(cx);
 
         v_flex()
             .size_full()
@@ -1081,6 +1131,8 @@ impl Render for SidebarView {
                     .gap_1p5()
                     .p_2()
                     .child(header)
+                    .child(divider(theme))
+                    .child(storage_summary)
                     .child(divider(theme))
                     .child(stats)
                     .child(divider(theme))
@@ -1255,6 +1307,39 @@ fn sparkline(history: &[f32], theme: &Theme) -> impl IntoElement {
         }))
 }
 
+/// Labels and numbers occupy separate fixed-height rows regardless of loading state.
+fn storage_metric(
+    id: &'static str,
+    label: &'static str,
+    value: String,
+    theme: &Theme,
+) -> impl IntoElement {
+    h_flex()
+        .w_full()
+        .h(px(24.))
+        .flex_shrink_0()
+        .items_center()
+        .text_xs()
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_color(theme.muted_foreground)
+                .child(label),
+        )
+        .child(
+            div()
+                .id(id)
+                .debug_selector(move || id.into())
+                .w(px(100.))
+                .flex_shrink_0()
+                .text_right()
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(SharedString::from(value)),
+        )
+}
+
 /// One filesystem: a fill drawn behind the mount's own name.
 fn disk_row(disk: &DiskUsage, theme: &Theme) -> impl IntoElement {
     // The fill carries the same reading as the bar's length: blue while there is room,
@@ -1313,6 +1398,8 @@ fn disk_row(disk: &DiskUsage, theme: &Theme) -> impl IntoElement {
             div()
                 .flex_shrink_0()
                 .text_xs()
+                .w(px(116.))
+                .text_right()
                 .text_color(theme.muted_foreground)
                 .child(SharedString::from(disk.detail.clone())),
         )

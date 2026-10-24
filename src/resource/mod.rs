@@ -19,6 +19,5 @@ pub(crate) use system_types::{DiskUsage, ProcRow};
 // two answers to it are two panels that disagree.
 pub(crate) use system::{
     chunked_rows, connection_host, cpu_usage_rows, disk_usage, normalized_history, overview_rows,
-    proc_rows, push_ring, selected_iface, single_row, tuple5_rows,
-    NET_HISTORY_LEN,
+    proc_rows, push_ring, root_disk, selected_iface, single_row, tuple5_rows, NET_HISTORY_LEN,
 };

@@ -2661,12 +2661,8 @@ fn parse_monitor_block(
     let mut net_now: Vec<(String, u64, u64)> = Vec::new();
     // Filesystems from `df -kP`: (mount, available_bytes, total_bytes).
     let mut disks: Vec<(String, u64, u64)> = Vec::new();
-    // Dedup duplicate filesystems before they reach the panel (#38): NAS boxes
-    // (FNOS …) report the same underlying volume dozens of times — one Docker
-    // overlay mount per container layer, all with identical size. Like dropping rows
-    // into a Set: skip a (total, available) we've already shown. `df` lists the real
-    // mount first, so that's the one kept.
-    let mut seen_fs: std::collections::HashSet<(u64, u64)> = std::collections::HashSet::new();
+    // Equal capacity is not filesystem identity: preserve distinct and repeated
+    // mounts for inspection. The UI must not sum them into physical capacity.
     // Processes from `ps` (#23): top-by-CPU rows.
     let mut procs: Vec<ProcInfo> = Vec::new();
     let mut current_user = String::new();
@@ -2708,12 +2704,7 @@ fn parse_monitor_block(
             Section::Df => {
                 if disks.len() < MAX_MON_ENTRIES {
                     if let Some((mount, avail, total)) = parse_df_line(line) {
-                        // Set-style dedup: skip a filesystem whose (total, available)
-                        // we've already added — collapses the dozens of identical
-                        // Docker overlay mounts a NAS reports down to one row (#38).
-                        if seen_fs.insert((total, avail)) {
-                            disks.push((mount, avail, total));
-                        }
+                        disks.push((mount, avail, total));
                     }
                 }
                 continue;
@@ -3052,9 +3043,6 @@ fn parse_df_line(line: &str) -> Option<(String, u64, u64)> {
     }
     let total_kb: u64 = f[1].parse().ok()?;
     let avail_kb: u64 = f[3].parse().ok()?;
-    if total_kb == 0 {
-        return None;
-    }
     // Mount point is the last column (joined in case it contains spaces).
     let mount = f[5..].join(" ");
     // Saturating: a server can report arbitrary block counts; KiB→bytes must
@@ -3677,6 +3665,22 @@ mod monitor_hardening_tests {
         let (_, avail, total) = parse_df_line(line).expect("parses");
         assert_eq!(avail, u64::MAX);
         assert_eq!(total, u64::MAX);
+    }
+
+    #[test]
+    fn monitor_keeps_equal_size_mounts_and_zero_capacity_rows() {
+        let block = "MemTotal: 1000 kB\n__DF__\n/dev/b 100 50 50 50% /data\n/dev/a 100 50 50 50% /\ntmpfs 0 0 0 0% /tmp\n";
+        let mut prev = None;
+        let mut net = HashMap::new();
+        let mut at = Instant::now();
+        match parse_monitor_block(block, &mut prev, &mut net, &mut at).unwrap() {
+            super::SessionEvent::ResourceStats { disks, .. } => {
+                assert_eq!(disks.len(), 3);
+                assert_eq!(disks[1].0, "/");
+                assert_eq!(disks[2], ("/tmp".into(), 0, 0));
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
     }
 
     #[test]
