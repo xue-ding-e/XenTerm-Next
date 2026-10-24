@@ -1357,11 +1357,11 @@ impl ConfigStore {
     }
 
     pub fn sessions_sidebar_width(&self) -> f32 {
-        self.cache.sessions_sidebar_width.filter(|v| v.is_finite()).unwrap_or(380.0).clamp(240.0, 640.0)
+        self.cache.sessions_sidebar_width.filter(|v| v.is_finite()).unwrap_or(380.0).max(240.0)
     }
 
     pub fn set_sessions_sidebar_width(&mut self, width: f32) {
-        self.cache.sessions_sidebar_width = Some(if width.is_finite() { width.clamp(240.0, 640.0) } else { 380.0 });
+        self.cache.sessions_sidebar_width = Some(if width.is_finite() { width.max(240.0) } else { 380.0 });
     }
 
     /// Global UI scale in percent (#100). Defaults to 100.
@@ -1648,10 +1648,10 @@ impl ConfigStore {
     }
 
     /// Persisted sidebar width in logical px. Falls back to the default when the
-    /// stored value is unset/zero (e.g. a config created via `Default`).
+    /// stored value is unset/zero or non-finite (e.g. a legacy/imported config).
     pub fn sidebar_width(&self) -> f32 {
         let w = self.cache.sidebar_width;
-        if w <= 0.0 {
+        if !w.is_finite() || w <= 0.0 {
             default_sidebar_width()
         } else {
             w
@@ -1659,7 +1659,7 @@ impl ConfigStore {
     }
 
     pub fn set_sidebar_width(&mut self, v: f32) {
-        self.cache.sidebar_width = v;
+        self.cache.sidebar_width = if v.is_finite() && v > 0.0 { v } else { default_sidebar_width() };
     }
 
     /// Resource / SFTP panel docking geometry, persisted across restarts (#dock).
@@ -3006,9 +3006,9 @@ mod tests {
             store.set_navigation_icon_gap(raw);
             assert_eq!(store.navigation_icon_gap(), expected);
         }
-        for (raw, expected) in [(-10.0, 240.0), (480.0, 480.0), (900.0, 640.0), (f32::NAN, 380.0)] {
+        for (raw, expected) in [(-10.0, 240.0), (480.0, 480.0), (900.0, 900.0), (f32::NAN, 380.0), (f32::INFINITY, 380.0)] {
             store.set_sessions_sidebar_width(raw);
-            assert_eq!(store.sessions_sidebar_width(), expected);
+            assert_eq!(store.sessions_sidebar_width(), expected, "sessions sidebar preference must round-trip finite widths without the old 640px cap: raw={raw}");
         }
         store.cache.navigation_icon_gap = Some(f32::NEG_INFINITY);
         store.cache.sessions_sidebar_width = Some(f32::NAN);
@@ -3022,6 +3022,27 @@ mod tests {
         assert_eq!(reopened.sessions_sidebar_width, Some(500.0));
         assert_eq!(store.terminal_line_spacing(), terminal_spacing);
         assert_eq!(store.sidebar_width(), resource_width);
+    }
+
+    #[test]
+    fn resource_sidebar_width_sanitizes_legacy_values_without_a_fixed_cap() {
+        let mut store = temp_store();
+        for invalid in [0.0, -100.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            store.cache.sidebar_width = invalid;
+            assert_eq!(store.sidebar_width(), default_sidebar_width());
+            store.set_sidebar_width(invalid);
+            assert_eq!(store.cache.sidebar_width, default_sidebar_width());
+        }
+        for valid in [180.0, 420.0, 1600.0, f32::MAX] {
+            store.set_sidebar_width(valid);
+            assert_eq!(store.sidebar_width(), valid);
+        }
+        store.set_sidebar_width(1600.0);
+        store.set_sessions_sidebar_width(1100.0);
+        store.save().unwrap();
+        let (reopened, _) = ConfigStore::read_cache_snapshot(&store.path, &store.key).unwrap();
+        assert_eq!(reopened.sidebar_width, 1600.0);
+        assert_eq!(reopened.sessions_sidebar_width, Some(1100.0));
     }
 
     /// Display order for these tests: default(d1, d2), alpha(a1), beta(b1, b2)

@@ -171,22 +171,17 @@ fn management_counts(store: &ConfigStore) -> (usize, usize) {
 /// when a smaller window temporarily constrains the layout.
 fn fitted_list_width(preferred: f32, available: f32) -> f32 {
     let preferred = if preferred.is_finite() {
-        preferred.clamp(240.0, 640.0)
+        preferred.max(240.0)
     } else {
         380.0
     };
-    let available = if available.is_finite() {
-        available.max(0.0)
-    } else {
-        0.0
-    };
-    preferred.min((available - 280.0).max(0.0))
+    preferred.min(super::super::tokens::sidebar_width_limit(available))
 }
 
 impl Render for SessionsPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let border = cx.theme().border;
-        let available = f32::from(window.bounds().size.width) - super::super::tokens::RAIL_WIDTH;
+        let available = f32::from(window.viewport_size().width) - super::super::tokens::RAIL_WIDTH;
         let width = fitted_list_width(
             self.preview_width
                 .unwrap_or_else(|| self.store.borrow().sessions_sidebar_width()),
@@ -241,7 +236,7 @@ impl Render for SessionsPage {
                                     this.resize = None;
                                     this.preview_width = None;
                                 } else {
-                                    let available = f32::from(window.bounds().size.width)
+                                    let available = f32::from(window.viewport_size().width)
                                         - super::super::tokens::RAIL_WIDTH;
                                     this.preview_width = Some(fitted_list_width(
                                         width + f32::from(event.position.x) - start,
@@ -263,7 +258,7 @@ impl Render for SessionsPage {
                                     this.preview_width = None;
                                 } else {
                                     if let Some((start, width)) = this.resize {
-                                        let available = f32::from(window.bounds().size.width)
+                                        let available = f32::from(window.viewport_size().width)
                                             - super::super::tokens::RAIL_WIDTH;
                                         this.preview_width = Some(fitted_list_width(
                                             width + f32::from(event.position.x) - start,
@@ -480,6 +475,8 @@ mod layout_tests {
     #[test]
     fn sessions_width_preserves_management_room_and_rejects_nonfinite() {
         assert_eq!(fitted_list_width(500.0, 1000.0), 500.0);
+        assert_eq!(fitted_list_width(1100.0, 1800.0), 1100.0);
+        assert_eq!(fitted_list_width(f32::MAX, 1800.0), 1520.0);
         assert_eq!(fitted_list_width(640.0, 800.0), 520.0);
         assert_eq!(fitted_list_width(640.0, 100.0), 0.0);
         assert_eq!(fitted_list_width(f32::NAN, 1000.0), 380.0);
@@ -522,7 +519,7 @@ mod layout_tests {
             gpui_kit::component::Root::new(view, window, cx)
         });
         let page = page.unwrap();
-        cx.update(|window, _| window.resize(gpui_kit::size(px(1280.0), px(800.0))));
+        cx.simulate_resize(gpui_kit::size(px(1280.0), px(800.0)));
         draw(cx);
         let (left, right) = page.read_with(cx, |page, _| page.list_bounds.get());
         assert!(
@@ -571,5 +568,55 @@ mod layout_tests {
         });
         assert_eq!(store.borrow().sessions_sidebar_width(), before);
         assert!(store.borrow().persistence_error().is_some());
+    }
+
+    #[gpui_kit::gpui::test]
+    fn sessions_sidebar_wide_drag_restores_after_viewport_resize(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let directory = tempfile::tempdir().unwrap();
+        let cache = crate::config::ConfigFile::default();
+        let store = Rc::new(RefCell::new(ConfigStore {
+            path: directory.path().join("sessions.db"), backup_dir: None,
+            saved_state: std::sync::Mutex::new(crate::config::SavedState::of_cache(&cache)).into(),
+            cache, key: [7; 32], keyring_enabled: false,
+        }));
+        let shared = store.clone();
+        let mut page = None;
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| SessionsPage::new(shared, window, cx));
+            page = Some(view.clone());
+            gpui_kit::component::Root::new(view, window, cx)
+        });
+        let page = page.unwrap();
+        for scale in [1.0, 1.5, 2.0] {
+            cx.simulate_scale_factor_change(scale);
+            cx.simulate_resize(gpui_kit::size(px(1920.), px(900.)));
+            draw(cx);
+            let (left, right) = page.read_with(cx, |page, _| page.list_bounds.get());
+            let start = gpui_kit::point(px(right - 1.), px(200.));
+            let end = gpui_kit::point(start.x + px(1100. - (right - left)), start.y);
+            cx.simulate_mouse_down(start, MouseButton::Left, Default::default());
+            draw(cx);
+            assert!(page.read_with(cx, |page, _| page.resize.is_some()), "rendered divider starts the actual drag");
+            cx.simulate_mouse_move(end, MouseButton::Left, Default::default());
+            draw(cx);
+            cx.simulate_mouse_up(end, MouseButton::Left, Default::default());
+            draw(cx);
+            assert!((store.borrow().sessions_sidebar_width() - 1100.).abs() <= 1., "sessions sidebar must persist a 1100px drag beyond the old fixed cap: actual={}", store.borrow().sessions_sidebar_width());
+            for (window_width, expected) in [(800., 464.), (1920., 1100.)] {
+                cx.simulate_resize(gpui_kit::size(px(window_width), px(900.)));
+                draw(cx);
+                let (left, right) = page.read_with(cx, |page, _| page.list_bounds.get());
+                assert!((right - left - expected).abs() <= 1., "scale={scale}, bounds={left}..{right}, expected={expected}");
+                assert!(right < window_width, "divider must remain inside the viewport");
+                assert!((store.borrow().sessions_sidebar_width() - 1100.).abs() <= 1., "temporary fit must not overwrite the preference");
+            }
+        }
+        let connection = rusqlite::Connection::open(&store.borrow().path).unwrap();
+        let settings: String = connection.query_row(
+            "SELECT value FROM meta WHERE key='settings'", [], |row| row.get(0),
+        ).unwrap();
+        let settings: serde_json::Value = serde_json::from_str(&settings).unwrap();
+        assert!((settings["sessions_sidebar_width"].as_f64().unwrap() - 1100.).abs() <= 1.);
     }
 }

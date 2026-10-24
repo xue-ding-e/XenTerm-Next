@@ -66,7 +66,7 @@ use crate::resource::{
     TabStatuses, NET_HISTORY_LEN,
 };
 
-use super::tokens::{SIDEBAR_COLLAPSED_WIDTH as COLLAPSED_WIDTH, SIDEBAR_MAX_WIDTH as MAX_WIDTH, SIDEBAR_MIN_WIDTH as MIN_WIDTH};
+use super::tokens::{SIDEBAR_COLLAPSED_WIDTH as COLLAPSED_WIDTH, SIDEBAR_MIN_WIDTH as MIN_WIDTH};
 /// The height of one throughput graph.
 const GRAPH_HEIGHT: f32 = 44.0;
 /// How long folding the column out or in takes. Short enough to read as one
@@ -190,6 +190,9 @@ pub(crate) struct SidebarView {
     collapsed: bool,
     /// The column's width when expanded, from the config.
     width: f32,
+    /// The viewport's current allowance, kept separate from the saved preference
+    /// so shrinking a window does not permanently shrink the user's column.
+    max_width: f32,
     /// The width the column is drawn at right now, which animates between
     /// [`COLLAPSED_WIDTH`] and `width` on every fold. The shell's layout reads
     /// this one, while the panel's own content is laid out at the target (see
@@ -230,7 +233,7 @@ impl SidebarView {
         // Hosted as a tab of the left column, the panel is not a column of its own and
         // cannot be collapsed: the tab that shows it is also what hides it, and a panel
         // folded to a chevron inside its own tab is a tab with nothing in it.
-        let width = store.borrow().sidebar_width().clamp(MIN_WIDTH, MAX_WIDTH);
+        let width = store.borrow().sidebar_width().max(MIN_WIDTH);
         // The fold is a remembered preference: a panel the user folded away stays
         // folded on the next launch.
         let collapsed = store.borrow().sidebar_collapsed().unwrap_or(false);
@@ -245,6 +248,7 @@ impl SidebarView {
             store,
             collapsed,
             width,
+            max_width: f32::MAX,
             shown_width: if collapsed { COLLAPSED_WIDTH } else { width },
             anim: None,
             shown: Resources::idle(),
@@ -343,25 +347,45 @@ impl SidebarView {
         self.shown_width
     }
 
+    /// Fit to this frame's viewport without changing the persisted preference.
+    /// A window/dock resize supersedes an in-flight fold; snapping to its target
+    /// avoids leaving an old animation capable of pushing the divider outside.
+    pub(crate) fn set_available_width(&mut self, available: f32, cx: &mut Context<Self>) {
+        let limit = super::tokens::sidebar_width_limit(available);
+        if self.max_width == limit {
+            return;
+        }
+        self.max_width = limit;
+        self.anim = None;
+        self.shown_width = if self.collapsed { COLLAPSED_WIDTH } else { self.width }.min(limit);
+        cx.notify();
+    }
+
     /// Set the column's width: the drag's write path, and the settings page's.
     ///
-    /// Clamped to the same bounds the constructor reads, persisted to the store
+    /// Fitted to the current viewport, with a valid preference persisted to the store
     /// the panel was handed, and notified so the page's observer re-lays the
     /// workspace out. The save itself is the caller's — a drag calls this on
     /// every move and saves once, on release.
     pub(crate) fn set_width(&mut self, width: f32, cx: &mut Context<Self>) {
+        if !width.is_finite() {
+            return;
+        }
         // An explicit resize supersedes an in-flight expansion, including a
         // same-width grab. Its old target must not overwrite the new width.
         self.anim = None;
-        let clamped = width.clamp(MIN_WIDTH, MAX_WIDTH);
-        if (self.shown_width - clamped).abs() < 0.5
-            && (self.width - clamped).abs() < 0.5
+        // A transiently tiny viewport may fit less than the minimum, even zero.
+        // Keep a valid preference separately from that temporary display width.
+        let preferred = width.min(self.max_width).max(MIN_WIDTH);
+        let shown_width = preferred.min(self.max_width);
+        if (self.shown_width - shown_width).abs() < 0.5
+            && (self.width - preferred).abs() < 0.5
         {
             return;
         }
-        self.store.borrow_mut().set_sidebar_width(clamped);
-        self.width = clamped;
-        self.shown_width = clamped;
+        self.store.borrow_mut().set_sidebar_width(preferred);
+        self.width = preferred;
+        self.shown_width = shown_width;
         cx.notify();
     }
 
@@ -373,9 +397,9 @@ impl SidebarView {
     /// reflow every frame read as jitter, not motion.
     pub(crate) fn content_width(&self) -> f32 {
         if self.showing_strip() {
-            COLLAPSED_WIDTH
+            COLLAPSED_WIDTH.min(self.max_width)
         } else {
-            self.width
+            self.width.min(self.max_width)
         }
     }
 
@@ -383,7 +407,7 @@ impl SidebarView {
     /// once the fold has actually arrived, so the slide keeps showing the
     /// panel sliding away under the workspace edge.
     fn showing_strip(&self) -> bool {
-        self.collapsed && (self.shown_width - COLLAPSED_WIDTH).abs() < 0.5
+        self.collapsed && (self.shown_width - COLLAPSED_WIDTH.min(self.max_width)).abs() < 0.5
     }
 
     /// Whether the panel is folded away.
@@ -562,7 +586,7 @@ impl SidebarView {
         // machine actually is rather than growing a cliff when the next tick lands.
         self.refresh(cx);
         self.animate_width_to(
-            if collapsed { COLLAPSED_WIDTH } else { self.width },
+            if collapsed { COLLAPSED_WIDTH } else { self.width }.min(self.max_width),
             cx,
         );
     }

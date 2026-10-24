@@ -258,9 +258,9 @@ pub(crate) struct TerminalPage {
     /// arrangement the original had and FinalShell has.
     sidebar: Entity<SidebarView>,
     /// The sidebar's current column width, as of the last change. The pane
-    /// width is derived from it, so it is watched through the subscription
-    /// below and cached here rather than read per frame: a 1 Hz resource
-    /// repaint must not re-layout the terminal beside it.
+    /// width is derived from it. The subscription only forwards width changes,
+    /// not every 1 Hz resource repaint; a page render also fits it to the current
+    /// viewport before deriving the workspace geometry.
     sidebar_width: f32,
     /// Keeps the width watch alive. Dropping it would leave the panes drawn
     /// against a width the sidebar had outgrown.
@@ -320,8 +320,8 @@ impl TerminalPage {
         // reaching for a global.
         let sidebar = cx.new(|cx| SidebarView::new(state.statuses.clone(), state.store.clone(), cx));
         let sidebar_width = sidebar.read(cx).width();
-        // The column's width is the panel's own decision, so the page watches it
-        // rather than making it. Only a change re-lays out the workspace: the
+        // The panel owns the preferred width; the page supplies its viewport
+        // budget and watches the fitted width. Only a change re-lays out the workspace: the
         // panel repaints every second while a session is live, and re-rendering
         // the terminal beside it at that rate would make the panel cost what the
         // terminal costs.
@@ -1936,6 +1936,22 @@ impl Render for TerminalPage {
                 }
             }
         }
+        // Viewport, pointer positions and layout widths are all logical pixels;
+        // dividing by the display scale again would reintroduce a high-DPI cap.
+        let viewport_width = f32::from(window.viewport_size().width);
+        self.window_width.set(viewport_width);
+        let right_dock = if self.state.store.borrow().sftp_panel_on_the_right()
+            && self.sftp_available()
+        {
+            right_dock_extent(self.dock_progress.get())
+        } else {
+            0.0
+        };
+        let available = viewport_width - super::super::tokens::RAIL_WIDTH - right_dock;
+        self.sidebar_width = self.sidebar.update(cx, |sidebar, cx| {
+            sidebar.set_available_width(available, cx);
+            sidebar.width()
+        });
         self.render_workspace(cx)
     }
 }
