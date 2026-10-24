@@ -509,13 +509,22 @@ impl SessionEditor {
             !secret.is_empty() && !secret.is_local_ciphertext()
         });
         SettingField::element(
-            move |_: &gpui_kit::component::setting::RenderOptions,
+            move |options: &gpui_kit::component::setting::RenderOptions,
                   _: &mut Window,
                   _: &mut gpui_kit::App| {
                 let editor = editor.clone();
                 let visible = preview.is_some();
-                v_flex()
-                    .w_full()
+                let field = v_flex()
+                    // Element fields have an intrinsic-width wrapper in horizontal
+                    // rows. A percentage alone shrinks this to the reveal button;
+                    // use the same width rule as the editable password field.
+                    .map(|field| {
+                        if options.layout().is_horizontal() {
+                            field.w_64()
+                        } else {
+                            field.w_full()
+                        }
+                    })
                     .gap_2()
                     .child(
                         Button::new(if index == 0 {
@@ -555,8 +564,14 @@ impl SessionEditor {
                         } else {
                             120.
                         })))
-                    })
-                    .into_any_element()
+                    });
+                // Observe the real Settings mode without changing its layout.
+                #[cfg(test)]
+                let field = field.debug_selector(move || {
+                    tests::saved_preview_layout_selector(index, options.layout().is_horizontal())
+                        .into()
+                });
+                field.into_any_element()
             },
         )
     }
@@ -1827,6 +1842,229 @@ mod tests {
         assert!(old_weak.upgrade().is_none());
         assert!(draft.borrow().password.is_empty());
         assert!(fixture.store.borrow().sessions().is_empty());
+    }
+
+    // Exercise the real dialog, responsive Settings row and Textarea geometry.
+    // TestPlatform has no native font renderer, so these checks prove bounds,
+    // not glyph rasterization or the number of wrapped lines on a desktop.
+    fn draw_saved_preview_dialog(cx: &mut gpui_kit::gpui::VisualTestContext) {
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.refresh();
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        cx.run_until_parked();
+    }
+
+    pub(super) fn saved_preview_layout_selector(index: usize, horizontal: bool) -> &'static str {
+        match (index, horizontal) {
+            (0, true) => "saved-password-layout-horizontal",
+            (0, false) => "saved-password-layout-vertical",
+            (1, true) => "saved-key-layout-horizontal",
+            (1, false) => "saved-key-layout-vertical",
+            _ => panic!("invalid synthetic saved-preview index"),
+        }
+    }
+
+    fn settle_saved_preview_dialog(
+        cx: &mut gpui_kit::gpui::VisualTestContext,
+        mode: Option<(usize, bool)>,
+    ) {
+        use std::time::{Duration, Instant};
+
+        // Dialog entrance animation uses wall time. Once the target row is
+        // visible, require its actual mode and bounds to settle with the footer;
+        // a stable footer alone does not prove the content panel has settled.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut previous = None;
+        let mut stable = 0;
+        loop {
+            draw_saved_preview_dialog(cx);
+            let footer = cx.debug_bounds("editor-save");
+            let mode_bounds = mode.and_then(|(index, horizontal)| {
+                cx.debug_bounds(saved_preview_layout_selector(index, horizontal))
+            });
+            let opposite_bounds = mode.and_then(|(index, horizontal)| {
+                cx.debug_bounds(saved_preview_layout_selector(index, !horizontal))
+            });
+            let mode_ready = mode.is_none() || (mode_bounds.is_some() && opposite_bounds.is_none());
+            let bounds = (footer, mode_bounds);
+            if footer.is_some() && mode_ready && Some(bounds) == previous {
+                stable += 1;
+                if stable == 3 {
+                    return;
+                }
+            } else {
+                stable = 0;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "saved-preview dialog did not settle: expected_mode={mode:?}, footer={footer:?}, mode_bounds={mode_bounds:?}, opposite_bounds={opposite_bounds:?}"
+            );
+            previous = Some(bounds);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn check_saved_preview_dialog_layout(
+        cx: &mut TestAppContext,
+        auth: crate::config::AuthMethod,
+        index: usize,
+    ) {
+        use gpui_kit::component::{Root, WindowExt as _};
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            gpui_kit::component::Theme::global_mut(cx).font_size = px(16.);
+        });
+        let fixture = StoreFixture::new();
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let harness = cx.new(|_| EditorDialogHarness);
+            Root::new(harness, window, cx)
+        });
+        cx.simulate_resize(gpui_kit::size(px(1200.), px(900.)));
+        let editor = cx.update(|window, cx| {
+            window.activate_window();
+            let mut session = secret_fixture();
+            session.name = "synthetic-layout-session".into();
+            session.auth = auth;
+            session.allow_secret_reveal = true;
+            let editor = cx.new(|_| SessionEditor::edit(fixture.store.clone(), session));
+            super::super::shell::Shell::editor_dialog(editor.clone(), window, cx);
+            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
+                "layout-clipboard-sentinel".into(),
+            ));
+            editor
+        });
+        settle_saved_preview_dialog(cx, None);
+
+        // The first empty text control in the actual dialog's focus chain is
+        // Settings search. Filtering puts the tested row inside the viewport;
+        // offscreen debug bounds alone would not establish a usable preview.
+        focus_editor_field(cx, "");
+        cx.simulate_input(if index == 0 {
+            crate::i18n::t("已保存密码 / 密钥口令", "Saved password / key passphrase")
+        } else {
+            crate::i18n::t("已保存内联私钥", "Saved inline private key")
+        });
+        settle_saved_preview_dialog(cx, Some((index, true)));
+        assert!(editor.read_with(cx, |editor, _| editor.secret_previews[index].is_none()));
+        let reveal = if index == 0 {
+            "saved-password-reveal"
+        } else {
+            "saved-key-reveal"
+        };
+        let eye = cx
+            .debug_bounds(reveal)
+            .expect("filtered saved-secret row is visible");
+        cx.simulate_click(eye.center(), Modifiers::default());
+        settle_saved_preview_dialog(cx, Some((index, true)));
+        let preview = editor.read_with(cx, |editor, _| {
+            editor.secret_previews[index]
+                .clone()
+                .expect("explicit reveal creates preview")
+        });
+
+        let mut wide_width = None;
+        // Settings switches at a 480px *content-panel* width. Its sidebar
+        // shrinks proportionally too, so an 820px window can remain horizontal.
+        for window_width in [1200., 760., 1200.] {
+            // The test platform's resize event, not Window::resize (a no-op on
+            // TestWindow), must drive both the dialog and Settings breakpoint.
+            cx.simulate_resize(gpui_kit::size(px(window_width), px(900.)));
+            let horizontal = window_width == 1200.;
+            settle_saved_preview_dialog(cx, Some((index, horizontal)));
+            assert!(
+                cx.debug_bounds(saved_preview_layout_selector(index, horizontal))
+                    .is_some(),
+                "saved-preview row must render the expected Settings layout mode"
+            );
+            assert!(
+                cx.debug_bounds(saved_preview_layout_selector(index, !horizontal))
+                    .is_none(),
+                "saved-preview row must not retain the opposite Settings layout mode"
+            );
+            let eye = cx.debug_bounds(reveal).unwrap();
+            let footer = cx.debug_bounds("editor-save").unwrap();
+            let text_bounds = preview.read_with(cx, |preview, _| {
+                assert!(preview.presentation().is_readonly());
+                preview.input_bounds()
+            });
+            // input_bounds is the inner text viewport. Include the toolkit's
+            // default presentation padding and 1px border to check the frame.
+            let inset_x = gpui_kit::component::Size::default().input_px() + px(1.);
+            let inset_y = gpui_kit::component::Size::default().input_py() + px(1.);
+            let bounds = gpui_kit::Bounds::new(
+                gpui_kit::point(text_bounds.left() - inset_x, text_bounds.top() - inset_y),
+                gpui_kit::size(
+                    text_bounds.size.width + inset_x * 2.,
+                    text_bounds.size.height + inset_y * 2.,
+                ),
+            );
+            assert!(
+                bounds.size.width >= px(240.),
+                "saved preview must not collapse to reveal-button width: {bounds:?}"
+            );
+            let expected_height = if index == 0 { 60. } else { 120. };
+            assert!(
+                bounds.size.height >= px(expected_height - 4.)
+                    && bounds.size.height <= px(expected_height),
+                "saved preview must retain its bounded height: {bounds:?}"
+            );
+            assert!(
+                bounds.left() >= px(48.)
+                    && bounds.right() <= px(window_width - 48.)
+                    && bounds.top() >= eye.bottom()
+                    && bounds.bottom() < footer.top(),
+                "saved preview must be inside the visible dialog body: {bounds:?}"
+            );
+            if window_width == 1200. {
+                assert!(
+                    bounds.size.width <= px(256.),
+                    "horizontal row uses the normal field width"
+                );
+                if let Some(width) = wide_width {
+                    assert_eq!(
+                        bounds.size.width, width,
+                        "resizing back restores the field width"
+                    );
+                }
+                wide_width = Some(bounds.size.width);
+            } else {
+                assert!(
+                    bounds.size.width > wide_width.unwrap() + px(40.),
+                    "stacked row should expand across the available content width: {bounds:?}"
+                );
+            }
+            cx.update(|_, cx| {
+                assert_eq!(
+                    cx.read_from_clipboard().unwrap().text().as_deref(),
+                    Some("layout-clipboard-sentinel")
+                );
+            });
+        }
+        cx.simulate_keystrokes("escape");
+        assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+        assert!(preview.read_with(cx, |preview, _| preview.value().is_empty()));
+        assert!(
+            fixture.store.borrow().sessions().is_empty(),
+            "layout never saves a session"
+        );
+    }
+
+    #[gpui_kit::gpui::test]
+    fn saved_password_preview_tracks_dialog_layout(cx: &mut TestAppContext) {
+        check_saved_preview_dialog_layout(cx, crate::config::AuthMethod::Password, 0);
+    }
+
+    #[gpui_kit::gpui::test]
+    fn saved_key_passphrase_preview_tracks_dialog_layout(cx: &mut TestAppContext) {
+        check_saved_preview_dialog_layout(cx, crate::config::AuthMethod::Key, 0);
+    }
+
+    #[gpui_kit::gpui::test]
+    fn saved_private_key_preview_tracks_dialog_layout(cx: &mut TestAppContext) {
+        check_saved_preview_dialog_layout(cx, crate::config::AuthMethod::Key, 1);
     }
 
     #[gpui_kit::gpui::test]
