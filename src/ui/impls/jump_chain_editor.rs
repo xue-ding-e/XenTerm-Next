@@ -43,8 +43,14 @@ fn full_label_tooltip(label: String, window: &mut Window, cx: &mut App) -> AnyVi
     let width = (window.viewport_size().width - px(64.))
         .min(px(520.))
         .max(px(0.));
-    Tooltip::element(move |_, _| div().w(width).whitespace_normal().child(label.clone()))
-        .build(window, cx)
+    Tooltip::element(move |_, _| {
+        div()
+            .debug_selector(|| "jump-full-label-tooltip".into())
+            .w(width)
+            .whitespace_normal()
+            .child(label.clone())
+    })
+    .build(window, cx)
 }
 
 fn candidate_item(id: &str, label: String, window: &Window) -> PopupMenuItem {
@@ -64,7 +70,9 @@ fn candidate_item(id: &str, label: String, window: &Window) -> PopupMenuItem {
             .whitespace_nowrap()
             .text_ellipsis()
             .aria_label(label.clone())
-            .hoverable_tooltip(move |window, cx| full_label_tooltip(tooltip.clone(), window, cx))
+            // This is read-only overflow text, not an interactive popup. Native
+            // tooltips keep the normal show delay but dismiss on leave/scroll.
+            .tooltip(move |window, cx| full_label_tooltip(tooltip.clone(), window, cx))
             .child(label.clone())
     })
 }
@@ -156,12 +164,15 @@ pub(super) fn page(
                             let tooltip = label.clone();
                             div()
                                 .id("label-value")
+                                .debug_selector(move || format!("jump-selected-label-{index}"))
                                 .w_full()
                                 .min_w_0()
                                 .overflow_hidden()
                                 .whitespace_nowrap()
                                 .text_ellipsis()
-                                .hoverable_tooltip(move |window, cx| {
+                                // Do not retain the native hoverable tooltip's
+                                // 500 ms hide grace over adjacent jump rows.
+                                .tooltip(move |window, cx| {
                                     full_label_tooltip(tooltip.clone(), window, cx)
                                 })
                                 .child(label)
@@ -386,6 +397,7 @@ mod ui_tests {
         test::TestWindowExt as _,
         Context, Entity, Render, Window,
     };
+    use std::time::Duration;
 
     struct Probe {
         draft: Rc<RefCell<SessionDraft>>,
@@ -476,6 +488,251 @@ mod ui_tests {
     fn draw(cx: &mut VisualTestContext) {
         cx.update(|window, cx| window.draw(cx).clear(cx));
         cx.run_until_parked();
+    }
+
+    fn hover_fixture(
+        cx: &mut TestAppContext,
+        count: usize,
+    ) -> (Entity<Probe>, &mut VisualTestContext) {
+        let (view, cx) = long_route_fixture(cx, count, 640.);
+        view.update(cx, |probe, cx| {
+            // All labels and endpoints are synthetic. No transport is opened.
+            for (index, session) in probe
+                .store
+                .borrow_mut()
+                .cache
+                .sessions
+                .iter_mut()
+                .enumerate()
+            {
+                session.name = format!(
+                    "Synthetic jump host {index:02} {}",
+                    "overflow-label-".repeat(8)
+                );
+                session.host = format!("192.0.2.{}", index + 1);
+            }
+            cx.notify();
+        });
+        settle_hover_frames(cx);
+        (view, cx)
+    }
+
+    fn settle_hover_frames(cx: &mut VisualTestContext) {
+        // Retire the buffered frame and let native prepaint reevaluate visibility.
+        // No time advances here: dismissal must not wait for a hide timer.
+        for _ in 0..3 {
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                window.refresh();
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            });
+        }
+        cx.run_until_parked();
+    }
+
+    fn advance_hover_clock(cx: &mut VisualTestContext, millis: u64) {
+        cx.executor().advance_clock(Duration::from_millis(millis));
+        settle_hover_frames(cx);
+    }
+
+    fn assert_no_label_tooltip(cx: &mut VisualTestContext) {
+        assert!(
+            cx.debug_bounds("jump-full-label-tooltip").is_none(),
+            "read-only jump label tooltip must disappear without advancing the hide clock"
+        );
+    }
+
+    fn hover_label(cx: &mut VisualTestContext, selector: &'static str) -> gpui_kit::Point<Pixels> {
+        let bounds = cx.debug_bounds(selector).expect("visible jump label");
+        // Stay left of the popup so switching rows tests the actual next label,
+        // not an old tooltip visually covering the middle of the next row.
+        let position = point(bounds.left() + px(4.), bounds.center().y);
+        cx.simulate_mouse_move(position, None, Default::default());
+        settle_hover_frames(cx);
+        position
+    }
+
+    fn show_label_tooltip(
+        cx: &mut VisualTestContext,
+        selector: &'static str,
+    ) -> gpui_kit::Point<Pixels> {
+        let position = hover_label(cx, selector);
+        assert_no_label_tooltip(cx);
+        advance_hover_clock(cx, 499);
+        assert_no_label_tooltip(cx);
+        advance_hover_clock(cx, 1);
+        assert!(cx.debug_bounds("jump-full-label-tooltip").is_some());
+        position
+    }
+
+    #[gpui_kit::gpui::test]
+    fn jump_hover_selected_label_dismisses_without_hide_grace(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let (_, cx) = hover_fixture(cx, 2);
+        for enter_tooltip in [false, true] {
+            let position = show_label_tooltip(cx, "jump-selected-label-0");
+            let tooltip = cx.debug_bounds("jump-full-label-tooltip").unwrap();
+            let leave = if enter_tooltip {
+                // Merely entering this read-only tooltip must not keep it alive.
+                point(tooltip.right() - px(1.), tooltip.bottom() - px(1.))
+            } else {
+                point(px(2.), px(2.))
+            };
+            let label = cx.debug_bounds("jump-selected-label-0").unwrap();
+            assert!(!label.contains(&leave));
+            assert!(!cx
+                .debug_bounds("jump-selected-label-1")
+                .unwrap()
+                .contains(&leave));
+            cx.simulate_mouse_move(leave, None, Default::default());
+            settle_hover_frames(cx);
+            assert_no_label_tooltip(cx);
+            advance_hover_clock(cx, 500);
+            assert_no_label_tooltip(cx);
+            assert!(position != leave);
+        }
+    }
+
+    #[gpui_kit::gpui::test]
+    fn jump_hover_switching_rows_cancels_pending_show_and_restarts_delay(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let (_, cx) = hover_fixture(cx, 2);
+        hover_label(cx, "jump-selected-label-0");
+        advance_hover_clock(cx, 200);
+        hover_label(cx, "jump-selected-label-1");
+        advance_hover_clock(cx, 300);
+        assert_no_label_tooltip(cx); // The first row's original deadline passed.
+        advance_hover_clock(cx, 199);
+        assert_no_label_tooltip(cx);
+        advance_hover_clock(cx, 1);
+        assert!(cx.debug_bounds("jump-full-label-tooltip").is_some());
+        // A visible old row must vanish immediately, not survive over the new one.
+        hover_label(cx, "jump-selected-label-0");
+        assert_no_label_tooltip(cx);
+        advance_hover_clock(cx, 499);
+        assert_no_label_tooltip(cx);
+        advance_hover_clock(cx, 1);
+        assert!(cx.debug_bounds("jump-full-label-tooltip").is_some());
+    }
+
+    #[gpui_kit::gpui::test]
+    fn jump_hover_selected_label_closes_before_menu_opens(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let (_, cx) = hover_fixture(cx, 2);
+        let position = show_label_tooltip(cx, "jump-selected-label-0");
+        cx.simulate_click(position, Default::default());
+        settle_hover_frames(cx);
+        assert_no_label_tooltip(cx);
+        assert!(cx.update(|window, _| window.try_find("popup-menu").is_some()));
+        cx.simulate_keystrokes("escape");
+        settle_hover_frames(cx);
+        assert!(cx.update(|window, _| window.try_find("popup-menu").is_none()));
+        advance_hover_clock(cx, 500);
+        assert_no_label_tooltip(cx);
+    }
+
+    #[gpui_kit::gpui::test]
+    fn jump_hover_candidate_label_dismisses_on_leave_scroll_and_menu_close(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(gpui_kit::init);
+        for action in [
+            "leave",
+            "scroll",
+            "escape",
+            "select",
+            "outside",
+            "close-pending",
+        ] {
+            let (_, cx) = hover_fixture(cx, 0);
+            let add = cx.debug_bounds("jump-add-trigger").unwrap();
+            cx.simulate_click(add.center(), Default::default());
+            settle_hover_frames(cx);
+            let position = if action == "close-pending" {
+                let position = hover_label(cx, "jump-menu-label-hop-00");
+                advance_hover_clock(cx, 250);
+                assert_no_label_tooltip(cx);
+                position
+            } else {
+                show_label_tooltip(cx, "jump-menu-label-hop-00")
+            };
+            match action {
+                "leave" => cx.simulate_mouse_move(point(px(2.), px(2.)), None, Default::default()),
+                "scroll" => cx.simulate_event(gpui_kit::ScrollWheelEvent {
+                    position,
+                    delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-120.))),
+                    modifiers: Default::default(),
+                    touch_phase: gpui_kit::TouchPhase::Moved,
+                }),
+                "escape" | "close-pending" => cx.simulate_keystrokes("escape"),
+                "select" => cx.simulate_click(position, Default::default()),
+                "outside" => cx.simulate_click(point(px(2.), px(2.)), Default::default()),
+                _ => unreachable!(),
+            }
+            settle_hover_frames(cx);
+            assert_no_label_tooltip(cx);
+            // Closing the popup must not let a canceled tooltip appear later.
+            cx.simulate_keystrokes("escape");
+            advance_hover_clock(cx, 500);
+            assert_no_label_tooltip(cx);
+            assert!(cx.update(|window, _| window.try_find("popup-menu").is_none()));
+        }
+    }
+
+    #[gpui_kit::gpui::test]
+    fn jump_hover_owner_removal_cancels_pending_and_visible_tooltips(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        for visible in [false, true] {
+            let (_, cx) = hover_fixture(cx, 2);
+            hover_label(cx, "jump-selected-label-0");
+            advance_hover_clock(cx, if visible { 500 } else { 250 });
+            assert_eq!(
+                cx.debug_bounds("jump-full-label-tooltip").is_some(),
+                visible
+            );
+            // Dialog dismissal removes the editor subtree. Exercise that teardown
+            // with a stationary pointer, not a mouse leave hiding it incidentally.
+            cx.update(|window, cx| {
+                window.replace_root(cx, |_, _| gpui_kit::EmptyView);
+            });
+            settle_hover_frames(cx);
+            assert_no_label_tooltip(cx);
+            advance_hover_clock(cx, 1000);
+            assert_no_label_tooltip(cx);
+        }
+    }
+
+    #[gpui_kit::gpui::test]
+    fn jump_hover_invalid_route_removal_does_not_leave_a_tooltip_on_disabled_add(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(gpui_kit::init);
+        for visible in [false, true] {
+            let (view, cx) = hover_fixture(cx, 2);
+            hover_label(cx, "jump-selected-label-0");
+            advance_hover_clock(cx, if visible { 500 } else { 250 });
+            assert_eq!(
+                cx.debug_bounds("jump-full-label-tooltip").is_some(),
+                visible
+            );
+            view.update(cx, |probe, cx| {
+                probe.draft.borrow_mut().jump_session_ids = vec!["missing-synthetic-hop".into()];
+                cx.notify();
+            });
+            settle_hover_frames(cx);
+            assert!(cx.debug_bounds("jump-selected-label-0").is_none());
+            assert_no_label_tooltip(cx);
+            advance_hover_clock(cx, 1000);
+            assert_no_label_tooltip(cx);
+            // Invalid routes remove selected-row tooltip owners and disable Add;
+            // selected rows themselves have no independent disabled state.
+            let add = cx.debug_bounds("jump-add-trigger").unwrap();
+            cx.simulate_click(add.center(), Default::default());
+            settle_hover_frames(cx);
+            assert!(cx.update(|window, _| window.try_find("popup-menu").is_none()));
+            assert_no_label_tooltip(cx);
+        }
     }
 
     #[gpui_kit::gpui::test]
