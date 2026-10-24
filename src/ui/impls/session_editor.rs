@@ -24,15 +24,15 @@ use gpui_kit::{
     component::{
         button::{Button, ButtonVariants},
         h_flex,
-        input::{Input, InputState, Textarea, TextareaState},
+        input::{Input, InputEvent, InputState, Textarea, TextareaState},
         setting::{SettingField, SettingGroup, SettingItem, SettingPage, Settings},
         switch::Switch,
         v_flex, ActiveTheme, AxisExt as _, Disableable as _, Icon, Sizable as _,
     },
     div,
     prelude::*,
-    px, relative, AnyElement, Context, Entity, Focusable as _, Hsla, IntoElement, Render,
-    SharedString, Window,
+    px, relative, AnyElement, Context, Entity, EntityInputHandler as _, Focusable as _, Hsla,
+    IntoElement, Render, SharedString, Window,
 };
 
 use gpui_kit::assets::IconName;
@@ -80,6 +80,9 @@ pub(crate) struct SessionEditor {
     /// Read-only, disposable previews. They never feed a replacement input or its undo history.
     secret_previews: [Option<Entity<TextareaState>>; 2],
     reset_previews: bool,
+    /// Weak handles only: hidden/replaced keyed fields retain no extra input state.
+    text_fields:
+        Rc<RefCell<std::collections::HashMap<&'static str, gpui_kit::WeakEntity<TextFieldState>>>>,
 }
 
 impl Drop for SessionEditor {
@@ -87,6 +90,34 @@ impl Drop for SessionEditor {
         let mut draft = self.draft.borrow_mut();
         draft.password.zeroize();
         draft.private_key_inline.zeroize();
+    }
+}
+
+/// Keep the last model value separate from the input's transient IME preedit.
+struct TextFieldState {
+    input: Entity<InputState>,
+    model_value: SharedString,
+    write: Rc<dyn Fn(SharedString)>,
+    _subscription: gpui_kit::Subscription,
+}
+
+impl TextFieldState {
+    /// Accept only settled text. An active candidate is not a saved form value.
+    fn flush(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let value = self.input.update(cx, |input, cx| {
+            input
+                .marked_text_range(window, cx)
+                .is_none()
+                .then(|| input.value())
+        });
+        let Some(value) = value else {
+            return false;
+        };
+        if value != self.model_value {
+            (self.write)(value.clone());
+            self.model_value = value;
+        }
+        true
     }
 }
 
@@ -229,6 +260,7 @@ impl SessionEditor {
             password: None,
             secret_previews: [None, None],
             reset_previews: false,
+            text_fields: Rc::new(RefCell::new(std::collections::HashMap::new())),
         }
     }
 
@@ -247,6 +279,7 @@ impl SessionEditor {
             password: None,
             secret_previews: [None, None],
             reset_previews: false,
+            text_fields: Rc::new(RefCell::new(std::collections::HashMap::new())),
         }
     }
 
@@ -554,17 +587,86 @@ impl SessionEditor {
         }));
     }
 
-    /// One text field bound to a draft field.
+    /// One text field bound to a draft field without reconciling away IME preedit.
     fn text(
-        draft: &Rc<RefCell<SessionDraft>>,
+        &self,
+        id: &'static str,
         get: impl Fn(&SessionDraft) -> String + 'static,
         set: impl Fn(&mut SessionDraft, String) + 'static,
     ) -> SettingField<SharedString> {
-        let read = draft.clone();
-        let write = draft.clone();
-        SettingField::input(
-            move |_| SharedString::from(get(&read.borrow())),
-            move |value, _| set(&mut write.borrow_mut(), value.to_string()),
+        let draft = self.draft.clone();
+        let fields = self.text_fields.clone();
+        let set = Rc::new(set);
+        SettingField::element(
+            move |options: &gpui_kit::component::setting::RenderOptions,
+                  window: &mut Window,
+                  cx: &mut gpui_kit::App| {
+                let value = SharedString::from(get(&draft.borrow()));
+                let state = window.use_keyed_state(id, cx, |window, cx| {
+                    let input =
+                        cx.new(|cx| InputState::new(window, cx).default_value(value.clone()));
+                    let draft = draft.clone();
+                    let set = set.clone();
+                    let write: Rc<dyn Fn(SharedString)> = Rc::new(move |value| {
+                        set(&mut draft.borrow_mut(), value.to_string());
+                    });
+                    let subscription = cx.subscribe_in(
+                        &input,
+                        window,
+                        move |state: &mut TextFieldState, _, event, window, cx| {
+                            if matches!(event, InputEvent::Change | InputEvent::Blur) {
+                                state.flush(window, cx);
+                            }
+                        },
+                    );
+                    TextFieldState {
+                        input,
+                        model_value: value.clone(),
+                        write,
+                        _subscription: subscription,
+                    }
+                });
+                fields.borrow_mut().insert(id, state.downgrade());
+                state.update(cx, |state, cx| {
+                    // Preedit notifies without Change. Comparing its display value
+                    // with the draft would clear the mark and move the caret to the
+                    // end. Defer reconciliation until no composition is active.
+                    let current = state.input.update(cx, |input, cx| {
+                        input
+                            .marked_text_range(window, cx)
+                            .is_none()
+                            .then(|| input.value())
+                    });
+                    let Some(current) = current else {
+                        return;
+                    };
+                    if current != state.model_value {
+                        // unmark_text and empty-preedit cancellation can finish a
+                        // visible edit without Change. The final local text wins;
+                        // a cancellation with no net edit still allows the external
+                        // value below. Never restore a stale external value over a
+                        // newly accepted candidate.
+                        (state.write)(current.clone());
+                        state.model_value = current;
+                    } else if state.model_value != value {
+                        state.input.update(cx, |input, cx| {
+                            input.set_value(value.clone(), window, cx);
+                        });
+                        state.model_value = value.clone();
+                    }
+                });
+                Input::new(&state.read(cx).input)
+                    .disabled(options.is_disabled())
+                    .with_size(options.size())
+                    .map(|input| {
+                        if options.layout().is_horizontal() {
+                            input.w_64()
+                        } else {
+                            input.w_full()
+                        }
+                    })
+                    .into_any_element()
+            },
         )
     }
 
@@ -1059,6 +1161,8 @@ fn triggers_element(
 // methods; what remains is the form's own inventory.
 impl Render for SessionEditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The next field render registers only this frame's visible controls.
+        self.text_fields.borrow_mut().clear();
         if self.reset_previews {
             self.clear_secret_previews(window, cx);
             self.reset_previews = false;
@@ -1078,7 +1182,7 @@ impl Render for SessionEditor {
         let is_ssh = kind_value == "ssh";
 
         let store_for_name = self.store.clone();
-        let name = Self::text(&draft, |d| d.name.clone(), |d, v| d.name = v);
+        let name = self.text("name", |d| d.name.clone(), |d, v| d.name = v);
         let _ = store_for_name;
 
         let kind = Self::choice(
@@ -1093,11 +1197,11 @@ impl Render for SessionEditor {
             |d, v| d.kind = v,
         );
 
-        let host = Self::text(&draft, |d| d.host.clone(), |d, v| d.host = v);
-        let user = Self::text(&draft, |d| d.user.clone(), |d, v| d.user = v);
+        let host = self.text("host", |d| d.host.clone(), |d, v| d.host = v);
+        let user = self.text("user", |d| d.user.clone(), |d, v| d.user = v);
         // Keep the exact text until Save. A number field parses f64 eagerly, losing
         // empty/non-numeric edits and truncating fractions before validation can see them.
-        let port = Self::text(&draft, |d| d.port.clone(), |d, v| d.port = v);
+        let port = self.text("port", |d| d.port.clone(), |d, v| d.port = v);
 
         let auth = Self::choice(
             &draft,
@@ -1181,26 +1285,30 @@ impl Render for SessionEditor {
         };
         let saved_password = self.saved_secret_field(0, cx);
         let saved_key = self.saved_secret_field(1, cx);
-        let key_path = Self::text(
-            &draft,
+        let key_path = self.text(
+            "private_key_path",
             |d| d.private_key_path.clone(),
             |d, v| d.private_key_path = v,
         );
-        let proxy = Self::text(&draft, |d| d.proxy.clone(), |d, v| d.proxy = v);
-        let note = Self::text(&draft, |d| d.note.clone(), |d, v| d.note = v);
+        let proxy = self.text("proxy", |d| d.proxy.clone(), |d, v| d.proxy = v);
+        let note = self.text("note", |d| d.note.clone(), |d, v| d.note = v);
 
         // Groups are a free-text field, not a dropdown, because the list of groups is
         // derived from the sessions in them: a dropdown would only offer the groups that
         // already exist, and a new session is often the first of its group.
-        let group = Self::text(&draft, |d| d.group.clone(), |d, v| d.group = v);
+        let group = self.text("group", |d| d.group.clone(), |d, v| d.group = v);
 
         // ---- Serial-only fields, built whatever the kind is so a kind change mid-form
         // has values to show rather than empty ones. They are only *added* when the kind
         // is serial.
-        let device = Self::text(&draft, |d| d.serial_port.clone(), |d, v| d.serial_port = v);
-        let baud = Self::text(&draft, |d| d.baud_rate.clone(), |d, v| d.baud_rate = v);
-        let data_bits = Self::text(&draft, |d| d.data_bits.clone(), |d, v| d.data_bits = v);
-        let stop_bits = Self::text(&draft, |d| d.stop_bits.clone(), |d, v| d.stop_bits = v);
+        let device = self.text(
+            "serial_port",
+            |d| d.serial_port.clone(),
+            |d, v| d.serial_port = v,
+        );
+        let baud = self.text("baud_rate", |d| d.baud_rate.clone(), |d, v| d.baud_rate = v);
+        let data_bits = self.text("data_bits", |d| d.data_bits.clone(), |d, v| d.data_bits = v);
+        let stop_bits = self.text("stop_bits", |d| d.stop_bits.clone(), |d, v| d.stop_bits = v);
         let parity = Self::choice(
             &draft,
             editor.clone(),
@@ -1463,6 +1571,27 @@ impl Render for SessionEditor {
             .label(crate::i18n::t("保存", "Save"))
             .primary()
             .on_click(cx.listener(|this, _, window, cx| {
+                // Buttons deliberately keep the input focused, so Blur is not a
+                // commit boundary. Flush accepted text even if unmark_text emitted
+                // no Change, and keep the dialog open for an unfinished candidate.
+                let fields: Vec<_> = this
+                    .text_fields
+                    .borrow()
+                    .values()
+                    .filter_map(|field| field.upgrade())
+                    .collect();
+                if fields
+                    .iter()
+                    .any(|field| !field.update(cx, |field, cx| field.flush(window, cx)))
+                {
+                    this.outcome = None;
+                    this.save_error = Some(crate::i18n::t(
+                        "请先确认或取消输入法候选，再保存。",
+                        "Confirm or cancel the input-method candidate before saving.",
+                    ));
+                    cx.notify();
+                    return;
+                }
                 this.save(cx);
                 if this.outcome == Some(EditorOutcome::Saved) {
                     this.clear_sensitive_inputs(window, cx);
@@ -2627,5 +2756,497 @@ mod tests {
             left, 0,
             "clearing the rows clears the rules, which is the bug round 31 fixed"
         );
+    }
+
+    // Protocol-level regressions against the real rendered form, not a native
+    // Windows IME/candidate window. Only synthetic names and disposable profiles.
+    const INPUT_FIXTURE_NAME: &str = "机房A🦀-server尾";
+
+    fn repaint_input_editor(
+        editor: &Entity<SessionEditor>,
+        cx: &mut gpui_kit::gpui::VisualTestContext,
+    ) {
+        cx.run_until_parked();
+        editor.update(cx, |_, cx| cx.notify());
+        cx.update(|window, cx| {
+            window.refresh();
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        cx.run_until_parked();
+    }
+
+    fn open_input_editor<'a>(
+        cx: &'a mut TestAppContext,
+        fixture: &StoreFixture,
+    ) -> (
+        Entity<SessionEditor>,
+        Entity<InputState>,
+        &'a mut gpui_kit::gpui::VisualTestContext,
+    ) {
+        cx.update(gpui_kit::init);
+        let mut session = Session::new_empty();
+        session.name = INPUT_FIXTURE_NAME.into();
+        session.host = "synthetic.invalid".into();
+        session.group = "synthetic-group".into();
+        fixture
+            .store
+            .borrow_mut()
+            .upsert_and_save(session.clone())
+            .unwrap();
+        let mut editor = None;
+        let store = fixture.store.clone();
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|_| SessionEditor::edit(store, session));
+            editor = Some(view.clone());
+            gpui_kit::component::Root::new(view, window, cx)
+        });
+        let editor = editor.unwrap();
+        cx.simulate_resize(gpui_kit::size(px(1100.), px(1900.)));
+        cx.update(|window, _| {
+            assert_eq!(window.viewport_size(), gpui_kit::size(px(1100.), px(1900.)));
+            window.activate_window();
+        });
+        repaint_input_editor(&editor, cx);
+        let input = focus_editor_field(cx, INPUT_FIXTURE_NAME)
+            .as_input()
+            .unwrap()
+            .clone();
+        repaint_input_editor(&editor, cx);
+        (editor, input, cx)
+    }
+
+    fn assert_input_protocol(
+        input: &Entity<InputState>,
+        text: &str,
+        selected: std::ops::Range<usize>,
+        marked: Option<std::ops::Range<usize>>,
+        cx: &mut gpui_kit::gpui::VisualTestContext,
+    ) {
+        use gpui_kit::EntityInputHandler as _;
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                let actual = (
+                    input.value().to_string(),
+                    input.selected_text_range(false, window, cx).unwrap().range,
+                    input.marked_text_range(window, cx),
+                );
+                assert_eq!(
+                    actual,
+                    (text.to_owned(), selected, marked),
+                    "repaint must retain text, UTF-16 caret/selection and marked range"
+                );
+            });
+        });
+    }
+
+    fn input_undo(cx: &mut gpui_kit::gpui::VisualTestContext) {
+        cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-z"
+        } else {
+            "ctrl-z"
+        });
+    }
+
+    #[gpui_kit::gpui::test]
+    fn name_ime_preedit_repeats_at_middle_then_commits_and_saves(cx: &mut TestAppContext) {
+        use gpui_kit::EntityInputHandler as _;
+        let fixture = StoreFixture::new();
+        let (editor, input, cx) = open_input_editor(cx, &fixture);
+        cx.update(|_, cx| {
+            input.update(cx, |input, cx| {
+                let offset = "机房A🦀".len();
+                input.set_selected_range(offset..offset, cx);
+            })
+        });
+        for preedit in ["n", "ni", "你"] {
+            let count = preedit.encode_utf16().count();
+            cx.update(|window, cx| {
+                input.update(cx, |input, cx| {
+                    input.replace_and_mark_text_in_range(
+                        None,
+                        preedit,
+                        Some(count..count),
+                        window,
+                        cx,
+                    );
+                })
+            });
+            for _ in 0..3 {
+                repaint_input_editor(&editor, cx);
+                assert_input_protocol(
+                    &input,
+                    &format!("机房A🦀{preedit}-server尾"),
+                    5 + count..5 + count,
+                    Some(5..5 + count),
+                    cx,
+                );
+            }
+            assert_eq!(
+                editor.read_with(cx, |editor, _| editor.draft.borrow().name.clone()),
+                INPUT_FIXTURE_NAME,
+                "preedit alone is not a committed draft change"
+            );
+        }
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.replace_text_in_range(None, "你", window, cx);
+            })
+        });
+        repaint_input_editor(&editor, cx);
+        assert_input_protocol(&input, "机房A🦀你-server尾", 6..6, None, cx);
+        cx.simulate_input("X");
+        repaint_input_editor(&editor, cx);
+        assert_input_protocol(&input, "机房A🦀你X-server尾", 7..7, None, cx);
+        assert_eq!(fixture.disk_sessions()[0].name, INPUT_FIXTURE_NAME);
+        let save = cx.debug_bounds("editor-save").unwrap();
+        cx.simulate_click(save.center(), Modifiers::default());
+        repaint_input_editor(&editor, cx);
+        assert_eq!(
+            editor.update(cx, |editor, _| editor.take_outcome()),
+            Some(EditorOutcome::Saved)
+        );
+        assert_eq!(
+            fixture.store.borrow().sessions()[0].name,
+            "机房A🦀你X-server尾"
+        );
+        assert_eq!(fixture.disk_sessions()[0].name, "机房A🦀你X-server尾");
+    }
+
+    #[gpui_kit::gpui::test]
+    fn name_ime_replaces_utf16_selection_and_keeps_separate_undo_steps(cx: &mut TestAppContext) {
+        use gpui_kit::EntityInputHandler as _;
+        let fixture = StoreFixture::new();
+        let (editor, input, cx) = open_input_editor(cx, &fixture);
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                // Replace the emoji (UTF-16 3..5), with a selection inside preedit.
+                input.replace_and_mark_text_in_range(Some(3..5), "ni🦀", Some(2..4), window, cx);
+            })
+        });
+        repaint_input_editor(&editor, cx);
+        assert_input_protocol(&input, "机房Ani🦀-server尾", 5..7, Some(3..7), cx);
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                // None replaces the full mark, not just the selected emoji in it.
+                input.replace_and_mark_text_in_range(None, "你好", Some(1..2), window, cx);
+            })
+        });
+        repaint_input_editor(&editor, cx);
+        assert_input_protocol(&input, "机房A你好-server尾", 4..5, Some(3..5), cx);
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.replace_text_in_range(None, "你好", window, cx);
+            })
+        });
+        repaint_input_editor(&editor, cx);
+        assert_input_protocol(&input, "机房A你好-server尾", 5..5, None, cx);
+        cx.simulate_input("x");
+        repaint_input_editor(&editor, cx);
+        assert_input_protocol(&input, "机房A你好x-server尾", 6..6, None, cx);
+        input_undo(cx);
+        repaint_input_editor(&editor, cx);
+        assert_input_protocol(&input, "机房A你好-server尾", 5..5, None, cx);
+        input_undo(cx);
+        repaint_input_editor(&editor, cx);
+        assert_eq!(
+            input.read_with(cx, |input, _| input.value()).as_ref(),
+            INPUT_FIXTURE_NAME
+        );
+        assert_eq!(
+            editor.read_with(cx, |editor, _| editor.draft.borrow().name.clone()),
+            INPUT_FIXTURE_NAME
+        );
+    }
+
+    #[gpui_kit::gpui::test]
+    fn name_ime_cancellation_preserves_caret_history_and_editor_cancel(cx: &mut TestAppContext) {
+        use gpui_kit::EntityInputHandler as _;
+        let fixture = StoreFixture::new();
+        let (editor, input, cx) = open_input_editor(cx, &fixture);
+        for _ in 0..2 {
+            cx.update(|window, cx| {
+                input.update(cx, |input, cx| {
+                    input.replace_and_mark_text_in_range(Some(3..3), "ni", Some(2..2), window, cx);
+                })
+            });
+            repaint_input_editor(&editor, cx);
+            assert_input_protocol(&input, "机房Ani🦀-server尾", 5..5, Some(3..5), cx);
+            cx.update(|window, cx| {
+                input.update(cx, |input, cx| {
+                    input.replace_and_mark_text_in_range(None, "", None, window, cx);
+                })
+            });
+            repaint_input_editor(&editor, cx);
+            assert_input_protocol(&input, INPUT_FIXTURE_NAME, 3..3, None, cx);
+        }
+        cx.simulate_input("x");
+        repaint_input_editor(&editor, cx);
+        assert_input_protocol(&input, "机房Ax🦀-server尾", 4..4, None, cx);
+        input_undo(cx);
+        repaint_input_editor(&editor, cx);
+        assert_input_protocol(&input, INPUT_FIXTURE_NAME, 3..3, None, cx);
+        cx.simulate_input("unsaved");
+        repaint_input_editor(&editor, cx);
+        let cancel = cx.debug_bounds("editor-cancel").unwrap();
+        cx.simulate_click(cancel.center(), Modifiers::default());
+        assert_eq!(
+            editor.update(cx, |editor, _| editor.take_outcome()),
+            Some(EditorOutcome::Cancelled)
+        );
+        assert_eq!(
+            fixture.store.borrow().sessions()[0].name,
+            INPUT_FIXTURE_NAME
+        );
+        assert_eq!(fixture.disk_sessions()[0].name, INPUT_FIXTURE_NAME);
+    }
+
+    #[gpui_kit::gpui::test]
+    fn name_ascii_middle_typing_and_selected_replacement_survive_repaints(cx: &mut TestAppContext) {
+        let fixture = StoreFixture::new();
+        let (editor, input, cx) = open_input_editor(cx, &fixture);
+        cx.update(|_, cx| {
+            input.update(cx, |input, cx| {
+                let offset = "机房A🦀".len();
+                input.set_selected_range(offset..offset, cx);
+            })
+        });
+        for (typed, expected, offset) in [
+            ("x", "机房A🦀x-server尾", 6),
+            ("y", "机房A🦀xy-server尾", 7),
+        ] {
+            cx.simulate_input(typed);
+            repaint_input_editor(&editor, cx);
+            assert_input_protocol(&input, expected, offset..offset, None, cx);
+            assert_eq!(
+                editor.read_with(cx, |editor, _| editor.draft.borrow().name.clone()),
+                expected
+            );
+        }
+        cx.simulate_keystrokes("shift-left shift-left");
+        repaint_input_editor(&editor, cx);
+        assert_input_protocol(&input, "机房A🦀xy-server尾", 5..7, None, cx);
+        cx.simulate_input("Z");
+        repaint_input_editor(&editor, cx);
+        assert_input_protocol(&input, "机房A🦀Z-server尾", 6..6, None, cx);
+    }
+
+    #[gpui_kit::gpui::test]
+    fn name_external_changes_defer_during_preedit_commit_wins_cancel_applies_external(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui_kit::EntityInputHandler as _;
+        let fixture = StoreFixture::new();
+        let (editor, input, cx) = open_input_editor(cx, &fixture);
+        for finish in ["commit", "cancel", "unmark"] {
+            editor.update(cx, |editor, cx| {
+                editor.draft.borrow_mut().name = INPUT_FIXTURE_NAME.into();
+                cx.notify();
+            });
+            repaint_input_editor(&editor, cx);
+            cx.update(|window, cx| {
+                input.update(cx, |input, cx| {
+                    input.replace_and_mark_text_in_range(Some(3..3), "ni", Some(1..2), window, cx);
+                })
+            });
+            repaint_input_editor(&editor, cx);
+            editor.update(cx, |editor, cx| {
+                editor.draft.borrow_mut().name = "external-name".into();
+                cx.notify();
+            });
+            repaint_input_editor(&editor, cx);
+            assert_input_protocol(&input, "机房Ani🦀-server尾", 4..5, Some(3..5), cx);
+            cx.update(|window, cx| {
+                input.update(cx, |input, cx| match finish {
+                    "commit" => input.replace_text_in_range(None, "你", window, cx),
+                    "unmark" => input.unmark_text(window, cx),
+                    _ => input.replace_and_mark_text_in_range(None, "", None, window, cx),
+                })
+            });
+            repaint_input_editor(&editor, cx);
+            let (expected, selection) = match finish {
+                "commit" => ("机房A你🦀-server尾", 4..4),
+                "unmark" => ("机房Ani🦀-server尾", 4..5),
+                _ => ("external-name", 13..13),
+            };
+            assert_input_protocol(&input, expected, selection, None, cx);
+            assert_eq!(
+                editor.read_with(cx, |editor, _| editor.draft.borrow().name.clone()),
+                expected
+            );
+        }
+    }
+
+    #[gpui_kit::gpui::test]
+    fn group_ime_unmark_and_blur_keep_visible_text_in_the_draft(cx: &mut TestAppContext) {
+        use gpui_kit::EntityInputHandler as _;
+        let fixture = StoreFixture::new();
+        let (editor, _, cx) = open_input_editor(cx, &fixture);
+        let input = focus_editor_field(cx, "synthetic-group")
+            .as_input()
+            .unwrap()
+            .clone();
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.replace_and_mark_text_in_range(Some(9..9), "中", Some(1..1), window, cx);
+            })
+        });
+        repaint_input_editor(&editor, cx);
+        assert_input_protocol(&input, "synthetic中-group", 10..10, Some(9..10), cx);
+        cx.update(|window, cx| input.update(cx, |input, cx| input.unmark_text(window, cx)));
+        repaint_input_editor(&editor, cx);
+        assert_input_protocol(&input, "synthetic中-group", 10..10, None, cx);
+        cx.update(|window, cx| window.blur(cx));
+        repaint_input_editor(&editor, cx);
+        assert_eq!(
+            editor.read_with(cx, |editor, _| editor.draft.borrow().group.clone()),
+            "synthetic中-group"
+        );
+        assert_eq!(
+            fixture.disk_sessions()[0].group,
+            "synthetic-group",
+            "blur does not persist the editor"
+        );
+    }
+
+    #[gpui_kit::gpui::test]
+    fn reopening_session_editor_does_not_reuse_previous_text_or_setter(cx: &mut TestAppContext) {
+        use gpui_kit::component::{Root, WindowExt as _};
+        cx.update(gpui_kit::init);
+        let fixture = StoreFixture::new();
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let harness = cx.new(|_| EditorDialogHarness);
+            Root::new(harness, window, cx)
+        });
+        cx.simulate_resize(gpui_kit::size(px(1200.), px(900.)));
+        cx.update(|window, _| {
+            assert_eq!(window.viewport_size(), gpui_kit::size(px(1200.), px(900.)));
+            window.activate_window();
+        });
+        let first = cx.update(|window, cx| {
+            let mut session = Session::new_empty();
+            session.name = "first-synthetic-session".into();
+            session.host = "first.invalid".into();
+            let editor = cx.new(|_| SessionEditor::edit(fixture.store.clone(), session));
+            super::super::shell::Shell::editor_dialog(editor.clone(), window, cx);
+            editor
+        });
+        repaint_input_editor(&first, cx);
+        let first_input = focus_editor_field(cx, "first-synthetic-session")
+            .as_input()
+            .unwrap()
+            .clone();
+        let second = cx.update(|window, cx| {
+            // Replace in the same dialog slot without an intervening empty frame.
+            window.close_dialog(cx);
+            let mut session = Session::new_empty();
+            session.name = "second-synthetic-session".into();
+            session.host = "second.invalid".into();
+            let editor = cx.new(|_| SessionEditor::edit(fixture.store.clone(), session));
+            super::super::shell::Shell::editor_dialog(editor.clone(), window, cx);
+            editor
+        });
+        repaint_input_editor(&second, cx);
+        let second_input = focus_editor_field(cx, "second-synthetic-session")
+            .as_input()
+            .unwrap()
+            .clone();
+        assert_ne!(first_input.entity_id(), second_input.entity_id());
+        cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-a"
+        } else {
+            "ctrl-a"
+        });
+        cx.simulate_input("second-edited");
+        repaint_input_editor(&second, cx);
+        assert_eq!(
+            second.read_with(cx, |editor, _| editor.draft.borrow().name.clone()),
+            "second-edited"
+        );
+        assert_eq!(
+            first.read_with(cx, |editor, _| editor.draft.borrow().name.clone()),
+            "first-synthetic-session"
+        );
+        assert_eq!(
+            first_input.read_with(cx, |input, _| input.value()).as_ref(),
+            "first-synthetic-session"
+        );
+        assert!(fixture.store.borrow().sessions().is_empty());
+    }
+
+    #[gpui_kit::gpui::test]
+    fn name_ime_save_waits_for_candidate_then_flushes_unmark_without_blur(cx: &mut TestAppContext) {
+        use gpui_kit::EntityInputHandler as _;
+        let fixture = StoreFixture::new();
+        let (editor, input, cx) = open_input_editor(cx, &fixture);
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.replace_and_mark_text_in_range(Some(3..3), "中", Some(1..1), window, cx);
+            })
+        });
+        repaint_input_editor(&editor, cx);
+        assert_input_protocol(&input, "机房A中🦀-server尾", 4..4, Some(3..4), cx);
+        let save = cx.debug_bounds("editor-save").unwrap();
+        cx.simulate_click(save.center(), Modifiers::default());
+        assert_eq!(editor.update(cx, |editor, _| editor.take_outcome()), None);
+        assert_eq!(fixture.disk_sessions()[0].name, INPUT_FIXTURE_NAME);
+        assert_input_protocol(&input, "机房A中🦀-server尾", 4..4, Some(3..4), cx);
+        cx.update(|window, cx| input.update(cx, |input, cx| input.unmark_text(window, cx)));
+        // No explicit blur or repaint between accepting the preedit and Save.
+        // Button's prevent_default means clicking it does not guarantee Blur.
+        cx.simulate_click(save.center(), Modifiers::default());
+        assert_eq!(
+            editor.update(cx, |editor, _| editor.take_outcome()),
+            Some(EditorOutcome::Saved)
+        );
+        assert_eq!(fixture.disk_sessions()[0].name, "机房A中🦀-server尾");
+        assert_eq!(
+            editor.read_with(cx, |editor, _| editor.draft.borrow().name.clone()),
+            "机房A中🦀-server尾"
+        );
+    }
+
+    #[gpui_kit::gpui::test]
+    fn name_ime_cancelled_selection_keeps_final_text_for_both_empty_protocols(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui_kit::EntityInputHandler as _;
+        let fixture = StoreFixture::new();
+        let (editor, input, cx) = open_input_editor(cx, &fixture);
+        for commit_empty in [false, true] {
+            editor.update(cx, |editor, cx| {
+                editor.draft.borrow_mut().name = INPUT_FIXTURE_NAME.into();
+                cx.notify();
+            });
+            repaint_input_editor(&editor, cx);
+            cx.update(|window, cx| {
+                input.update(cx, |input, cx| {
+                    input.replace_and_mark_text_in_range(Some(3..5), "ni", Some(2..2), window, cx);
+                })
+            });
+            repaint_input_editor(&editor, cx);
+            assert_input_protocol(&input, "机房Ani-server尾", 5..5, Some(3..5), cx);
+            cx.update(|window, cx| {
+                input.update(cx, |input, cx| {
+                    if commit_empty {
+                        // Windows' lparam == 0 cancellation uses the replacement path.
+                        input.replace_text_in_range(None, "", window, cx);
+                    } else {
+                        input.replace_and_mark_text_in_range(None, "", None, window, cx);
+                    }
+                })
+            });
+            repaint_input_editor(&editor, cx);
+            // The toolkit removes the marked replacement, not restores the old
+            // selected emoji. Preserve that visible result and its draft parity.
+            assert_input_protocol(&input, "机房A-server尾", 3..3, None, cx);
+            assert_eq!(
+                editor.read_with(cx, |editor, _| editor.draft.borrow().name.clone()),
+                "机房A-server尾"
+            );
+        }
+        let save = cx.debug_bounds("editor-save").unwrap();
+        cx.simulate_click(save.center(), Modifiers::default());
+        assert_eq!(fixture.disk_sessions()[0].name, "机房A-server尾");
     }
 }
