@@ -97,6 +97,8 @@ impl PromptOutcome {
 pub(crate) struct HostKeyPrompt {
     pub(crate) host: String,
     pub(crate) port: u16,
+    /// The exact fingerprint, not parsed back out of the formatted detail text.
+    pub(crate) fingerprint: String,
     pub(crate) changed: bool,
     pub(crate) title: String,
     pub(crate) message: String,
@@ -283,6 +285,7 @@ pub(crate) fn host_key_prompt(window_id: u64) -> Option<HostKeyPrompt> {
             .map(|p| HostKeyPrompt {
                 host: p.host.clone(),
                 port: p.port,
+                fingerprint: p.fingerprint.clone(),
                 changed: p.changed,
                 title: p.title.clone(),
                 message: p.message.clone(),

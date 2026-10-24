@@ -10,11 +10,15 @@
 //! reject (#152), merging the shell's prompt with its SFTP channel's so one decision
 //! answers both, and answering everything queued when a window closes.
 
+use std::{cell::Cell, rc::Rc};
+
 use gpui_kit::{
     component::{
-        dialog::DialogButtonProps,
+        button::{Button, ButtonVariants},
+        dialog::{Confirm, DialogButtonProps},
+        h_flex,
         input::{Input, InputState},
-        v_flex, ActiveTheme as _, WindowExt as _,
+        v_flex, ActiveTheme as _, IconName, Sizable as _, WindowExt as _,
     },
     div,
     prelude::*,
@@ -72,10 +76,14 @@ fn present_host_key(window: &mut Window, cx: &mut App) {
     // not the default colour and says what it does.
     let prompt_changed = prompt.changed;
 
+    let fingerprint = prompt.fingerprint.clone();
     let detail = prompt.detail.clone();
     let title = prompt.title.clone();
     let message = prompt.message.clone();
     let confirm_label = prompt.confirm_label.clone();
+    // Feedback belongs to this prompt alone. Copying never resolves the queue or
+    // dispatches a dialog action: verification still requires an explicit answer.
+    let copied = Rc::new(Cell::new(None));
     window.open_dialog(cx, move |dialog, _window, cx| {
         dialog
             .title(SharedString::from(title.clone()))
@@ -115,6 +123,35 @@ fn present_host_key(window: &mut Window, cx: &mut App) {
                             .font_family(cx.theme().mono_font_family.clone())
                             .text_sm()
                             .child(SharedString::from(detail.clone())),
+                    )
+                    .child(
+                        h_flex()
+                            .debug_selector(|| {
+                                match copied.get() {
+                                    Some("host-key-copy-fingerprint") => {
+                                        "host-key-fingerprint-copied"
+                                    }
+                                    Some("host-key-copy-details") => "host-key-details-copied",
+                                    _ => "host-key-copy-ready",
+                                }
+                                .into()
+                            })
+                            .gap_2()
+                            .flex_wrap()
+                            .child(host_key_copy_button(
+                                "host-key-copy-fingerprint",
+                                crate::i18n::t("复制指纹", "Copy fingerprint"),
+                                crate::i18n::t("指纹已复制", "Fingerprint copied"),
+                                fingerprint.clone(),
+                                copied.clone(),
+                            ))
+                            .child(host_key_copy_button(
+                                "host-key-copy-details",
+                                crate::i18n::t("复制详情", "Copy details"),
+                                crate::i18n::t("详情已复制", "Details copied"),
+                                detail.clone(),
+                                copied.clone(),
+                            )),
                     ),
             )
             .footer(super::answer_footer(
@@ -123,6 +160,42 @@ fn present_host_key(window: &mut Window, cx: &mut App) {
                 crate::i18n::t("取消", "Cancel").into(),
             ))
     });
+}
+
+/// An ordinary clipboard button, deliberately outside `DialogAction`/`DialogClose`.
+fn host_key_copy_button(
+    id: &'static str,
+    label: &'static str,
+    copied_label: &'static str,
+    value: String,
+    copied: Rc<Cell<Option<&'static str>>>,
+) -> Button {
+    let is_copied = copied.get() == Some(id);
+    let copy = Rc::new(move |window: &mut Window, cx: &mut App| {
+        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(value.clone()));
+        copied.set(Some(id));
+        window.refresh();
+    });
+    Button::new(id)
+        .debug_selector(move || id.into())
+        .icon(if is_copied {
+            IconName::Check
+        } else {
+            IconName::Copy
+        })
+        .label(if is_copied { copied_label } else { label })
+        .outline()
+        .small()
+        .on_click({
+            let copy = copy.clone();
+            move |_, window, cx| copy(window, cx)
+        })
+        // Dialog binds Enter to Confirm. Consume it on a focused copy button
+        // rather than letting keyboard activation trust the host in its parent.
+        .on_action(move |_: &Confirm, window, cx| {
+            cx.stop_propagation();
+            copy(window, cx);
+        })
 }
 
 /// Answer the current host-key prompt and show the next one if there is one.
@@ -329,6 +402,10 @@ fn advance_mfa(window: &mut Window, cx: &mut App, answer: Option<String>) {
         present_mfa(window, cx);
     }
 }
+
+#[cfg(test)]
+#[path = "auth_dialogs_tests.rs"]
+mod tests;
 
 #[cfg(test)]
 #[path = "auth_dialogs_queue_tests.rs"]
