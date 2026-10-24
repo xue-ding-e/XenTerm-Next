@@ -1084,10 +1084,14 @@ impl SidebarView {
                     .text_xs()
                     .flex_shrink_0()
                     .text_color(theme.muted_foreground)
-                    .child(crate::i18n::t(
-                        "全部挂载 · 剩余可用 / 总容量",
-                        "All mounts · Available / Total",
-                    )),
+                    .child(
+                        v_flex()
+                            .child(crate::i18n::t(
+                                "采样挂载（非完整清单）",
+                                "Sampled mounts (may be partial)",
+                            ))
+                            .child(crate::i18n::t("剩余可用 / 总容量", "Available / Total")),
+                    ),
             )
             .child(
                 v_flex()

@@ -2685,7 +2685,8 @@ fn parse_monitor_block(
 
     // Cap how many interfaces / filesystems / processes we accept from one sample
     // so a hostile server can't flood the parser and sidebar with fabricated rows
-    // (#27). No real machine has anywhere near this many.
+    // (#27). This is a safety bound, not an exhaustive mount inventory; real
+    // container hosts may exceed it. A truncated storage sample has no aggregate.
     const MAX_MON_ENTRIES: usize = 64;
 
     for line in block.lines() {

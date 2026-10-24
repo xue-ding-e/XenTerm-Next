@@ -209,13 +209,56 @@ mod tests {
         let info = metadata(&["8:1 / / ext4", "8:2 / /data ext4"]);
         assert_eq!(
             mounted_local_capacity(
-                &[("/".into(), 1, u64::MAX), ("/data".into(), 1, 2)],
+                &[("/".into(), 1, u64::MAX - 1), ("/data".into(), 1, 2)],
                 &info,
                 true
             ),
             None
         );
     }
+    #[test]
+    fn individually_valid_capacities_reach_checked_sum_overflow() {
+        let info = metadata(&["8:1 / / ext4", "8:2 / /data xfs"]);
+        // Each filesystem is valid on its own. These are sum failures, not
+        // rejection of the u64::MAX sentinel used by saturated df parsing.
+        for (path, available, total, record) in [
+            ("/", u64::MAX - 1, u64::MAX - 1, "8:1 / / ext4"),
+            ("/data", 2, 2, "8:2 / /data xfs"),
+        ] {
+            assert_eq!(
+                mounted_local_capacity(
+                    &[(path.into(), available, total)],
+                    &metadata(&[record]),
+                    true
+                ),
+                Some((available, total))
+            );
+        }
+        // Availability overflows first; with small availability only total overflows.
+        for available in [u64::MAX - 1, 1] {
+            assert_eq!(
+                mounted_local_capacity(
+                    &[
+                        ("/".into(), available, u64::MAX - 1),
+                        ("/data".into(), 2, 2)
+                    ],
+                    &info,
+                    true
+                ),
+                None
+            );
+        }
+        // The exact representable aggregate boundary is not an overflow.
+        assert_eq!(
+            mounted_local_capacity(
+                &[("/".into(), 1, u64::MAX - 1), ("/data".into(), 1, 1)],
+                &info,
+                true
+            ),
+            Some((2, u64::MAX))
+        );
+    }
+
     #[test]
     fn capped_or_inconsistent_samples_do_not_create_partial_totals() {
         let disks = vec![("/".into(), 40, 100)];
