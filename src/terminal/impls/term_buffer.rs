@@ -539,10 +539,12 @@ impl TermBuffer {
         let hist_len = if self.parser.alternate_screen() { 0 } else { self.history_len() };
         let combined_len = hist_len + live_used;
         // Clamp into real content so a focus parked on a blank row below the
-        // prompt doesn't emit trailing empty lines.
-        let hi_r = hi_r.min(combined_len.saturating_sub(1));
+        // prompt doesn't emit trailing empty lines. Keep the actual endpoint
+        // separate: its column belongs to that blank row, not the last line of
+        // text, which must still be copied in full.
+        let last_content_row = hi_r.min(combined_len.saturating_sub(1));
         let mut out = String::new();
-        for r in lo_r..=hi_r {
+        for r in lo_r..=last_content_row {
             let historical = (r < hist_len).then(|| self.parser.text_line_at_abs(r)).flatten();
             let live_row = live.get(r.saturating_sub(hist_len));
             let line = if r < hist_len {
@@ -574,7 +576,7 @@ impl TermBuffer {
             let wrapped = if r < hist_len {
                 historical.as_ref().is_some_and(|line| line.1)
             } else { live_row.is_some_and(|line| line.2) };
-            if r != hi_r && !wrapped {
+            if r != last_content_row && !wrapped {
                 out.push('\n');
             }
         }

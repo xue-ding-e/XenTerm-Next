@@ -132,6 +132,36 @@ fn extract_handles_wide_cjk_columns() {
     assert_eq!(buf.extract_selection_text(), "示: 1pctl");
 }
 
+#[test]
+fn forward_and_reverse_drags_keep_reading_order_across_history_and_wide_cells() {
+    for reverse in [false, true] {
+        let mut buffer = make_buf(5, 40, &["old", "历史-HEAD"], &["中文-tail", "end"], 2);
+        buffer.render();
+        let (start, end) = if reverse { ((2, 7), (1, 3)) } else { ((1, 3), (2, 7)) };
+        buffer.begin_selection(start.0, start.1, false, false);
+        buffer.extend_selection(end.0, end.1);
+        // Column 3 is the second cell of 史; copy the complete glyph. The
+        // later row starts in the live grid while the first is scrollback.
+        assert_eq!(buffer.finish_selection().as_deref(), Some("史-HEAD\n中文-tai"));
+        let selected = buffer.extract_selection_text();
+        buffer.view_offset = 0;
+        buffer.render();
+        assert_eq!(buffer.extract_selection_text(), selected);
+    }
+}
+
+#[test]
+fn selecting_from_or_into_blank_rows_does_not_truncate_the_last_content_row() {
+    for reverse in [false, true] {
+        let mut buffer = make_buf(8, 40, &[], &["first", "中文-last-line"], 0);
+        buffer.render();
+        let (start, end) = if reverse { ((6, 1), (0, 0)) } else { ((0, 0), (6, 1)) };
+        buffer.begin_selection(start.0, start.1, false, false);
+        buffer.extend_selection(end.0, end.1);
+        assert_eq!(buffer.finish_selection().as_deref(), Some("first\n中文-last-line"));
+    }
+}
+
 
 // --- The selection policy, moved out of `src/app.rs` so both frontends share it.
 

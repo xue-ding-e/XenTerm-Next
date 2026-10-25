@@ -113,6 +113,83 @@ fn clipboard(text: &str, cx: &mut VisualTestContext) {
 }
 
 #[gpui_kit::gpui::test]
+fn selection_clamps_rows_and_columns_independently(cx: &mut TestAppContext) {
+    let (fixture, cx) = fixture(cx);
+    for (cols, rows) in [(120, 20), (18, 65)] {
+        fixture.view.update(cx, |view, _| {
+            view.metrics = Some(CellMetrics { width: px(8.), height: px(16.) });
+            view.grid_bounds.set(Some(Bounds::new(
+                gpui_kit::point(px(10.), px(20.)),
+                gpui_kit::size(px(cols as f32 * 8.), px(rows as f32 * 16.)),
+            )));
+            assert_eq!(view.clamped_cell((-10, -20)), (0, 0));
+            assert_eq!(view.clamped_cell((rows - 1, cols - 1)), ((rows - 1) as u16, (cols - 1) as u16));
+            assert_eq!(view.clamped_cell((rows + 50, cols + 50)), ((rows - 1) as u16, (cols - 1) as u16));
+            assert_eq!(view.clamped_cell((rows - 2, cols - 2)), ((rows - 2) as u16, (cols - 2) as u16));
+        });
+    }
+}
+
+#[gpui_kit::gpui::test]
+fn real_drag_copies_both_directions_in_wide_and_tall_terminal_panes(cx: &mut TestAppContext) {
+    let (mut fixture, cx) = fixture(cx);
+    for (width, height) in [(960., 360.), (240., 900.)] {
+        cx.simulate_resize(gpui_kit::size(px(width), px(height)));
+        for padding in [false, true] {
+            fixture.view.update(cx, |view, cx| { view.padding = padding; cx.notify(); });
+            draw(cx);
+            let (bounds, metrics, cols, rows) = fixture.view.read_with(cx, |view, _| {
+                let bounds = view.grid_bounds.get().expect("painted grid");
+                let metrics = view.metrics.expect("measured grid");
+                let (cols, rows) = metrics.grid_size(bounds.size);
+                (bounds, metrics, cols, rows)
+            });
+            assert!(cols > 9 && rows > 3 && cols != rows);
+            let lines: Vec<_> = (0..rows)
+                .map(|row| format!("行-{row:03}-{}", "x".repeat(usize::from(cols - 9))))
+                .collect();
+            let expected = lines.join("\n");
+            fixture.view.update(cx, |view, cx| {
+                {
+                    let mut buffer = view.buffer.lock().unwrap();
+                    *buffer = TermBuffer::new(rows, cols);
+                    buffer.ingest(lines.join("\r\n").as_bytes());
+                }
+                view.refresh();
+                cx.notify();
+            });
+            draw(cx);
+            let at = |row: u16, col: u16| gpui_kit::point(
+                bounds.left() + metrics.width * (f32::from(col) + 0.5),
+                bounds.top() + metrics.height * (f32::from(row) + 0.5),
+            );
+            for reverse in [false, true] {
+                clipboard("unchanged-until-drag", cx);
+                let (start, end) = if reverse {
+                    (at(rows - 1, cols - 1), at(0, 0))
+                } else {
+                    (at(0, 0), at(rows - 1, cols - 1))
+                };
+                cx.simulate_mouse_down(start, MouseButton::Left, Default::default());
+                cx.simulate_mouse_move(end, MouseButton::Left, Default::default());
+                cx.simulate_mouse_up(end, MouseButton::Left, Default::default());
+                draw(cx);
+                assert_eq!(
+                    cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text())),
+                    Some(expected.clone()),
+                    "cols={cols}, rows={rows}, padding={padding}, reverse={reverse}",
+                );
+                let last = fixture.view.read_with(cx, |view, _| {
+                    view.snapshot.selection.last().map(|rect| (rect.row, rect.col, rect.len))
+                });
+                assert_eq!(last, Some((i32::from(rows - 1), 0, i32::from(cols))));
+                assert!(raw_input(&mut fixture).is_empty(), "a local drag sends no PTY bytes");
+            }
+        }
+    }
+}
+
+#[gpui_kit::gpui::test]
 fn disabled_shift_insert_sends_its_modifier_without_pasting_or_submitting(cx: &mut TestAppContext) {
     let (mut fixture, cx) = fixture(cx);
     fixture

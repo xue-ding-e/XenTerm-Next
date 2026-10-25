@@ -504,7 +504,10 @@ impl TerminalView {
 
     /// Clamp a cell into the grid, for the selection API's `u16` coordinates.
     fn clamped_cell(&self, cell: (i32, i32)) -> (u16, u16) {
-        let (rows, cols) = self
+        // CellMetrics reports (columns, rows), while selection points use
+        // (row, column). Swapping these clips wide panes at their row count
+        // and tall panes at their column count, regardless of drag direction.
+        let (cols, rows) = self
             .grid_bounds
             .get()
             .and_then(|bounds| self.metrics.map(|metrics| metrics.grid_size(bounds.size)))
