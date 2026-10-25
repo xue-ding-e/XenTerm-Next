@@ -45,6 +45,8 @@ jobs:
     timeout-minutes: 90
     strategy:
       fail-fast: false
+      # Release packaging shares the same one-heavy-runner budget as CI.
+      max-parallel: 1
       matrix:
         include:
           - {os: windows-latest, target: x86_64-pc-windows-msvc, platform: windows-x86_64}

@@ -23,11 +23,15 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # One runner at a time: serialize both matrix children and job families.
+  # Ordering-only needs use !cancelled() so an earlier failure still leaves
+  # independent regressions running and red; cancellation stops queued work.
   desktop:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
         include:
           - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, name: Linux desktop, toolchain: "1.99.1" }
@@ -129,9 +133,12 @@ jobs:
 
   migration-e2e:
     name: ${{ matrix.os }} migration CLI regression
+    needs: desktop
+    if: ${{ !cancelled() }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
         os: [ubuntu-22.04, windows-latest, macos-14]
     steps:
@@ -170,6 +177,8 @@ jobs:
 
   headless-e2e:
     name: Headless MCP regression
+    needs: migration-e2e
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -205,6 +214,8 @@ jobs:
     # Keep the declared minimum compiler honest without replacing stable coverage.
     # This gate covers Linux headless, not GUI or other target MSRV support.
     needs: headless-e2e
+    # Preserve the original headless-success gate, not unrelated ancestor gates.
+    if: ${{ !cancelled() && needs.headless-e2e.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -220,6 +231,8 @@ jobs:
 
   windows-ssh:
     name: Windows SSH command stack
+    needs: msrv-headless
+    if: ${{ !cancelled() }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -239,6 +252,8 @@ jobs:
 
   installer:
     name: Linux installer check
+    needs: windows-ssh
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -256,6 +271,8 @@ jobs:
 
   installer-windows:
     name: Windows MSI install upgrade uninstall
+    needs: installer
+    if: ${{ !cancelled() }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -284,6 +301,8 @@ jobs:
 
   installer-macos:
     name: macOS PKG choices and payload
+    needs: installer-windows
+    if: ${{ !cancelled() }}
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
