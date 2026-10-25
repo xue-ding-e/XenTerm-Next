@@ -84,9 +84,11 @@ pub(crate) fn render_layout(
         };
         // A pane is a click target as well as a box: clicking anywhere in it focuses it,
         // which is what makes a split's other half addressable at all.
+        // Focusing is not a link or button action: leave ordinary terminal surfaces
+        // on the default arrow while child inputs and controls choose their own cursor.
         let focus_slot = focus.clone();
         let focus_id = rect.id;
-        element = element.cursor_pointer().on_click(move |_, _, _| {
+        element = element.on_click(move |_, _, _| {
             *focus_slot.borrow_mut() = Some(focus_id);
         });
         // The focused pane carries a second selector so a test can ask which one it is
