@@ -911,9 +911,10 @@ impl TerminalView {
     /// because a permanent "connected" would be a line that never changes and therefore
     /// never informs.
     fn status_line(&self) -> Option<SharedString> {
-        // An ended session names the way back: the red line in the scrollback is
-        // output, and output scrolls; the status line is furniture, and it is
-        // where an affordance belongs.
+        // An ended session names the way back in UI state, not in the PTY
+        // transcript. The buffer survives an in-place reconnect, so injecting
+        // this temporary hint there would leave stale instructions over a live
+        // shell. Keep the reason and reconnect action visible in this line.
         if self.conn_state == 2 {
             let base = self
                 .status
@@ -1638,7 +1639,11 @@ impl Render for TerminalView {
                         .px_2()
                         .py_1()
                         .text_sm()
-                        .text_color(cx.theme().muted_foreground)
+                        .text_color(if self.conn_state == 2 {
+                            cx.theme().danger
+                        } else {
+                            cx.theme().muted_foreground
+                        })
                         .when(self.conn_state == 0 && self.status.is_some(), |this| {
                             this.child(
                                 Spinner::new()
@@ -2042,20 +2047,10 @@ fn apply_event(
             // idle is the allocation this exists to drop.
             if let Ok(mut buffer) = buffer.lock() {
                 buffer.release_scrollback();
-                // Printed into the terminal rather than only into the status line,
-                // because a terminal that has gone quiet with no explanation reads
-                // as a hang. Colour codes so it stands out from the shell's output.
-                let _ = buffer.ingest(
-                    format!(
-                        "\r\n\x1b[31m{}\x1b[0m\r\n",
-                        crate::i18n::t(
-                            "连接已断开,按 Enter 重新连接",
-                            "Disconnected — press Enter to reconnect"
-                        )
-                    )
-                    .as_bytes(),
-                );
             }
+            // The status line explains the quiet terminal without inserting a
+            // transient UI notice into remote output. A new attempt replaces
+            // this state; it must not clear the buffer or delete matching text.
             view.conn_state = 2;
             view.status = Some(format!(
                 "{} — {reason}",
