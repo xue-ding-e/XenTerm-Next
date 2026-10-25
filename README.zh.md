@@ -197,7 +197,7 @@ Linux 原生界面的验证不能代替 Windows、macOS 原生交互验证；请
 
 ## 安装
 
-本独立仓库尚未发布安装包。要使用 `main` 中的增强功能，请按[快速开始](#快速开始)从源码构建；后续安装包以[本仓库 Releases](https://github.com/xue-ding-e/XenTerm-Next/releases) 实际内容为准。下述说明介绍继承的 Windows、macOS 和 Linux 包格式，不表示这些包已发布。上游安装包见[官方 Releases](https://github.com/ixbaicn/XenTerm/releases)，不包含本仓库全部增强功能。
+[滚动 beta](https://github.com/xue-ding-e/XenTerm-Next/releases/tag/beta) 已提供 Windows x86_64（ZIP）、Linux x86_64（tar.gz）和 macOS Apple Silicon（ZIP）三平台便携包。当前 beta 不含 MSI 或 PKG 安装器；安装器 CI 检查通过不代表对应安装包已可下载。请核对发布页的精确源码 SHA、`BUILD.json` 和 `SHA256SUMS`，也可按[快速开始](#快速开始)从源码构建 `main`。下述打包说明介绍支持的构建格式，已发布下载仅以[本仓库 Releases](https://github.com/xue-ding-e/XenTerm-Next/releases) 列出的资产为准。上游安装包见[官方 Releases](https://github.com/ixbaicn/XenTerm/releases)，不包含本仓库全部增强功能。
 
 ### Windows
 
@@ -574,9 +574,9 @@ xenterm/
 版本号，运行 `cargo check --locked`，验证 `xenterm --version`，提交 `Release v0.7.4`，
 创建 annotated tag，然后推送分支和标签。详见 [docs/release.md](docs/release.md)。
 
-> **从这个代码树首次发版之前**：发布流水线的 Linux runner 可能还需要为 GPUI 的平台库
-> 补装 apt 包；GPUI 的 Windows crate 在发布构建时需要 Windows SDK 的 `fxc.exe`
-> （debug 构建会跳过这一步）。这两点都记在 `Cargo.toml` 里，而不是当作不存在。
+> **发布构建依赖**：Linux runner 需要 GPUI 平台库的开发包；GPUI 的 Windows 发布构建
+> 需要 Windows SDK 的 `fxc.exe`（debug 构建会跳过这一步）。既有 beta 工作流已配置这些前置依赖，
+> 本地发布构建也必须提供。详见 `Cargo.toml` 与发布工作流。
 
 ## 社区
 

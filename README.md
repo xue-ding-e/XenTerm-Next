@@ -226,7 +226,7 @@ behaviour still require platform testing.
 
 ## Install
 
-This independent repository has not published installation packages yet. Build the enhanced `main` from source using [Quick start](#quick-start); future packages will appear in [this repository’s Releases](https://github.com/xue-ding-e/XenTerm-Next/releases). The instructions below describe inherited Windows, macOS and Linux package formats, not packages already published here. [Official upstream releases](https://github.com/ixbaicn/XenTerm/releases) do not include all enhancements from this repository.
+The [rolling beta](https://github.com/xue-ding-e/XenTerm-Next/releases/tag/beta) provides portable archives for Windows x86_64 (ZIP), Linux x86_64 (tar.gz) and macOS Apple Silicon (ZIP). The current beta does not include MSI or PKG installers; installer CI checks do not imply that those packages are available for download. Check the release's exact source SHA, `BUILD.json` and `SHA256SUMS`, or build `main` from source using [Quick start](#quick-start). The packaging instructions below describe supported build formats; only the assets listed in [this repository’s Releases](https://github.com/xue-ding-e/XenTerm-Next/releases) are published downloads. [Official upstream releases](https://github.com/ixbaicn/XenTerm/releases) do not include all enhancements from this repository.
 
 ### Windows
 
@@ -674,10 +674,10 @@ entry in `Cargo.lock`, runs `cargo check --locked`, verifies `xenterm --version`
 `Release v0.7.4` and creates an annotated tag, then pushes the branch and tag. See
 [docs/release.md](docs/release.md).
 
-> **Before the first release from this tree**, the workflow's Linux runners may need extra
-> apt packages for GPUI's platform libraries, and GPUI's Windows crate wants `fxc.exe` from
-> the Windows SDK for release builds (debug builds skip that step). Both are recorded in
-> `Cargo.toml` rather than assumed away.
+> **Release build requirements:** Linux runners need development packages for GPUI's
+> platform libraries, and GPUI's Windows release build requires `fxc.exe` from the Windows
+> SDK (debug builds skip that step). The existing beta workflow provisions these prerequisites;
+> local release builds must provide them too. See `Cargo.toml` and the release workflows.
 
 ## Community
 
