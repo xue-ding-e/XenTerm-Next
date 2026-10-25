@@ -721,14 +721,38 @@ impl TerminalView {
     /// rather than caching it is deliberate: a session can end (the tab stays, showing
     /// the reconnect hint) and be replaced by a reconnect, and a cached sender would
     /// keep writing into the dead one.
-    fn send_bytes(&mut self, bytes: &[u8]) {
-        if bytes.is_empty() {
+    /// Queue raw bytes, without changing local selection. Mouse reports use
+    /// this path too, so selection lifetime belongs to the user-input wrapper.
+    /// Acceptance here means the local queue accepted the bytes, not that the
+    /// remote shell received or executed them.
+    fn send_bytes(&mut self, bytes: &[u8]) -> bool {
+        !bytes.is_empty()
+            && self.handles.borrow().get(&self.tab_id).is_some_and(|handle| {
+                handle.commands.send(SessionCommand::RawInput(bytes.to_vec())).is_ok()
+            })
+    }
+
+    /// Committed keyboard/paste input ends an old output selection. Otherwise
+    /// a later Ctrl+C after typing a new command would copy stale output instead
+    /// of interrupting. Copy, IME preedit, cancelled paste and failed sends never
+    /// reach this clear, and mouse/protocol bytes retain their raw path above.
+    fn send_user_input(&mut self, bytes: &[u8], cx: &mut Context<Self>) {
+        if !self.send_bytes(bytes) {
             return;
         }
-        if let Some(handle) = self.handles.borrow().get(&self.tab_id) {
-            let _ = handle
-                .commands
-                .send(SessionCommand::RawInput(bytes.to_vec()));
+        let cleared = self.buffer.lock().ok().is_some_and(|mut buffer| {
+            let selected = buffer.sel_anchor.is_some()
+                || buffer.sel_focus.is_some()
+                || !buffer.sel_ranges.is_empty();
+            if selected {
+                buffer.clear_selection();
+            }
+            selected
+        });
+        if cleared {
+            self.drag_anchor = None;
+            self.refresh();
+            cx.notify();
         }
     }
 
@@ -773,9 +797,9 @@ impl TerminalView {
         }
         // Copy, paste, find and zoom moved to actions bound in the `Terminal`
         // context (`impls/actions.rs`); the keymap consumes those chords before
-        // this handler runs, so they are no longer matched here. Ctrl+C stays
-        // unmatched on purpose — it is SIGINT — and Escape/Backspace above are
-        // state-gated, which a static binding cannot be.
+        // this handler runs, so they are no longer matched here. Ctrl+C's action
+        // chooses copy or interrupt from the current selection. Escape/Backspace
+        // are state-gated, which a static binding cannot be.
         // Escape closes the bar and clears the query, so the highlights go with it. A
         // search that outlived its bar would leave rectangles on screen with nothing to
         // explain them.
@@ -836,7 +860,7 @@ impl TerminalView {
         let app_cursor = self.buffer.lock().ok()
             .is_some_and(|buffer| buffer.parser.screen().application_cursor());
         let bytes = gpui_key_bytes(&keystroke.key, ctrl, alt, shift, app_cursor);
-        self.send_bytes(&bytes);
+        self.send_user_input(&bytes, cx);
     }
 
     /// Send Tab to the session.
@@ -857,7 +881,7 @@ impl TerminalView {
             .ok()
             .is_some_and(|buffer| buffer.parser.screen().application_cursor());
         let bytes = gpui_key_bytes("tab", false, false, shift, app_cursor);
-        self.send_bytes(&bytes);
+        self.send_user_input(&bytes, cx);
         cx.notify();
     }
 
@@ -887,13 +911,13 @@ impl TerminalView {
         cx.notify();
     }
 
-    /// Copy the current selection, if there is one.
+    /// Copy the current selection, returning whether any text was copied.
     ///
     /// The explicit copy the original binds to Ctrl+Shift+C. It is not the only way a
     /// selection reaches the clipboard — releasing a drag already copies, which is what
     /// a macOS-style terminal does — but a selection made some other way (a word, a
     /// line, a keyboard-driven range) needs a shortcut to ask for it again.
-    fn copy_selection(&mut self, cx: &mut Context<Self>) {
+    fn copy_selection(&mut self, cx: &mut Context<Self>) -> bool {
         let text = self
             .buffer
             .lock()
@@ -902,6 +926,22 @@ impl TerminalView {
             .filter(|text| !text.is_empty());
         if let Some(text) = text {
             cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
+            true
+        } else {
+            false
+        }
+    }
+
+    /// A familiar copy chord must not interrupt a command while the user is
+    /// copying its output. With no text selected, preserve Ctrl+C's terminal
+    /// meaning, including in full-screen applications. The find bar still owns
+    /// input while it is open, just as it did in `send_key`.
+    fn copy_or_interrupt(&mut self, cx: &mut Context<Self>) {
+        if self.find_open {
+            return;
+        }
+        if !self.copy_selection(cx) {
+            self.send_user_input(b"\x03", cx);
         }
     }
 
@@ -1016,7 +1056,7 @@ impl TerminalView {
                     DialogButtonProps::default()
                         .on_ok(move |_, _window, cx| {
                             let _ = view.update(cx, |view, cx| {
-                                view.send_bytes(&send);
+                                view.send_user_input(&send, cx);
                                 cx.notify();
                             });
                             true
@@ -1100,7 +1140,7 @@ impl TerminalView {
         } else {
             gpui_key_bytes("v", true, true, false, false)
         };
-        self.send_bytes(&bytes);
+        self.send_user_input(&bytes, cx);
         cx.notify();
     }
 
@@ -1136,7 +1176,7 @@ impl TerminalView {
             return;
         }
         let bytes = terminal::encode_pasted_text(&text, bracketed);
-        self.send_bytes(&bytes);
+        self.send_user_input(&bytes, cx);
     }
 }
 
@@ -1340,7 +1380,7 @@ impl EntityInputHandler for TerminalView {
             cx.notify();
         }
         self.composition = held;
-        self.send_bytes(&bytes);
+        self.send_user_input(&bytes, cx);
     }
 
     /// IME composition: the text the user is still choosing between.
@@ -1455,7 +1495,7 @@ impl EntityInputHandler for TerminalView {
             return;
         }
         let bytes = terminal::encode_pasted_text(&text, bracketed);
-        self.send_bytes(&bytes);
+        self.send_user_input(&bytes, cx);
     }
 }
 
@@ -1552,6 +1592,9 @@ impl Render for TerminalView {
             // (state-gated Escape, alt-screen paging) still reaches `send_key`.
             .on_action(cx.listener(|this, _: &crate::ui::CopySelection, _, cx| {
                 this.copy_selection(cx);
+            }))
+            .on_action(cx.listener(|this, _: &crate::ui::CopyOrInterrupt, _, cx| {
+                this.copy_or_interrupt(cx);
             }))
             .on_action(cx.listener(|this, _: &crate::ui::Paste, window, cx| {
                 this.paste_from_clipboard(window, cx);

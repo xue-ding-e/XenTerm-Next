@@ -44,6 +44,8 @@ actions!(xenterm, [
     CyclePane,
     /// Terminal: copy the selection.
     CopySelection,
+    /// Terminal: copy selected text, or interrupt when nothing is selected.
+    CopyOrInterrupt,
     /// Terminal: paste from the clipboard.
     Paste,
     /// Terminal: open the find bar.
@@ -115,8 +117,8 @@ pub(crate) fn init(cx: &mut gpui_kit::App) {
         // Ctrl+8 are control characters (NUL through GS) that a shell expects to
         // receive, and a window-scope binding would take them from the terminal —
         // the same reason Ctrl+W became Ctrl+Shift+W. Tab switching is Ctrl+Tab.
-        // The terminal's own set. Ctrl+C stays unbound — it is SIGINT, the one
-        // chord a terminal must never take away. Three families stay keystroke
+        // The terminal's own set. Ctrl+C copies an existing selection; without
+        // one its action sends the original interrupt byte. Three families stay keystroke
         // checks in the view rather than bindings, because a static keymap cannot
         // express their conditions: Escape/Backspace (the find bar's only while it
         // is open), and PageUp/PageDown/Home/End (scroll keys on the normal screen,
@@ -132,6 +134,7 @@ pub(crate) fn init(cx: &mut gpui_kit::App) {
         // (`\t` versus the CSI form).
         KeyBinding::new("tab", SendTab { shift: false }, Some("Terminal")),
         KeyBinding::new("shift-tab", SendTab { shift: true }, Some("Terminal")),
+        KeyBinding::new("ctrl-c", CopyOrInterrupt, Some("Terminal")),
         KeyBinding::new("ctrl-shift-c", CopySelection, Some("Terminal")),
         KeyBinding::new("ctrl-v", Paste, Some("Terminal")),
         KeyBinding::new("ctrl-shift-v", Paste, Some("Terminal")),

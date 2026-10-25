@@ -100,7 +100,7 @@ mod ui_animation_probes;
 pub(crate) use execution_log_window::ExecutionLogWindowHandle;
 // The keyboard surface: every action and every chord, and the one `bind_keys`.
 pub(crate) use actions::{
-    CloseTab, CommandPalette, CopySelection, CyclePane, Find, NextTab, Paste,
+    CloseTab, CommandPalette, CopyOrInterrupt, CopySelection, CyclePane, Find, NextTab, Paste,
     PasteAlternate, PrevTab, QuickConnect,
     Reconnect, SendTab, SplitDown, SplitRight, ZoomIn, ZoomOut, ZoomReset,
 };

@@ -112,6 +112,25 @@ fn clipboard(text: &str, cx: &mut VisualTestContext) {
     cx.update(|_, cx| cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text.into())));
 }
 
+fn select_fixture_output(fixture: &Fixture, cx: &mut VisualTestContext) {
+    fixture.view.update(cx, |view, cx| {
+        {
+            let mut buffer = view.buffer.lock().unwrap();
+            buffer.ingest(b"\x1b[2J\x1b[Hselected output");
+            buffer.begin_selection(0, 0, false, false);
+            buffer.extend_selection(0, 14);
+        }
+        view.refresh();
+        cx.notify();
+    });
+    draw(cx);
+    assert_eq!(selected_output(fixture, cx), "selected output");
+}
+
+fn selected_output(fixture: &Fixture, cx: &mut VisualTestContext) -> String {
+    fixture.view.read_with(cx, |view, _| view.buffer.lock().unwrap().extract_selection_text())
+}
+
 #[gpui_kit::gpui::test]
 fn selection_clamps_rows_and_columns_independently(cx: &mut TestAppContext) {
     let (fixture, cx) = fixture(cx);
@@ -324,6 +343,245 @@ fn printable_text_and_existing_control_keys_are_unchanged(cx: &mut TestAppContex
         cx.simulate_keystrokes(chord);
         assert_eq!(raw_input(&mut fixture), expected, "{chord}");
     }
+}
+
+#[gpui_kit::gpui::test]
+fn ctrl_c_copies_selected_output_and_only_interrupts_without_selection(cx: &mut TestAppContext) {
+    let (mut fixture, cx) = fixture(cx);
+    for alternate_screen in [false, true] {
+        fixture.view.update(cx, |view, cx| {
+            {
+                let mut buffer = view.buffer.lock().unwrap();
+                buffer.ingest(if alternate_screen { b"\x1b[?1049h" } else { b"\x1b[?1049l" });
+                buffer.ingest("\x1b[2J\x1b[Hselected 中文".as_bytes());
+                buffer.begin_selection(0, 0, false, false);
+                buffer.extend_selection(0, 12);
+            }
+            view.refresh();
+            cx.notify();
+        });
+        draw(cx);
+        for chord in ["ctrl-c", "ctrl-shift-c", "ctrl-c"] {
+            clipboard("replace-on-explicit-copy", cx);
+            cx.simulate_keystrokes(chord);
+            assert_eq!(
+                cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text())),
+                Some("selected 中文".into()),
+                "{chord}, alternate_screen={alternate_screen}",
+            );
+            assert!(raw_input(&mut fixture).is_empty(), "copy must not interrupt");
+        }
+        fixture.view.update(cx, |view, cx| {
+            view.buffer.lock().unwrap().clear_selection();
+            view.refresh();
+            cx.notify();
+        });
+        draw(cx);
+        clipboard("keep-without-selection", cx);
+        cx.simulate_keystrokes("ctrl-c");
+        assert_eq!(raw_input(&mut fixture), b"\x03");
+        cx.simulate_keystrokes("ctrl-shift-c");
+        assert!(raw_input(&mut fixture).is_empty());
+        assert_eq!(
+            cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text())),
+            Some("keep-without-selection".into()),
+        );
+    }
+}
+
+#[gpui_kit::gpui::test]
+fn single_cell_word_copy_and_find_bar_do_not_send_interrupts(cx: &mut TestAppContext) {
+    let (mut fixture, cx) = fixture(cx);
+    fixture.view.update(cx, |view, cx| {
+        {
+            let mut buffer = view.buffer.lock().unwrap();
+            buffer.ingest(b"x");
+            buffer.render();
+            assert_eq!(buffer.select_word_at(0, 0).as_deref(), Some("x"));
+        }
+        view.refresh();
+        cx.notify();
+    });
+    draw(cx);
+    clipboard("not-x", cx);
+    cx.simulate_keystrokes("ctrl-c");
+    assert!(raw_input(&mut fixture).is_empty());
+    assert_eq!(
+        cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text())),
+        Some("x".into()),
+    );
+    // Ctrl+C must belong to find even when a terminal selection also exists.
+    cx.simulate_keystrokes("ctrl-f");
+    cx.simulate_input("query");
+    draw(cx);
+    // Expanding find may reflow the terminal and clear old cell coordinates.
+    // This is an input-routing test, not a real-time animation test: freeze the
+    // final height, let the layout settle, then re-establish and assert the
+    // selection so resize cannot silently turn this into the no-selection case.
+    fixture.view.update(cx, |view, cx| {
+        view.find_anim = None;
+        view.find_height = FIND_BAR_HEIGHT;
+        cx.notify();
+    });
+    draw(cx);
+    draw(cx);
+    fixture.view.update(cx, |view, _| {
+        let mut buffer = view.buffer.lock().unwrap();
+        buffer.render();
+        assert_eq!(buffer.select_word_at(0, 0).as_deref(), Some("x"));
+        assert!(!buffer.extract_selection_text().is_empty());
+    });
+    for selected in [true, false] {
+        if !selected {
+            fixture.view.update(cx, |view, _| view.buffer.lock().unwrap().clear_selection());
+        }
+        clipboard("find-must-not-replace-this", cx);
+        cx.simulate_keystrokes("ctrl-c");
+        assert!(raw_input(&mut fixture).is_empty(), "find owns the keyboard");
+        assert_eq!(fixture.view.read_with(cx, |view, _| view.find_query.clone()), "query");
+        assert_eq!(
+            cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text())),
+            Some("find-must-not-replace-this".into()),
+        );
+    }
+}
+
+#[gpui_kit::gpui::test]
+fn standard_paste_after_copy_keeps_bracketed_paste_and_review_safety(cx: &mut TestAppContext) {
+    let (mut fixture, cx) = fixture(cx);
+    fixture.view.update(cx, |view, cx| {
+        {
+            let mut buffer = view.buffer.lock().unwrap();
+            buffer.ingest("copy 中文".as_bytes());
+            buffer.begin_selection(0, 0, false, false);
+            buffer.extend_selection(0, 8);
+        }
+        view.refresh();
+        cx.notify();
+    });
+    draw(cx);
+    cx.simulate_keystrokes("ctrl-c");
+    assert!(raw_input(&mut fixture).is_empty());
+    for bracketed in [false, true] {
+        fixture.view.update(cx, |view, _| {
+            view.buffer.lock().unwrap().ingest(if bracketed { b"\x1b[?2004h" } else { b"\x1b[?2004l" });
+        });
+        for chord in ["ctrl-v", "ctrl-shift-v"] {
+            cx.simulate_keystrokes(chord);
+            let expected = if bracketed { "\x1b[200~copy 中文\x1b[201~" } else { "copy 中文" };
+            assert_eq!(raw_input(&mut fixture), expected.as_bytes());
+        }
+    }
+    // Embedded escape/interrupt bytes cannot terminate a bracketed paste.
+    clipboard("safe\x1b[201~\x03中文", cx);
+    cx.simulate_keystrokes("ctrl-v");
+    assert_eq!(raw_input(&mut fixture), "\x1b[200~safe[201~中文\x1b[201~".as_bytes());
+    for chord in ["ctrl-v", "ctrl-shift-v"] {
+        clipboard("first\r\nsecond\n", cx);
+        cx.simulate_keystrokes(chord);
+        draw(cx);
+        assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+        assert!(raw_input(&mut fixture).is_empty());
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+        assert!(raw_input(&mut fixture).is_empty(), "cancel must not paste or execute");
+        cx.update(|window, cx| window.focus(&fixture.view.read(cx).focus.clone(), cx));
+        draw(cx);
+    }
+}
+
+#[gpui_kit::gpui::test]
+fn accepted_user_input_clears_old_selection_but_copy_keeps_it(cx: &mut TestAppContext) {
+    let (mut fixture, cx) = fixture(cx);
+    for (action, expected) in [
+        ("type", &b"run"[..]),
+        ("enter", &b"\r"[..]),
+        ("tab", &b"\t"[..]),
+        ("paste", &b"payload"[..]),
+        ("platform-paste", &b"payload"[..]),
+    ] {
+        select_fixture_output(&fixture, cx);
+        cx.simulate_keystrokes("ctrl-c");
+        assert_eq!(selected_output(&fixture, cx), "selected output");
+        assert!(raw_input(&mut fixture).is_empty());
+        match action {
+            "type" => cx.simulate_input("run"),
+            "paste" => { clipboard("payload", cx); cx.simulate_keystrokes("ctrl-v"); }
+            "platform-paste" => cx.update(|window, cx| fixture.view.update(cx, |view, cx| {
+                view.paste(gpui_kit::ClipboardItem::new_string("payload".into()), window, cx);
+            })),
+            chord => cx.simulate_keystrokes(chord),
+        }
+        assert_eq!(raw_input(&mut fixture), expected, "{action}");
+        assert!(selected_output(&fixture, cx).is_empty(), "{action}");
+        draw(cx);
+        assert!(fixture.view.read_with(cx, |view, _| view.snapshot.selection.is_empty()));
+        cx.simulate_keystrokes("ctrl-c");
+        assert_eq!(raw_input(&mut fixture), b"\x03", "new commands remain interruptible after {action}");
+    }
+}
+
+#[gpui_kit::gpui::test]
+fn empty_rejected_and_non_user_input_do_not_discard_selection(cx: &mut TestAppContext) {
+    let (mut fixture, cx) = fixture(cx);
+    // Removing a session handle must not change the status-bar geometry here:
+    // that would test resize-driven selection clearing instead of send failure.
+    fixture.view.update(cx, |view, cx| {
+        view.status = Some("Synthetic session".into());
+        cx.notify();
+    });
+    draw(cx);
+    draw(cx);
+    select_fixture_output(&fixture, cx);
+    cx.update(|window, cx| fixture.view.update(cx, |view, cx| {
+        view.replace_text_in_range(None, "", window, cx);
+    }));
+    assert!(raw_input(&mut fixture).is_empty());
+    assert_eq!(selected_output(&fixture, cx), "selected output");
+
+    // Raw mouse/protocol traffic is not a user's new command.
+    fixture.view.update(cx, |view, _| { view.send_bytes(b"\x1b[1;1R"); });
+    assert_eq!(raw_input(&mut fixture), b"\x1b[1;1R");
+    assert_eq!(selected_output(&fixture, cx), "selected output");
+
+    let handle = fixture.view.update(cx, |view, _| {
+        view.handles.borrow_mut().remove(&view.tab_id).unwrap()
+    });
+    cx.simulate_input("not-connected");
+    assert!(raw_input(&mut fixture).is_empty());
+    assert_eq!(selected_output(&fixture, cx), "selected output");
+    fixture.view.update(cx, |view, _| {
+        view.handles.borrow_mut().insert(view.tab_id.clone(), handle);
+    });
+    fixture.input.close();
+    cx.simulate_input("queue-refuses-this");
+    assert!(raw_input(&mut fixture).is_empty());
+    assert_eq!(selected_output(&fixture, cx), "selected output");
+}
+
+#[gpui_kit::gpui::test]
+fn preedit_and_cancelled_multiline_paste_preserve_selected_output(cx: &mut TestAppContext) {
+    let (mut fixture, cx) = fixture(cx);
+    select_fixture_output(&fixture, cx);
+    cx.update(|window, cx| fixture.view.update(cx, |view, cx| {
+        view.replace_and_mark_text_in_range(None, "ni", Some(0..2), window, cx);
+    }));
+    assert!(raw_input(&mut fixture).is_empty());
+    assert_eq!(selected_output(&fixture, cx), "selected output");
+    cx.update(|window, cx| fixture.view.update(cx, |view, cx| view.unmark_text(window, cx)));
+    assert_eq!(selected_output(&fixture, cx), "selected output");
+    clipboard("first\nsecond\n", cx);
+    cx.simulate_keystrokes("ctrl-v");
+    draw(cx);
+    assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+    assert!(raw_input(&mut fixture).is_empty());
+    assert_eq!(selected_output(&fixture, cx), "selected output");
+    cx.simulate_keystrokes("escape");
+    draw(cx);
+    assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+    assert!(raw_input(&mut fixture).is_empty());
+    assert_eq!(selected_output(&fixture, cx), "selected output");
 }
 
 #[gpui_kit::gpui::test]
