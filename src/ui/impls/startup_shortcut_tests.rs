@@ -256,7 +256,7 @@ fn page_navigation_from_typed_settings_draft_focuses_existing_terminal(cx: &mut 
     cx.simulate_input("echo page-focus");
     cx.simulate_keystrokes("enter");
     draw(cx);
-    assert_eq!(raw_input(&mut inbox), b"echo page-focus\r\n");
+    assert_eq!(raw_input(&mut inbox), b"echo page-focus\r");
     click_entry_element("nav-Settings", cx);
     click_pasted_connections_field(cx);
     assert_eq!(

@@ -27,7 +27,7 @@ fn assert_typed_only_to(
         assert_eq!(
             raw_input(inbox),
             if index == selected {
-                b"echo cycle-focus\r\n".to_vec()
+                b"echo cycle-focus\r".to_vec()
             } else {
                 vec![]
             },

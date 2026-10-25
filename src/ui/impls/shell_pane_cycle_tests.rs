@@ -67,7 +67,7 @@ fn pane_cycle_shortcut_routes_input_to_each_selected_pane_without_mouse(cx: &mut
             assert_eq!(
                 raw_input(inbox),
                 if index == selected {
-                    b"echo pane-cycle\r\n".to_vec()
+                    b"echo pane-cycle\r".to_vec()
                 } else {
                     vec![]
                 },
