@@ -692,8 +692,8 @@ fn online_enter_is_sent_once_without_text_fallback(cx: &mut TestAppContext) {
     // Enter, which correctly requests reconnection before encoding in that state.
     let result = cx.update(|window, cx| {
         window.dispatch_event(
-            gpui_kit::gpui::PlatformInput::KeyDown(KeyDownEvent {
-                keystroke: gpui_kit::gpui::Keystroke::parse("backspace").unwrap(),
+            gpui_kit::PlatformInput::KeyDown(KeyDownEvent {
+                keystroke: gpui_kit::Keystroke::parse("backspace").unwrap(),
                 is_held: false,
                 prefer_character_input: false,
             }),
