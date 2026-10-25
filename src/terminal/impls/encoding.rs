@@ -63,4 +63,66 @@ mod tests {
         let mut codec = TerminalEncoding::new("not-a-real-charset");
         assert_eq!(codec.decode("你好".as_bytes()), "你好");
     }
+
+    #[test]
+    fn utf8_remote_console_output_survives_every_packet_boundary() {
+        // Entirely synthetic remote output, not a captured user's session.
+        // Windows ConPTY sends UTF-8 even when the hosted application uses a
+        // different code page. Exercise both decoding and the terminal parser.
+        let original = concat!(
+            "Windows 测试终端\r\n",
+            "\x1b[32mdemo@测试主机\x1b[0m C:\\fixture> 😀"
+        );
+        let bytes = original.as_bytes();
+        for split in 0..=bytes.len() {
+            let mut codec = TerminalEncoding::new("UTF-8");
+            let mut terminal = crate::terminal::TermBuffer::new(5, 80);
+            let mut decoded = String::new();
+            for packet in [&bytes[..split], &bytes[split..]] {
+                let chunk = codec.decode(packet);
+                terminal.ingest(chunk.as_bytes());
+                decoded.push_str(&chunk);
+            }
+            assert_eq!(decoded, original, "split={split}");
+            assert_eq!(terminal.parser.screen().contents(), "Windows 测试终端\ndemo@测试主机 C:\\fixture> 😀", "split={split}");
+        }
+        let mut codec = TerminalEncoding::new("UTF-8");
+        let mut terminal = crate::terminal::TermBuffer::new(5, 80);
+        let decoded: String = bytes.chunks(1).map(|packet| {
+            let chunk = codec.decode(packet);
+            terminal.ingest(chunk.as_bytes());
+            chunk
+        }).collect();
+        assert_eq!(decoded, original);
+        assert_eq!(terminal.parser.screen().contents(), "Windows 测试终端\ndemo@测试主机 C:\\fixture> 😀");
+    }
+
+    #[test]
+    fn explicitly_configured_legacy_output_preserves_raw_fixture_and_split_characters() {
+        // The same Chinese glyphs are GB18030 here. Choosing a legacy decoder
+        // is an explicit session setting, not an inference from remote OS.
+        let raw = b"\x1b[32m\xd6\xd0\xce\xc4\x1b[0m\r\ndemo@fixture> ";
+        let expected = "\x1b[32m中文\x1b[0m\r\ndemo@fixture> ";
+        for split in 0..=raw.len() {
+            let mut codec = TerminalEncoding::new("GB18030");
+            let mut decoded = codec.decode(&raw[..split]);
+            decoded.push_str(&codec.decode(&raw[split..]));
+            assert_eq!(decoded, expected, "split={split}");
+            assert_eq!(codec.encode(expected.as_bytes()), raw);
+        }
+    }
+
+    #[test]
+    fn decoder_does_not_guess_a_charset_or_repair_replacements_sent_by_the_peer() {
+        let original = "demo@\u{fffd}\u{fffd} C:\\fixture> ";
+        let mut codec = TerminalEncoding::new("UTF-8");
+        assert_eq!(codec.decode(original.as_bytes()), original);
+
+        // A screenshot cannot tell malformed transport bytes from valid UTF-8
+        // replacement characters already emitted by the remote application.
+        let mut codec = TerminalEncoding::new("UTF-8");
+        let decoded = codec.decode(b"\xd6\xd0\xce\xc4");
+        assert!(decoded.contains('\u{fffd}'));
+        assert_ne!(decoded, "中文", "UTF-8 must not silently become GB18030");
+    }
 }
