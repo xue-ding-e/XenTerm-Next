@@ -2998,7 +2998,7 @@ mod tests {
 
     // Protocol-level regressions against the real rendered form, not a native
     // Windows IME/candidate window. Only synthetic names and disposable profiles.
-    const INPUT_FIXTURE_NAME: &str = "机房A🦀-server尾";
+    const INPUT_FIXTURE_NAME: &str = "机房A\u{1f980}-server尾";
 
     fn repaint_input_editor(
         editor: &Entity<SessionEditor>,
@@ -3093,7 +3093,7 @@ mod tests {
         let (editor, input, cx) = open_input_editor(cx, &fixture);
         cx.update(|_, cx| {
             input.update(cx, |input, cx| {
-                let offset = "机房A🦀".len();
+                let offset = "机房A\u{1f980}".len();
                 input.set_selected_range(offset..offset, cx);
             })
         });
@@ -3114,7 +3114,7 @@ mod tests {
                 repaint_input_editor(&editor, cx);
                 assert_input_protocol(
                     &input,
-                    &format!("机房A🦀{preedit}-server尾"),
+                    &format!("机房A\u{1f980}{preedit}-server尾"),
                     5 + count..5 + count,
                     Some(5..5 + count),
                     cx,
@@ -3132,10 +3132,10 @@ mod tests {
             })
         });
         repaint_input_editor(&editor, cx);
-        assert_input_protocol(&input, "机房A🦀你-server尾", 6..6, None, cx);
+        assert_input_protocol(&input, "机房A\u{1f980}你-server尾", 6..6, None, cx);
         cx.simulate_input("X");
         repaint_input_editor(&editor, cx);
-        assert_input_protocol(&input, "机房A🦀你X-server尾", 7..7, None, cx);
+        assert_input_protocol(&input, "机房A\u{1f980}你X-server尾", 7..7, None, cx);
         assert_eq!(fixture.disk_sessions()[0].name, INPUT_FIXTURE_NAME);
         let save = cx.debug_bounds("editor-save").unwrap();
         cx.simulate_click(save.center(), Modifiers::default());
@@ -3146,9 +3146,9 @@ mod tests {
         );
         assert_eq!(
             fixture.store.borrow().sessions()[0].name,
-            "机房A🦀你X-server尾"
+            "机房A\u{1f980}你X-server尾"
         );
-        assert_eq!(fixture.disk_sessions()[0].name, "机房A🦀你X-server尾");
+        assert_eq!(fixture.disk_sessions()[0].name, "机房A\u{1f980}你X-server尾");
     }
 
     #[gpui_kit::gpui::test]
@@ -3159,11 +3159,11 @@ mod tests {
         cx.update(|window, cx| {
             input.update(cx, |input, cx| {
                 // Replace the emoji (UTF-16 3..5), with a selection inside preedit.
-                input.replace_and_mark_text_in_range(Some(3..5), "ni🦀", Some(2..4), window, cx);
+                input.replace_and_mark_text_in_range(Some(3..5), "ni\u{1f980}", Some(2..4), window, cx);
             })
         });
         repaint_input_editor(&editor, cx);
-        assert_input_protocol(&input, "机房Ani🦀-server尾", 5..7, Some(3..7), cx);
+        assert_input_protocol(&input, "机房Ani\u{1f980}-server尾", 5..7, Some(3..7), cx);
         cx.update(|window, cx| {
             input.update(cx, |input, cx| {
                 // None replaces the full mark, not just the selected emoji in it.
@@ -3209,7 +3209,7 @@ mod tests {
                 })
             });
             repaint_input_editor(&editor, cx);
-            assert_input_protocol(&input, "机房Ani🦀-server尾", 5..5, Some(3..5), cx);
+            assert_input_protocol(&input, "机房Ani\u{1f980}-server尾", 5..5, Some(3..5), cx);
             cx.update(|window, cx| {
                 input.update(cx, |input, cx| {
                     input.replace_and_mark_text_in_range(None, "", None, window, cx);
@@ -3220,7 +3220,7 @@ mod tests {
         }
         cx.simulate_input("x");
         repaint_input_editor(&editor, cx);
-        assert_input_protocol(&input, "机房Ax🦀-server尾", 4..4, None, cx);
+        assert_input_protocol(&input, "机房Ax\u{1f980}-server尾", 4..4, None, cx);
         input_undo(cx);
         repaint_input_editor(&editor, cx);
         assert_input_protocol(&input, INPUT_FIXTURE_NAME, 3..3, None, cx);
@@ -3245,13 +3245,13 @@ mod tests {
         let (editor, input, cx) = open_input_editor(cx, &fixture);
         cx.update(|_, cx| {
             input.update(cx, |input, cx| {
-                let offset = "机房A🦀".len();
+                let offset = "机房A\u{1f980}".len();
                 input.set_selected_range(offset..offset, cx);
             })
         });
         for (typed, expected, offset) in [
-            ("x", "机房A🦀x-server尾", 6),
-            ("y", "机房A🦀xy-server尾", 7),
+            ("x", "机房A\u{1f980}x-server尾", 6),
+            ("y", "机房A\u{1f980}xy-server尾", 7),
         ] {
             cx.simulate_input(typed);
             repaint_input_editor(&editor, cx);
@@ -3263,10 +3263,10 @@ mod tests {
         }
         cx.simulate_keystrokes("shift-left shift-left");
         repaint_input_editor(&editor, cx);
-        assert_input_protocol(&input, "机房A🦀xy-server尾", 5..7, None, cx);
+        assert_input_protocol(&input, "机房A\u{1f980}xy-server尾", 5..7, None, cx);
         cx.simulate_input("Z");
         repaint_input_editor(&editor, cx);
-        assert_input_protocol(&input, "机房A🦀Z-server尾", 6..6, None, cx);
+        assert_input_protocol(&input, "机房A\u{1f980}Z-server尾", 6..6, None, cx);
     }
 
     #[gpui_kit::gpui::test]
@@ -3293,7 +3293,7 @@ mod tests {
                 cx.notify();
             });
             repaint_input_editor(&editor, cx);
-            assert_input_protocol(&input, "机房Ani🦀-server尾", 4..5, Some(3..5), cx);
+            assert_input_protocol(&input, "机房Ani\u{1f980}-server尾", 4..5, Some(3..5), cx);
             cx.update(|window, cx| {
                 input.update(cx, |input, cx| match finish {
                     "commit" => input.replace_text_in_range(None, "你", window, cx),
@@ -3303,8 +3303,8 @@ mod tests {
             });
             repaint_input_editor(&editor, cx);
             let (expected, selection) = match finish {
-                "commit" => ("机房A你🦀-server尾", 4..4),
-                "unmark" => ("机房Ani🦀-server尾", 4..5),
+                "commit" => ("机房A你\u{1f980}-server尾", 4..4),
+                "unmark" => ("机房Ani\u{1f980}-server尾", 4..5),
                 _ => ("external-name", 13..13),
             };
             assert_input_protocol(&input, expected, selection, None, cx);
@@ -3423,12 +3423,12 @@ mod tests {
             })
         });
         repaint_input_editor(&editor, cx);
-        assert_input_protocol(&input, "机房A中🦀-server尾", 4..4, Some(3..4), cx);
+        assert_input_protocol(&input, "机房A中\u{1f980}-server尾", 4..4, Some(3..4), cx);
         let save = cx.debug_bounds("editor-save").unwrap();
         cx.simulate_click(save.center(), Modifiers::default());
         assert_eq!(editor.update(cx, |editor, _| editor.take_outcome()), None);
         assert_eq!(fixture.disk_sessions()[0].name, INPUT_FIXTURE_NAME);
-        assert_input_protocol(&input, "机房A中🦀-server尾", 4..4, Some(3..4), cx);
+        assert_input_protocol(&input, "机房A中\u{1f980}-server尾", 4..4, Some(3..4), cx);
         cx.update(|window, cx| input.update(cx, |input, cx| input.unmark_text(window, cx)));
         // No explicit blur or repaint between accepting the preedit and Save.
         // Button's prevent_default means clicking it does not guarantee Blur.
@@ -3437,10 +3437,10 @@ mod tests {
             editor.update(cx, |editor, _| editor.take_outcome()),
             Some(EditorOutcome::Saved)
         );
-        assert_eq!(fixture.disk_sessions()[0].name, "机房A中🦀-server尾");
+        assert_eq!(fixture.disk_sessions()[0].name, "机房A中\u{1f980}-server尾");
         assert_eq!(
             editor.read_with(cx, |editor, _| editor.draft.borrow().name.clone()),
-            "机房A中🦀-server尾"
+            "机房A中\u{1f980}-server尾"
         );
     }
 
