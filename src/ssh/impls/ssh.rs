@@ -3703,9 +3703,12 @@ mod monitor_hardening_tests {
         assert_eq!(total, u64::MAX);
     }
 
+    // Storage cases still require a complete monitor envelope. Valid memory
+    // fields let these fixtures reach the capacity assertions without
+    // weakening rejection of missing or malformed memory measurements.
     #[test]
     fn monitor_keeps_equal_size_mounts_and_zero_capacity_rows() {
-        let block = "MemTotal: 1000 kB\n__DF__\n/dev/b 100 50 50 50% /data\n/dev/a 100 50 50 50% /\ntmpfs 0 0 0 0% /tmp\n";
+        let block = "MemTotal: 1000 kB\nMemAvailable: 500 kB\n__DF__\n/dev/b 100 50 50 50% /data\n/dev/a 100 50 50 50% /\ntmpfs 0 0 0 0% /tmp\n";
         let mut prev = None;
         let mut net = HashMap::new();
         let mut at = Instant::now();
@@ -3722,7 +3725,7 @@ mod monitor_hardening_tests {
     #[test]
     fn mounted_local_total_requires_complete_matching_metadata() {
         let base =
-            "MemTotal: 1000 kB\n__DF__\n/dev/a 100 50 50 50% /\n/dev/b 100 50 50 50% /data\n";
+            "MemTotal: 1000 kB\nMemAvailable: 500 kB\n__DF__\n/dev/a 100 50 50 50% /\n/dev/b 100 50 50 50% /data\n";
         let suffix = "__DF_END__\n__MOUNTS__\n8:1 / / ext4\n8:2 / /data xfs\n__MOUNT_END__\n";
         for (block, expected) in [
             (format!("{base}{suffix}"), Some((100 * 1024, 200 * 1024))),
@@ -3774,7 +3777,7 @@ mod monitor_hardening_tests {
     #[test]
     fn storage_parser_df_cap_does_not_publish_a_partial_aggregate() {
         for count in [64, 65] {
-            let mut block = String::from("MemTotal: 1000 kB\n__DF__\n");
+            let mut block = String::from("MemTotal: 1000 kB\nMemAvailable: 500 kB\n__DF__\n");
             for index in 0..count {
                 block.push_str(&format!(
                     "/dev/synthetic{index} 100 50 50 50% /volume/{index}\n"
@@ -3797,7 +3800,7 @@ mod monitor_hardening_tests {
     #[test]
     fn storage_parser_mount_metadata_cap_is_unknown_not_a_partial_sum() {
         for count in [512, 513] {
-            let mut block = String::from("MemTotal: 1000 kB\n__DF__\n/dev/synthetic 100 50 50 50% /\n__DF_END__\n__MOUNTS__\n8:1 / / ext4\n");
+            let mut block = String::from("MemTotal: 1000 kB\nMemAvailable: 500 kB\n__DF__\n/dev/synthetic 100 50 50 50% /\n__DF_END__\n__MOUNTS__\n8:1 / / ext4\n");
             for index in 1..count {
                 block.push_str(&format!("0:{index} / /temporary/{index} tmpfs\n"));
             }
@@ -3810,7 +3813,7 @@ mod monitor_hardening_tests {
 
     #[test]
     fn storage_parser_matches_escaped_mount_targets_and_preserves_bind_details() {
-        let block = "MemTotal: 1000 kB\n__DF__\n/dev/a 100 50 50 50% /data volume\n/dev/a 100 50 50 50% /bind\n__DF_END__\n__MOUNTS__\n8:1 / /data\\040volume ext4\n8:1 /sub /bind ext4\n__MOUNT_END__\n";
+        let block = "MemTotal: 1000 kB\nMemAvailable: 500 kB\n__DF__\n/dev/a 100 50 50 50% /data volume\n/dev/a 100 50 50 50% /bind\n__DF_END__\n__MOUNTS__\n8:1 / /data\\040volume ext4\n8:1 /sub /bind ext4\n__MOUNT_END__\n";
         let (disks, total) = storage_sample(block);
         assert_eq!(disks[0].0, "/data volume");
         assert_eq!(disks[1].0, "/bind");
@@ -3819,7 +3822,7 @@ mod monitor_hardening_tests {
 
     #[test]
     fn storage_parser_rejects_missing_df_completion_and_invalid_metadata() {
-        let base = "MemTotal: 1000 kB\n__DF__\n/dev/a 100 50 50 50% /\n";
+        let base = "MemTotal: 1000 kB\nMemAvailable: 500 kB\n__DF__\n/dev/a 100 50 50 50% /\n";
         for suffix in [
             "__MOUNTS__\n8:1 / / ext4\n__MOUNT_END__\n",
             "__DF_END__\n__MOUNTS__\n__INVALID_MOUNT__\n__MOUNT_END__\n",
