@@ -667,3 +667,68 @@ fn wallpaper_bounds_follow_the_grid_and_exclude_status_and_find_bars(cx: &mut Te
         "disabled wallpaper adds no layer"
     );
 }
+
+#[gpui_kit::gpui::test]
+fn online_enter_is_sent_once_without_text_fallback(cx: &mut TestAppContext) {
+    let (mut fixture, cx) = fixture(cx);
+    // No selection or Ctrl+C precondition: reach the live Enter path directly.
+    cx.simulate_keystrokes("enter");
+    assert_eq!(raw_input(&mut fixture), b"\r", "online Enter must be encoded once");
+
+    // A failed enqueue still belongs to the terminal key path, not to a text
+    // fallback. Keep geometry stable so selection loss cannot come from resize.
+    fixture.view.update(cx, |view, cx| {
+        view.status = Some("Synthetic session".into());
+        cx.notify();
+    });
+    draw(cx);
+    draw(cx);
+    select_fixture_output(&fixture, cx);
+    fixture.input.close();
+    assert!(fixture.view.read_with(cx, |view, _| {
+        view.handles.borrow().get(&view.tab_id).unwrap().commands.is_closed()
+    }));
+    // Backspace reaches the encoder even with a closed queue, unlike bare
+    // Enter, which correctly requests reconnection before encoding in that state.
+    let result = cx.update(|window, cx| {
+        window.dispatch_event(
+            gpui_kit::gpui::PlatformInput::KeyDown(KeyDownEvent {
+                keystroke: gpui_kit::gpui::Keystroke::parse("backspace").unwrap(),
+                is_held: false,
+                prefer_character_input: false,
+            }),
+            cx,
+        )
+    });
+    assert!(!result.propagate, "a rejected encoded key must not fall back to text");
+    assert!(raw_input(&mut fixture).is_empty());
+    assert_eq!(selected_output(&fixture, cx), "selected output");
+}
+
+#[gpui_kit::gpui::test]
+fn ordinary_text_and_ime_keep_the_input_handler_path(cx: &mut TestAppContext) {
+    let (mut fixture, cx) = fixture(cx);
+    // These printable keydowns must remain unconsumed so GPUI supplies text.
+    cx.simulate_keystrokes("a shift-b");
+    assert_eq!(raw_input(&mut fixture), b"aB");
+    cx.simulate_input("中文");
+    assert_eq!(raw_input(&mut fixture), "中文".as_bytes());
+
+    cx.update(|window, cx| fixture.view.update(cx, |view, cx| {
+        view.replace_and_mark_text_in_range(None, "ni", Some(0..2), window, cx);
+    }));
+    assert!(raw_input(&mut fixture).is_empty());
+    assert_eq!(fixture.view.read_with(cx, |view, _| view.composition.clone()), Some("ni".into()));
+    cx.update(|window, cx| fixture.view.update(cx, |view, cx| {
+        view.replace_text_in_range(None, "你", window, cx);
+    }));
+    assert_eq!(raw_input(&mut fixture), "你".as_bytes());
+    assert!(fixture.view.read_with(cx, |view, _| view.composition.is_none()));
+
+    cx.update(|window, cx| fixture.view.update(cx, |view, cx| {
+        view.replace_and_mark_text_in_range(None, "hao", Some(0..3), window, cx);
+        view.unmark_text(window, cx);
+    }));
+    assert!(raw_input(&mut fixture).is_empty());
+    assert!(fixture.view.read_with(cx, |view, _| view.composition.is_none()));
+}

@@ -860,7 +860,14 @@ impl TerminalView {
         let app_cursor = self.buffer.lock().ok()
             .is_some_and(|buffer| buffer.parser.screen().application_cursor());
         let bytes = gpui_key_bytes(&keystroke.key, ctrl, alt, shift, app_cursor);
-        self.send_user_input(&bytes, cx);
+        if !bytes.is_empty() {
+            self.send_user_input(&bytes, cx);
+            // This key already has a terminal encoding. Do not let GPUI also
+            // deliver its text fallback (for example LF after Enter's CR).
+            // Consume even when the queue rejects the send: falling back to
+            // text is not a retry. Failed sends still retain the selection.
+            cx.stop_propagation();
+        }
     }
 
     /// Send Tab to the session.
@@ -1192,10 +1199,10 @@ fn gpui_key_bytes(key: &str, ctrl: bool, alt: bool, shift: bool, app_cursor: boo
         // through the same call, which is where the control-byte mapping lives.
         //
         // Text also arrives through `EntityInputHandler`, and the two must not
-        // both send it: an ordinary letter here would be typed twice. Named keys
-        // are excluded from that path — the platform sends no character for
-        // Enter or an arrow — and `key_char` is `None` for them, so this arm
-        // fires only for control combinations, which the handler never sees.
+        // both send it: an ordinary letter here would be typed twice. Only named
+        // keys and control combinations are encoded here; ordinary text falls
+        // through to the input handler. The key handler consumes nonempty
+        // encodings so a platform text fallback cannot send the same key again.
         None if ctrl => terminal::key_to_pty_bytes(key, ctrl, alt, false),
         None => Vec::new(),
     }
