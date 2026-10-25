@@ -195,3 +195,50 @@ fn resource_events_reject_old_connection_and_do_not_reclassify_system_details(
     assert_eq!(statuses.lock().unwrap()["resource-tab"].mem_total_kib, 4096);
     assert_eq!(statuses.lock().unwrap()["resource-tab"].state, 1);
 }
+
+#[gpui_kit::gpui::test]
+fn storage_events_replace_known_totals_with_unknown_and_reject_unrelated_samples(
+    cx: &mut TestAppContext,
+) {
+    let (statuses, sink, cx) = fixture(cx);
+    let storage_event = |capacity| {
+        let mut event = sample(true);
+        if let SessionEvent::ResourceStats {
+            local_storage,
+            disks,
+            ..
+        } = &mut event
+        {
+            *local_storage = capacity;
+            *disks = vec![("/".into(), 50, 100), ("/data".into(), 25, 200)];
+        }
+        event
+    };
+    sink.deliver_for_generation("resource-tab", 7, vec![storage_event(Some((75, 300)))]);
+    cx.run_until_parked();
+    assert_eq!(
+        statuses.lock().unwrap()["resource-tab"].local_storage,
+        Some((75, 300))
+    );
+    // Old connections and one-shot system-detail probes are not current samples.
+    let mut details = storage_event(Some((999, 1000)));
+    if let SessionEvent::ResourceStats { sys, .. } = &mut details {
+        *sys = Some(Default::default());
+    }
+    sink.deliver_for_generation("resource-tab", 6, vec![storage_event(None)]);
+    sink.deliver_for_generation("resource-tab", 7, vec![details]);
+    cx.run_until_parked();
+    assert_eq!(
+        statuses.lock().unwrap()["resource-tab"].local_storage,
+        Some((75, 300))
+    );
+    // None must replace the previous number, not leave a believable stale total.
+    sink.deliver_for_generation("resource-tab", 7, vec![storage_event(None)]);
+    cx.run_until_parked();
+    let map = statuses.lock().unwrap();
+    assert_eq!(map["resource-tab"].local_storage, None);
+    assert_eq!(
+        map["resource-tab"].disks,
+        vec![("/".into(), 50, 100), ("/data".into(), 25, 200)]
+    );
+}

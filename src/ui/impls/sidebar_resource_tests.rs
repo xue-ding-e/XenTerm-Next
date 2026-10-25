@@ -177,6 +177,12 @@ fn storage_numeric_anchors_do_not_move_with_mounts_or_monitor_state(cx: &mut Tes
     let initial_available = cx
         .debug_bounds("storage-available")
         .expect("reserved available anchor");
+    let initial_root_total = cx
+        .debug_bounds("storage-root-total")
+        .expect("reserved root total");
+    let initial_root_available = cx
+        .debug_bounds("storage-root-available")
+        .expect("reserved root available");
     let initial_summary = cx.debug_bounds("storage-summary").unwrap();
     assert_eq!(initial_total.size.width, px(100.));
     assert_eq!(initial_available.origin.y - initial_total.origin.y, px(24.));
@@ -219,6 +225,14 @@ fn storage_numeric_anchors_do_not_move_with_mounts_or_monitor_state(cx: &mut Tes
             cx.debug_bounds("storage-available").unwrap(),
             initial_available
         );
+        assert_eq!(
+            cx.debug_bounds("storage-root-total").unwrap(),
+            initial_root_total
+        );
+        assert_eq!(
+            cx.debug_bounds("storage-root-available").unwrap(),
+            initial_root_available
+        );
         assert_eq!(cx.debug_bounds("storage-summary").unwrap(), initial_summary);
     }
 }
@@ -232,6 +246,11 @@ fn storage_numeric_columns_keep_their_width_and_right_alignment_on_resize(cx: &m
         draw(cx);
         let total = cx.debug_bounds("storage-total").unwrap();
         let available = cx.debug_bounds("storage-available").unwrap();
+        for id in ["storage-root-total", "storage-root-available"] {
+            let root = cx.debug_bounds(id).unwrap();
+            assert_eq!(root.size.width, total.size.width);
+            assert_eq!(root.origin.x, total.origin.x);
+        }
         let summary = cx.debug_bounds("storage-summary").unwrap();
         assert_eq!(total.size.width, px(100.));
         assert_eq!(available.size.width, total.size.width);
@@ -242,4 +261,63 @@ fn storage_numeric_columns_keep_their_width_and_right_alignment_on_resize(cx: &m
         );
         assert_eq!(*top.get_or_insert(total.origin.y), total.origin.y);
     }
+}
+
+#[gpui_kit::gpui::test]
+fn storage_projection_keeps_root_scope_separate_from_aggregate_and_stale_samples(
+    cx: &mut TestAppContext,
+) {
+    use crate::session::protocol::ResourceMonitorState as State;
+    let (view, statuses, cx) = fixture(cx);
+    for (mounts, aggregate, expected_root) in [
+        (
+            vec![("/data".into(), 25, 200), ("/".into(), 50, 100)],
+            Some((75, 300)),
+            Some((50, 100)),
+        ),
+        (vec![("/data".into(), 25, 200)], Some((25, 200)), None),
+        (vec![("/".into(), 0, 100)], None, Some((0, 100))),
+        (
+            vec![("/".into(), 50, 100), ("/".into(), 25, 100)],
+            None,
+            None,
+        ),
+        (vec![("/".into(), 0, 0)], None, None),
+    ] {
+        {
+            let mut map = statuses.lock().unwrap();
+            let status = map.get_mut("remote").unwrap();
+            status.monitor_state = State::Available;
+            status.sampled_at = Some(std::time::Instant::now());
+            status.mem_total_kib = 4096;
+            status.local_storage = aggregate;
+            status.disks = mounts;
+        }
+        view.update(cx, |view, cx| view.refresh(cx));
+        draw(cx);
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.shown.local_storage, aggregate);
+            assert_eq!(
+                crate::resource::root_disk(&view.shown.disks).and_then(|disk| disk.capacity),
+                expected_root
+            );
+            if expected_root.is_some() {
+                assert_eq!(view.shown.disks[0].path, "/");
+            }
+        });
+    }
+    // Retained store data must not leak through after the streaming sample expires.
+    {
+        let mut map = statuses.lock().unwrap();
+        let status = map.get_mut("remote").unwrap();
+        status.local_storage = Some((75, 300));
+        status.disks = vec![("/".into(), 50, 100)];
+        status.sampled_at = Some(std::time::Instant::now() - Duration::from_secs(11));
+    }
+    view.update(cx, |view, cx| view.refresh(cx));
+    draw(cx);
+    view.read_with(cx, |view, _| {
+        assert!(view.shown.local_storage.is_none());
+        assert!(crate::resource::root_disk(&view.shown.disks).is_none());
+    });
 }

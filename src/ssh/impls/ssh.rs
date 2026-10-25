@@ -3757,6 +3757,81 @@ mod monitor_hardening_tests {
         }
     }
 
+    fn storage_sample(block: &str) -> (Vec<(String, u64, u64)>, Option<(u64, u64)>) {
+        let mut previous = None;
+        let mut network = HashMap::new();
+        let mut at = Instant::now();
+        match parse_monitor_block(block, &mut previous, &mut network, &mut at).unwrap() {
+            super::SessionEvent::ResourceStats {
+                disks,
+                local_storage,
+                ..
+            } => (disks, local_storage),
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn storage_parser_df_cap_does_not_publish_a_partial_aggregate() {
+        for count in [64, 65] {
+            let mut block = String::from("MemTotal: 1000 kB\n__DF__\n");
+            for index in 0..count {
+                block.push_str(&format!(
+                    "/dev/synthetic{index} 100 50 50 50% /volume/{index}\n"
+                ));
+            }
+            block.push_str("__DF_END__\n__MOUNTS__\n");
+            for index in 0..count {
+                block.push_str(&format!("8:{} / /volume/{index} ext4\n", index + 1));
+            }
+            block.push_str("__MOUNT_END__\n");
+            let (disks, total) = storage_sample(&block);
+            assert_eq!(disks.len(), 64);
+            assert_eq!(
+                total,
+                (count == 64).then_some((64 * 50 * 1024, 64 * 100 * 1024))
+            );
+        }
+    }
+
+    #[test]
+    fn storage_parser_mount_metadata_cap_is_unknown_not_a_partial_sum() {
+        for count in [512, 513] {
+            let mut block = String::from("MemTotal: 1000 kB\n__DF__\n/dev/synthetic 100 50 50 50% /\n__DF_END__\n__MOUNTS__\n8:1 / / ext4\n");
+            for index in 1..count {
+                block.push_str(&format!("0:{index} / /temporary/{index} tmpfs\n"));
+            }
+            block.push_str("__MOUNT_END__\n");
+            let (disks, total) = storage_sample(&block);
+            assert_eq!(disks.len(), 1);
+            assert_eq!(total, (count == 512).then_some((50 * 1024, 100 * 1024)));
+        }
+    }
+
+    #[test]
+    fn storage_parser_matches_escaped_mount_targets_and_preserves_bind_details() {
+        let block = "MemTotal: 1000 kB\n__DF__\n/dev/a 100 50 50 50% /data volume\n/dev/a 100 50 50 50% /bind\n__DF_END__\n__MOUNTS__\n8:1 / /data\\040volume ext4\n8:1 /sub /bind ext4\n__MOUNT_END__\n";
+        let (disks, total) = storage_sample(block);
+        assert_eq!(disks[0].0, "/data volume");
+        assert_eq!(disks[1].0, "/bind");
+        assert_eq!(total, Some((50 * 1024, 100 * 1024)));
+    }
+
+    #[test]
+    fn storage_parser_rejects_missing_df_completion_and_invalid_metadata() {
+        let base = "MemTotal: 1000 kB\n__DF__\n/dev/a 100 50 50 50% /\n";
+        for suffix in [
+            "__MOUNTS__\n8:1 / / ext4\n__MOUNT_END__\n",
+            "__DF_END__\n__MOUNTS__\n__INVALID_MOUNT__\n__MOUNT_END__\n",
+            "__DF_END__\n__MOUNTS__\n8:1 / /\\999 ext4\n__MOUNT_END__\n",
+            "__DF_END__\n__MOUNTS__\n8:1 / / ext4 extra-field\n__MOUNT_END__\n",
+        ] {
+            let (disks, total) = storage_sample(&format!("{base}{suffix}"));
+            assert_eq!(disks, vec![("/".into(), 50 * 1024, 100 * 1024)]);
+            assert_eq!(total, None);
+        }
+    }
+
     #[test]
     fn cpu_overflow_values_do_not_panic() {
         let big = u64::MAX;
