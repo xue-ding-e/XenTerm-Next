@@ -1,6 +1,8 @@
 > **XenTerm Next (XenTerm-Next)** is an independent SSH, SFTP and terminal project created and maintained by [xue-ding-e](https://github.com/xue-ding-e), building on [ixbaicn/XenTerm](https://github.com/ixbaicn/XenTerm). We develop our own next-generation terminal experience, including Next-specific enhancements and reviewed community fixes that may not yet be in upstream. It is not an official XenTerm release or a promise of upstream’s next version; upstream authorship, copyright and the MIT license are preserved.
 >
 > Our development line is `main`. `upstream-main` preserves official history; a daily read-only workflow checks drift, and verified mirror fast-forwards are handled separately. Upstream updates never automatically replace Next features. See the [branch policy](CONTRIBUTING.md#independent-repository-branch-policy-xue-ding-exenterm-next).
+>
+> XenTerm Next independently maintains its Rust + GPUI desktop architecture and does not follow upstream’s Rust-core + Flutter migration. Any migration requires an explicit decision from repository owner **xue-ding-e**; until then, only independently reviewed and tested upstream fixes applicable to the current GPUI architecture are candidates for integration. The `upstream-main` mirror and drift reports do not authorize a migration of Next’s `main`.
 
 <p align="center">
   <b>English</b> · <a href="README.zh.md">简体中文</a>

@@ -1,6 +1,8 @@
 > **XenTerm Next（XenTerm-Next）** 是由 [xue-ding-e](https://github.com/xue-ding-e) 创建并维护的独立 SSH、SFTP 与终端项目，基于 [ixbaicn/XenTerm](https://github.com/ixbaicn/XenTerm) 发展。我们打造自己的下一代终端体验，包含 Next 自有增强，以及经审查整合、可能尚未进入上游的社区修复。本项目不是 XenTerm 官方发行版，也不代表官方下一版本的承诺；保留上游作者归属、版权及 MIT 许可证。
 >
 > 自有开发维护在 `main`；`upstream-main` 保留官方历史。每日只读工作流检查差异，经核验的镜像快进另行执行，上游更新不会自动替换 Next 功能。详见[分支约定](CONTRIBUTING.zh-CN.md#独立仓库的分支约定xue-ding-exenterm-next)。
+>
+> XenTerm Next 继续独立维护 Rust + GPUI 桌面架构，不跟随官方的 Rust 核心 + Flutter 迁移。只有仓库负责人 **xue-ding-e** 明确通知并决定后才重新评估迁移；在此之前，仅择取适用于当前 GPUI 架构、经过独立审查和测试的上游修复。`upstream-main` 镜像与差异报告不代表 Next `main` 的迁移授权。
 
 <p align="center">
   <a href="README.md">English</a> · <b>简体中文</b>
