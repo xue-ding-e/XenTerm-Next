@@ -245,7 +245,10 @@ async fn upload_exclusive<R: tokio::io::AsyncRead + Unpin>(
         .open(
             remote,
             OpenFlags::CREATE | OpenFlags::WRITE | OpenFlags::EXCLUDE,
-            FileAttributes::default(),
+            // `default()` in russh-sftp 2.1.1 sends uid/gid 0, mode 0777|DIR,
+            // size and timestamps. Leave attributes absent instead: the server
+            // applies its regular-file creation policy, as SftpSession::open does.
+            FileAttributes::empty(),
         )
         .await
         .context("exclusive create (existing names are rejected)")?
