@@ -7,10 +7,9 @@
 //! itself needs to look alive (a spinner and a status line, both of which come from
 //! events).
 //!
-//! What it deliberately does not do yet: the left-hand directory tree, drag-and-drop
-//! upload, and the file viewer/editor. Each is a view of its own and the panel is
-//! useful without them; the buttons that would open them are absent rather than
-//! present-and-dead, because a button that does nothing is worse than no button.
+//! External file drops are confined to this remote panel, never terminal input.
+//! The worker admits regular files and uses create-new writes; directories and
+//! links are explicitly rejected rather than routed to uncancellable recursion.
 //!
 //! **The original's callbacks, checked one by one against this panel.** Not a guess and not a
 //! memory: the original declared the list, and each entry is either here or named below as
@@ -69,6 +68,9 @@ use gpui_kit::gpui::{EntityInputHandler as _, Focusable as _};
 #[path = "sftp_navigation.rs"]
 mod navigation;
 use navigation::{entered_path, DirectoryTarget};
+#[path = "sftp_drop.rs"]
+mod drop_admission;
+use drop_admission::dropped_paths;
 
 use crate::core::{SftpColumn, SftpFile, SftpListing};
 use crate::session::protocol::RemoteTreeNode;
@@ -100,6 +102,8 @@ pub(crate) enum PanelAction {
     Refresh,
     /// Ask the OS for a local file and upload it here.
     Upload,
+    /// Local OS file paths, bound to the remote directory visible at drop time.
+    UploadDropped { target: DirectoryTarget, locals: Vec<std::path::PathBuf> },
     /// Download these remote paths into a chosen local directory.
     Download(Vec<String>),
     /// Delete these remote paths.
@@ -313,6 +317,29 @@ impl SftpPanelView {
 
     pub(crate) fn matches_directory_target(&self, target: &DirectoryTarget) -> bool {
         self.directory_target().as_ref() == Some(target)
+    }
+
+    fn dropped_files(&mut self, paths: &gpui_kit::ExternalPaths, cx: &mut Context<Self>) {
+        self.dock_press = None;
+        cx.stop_propagation();
+        if self.pending.is_some() || self.path_editor.is_some() {
+            self.status = Some(crate::i18n::t("请先完成或取消当前操作，再拖入文件。", "Finish or cancel the current action before dropping files.").into());
+            cx.notify();
+            return;
+        }
+        let Some(target) = self.directory_target() else {
+            self.status = Some(crate::i18n::t("远程目录未就绪，未上传。请刷新或重新连接。", "The remote directory is not ready; nothing was uploaded. Refresh or reconnect.").into());
+            cx.notify();
+            return;
+        };
+        let Some(locals) = dropped_paths(paths.paths()) else {
+            self.status = Some(crate::i18n::t("请拖入 1–128 个本地文件（不支持相对路径）。", "Drop 1–128 local files (relative paths are not supported).").into());
+            cx.notify();
+            return;
+        };
+        self.pending = Some(PanelAction::UploadDropped { target, locals });
+        self.status = Some(crate::i18n::t("已提交上传请求；同名文件不会被覆盖。", "Upload requested; existing files will not be overwritten.").into());
+        cx.notify();
     }
 
     fn begin_path_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -719,6 +746,14 @@ impl Render for SftpPanelView {
             // handler that never fires. That cost two rounds of probes before the process was
             // checked rather than the code.
             .id("sftp-panel")
+            .debug_selector(|| "sftp-drop-zone".into())
+            .drag_over::<gpui_kit::ExternalPaths>(|style, _, _, cx| style.bg(cx.theme().accent.opacity(0.12)))
+            .on_drag_move::<gpui_kit::ExternalPaths>(cx.listener(|this, _, _, _| {
+                // Native file Entered/Submit translate to move/up, not a dock
+                // grip press. Do not reuse a stale internal dragging origin.
+                this.dock_press = None;
+            }))
+            .on_drop(cx.listener(|this, paths: &gpui_kit::ExternalPaths, _, cx| this.dropped_files(paths, cx)))
             .on_mouse_down(
                 gpui_kit::MouseButton::Left,
                 cx.listener(|this, event: &gpui_kit::MouseDownEvent, _, _| {
@@ -1511,6 +1546,81 @@ mod tests {
         cx.simulate_keystrokes("enter");
         draw_menu(cx);
         assert!(matches!(panel.update(cx, |panel, _| panel.take_action()), Some(PanelAction::NavigateEntered { path, .. }) if path == "/var/中文路径"));
+    }
+
+    fn ready_drop_panel(panel: &Entity<SftpPanelView>, cx: &mut gpui_kit::gpui::VisualTestContext) {
+        panel.update(cx, |panel, cx| {
+            panel.mark_synced("drop-source", panel.listing.generation(), cx);
+            panel.set_connection_generation(Some(9));
+        });
+        draw_menu(cx);
+    }
+
+    fn native_drop(paths: Vec<std::path::PathBuf>, cx: &mut gpui_kit::gpui::VisualTestContext) {
+        use gpui_kit::test::TestWindowExt as _;
+        let position = cx.debug_bounds("sftp-drop-zone").unwrap().center();
+        cx.simulate_event(gpui_kit::FileDropEvent::Entered {
+            position, paths: gpui_kit::ExternalPaths(paths.into_iter().collect()),
+        });
+        draw_menu(cx);
+        cx.simulate_event(gpui_kit::FileDropEvent::Submit { position });
+        draw_menu(cx);
+    }
+
+    #[gpui_kit::gpui::test]
+    fn external_file_drop_queues_exact_paths_once_and_is_not_a_dock_drag(cx: &mut TestAppContext) {
+        let (panel, cx) = menu_panel(cx);
+        ready_drop_panel(&panel, cx);
+        panel.update(cx, |panel, _| panel.dock_press = Some((-1000., -1000.)));
+        let a = std::env::temp_dir().join("合成 文件.txt");
+        let b = std::env::temp_dir().join("other.txt");
+        native_drop(vec![a.clone(), b.clone(), a.clone()], cx);
+        // A repeated native event while the first request is pending must not
+        // overwrite it or produce an extra action. Worker dedup covers in-flight I/O.
+        native_drop(vec![std::env::temp_dir().join("must-not-replace.txt")], cx);
+        panel.update(cx, |panel, _| {
+            assert_eq!(panel.take_action(), Some(PanelAction::UploadDropped {
+                target: DirectoryTarget { tab: "drop-source".into(), path: "/var".into(), listing_generation: 1, connection_generation: 9 },
+                locals: vec![a, b],
+            }));
+            assert!(panel.take_action().is_none());
+            assert!(panel.dock_press.is_none());
+        });
+    }
+
+    #[gpui_kit::gpui::test]
+    fn abandoned_external_drag_and_invalid_payload_do_not_upload(cx: &mut TestAppContext) {
+        use gpui_kit::test::TestWindowExt as _;
+        let (panel, cx) = menu_panel(cx);
+        ready_drop_panel(&panel, cx);
+        let position = cx.debug_bounds("sftp-drop-zone").unwrap().center();
+        cx.simulate_event(gpui_kit::FileDropEvent::Entered {
+            position, paths: gpui_kit::ExternalPaths([std::env::temp_dir().join("cancelled.txt")].into_iter().collect()),
+        });
+        draw_menu(cx);
+        assert!(panel.update(cx, |panel, _| panel.take_action()).is_none());
+        cx.simulate_event(gpui_kit::FileDropEvent::Exited);
+        draw_menu(cx);
+        assert!(panel.update(cx, |panel, _| panel.take_action()).is_none());
+        native_drop(vec![std::path::PathBuf::from("relative.txt")], cx);
+        assert!(panel.update(cx, |panel, _| panel.take_action()).is_none());
+    }
+
+    #[gpui_kit::gpui::test]
+    fn drop_rejects_loading_directory_and_unsubmitted_path_draft(cx: &mut TestAppContext) {
+        let (panel, cx) = menu_panel(cx);
+        ready_drop_panel(&panel, cx);
+        panel.update(cx, |panel, cx| panel.set_loading(cx));
+        native_drop(vec![std::env::temp_dir().join("busy.txt")], cx);
+        assert!(panel.update(cx, |panel, _| panel.take_action()).is_none());
+        panel.update(cx, |panel, cx| panel.set_listing(listing(), cx));
+        enter_path_text(&panel, "/unsubmitted-destination", cx);
+        native_drop(vec![std::env::temp_dir().join("draft.txt")], cx);
+        panel.update(cx, |panel, _| {
+            assert!(panel.take_action().is_none());
+            assert!(panel.path_editor.is_some());
+            assert_eq!(panel.path(), "/var");
+        });
     }
 
     fn menu_panel(

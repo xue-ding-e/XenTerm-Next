@@ -1930,6 +1930,26 @@ impl Shell {
                     })
                     .detach();
                 }
+                PanelAction::UploadDropped { target, locals } => {
+                    let listing = self.state.listing(&tab_id);
+                    let same_connection = self.state.statuses.lock().ok().is_some_and(|statuses| {
+                        statuses.get(&tab_id).is_some_and(|status| status.monitor_generation == target.connection_generation)
+                    });
+                    if target.tab != tab_id || target.path != listing.path()
+                        || target.listing_generation != listing.generation() || !same_connection
+                        || !panel.read(cx).matches_directory_target(&target)
+                    {
+                        self.say(crate::i18n::t("目录或连接已变化，未上传。请重新拖入文件。", "The directory or connection changed; nothing was uploaded. Drop the files again."), cx);
+                        continue;
+                    }
+                    // Only SFTP receives OS paths. Never turn a drop into PTY
+                    // text, a shell command, or the legacy overwrite upload.
+                    if !handle.as_ref().is_some_and(|commands| commands.send(crate::sftp::SftpCommand::UploadDropped {
+                        locals, remote_dir: target.path,
+                    }).is_ok()) {
+                        self.say(crate::i18n::t("连接已断开，未上传文件。", "Disconnected; no files were uploaded."), cx);
+                    }
+                }
                 PanelAction::Download(paths) => {
                     // The folder picker is async like the upload's (a blocking
                     // native dialog on the UI thread re-enters the frame and

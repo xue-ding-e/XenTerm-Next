@@ -15,6 +15,8 @@ use std::sync::{Arc, Mutex};
 // tests remain separate from editor behavior and exercise the production drain.
 #[path = "sftp_navigation_routing_tests.rs"]
 mod navigation;
+#[path = "sftp_drop_routing_tests.rs"]
+mod drops;
 
 const SOURCE: &str = "editor-source";
 const OTHER: &str = "editor-other";
