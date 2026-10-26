@@ -1412,8 +1412,18 @@ mod tests {
         cx.simulate_click(position, Default::default());
         draw_menu(cx);
         cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-a" } else { "ctrl-a" });
-        cx.simulate_input(text);
+        if text.is_empty() {
+            // An empty simulated text stream emits no replacement input;
+            // actually delete the selected path before testing empty Enter.
+            cx.simulate_keystrokes("backspace");
+        } else {
+            cx.simulate_input(text);
+        }
         draw_menu(cx);
+        panel.read_with(cx, |panel, cx| {
+            let (_, input) = panel.path_editor.as_ref().expect("path editor remains open");
+            assert_eq!(input.read(cx).value().as_ref(), text, "the fixture must enter the requested draft before dispatching Enter/Escape");
+        });
     }
 
     #[gpui_kit::gpui::test]
