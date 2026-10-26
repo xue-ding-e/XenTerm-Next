@@ -317,7 +317,19 @@ impl SftpPanelView {
 
     fn begin_path_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.pending.is_some() { return; }
-        let Some(target) = self.directory_target() else { return };
+        let Some(target) = self.directory_target() else {
+            // A timeout hides the spinner but is not proof the old request died.
+            // Explain how to recover; do not silently admit a concurrent cd.
+            self.status = Some(if self.loading_timed_out() {
+                crate::i18n::t("目录读取超时，请刷新或重新连接后再输入路径。", "Directory loading timed out. Refresh or reconnect before entering a path.")
+            } else if self.loading_since.is_some() {
+                crate::i18n::t("正在读取目录，请稍后再输入路径。", "The directory is loading. Wait before entering a path.")
+            } else {
+                crate::i18n::t("远程目录尚未就绪，请连接后重试。", "The remote directory is not ready. Connect before trying again.")
+            }.into());
+            cx.notify();
+            return;
+        };
         let input = cx.new(|cx| InputState::new(window, cx).default_value(target.path.clone()));
         input.update(cx, |input, cx| input.focus(window, cx));
         self.path_editor = Some((target, input));
@@ -1435,6 +1447,70 @@ mod tests {
             assert!(panel.take_action().is_none());
             assert_eq!(panel.path(), "/elsewhere");
         });
+    }
+
+    #[gpui_kit::gpui::test]
+    fn path_timeout_explains_recovery_without_admitting_another_navigation(cx: &mut TestAppContext) {
+        use gpui_kit::test::TestWindowExt as _;
+        let (panel, cx) = menu_panel(cx);
+        panel.update(cx, |panel, cx| {
+            panel.mark_synced("path-source", panel.listing.generation(), cx);
+            panel.set_connection_generation(Some(7));
+            panel.loading_since = Some(std::time::Instant::now() - LOADING_TIMEOUT - std::time::Duration::from_secs(1));
+        });
+        draw_menu(cx);
+        cx.simulate_click(cx.debug_bounds("sftp-path-edit").unwrap().center(), Default::default());
+        draw_menu(cx);
+        panel.update(cx, |panel, _| {
+            assert!(panel.path_editor.is_none());
+            assert!(panel.take_action().is_none());
+            assert_eq!(panel.path(), "/var");
+            assert_eq!(panel.status.as_deref(), Some(crate::i18n::t("目录读取超时，请刷新或重新连接后再输入路径。", "Directory loading timed out. Refresh or reconnect before entering a path.")));
+        });
+        // Only an explicit existing Refresh action, then a successful listing,
+        // restores editing. No timer or click invents an automatic retry.
+        cx.simulate_click(cx.debug_bounds("sftp-refresh").unwrap().center(), Default::default());
+        draw_menu(cx);
+        panel.update(cx, |panel, cx| {
+            assert_eq!(panel.take_action(), Some(PanelAction::Refresh));
+            let mut fresh = panel.listing.clone();
+            fresh.touch();
+            let generation = fresh.generation();
+            panel.set_listing(fresh, cx);
+            panel.mark_synced("path-source", generation, cx);
+        });
+        draw_menu(cx);
+        cx.simulate_click(cx.debug_bounds("sftp-path-edit").unwrap().center(), Default::default());
+        draw_menu(cx);
+        assert!(panel.read_with(cx, |panel, _| panel.path_editor.is_some()));
+    }
+
+    #[gpui_kit::gpui::test]
+    fn path_chinese_composition_needs_a_separate_enter_after_ime_commit(cx: &mut TestAppContext) {
+        let (panel, cx) = menu_panel(cx);
+        enter_path_text(&panel, "draft", cx);
+        let input = panel.read_with(cx, |panel, _| panel.path_editor.as_ref().unwrap().1.clone());
+        cx.update(|window, cx| input.update(cx, |input, cx| {
+            input.replace_and_mark_text_in_range(Some(0..5), "中文路径", Some(4..4), window, cx);
+            assert_eq!(input.marked_text_range(window, cx), Some(0..4));
+        }));
+        draw_menu(cx);
+        cx.simulate_keystrokes("enter");
+        draw_menu(cx);
+        panel.update(cx, |panel, _| {
+            assert!(panel.path_editor.is_some());
+            assert!(panel.take_action().is_none());
+            assert_eq!(panel.path(), "/var");
+        });
+        cx.update(|window, cx| input.update(cx, |input, cx| {
+            input.replace_text_in_range(None, "中文路径", window, cx);
+            assert_eq!(input.marked_text_range(window, cx), None);
+        }));
+        draw_menu(cx);
+        assert!(panel.update(cx, |panel, _| panel.take_action()).is_none());
+        cx.simulate_keystrokes("enter");
+        draw_menu(cx);
+        assert!(matches!(panel.update(cx, |panel, _| panel.take_action()), Some(PanelAction::NavigateEntered { path, .. }) if path == "/var/中文路径"));
     }
 
     fn menu_panel(
