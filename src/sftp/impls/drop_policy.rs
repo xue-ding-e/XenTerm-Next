@@ -66,9 +66,30 @@ mod tests {
         for dir in ["relative", "", "/bad\0", "/bad\n"] {
             assert!(destination(&base.join("file"), dir).is_err());
         }
-        for name in ["a\\b", "a\nb", "a\rb"] {
-            assert!(destination(&base.join(name), "/").is_err());
+        for name in ["a\nb", "a\rb"] {
+            assert!(
+                destination(&base.join(name), "/").is_err(),
+                "name: {name:?}"
+            );
         }
+        // Backslash is a literal filename character on Unix, but a native
+        // directory separator on Windows. Do not confuse a path with its basename.
+        #[cfg(unix)]
+        assert!(
+            destination(&base.join("a\\b"), "/").is_err(),
+            "Unix literal backslash name"
+        );
+        #[cfg(windows)]
+        assert_eq!(
+            destination(&base.join("a\\b"), "/"),
+            Ok("/b".into()),
+            "Windows native path separator"
+        );
+        assert_eq!(
+            destination(&base.join("nested").join("file.txt"), "/"),
+            Ok("/file.txt".into()),
+            "native nested path uses its basename"
+        );
     }
 
     #[test]
