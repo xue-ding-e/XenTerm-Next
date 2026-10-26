@@ -10,9 +10,9 @@ name: CI
 
 on:
   push:
-    paths: ["Cargo.toml", "Cargo.lock", "build.rs", "scripts/version.sh", "tests/version_metadata_test.py", "tests/version_build_test.py", "src/**", "tests/*_e2e.py", "tests/tls_proxy_fixture.py", "assets/install-linux.sh", "tests/install_linux_test.py", "wix/**", "packaging/macos/**", "tests/windows_installer*", "tests/macos_installer*", "tests/release_workflow_test.py", ".github/workflows/ci.yml", ".github/workflows/release.yml", ".github/workflows/next-beta.yml", ".github/workflows/next-beta-build.yml", "scripts/next_beta*.py", "scripts/packaging_version.py", "tests/test_packaging_version.py", "tests/next_beta*.py"]
+    paths: ["Cargo.toml", "Cargo.lock", "build.rs", "scripts/version.sh", "tests/version_metadata_test.py", "tests/version_build_test.py", "tests/sftp_interaction*.py", "src/**", "tests/*_e2e.py", "tests/tls_proxy_fixture.py", "assets/install-linux.sh", "tests/install_linux_test.py", "wix/**", "packaging/macos/**", "tests/windows_installer*", "tests/macos_installer*", "tests/release_workflow_test.py", ".github/workflows/ci.yml", ".github/workflows/release.yml", ".github/workflows/next-beta.yml", ".github/workflows/next-beta-build.yml", "scripts/next_beta*.py", "scripts/packaging_version.py", "tests/test_packaging_version.py", "tests/next_beta*.py"]
   pull_request:
-    paths: ["Cargo.toml", "Cargo.lock", "build.rs", "scripts/version.sh", "tests/version_metadata_test.py", "tests/version_build_test.py", "src/**", "tests/*_e2e.py", "tests/tls_proxy_fixture.py", "assets/install-linux.sh", "tests/install_linux_test.py", "wix/**", "packaging/macos/**", "tests/windows_installer*", "tests/macos_installer*", "tests/release_workflow_test.py", ".github/workflows/ci.yml", ".github/workflows/release.yml", ".github/workflows/next-beta.yml", ".github/workflows/next-beta-build.yml", "scripts/next_beta*.py", "scripts/packaging_version.py", "tests/test_packaging_version.py", "tests/next_beta*.py"]
+    paths: ["Cargo.toml", "Cargo.lock", "build.rs", "scripts/version.sh", "tests/version_metadata_test.py", "tests/version_build_test.py", "tests/sftp_interaction*.py", "src/**", "tests/*_e2e.py", "tests/tls_proxy_fixture.py", "assets/install-linux.sh", "tests/install_linux_test.py", "wix/**", "packaging/macos/**", "tests/windows_installer*", "tests/macos_installer*", "tests/release_workflow_test.py", ".github/workflows/ci.yml", ".github/workflows/release.yml", ".github/workflows/next-beta.yml", ".github/workflows/next-beta-build.yml", "scripts/next_beta*.py", "scripts/packaging_version.py", "tests/test_packaging_version.py", "tests/next_beta*.py"]
   workflow_dispatch:
 
 permissions:
@@ -29,6 +29,7 @@ jobs:
   desktop:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       max-parallel: 1
@@ -117,6 +118,32 @@ jobs:
           set -euo pipefail
           cargo test --locked --target ${{ matrix.target }} --jobs 2 ui::sftp_panel::tests::a_long_listing_and_tree_scroll_under_the_wheel -- --exact --test-threads=1 2>&1 | tee sftp-scroll-test.log
           grep -F 'test result: ok. 1 passed; 0 failed;' sftp-scroll-test.log
+      # New SFTP UI uses real GPUI events with synthetic session channels. The
+      # worker tests speak SFTP over in-memory duplex streams, never real hosts.
+      # Reuse the compiled desktop binary and reject missing/ignored/zero tests.
+      - name: Test SFTP entered paths and external file drop boundaries
+        shell: bash
+        timeout-minutes: 20
+        env:
+          XDG_CONFIG_HOME: ${{ runner.temp }}/xenterm-sftp-config
+          XDG_DATA_HOME: ${{ runner.temp }}/xenterm-sftp-data
+          XDG_RUNTIME_DIR: ${{ runner.temp }}/xenterm-sftp-runtime
+        run: |
+          set -euo pipefail
+          python tests/sftp_interaction_inventory_test.py
+          cargo test --locked --target ${{ matrix.target }} --jobs 2 sftp -- --test-threads=1 2>&1 | tee sftp-interaction-test.log
+          cargo test --locked --target ${{ matrix.target }} --jobs 2 core::transfer::tests -- --test-threads=1 2>&1 | tee sftp-transfer-test.log
+          python tests/sftp_interaction_inventory.py sftp-interaction-test.log sftp-transfer-test.log
+      - name: Preserve SFTP interaction test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sftp-interactions-${{ matrix.target }}
+          path: |
+            sftp-interaction-test.log
+            sftp-transfer-test.log
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Test complete desktop regression suite on Linux
         if: runner.os == 'Linux'
         env:
