@@ -1996,6 +1996,8 @@ fn sync_panel(
         .and_then(|map| map.get(tab_id).cloned())
         .unwrap_or_default();
     let generation = listing.generation();
+    let connection_generation = state.statuses.lock().ok()
+        .and_then(|statuses| statuses.get(tab_id).map(|status| status.monitor_generation));
     panel.update(cx, |panel, cx| {
         panel.set_targets(other_tabs, cx);
         panel.set_tree(tree, cx);
@@ -2004,6 +2006,7 @@ fn sync_panel(
         // update, the drain's comparison sees the stale generation and syncs
         // again next frame rather than swallowing the change.
         panel.mark_synced(tab_id, generation, cx);
+        panel.set_connection_generation(connection_generation);
     });
 }
 

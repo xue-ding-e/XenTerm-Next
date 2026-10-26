@@ -1672,6 +1672,26 @@ impl Shell {
                     }
                     panel.update(cx, |panel, cx| panel.set_path(path, cx));
                 }
+                PanelAction::NavigateEntered { target, path } => {
+                    let listing = self.state.listing(&tab_id);
+                    let same_connection = self.state.statuses.lock().ok().is_some_and(|statuses| {
+                        statuses.get(&tab_id).is_some_and(|status| status.monitor_generation == target.connection_generation)
+                    });
+                    if target.tab != tab_id || target.path != listing.path()
+                        || target.listing_generation != listing.generation() || !same_connection
+                        || !panel.read(cx).matches_directory_target(&target)
+                    {
+                        self.say(crate::i18n::t("目录或连接已变化，请重新输入路径。", "The directory or connection changed. Enter the path again."), cx);
+                        continue;
+                    }
+                    if handle.as_ref().is_some_and(|commands| commands.send(crate::sftp::SftpCommand::ListDir(path)).is_ok()) {
+                        // Unlike a terminal cwd notification, typed navigation is only a
+                        // request. Keep the last successful directory until Entries arrives.
+                        panel.update(cx, |panel, cx| panel.set_loading(cx));
+                    } else {
+                        self.say(crate::i18n::t("连接已断开，未跳转目录。", "Disconnected; the directory was not changed."), cx);
+                    }
+                }
                 // The desktop's own editor, on a copy in a temporary directory: the
                 // session downloads it, opens it, watches it, and uploads it back when it
                 // is saved. The panel's whole part is naming the file.

@@ -11,6 +11,11 @@ use gpui_kit::gpui::{TestAppContext, VisualTestContext};
 use gpui_kit::test::TestWindowExt as _;
 use std::sync::{Arc, Mutex};
 
+// Reuse this no-network Shell fixture for entered-path routing as well. The
+// tests remain separate from editor behavior and exercise the production drain.
+#[path = "sftp_navigation_routing_tests.rs"]
+mod navigation;
+
 const SOURCE: &str = "editor-source";
 const OTHER: &str = "editor-other";
 const REMOTE: &str = "/synthetic/共享路径/配置.txt";

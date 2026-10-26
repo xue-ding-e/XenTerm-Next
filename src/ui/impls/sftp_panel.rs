@@ -48,13 +48,14 @@ use gpui_kit::{
     component::{
         button::{Button, ButtonVariants},
         h_flex,
+        input::{Enter, Escape, Input, InputState},
         menu::{ContextMenuExt, DropdownMenu, PopupMenuItem},
         spinner::Spinner,
         v_flex, ActiveTheme as _, Disableable as _, Icon, Sizable as _, Size,
     },
     div,
     prelude::*,
-    px, uniform_list, AnyElement, Context, Entity, FontWeight, Hsla, IntoElement,
+    px, uniform_list, AnyElement, Context, Entity, FocusHandle, FontWeight, Hsla, IntoElement,
     ListSizingBehavior, Point, Render, SharedString, TestSupportExt as _, UniformListScrollHandle,
     Window,
 };
@@ -63,6 +64,11 @@ use gpui_kit::{
 // panel wants an upload arrow, a download arrow and a bin, and the subset has none of
 // the three.
 use gpui_kit::assets::IconName;
+use gpui_kit::gpui::{EntityInputHandler as _, Focusable as _};
+
+#[path = "sftp_navigation.rs"]
+mod navigation;
+use navigation::{entered_path, DirectoryTarget};
 
 use crate::core::{SftpColumn, SftpFile, SftpListing};
 use crate::session::protocol::RemoteTreeNode;
@@ -88,6 +94,8 @@ const LOADING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 pub(crate) enum PanelAction {
     /// Go to this directory path.
     Navigate(String),
+    /// An entered path belongs to the directory and connection where editing began.
+    NavigateEntered { target: DirectoryTarget, path: String },
     /// Re-read the current directory, resyncing the tree (#189).
     Refresh,
     /// Ask the OS for a local file and upload it here.
@@ -150,6 +158,9 @@ pub(crate) struct SftpPanelView {
     /// drain compares it against the store each frame; the `None` a fresh panel
     /// starts with is what forces the first sync.
     synced: Option<(String, u64)>,
+    connection_generation: Option<u64>,
+    path_editor: Option<(DirectoryTarget, Entity<InputState>)>,
+    path_focus: FocusHandle,
     /// The last status or error text from the session, shown under the toolbar.
     status: Option<String>,
     /// The last action an interaction produced, drained by the shell's caller.
@@ -176,11 +187,14 @@ pub(crate) struct SftpPanelView {
 }
 
 impl SftpPanelView {
-    pub(crate) fn new(_cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(cx: &mut Context<Self>) -> Self {
         Self {
             listing: SftpListing::default(),
             loading_since: None,
             synced: None,
+            connection_generation: None,
+            path_editor: None,
+            path_focus: cx.focus_handle(),
             status: None,
             pending: None,
             targets: Vec::new(),
@@ -278,6 +292,102 @@ impl SftpPanelView {
     /// view — the same cycle the session list avoids by reporting an event.
     pub(crate) fn take_action(&mut self) -> Option<PanelAction> {
         self.pending.take()
+    }
+
+    pub(crate) fn set_connection_generation(&mut self, generation: Option<u64>) {
+        self.connection_generation = generation;
+    }
+
+    fn directory_target(&self) -> Option<DirectoryTarget> {
+        let (tab, generation) = self.synced.as_ref()?;
+        if self.loading_since.is_some() || *generation != self.listing.generation() {
+            return None;
+        }
+        Some(DirectoryTarget {
+            tab: tab.clone(),
+            path: self.path().to_string(),
+            listing_generation: *generation,
+            connection_generation: self.connection_generation?,
+        })
+    }
+
+    pub(crate) fn matches_directory_target(&self, target: &DirectoryTarget) -> bool {
+        self.directory_target().as_ref() == Some(target)
+    }
+
+    fn begin_path_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pending.is_some() { return; }
+        let Some(target) = self.directory_target() else { return };
+        let input = cx.new(|cx| InputState::new(window, cx).default_value(target.path.clone()));
+        input.update(cx, |input, cx| input.focus(window, cx));
+        self.path_editor = Some((target, input));
+        self.status = None;
+        cx.notify();
+    }
+
+    fn end_path_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.path_editor.as_ref().is_some_and(|(_, input)| input.read(cx).focus_handle(cx).is_focused(window)) {
+            window.focus(&self.path_focus, cx);
+        }
+        self.path_editor = None;
+        cx.notify();
+    }
+
+    fn submit_path(&mut self, _: &Enter, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((target, input)) = self.path_editor.clone() else { cx.propagate(); return };
+        if !input.read(cx).focus_handle(cx).is_focused(window) {
+            cx.propagate();
+            return;
+        }
+        // Candidate confirmation belongs to the native IME, not navigation.
+        if input.update(cx, |input, cx| input.marked_text_range(window, cx).is_some()) {
+            return;
+        }
+        if !self.matches_directory_target(&target) {
+            self.status = Some(crate::i18n::t("目录或连接已变化，请重新输入路径。", "The directory or connection changed. Enter the path again.").into());
+            self.end_path_edit(window, cx);
+            return;
+        }
+        let Some(path) = entered_path(&target.path, input.read(cx).value().as_ref()) else {
+            self.status = Some(crate::i18n::t("请输入有效的远程路径。", "Enter a valid remote path.").into());
+            cx.notify();
+            return;
+        };
+        self.pending = Some(PanelAction::NavigateEntered { target, path });
+        self.end_path_edit(window, cx);
+    }
+
+    fn cancel_path(&mut self, _: &Escape, window: &mut Window, cx: &mut Context<Self>) {
+        if self.path_editor.is_none() {
+            cx.propagate();
+            return;
+        }
+        self.end_path_edit(window, cx);
+    }
+
+    fn path_bar(&self, cx: &mut Context<Self>) -> AnyElement {
+        let content = if let Some((_, input)) = &self.path_editor {
+            div().id("sftp-path-input").debug_selector(|| "sftp-path-input".into()).flex_1().min_w_0()
+                .on_action(cx.listener(Self::submit_path))
+                .on_action(cx.listener(Self::cancel_path))
+                .child(Input::new(input).small())
+                .into_any_element()
+        } else {
+            div().id("sftp-path-edit").debug_selector(|| "sftp-path-edit".into())
+                .flex_1().min_w_0().truncate().text_xs().cursor_text()
+                .child(SharedString::from(self.path().to_string()))
+                .on_click(cx.listener(|this, _, window, cx| this.begin_path_edit(window, cx)))
+                .into_any_element()
+        };
+        h_flex().w_full().gap_1().items_center().px_2().py_1()
+            .track_focus(&self.path_focus)
+            .child(Icon::new(IconName::FolderOpen).size_3().text_color(cx.theme().muted_foreground))
+            .child(content)
+            .child(Button::new("sftp-edit-path-button").icon(IconName::Pencil).ghost().small()
+                .tooltip(crate::i18n::t("输入远程路径（Enter 前往，Esc 取消）", "Enter a remote path (Enter to go, Esc to cancel)"))
+                .accessibility_label(crate::i18n::t("输入远程路径", "Enter remote path"))
+                .on_click(cx.listener(|this, _, window, cx| this.begin_path_edit(window, cx))))
+            .into_any_element()
     }
 
     /// Show a freshly arrived listing.
@@ -440,7 +550,7 @@ impl Render for SftpPanelView {
         let border = cx.theme().border;
         let muted = cx.theme().muted_foreground;
         let warning = cx.theme().warning;
-        let path = self.listing.path().to_string();
+        let path_bar = self.path_bar(cx);
         let files: Vec<SftpFile> = self.listing.files().to_vec();
         let selected_count = files.iter().filter(|f| f.selected).count();
 
@@ -871,26 +981,8 @@ impl Render for SftpPanelView {
                                     })),
                             ),
                     )
-                    .child(
-                        // Where you are, with the icon that says this is a path rather than a
-                        // stray line of text above the table.
-                        h_flex()
-                            .w_full()
-                            .gap_1()
-                            .items_center()
-                            .px_2()
-                            .py_1()
-                            .child(Icon::new(IconName::FolderOpen).size_3().text_color(muted))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_xs()
-                                    .text_color(muted)
-                                    .child(SharedString::from(path)),
-                            ),
-                    )
+                    // Keep the folder cue while making the current remote path editable.
+                    .child(path_bar)
                     .child(
                         // A hairline under the headings: what makes the row above the list read as
                         // a table's headings rather than as another row of the list.
@@ -1261,6 +1353,89 @@ mod tests {
     use super::*;
     use crate::session::protocol::RemoteEntry;
     use gpui_kit::gpui::{Modifiers, TestAppContext};
+
+    fn enter_path_text(panel: &Entity<SftpPanelView>, text: &str, cx: &mut gpui_kit::gpui::VisualTestContext) {
+        use gpui_kit::test::TestWindowExt as _;
+        panel.update(cx, |panel, cx| {
+            panel.mark_synced("path-source", panel.listing.generation(), cx);
+            panel.set_connection_generation(Some(7));
+        });
+        draw_menu(cx);
+        cx.simulate_click(cx.debug_bounds("sftp-path-edit").unwrap().center(), Default::default());
+        draw_menu(cx);
+        cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-a" } else { "ctrl-a" });
+        cx.simulate_input(text);
+        draw_menu(cx);
+    }
+
+    #[gpui_kit::gpui::test]
+    fn path_enter_submits_once_without_changing_the_successful_directory(cx: &mut TestAppContext) {
+        let (panel, cx) = menu_panel(cx);
+        enter_path_text(&panel, "../中文 路径", cx);
+        cx.simulate_keystrokes("enter");
+        draw_menu(cx);
+        panel.update(cx, |panel, _| {
+            assert_eq!(panel.path(), "/var");
+            assert_eq!(panel.take_action(), Some(PanelAction::NavigateEntered {
+                target: DirectoryTarget { tab: "path-source".into(), path: "/var".into(), listing_generation: 1, connection_generation: 7 },
+                path: "/var/../中文 路径".into(),
+            }));
+            assert!(panel.path_editor.is_none());
+        });
+        cx.simulate_keystrokes("enter");
+        draw_menu(cx);
+        assert!(panel.update(cx, |panel, _| panel.take_action()).is_none());
+    }
+
+    #[gpui_kit::gpui::test]
+    fn path_escape_discards_the_draft_without_navigation_or_history(cx: &mut TestAppContext) {
+        let (panel, cx) = menu_panel(cx);
+        enter_path_text(&panel, "/unused/draft", cx);
+        cx.simulate_keystrokes("escape");
+        draw_menu(cx);
+        panel.update(cx, |panel, _| {
+            assert!(panel.path_editor.is_none());
+            assert!(panel.take_action().is_none());
+            assert_eq!(panel.path(), "/var");
+            assert_eq!(panel.listing.generation(), 1);
+        });
+        enter_path_text(&panel, "", cx);
+        cx.simulate_keystrokes("enter");
+        draw_menu(cx);
+        panel.update(cx, |panel, _| {
+            assert!(panel.path_editor.is_some(), "invalid empty draft remains editable");
+            assert!(panel.take_action().is_none());
+            assert_eq!(panel.path(), "/var");
+        });
+    }
+
+    #[gpui_kit::gpui::test]
+    fn path_edit_rejects_a_replaced_connection_or_changed_listing(cx: &mut TestAppContext) {
+        let (panel, cx) = menu_panel(cx);
+        enter_path_text(&panel, "/must-not-navigate", cx);
+        panel.update(cx, |panel, _| panel.set_connection_generation(Some(8)));
+        cx.simulate_keystrokes("enter");
+        draw_menu(cx);
+        panel.update(cx, |panel, _| {
+            assert!(panel.take_action().is_none());
+            assert!(panel.path_editor.is_none());
+            assert_eq!(panel.path(), "/var");
+        });
+        enter_path_text(&panel, "/another-stale-draft", cx);
+        panel.update(cx, |panel, cx| {
+            let mut changed = panel.listing.clone();
+            changed.load("/elsewhere".into(), &[]);
+            let generation = changed.generation();
+            panel.set_listing(changed, cx);
+            panel.mark_synced("other-tab", generation, cx);
+        });
+        cx.simulate_keystrokes("enter");
+        draw_menu(cx);
+        panel.update(cx, |panel, _| {
+            assert!(panel.take_action().is_none());
+            assert_eq!(panel.path(), "/elsewhere");
+        });
+    }
 
     fn menu_panel(
         cx: &mut TestAppContext,
