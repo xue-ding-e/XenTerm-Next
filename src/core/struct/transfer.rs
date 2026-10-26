@@ -65,8 +65,8 @@ pub struct Transfer {
     pub transferred: u64,
     pub total: u64,
     pub phase: TransferPhase,
-    /// Worker-supplied detail. Meaningful for `Failed`, where it carries the
-    /// real error text instead of a generic label; empty otherwise.
+    /// Worker-supplied terminal detail: error, retained-partial warning, or
+    /// completion hint. Empty messages keep the existing generic label.
     pub message: String,
 }
 
@@ -113,6 +113,9 @@ impl Transfer {
     /// get the same string without reimplementing the rules.
     pub fn detail(&self) -> String {
         match self.phase {
+            TransferPhase::Done | TransferPhase::Cancelled if !self.message.is_empty() => {
+                self.message.clone()
+            }
             TransferPhase::Failed => {
                 if self.message.is_empty() {
                     t("失败", "Failed").to_string()
@@ -224,5 +227,24 @@ mod tests {
         assert!(transfer(TransferPhase::Active, 10, 100)
             .detail()
             .contains('/'));
+    }
+
+    #[test]
+    fn cancelled_detail_preserves_retained_partial_warning() {
+        let mut tr = transfer(TransferPhase::Cancelled, 3, 10);
+        tr.message = "Cancelled; remote partial file retained for inspection".into();
+        assert_eq!(tr.detail(), tr.message);
+        tr.message.clear();
+        assert_eq!(tr.detail(), t("已取消", "Cancelled"));
+    }
+
+    #[test]
+    fn completed_detail_preserves_refresh_hint_without_changing_progress() {
+        let mut tr = transfer(TransferPhase::Done, 10, 10);
+        tr.message = "Uploaded; refresh the directory to view".into();
+        assert_eq!(tr.detail(), tr.message);
+        assert_eq!(tr.percent(), 1.0);
+        tr.message.clear();
+        assert_eq!(tr.detail(), t("已完成", "Done"));
     }
 }

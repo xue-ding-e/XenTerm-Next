@@ -279,7 +279,9 @@ async fn upload_exclusive<R: tokio::io::AsyncRead + Unpin>(
     let success = transfer?;
     closed?;
     if success && !cancel.load(Ordering::Relaxed) {
-        emit_transfer(events, id, name, true, offset, offset, 1, "");
+        // Do not push a listing for this old destination after navigation.
+        // Completion is visible; an explicit refresh keeps directory ownership.
+        emit_transfer(events, id, name, true, offset, offset, 1, t("上传完成；刷新目录查看。", "Uploaded; refresh the directory to view."));
         Ok(true)
     } else {
         Ok(false)
