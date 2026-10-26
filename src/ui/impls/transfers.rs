@@ -29,6 +29,7 @@ use gpui_kit::{
         button::{Button, ButtonVariants},
         h_flex,
         progress::Progress,
+        tooltip::Tooltip,
         v_flex, ActiveTheme as _, Disableable as _, Icon, Sizable as _,
     },
     div,
@@ -211,6 +212,7 @@ fn transfer_row(
             )
             .child(
                 div()
+                    .id(SharedString::from(format!("transfer-detail-{}", transfer.id)))
                     .w(px(150.))
                     .flex_shrink_0()
                     .truncate()
@@ -219,6 +221,13 @@ fn transfer_row(
                         theme.danger
                     } else {
                         theme.muted_foreground
+                    })
+                    // Terminal details can include a retained-partial warning.
+                    // Keep the full text accessible despite the compact column.
+                    .aria_label(transfer.detail())
+                    .tooltip({
+                        let detail = transfer.detail();
+                        move |window, cx| Tooltip::new(detail.clone()).build(window, cx)
                     })
                     .child(SharedString::from(transfer.detail())),
             )

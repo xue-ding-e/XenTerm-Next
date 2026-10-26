@@ -57,6 +57,38 @@ fn drop_to_a_disconnected_transport_does_not_fallback_or_change_directory(cx: &m
 }
 
 #[gpui_kit::gpui::test]
+fn drop_rejects_a_replaced_connection_before_shell_drain(cx: &mut TestAppContext) {
+    let (mut fixture, cx) = fixture(cx);
+    let position = cx.debug_bounds("sftp-drop-zone").unwrap().center();
+    drag_enter(vec![std::env::temp_dir().join("old-connection.txt")], position, cx);
+    cx.update(|window, cx| {
+        window.dispatch_event(gpui_kit::FileDropEvent::Submit { position }.to_platform_input(), cx);
+        fixture.shell.update(cx, |shell, _| {
+            shell.state.statuses.lock().unwrap().get_mut(SOURCE).unwrap().monitor_generation += 1;
+        });
+    });
+    settle(cx);
+    assert!(fixture.source_commands.try_recv().is_err());
+    assert!(fixture.other_commands.try_recv().is_err());
+}
+
+#[gpui_kit::gpui::test]
+fn drop_rejects_a_changed_listing_before_shell_drain(cx: &mut TestAppContext) {
+    let (mut fixture, cx) = fixture(cx);
+    let position = cx.debug_bounds("sftp-drop-zone").unwrap().center();
+    drag_enter(vec![std::env::temp_dir().join("old-listing.txt")], position, cx);
+    cx.update(|window, cx| {
+        window.dispatch_event(gpui_kit::FileDropEvent::Submit { position }.to_platform_input(), cx);
+        fixture.shell.update(cx, |shell, _| {
+            shell.state.sftp_listings.lock().unwrap().get_mut(SOURCE).unwrap().touch();
+        });
+    });
+    settle(cx);
+    assert!(fixture.source_commands.try_recv().is_err());
+    assert!(fixture.other_commands.try_recv().is_err());
+}
+
+#[gpui_kit::gpui::test]
 fn drop_on_the_terminal_never_becomes_pty_input_or_an_upload(cx: &mut TestAppContext) {
     let (mut fixture, cx) = fixture(cx);
     let runtime = tokio::runtime::Runtime::new().unwrap();
