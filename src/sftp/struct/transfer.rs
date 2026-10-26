@@ -43,6 +43,12 @@ pub enum SftpCommand {
         remote_dir: String,
         cleanup_after: Option<PathBuf>,
     },
+    /// Files dropped onto a captured remote directory. Unlike the legacy picker
+    /// and editor paths, this never recurses, follows a local link or overwrites.
+    UploadDropped {
+        locals: Vec<PathBuf>,
+        remote_dir: String,
+    },
     /// Re-upload an externally edited temp file to its exact original path.
     /// The local name may include a host prefix, so deriving the remote name
     /// from it would overwrite the wrong file (#318).

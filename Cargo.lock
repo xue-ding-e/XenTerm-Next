@@ -10627,6 +10627,7 @@ dependencies = [
  "jemallocator",
  "jsonwebtoken",
  "keyring",
+ "libc",
  "md5 0.7.0",
  "mimalloc",
  "portable-pty",

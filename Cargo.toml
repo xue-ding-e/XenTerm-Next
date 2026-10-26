@@ -114,6 +114,10 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "ios", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd", target_os = "dragonfly"))'.dependencies]
 jemallocator = "0.5"
 
+[target.'cfg(unix)'.dependencies]
+# Drop uploads open regular files without following a swapped symlink/FIFO.
+libc = "0.2"
+
 # Embeds assets/xenterm.ico into the .exe so Explorer / taskbar / shortcuts
 # show the app icon. Windows-only; ignored on other targets.
 [target.'cfg(windows)'.build-dependencies]

@@ -34,6 +34,9 @@ use crate::ssh::{format_mtime, format_size};
 
 use super::transfer::{DownloadConflict, SftpCommand, SftpHandle};
 
+#[path = "drop_upload.rs"]
+mod drop_upload;
+
 impl SftpHandle {
     pub fn list_dir(&self, path: String) {
         let _ = self.commands.send(SftpCommand::ListDir(path));
@@ -515,6 +518,7 @@ async fn run_sftp(
     // exit (#100 cancel download).
     let cancels: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>> =
         Arc::new(Mutex::new(HashMap::new()));
+    let dropped = drop_upload::DropQueue::new();
 
     // Resolve the home directory and do an initial listing.
     let home = sftp
@@ -877,6 +881,17 @@ async fn run_sftp(
                 if let Some(flag) = cancels.lock().unwrap().get(&id) {
                     flag.store(true, Ordering::Relaxed);
                 }
+                dropped.wake_cancelled(&id);
+            }
+
+            SftpCommand::UploadDropped { locals, remote_dir } => {
+                dropped.enqueue(
+                    locals,
+                    remote_dir,
+                    handle.clone(),
+                    events.clone(),
+                    cancels.clone(),
+                );
             }
 
             SftpCommand::Upload {
@@ -1379,6 +1394,8 @@ async fn run_sftp(
         }
     }
 
+    // Include queued drops: they must not start after the owning connection closes.
+    dropped.cancel_all();
     let _ = handle
         .disconnect(Disconnect::ByApplication, "bye", "")
         .await;
