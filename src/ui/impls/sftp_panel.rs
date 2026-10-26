@@ -1408,7 +1408,8 @@ mod tests {
             panel.set_connection_generation(Some(7));
         });
         draw_menu(cx);
-        cx.simulate_click(cx.debug_bounds("sftp-path-edit").unwrap().center(), Default::default());
+        let position = cx.debug_bounds("sftp-path-edit").unwrap().center();
+        cx.simulate_click(position, Default::default());
         draw_menu(cx);
         cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-a" } else { "ctrl-a" });
         cx.simulate_input(text);
@@ -1494,7 +1495,8 @@ mod tests {
             panel.loading_since = Some(std::time::Instant::now() - LOADING_TIMEOUT - std::time::Duration::from_secs(1));
         });
         draw_menu(cx);
-        cx.simulate_click(cx.debug_bounds("sftp-path-edit").unwrap().center(), Default::default());
+        let position = cx.debug_bounds("sftp-path-edit").unwrap().center();
+        cx.simulate_click(position, Default::default());
         draw_menu(cx);
         panel.update(cx, |panel, _| {
             assert!(panel.path_editor.is_none());
@@ -1504,7 +1506,8 @@ mod tests {
         });
         // Only an explicit existing Refresh action, then a successful listing,
         // restores editing. No timer or click invents an automatic retry.
-        cx.simulate_click(cx.debug_bounds("sftp-refresh").unwrap().center(), Default::default());
+        let position = cx.debug_bounds("sftp-refresh").unwrap().center();
+        cx.simulate_click(position, Default::default());
         draw_menu(cx);
         panel.update(cx, |panel, cx| {
             assert_eq!(panel.take_action(), Some(PanelAction::Refresh));
@@ -1515,7 +1518,8 @@ mod tests {
             panel.mark_synced("path-source", generation, cx);
         });
         draw_menu(cx);
-        cx.simulate_click(cx.debug_bounds("sftp-path-edit").unwrap().center(), Default::default());
+        let position = cx.debug_bounds("sftp-path-edit").unwrap().center();
+        cx.simulate_click(position, Default::default());
         draw_menu(cx);
         assert!(panel.read_with(cx, |panel, _| panel.path_editor.is_some()));
     }
