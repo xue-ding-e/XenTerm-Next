@@ -36,12 +36,12 @@ fn initialize_ui_language(store: &crate::config::ConfigStore) {
     gpui_kit::component::set_locale(if crate::i18n::is_en() { "en" } else { "zh-CN" });
 }
 
-/// Open the XenTerm window and run the platform event loop until it closes.
+/// Open the XenTerm window and run the platform event loop until the app quits.
 ///
 /// The loop ends by itself once the last window is gone: `QuitMode::Default`
 /// quits when the window count reaches zero on every platform but macOS, so
-/// nothing here has to ask it to stop, and the `Err` case is the only part of
-/// *this* function's own contract that needs arranging.
+/// macOS keeps the application running and the Dock reopen callback below
+/// restores its main window. Explicit Quit still follows the platform path.
 ///
 /// What the loop ending does not end is the plugin processes started before it.
 /// Those are arranged for after it returns, at the end of this function, and a
@@ -85,12 +85,26 @@ pub(crate) fn run() -> Result<()> {
         crate::config::ConfigStore::load().context("load the saved sessions for the UI shell")?,
     ));
 
-    gpui_kit::application()
+    // A handle does not keep the window alive. Keep the selected profile/runtime,
+    // not a Shell entity, so closing a window still releases its sessions and tasks.
+    let main_window = Rc::new(Cell::new(None));
+    let application = gpui_kit::application()
         // `AllAssets` rather than the curated default `Assets`, because this shell draws
         // from the full Lucide catalog: the default bundle is a deliberately short list
         // (`zap`, `plug`, `server` and `puzzle` are all absent from it), and an asset
         // that cannot be loaded is a panic inside the paint, not a missing icon.
-        .with_assets(gpui_kit::assets::AllAssets)
+        .with_assets(gpui_kit::assets::AllAssets);
+    let reopen_window = main_window.clone();
+    let reopen_runtime = runtime.clone();
+    let reopen_store = store.clone();
+    application.on_reopen(move |cx| {
+        if let Err(error) = show_main_window(&reopen_window, &reopen_runtime, &reopen_store, cx) {
+            // A later Dock click may retry. Do not terminate the app and discard
+            // pending profile edits merely because reopening a window failed.
+            tracing::warn!("could not reopen the main window: {error:#}");
+        }
+    });
+    application
         .run(move |cx| {
             // The toolkit's own widgets translate from its own catalog — its settings search
             // box, its list placeholders — and that catalog defaults to English, which is how
@@ -186,82 +200,7 @@ pub(crate) fn run() -> Result<()> {
                 tracing::info!("registered {imported} imported font file(s)");
             }
 
-            // Sized before the window rather than after it, because
-            // `WindowBounds::centered` wants `&App` to ask which display to
-            // center on, and `open_window` takes `&mut App`. Two borrows of `cx`
-            // in one expression would not compile, and the order here is the only
-            // one that reads as "decide where, then open".
-            let bounds = WindowBounds::centered(size(px(1280.), px(800.)), cx);
-            let options = WindowOptions {
-                window_bounds: Some(bounds),
-                // A navigation rail and a terminal wide enough to be a terminal: below
-                // this the pane stops having room for a 40-column shell, and a terminal
-                // that loses columns reflows the user's output.
-                window_min_size: Some(size(px(1100.), px(520.))),
-                titlebar: Some(TitlebarOptions {
-                    title: Some("XenTerm".into()),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            };
-
-            match cx.open_window(options, |window, cx| {
-                let shell = cx.new(|cx| {
-                    let gates: crate::terminal::RenderGates = std::sync::Arc::new(
-                        std::sync::Mutex::new(std::collections::HashMap::new()),
-                    );
-
-                    // Everything a connect needs, built once for the window. The gates
-                    // go in rather than being made twice: a producer's ticket and the
-                    // view's flush have to be the same gate.
-                    let state = SessionState::new(runtime_arc.clone(), gates, store.clone());
-
-                    // What the terminal page needs to derive its pane width from: the
-                    // window's width, written here each frame. A shared `Cell` rather
-                    // than a field on the shell, because the page is built before the
-                    // shell that measures.
-                    let window_width: Rc<Cell<f32>> = Rc::new(Cell::new(0.0));
-
-                    // The terminal workspace. It is a page like the rest — but it is
-                    // the window's reason to exist, it holds the first tab, and it is
-                    // built now rather than on first entry.
-                    let terminal = cx.new(|cx| {
-                        super::pages::TerminalPage::new(
-                            state.clone(),
-                            window_width.clone(),
-                            window,
-                            cx,
-                        )
-                    });
-
-                    let mut shell = Shell {
-                        pages: Pages::new(terminal),
-                        window_width,
-                        webdav_task: None,
-                        persistence_poll: None,
-                        process_window: Detached::new(process_window_title),
-                        execution_log_window: crate::ui::ExecutionLogWindowHandle::new(),
-                        system_info_window: Detached::new(system_info_window_title),
-                        open_file: None,
-                        state,
-                        overlay: Overlay::None,
-                        persistence_warning: PersistenceWarning::default(),
-                        status: None,
-                        status_epoch: 0,
-                        status_expiry: None,
-                        quick_connect_pick: None,
-                        _quick_connect_subscription: None,
-                    };
-                    shell.start_persistence_poll(cx);
-                    shell
-                });
-                // `Root` has to be the window's first view. It is what the
-                // component library's dialogs, sheets, notifications and tooltips
-                // look up, and they panic rather than degrade when the window's
-                // root is anything else — so adding it now costs one line, and
-                // adding it at the first overlay would cost finding that panic.
-                cx.new(|cx| Root::new(shell, window, cx))
-            }) {
+            match show_main_window(&main_window, &runtime_arc, &store, cx) {
                 Ok(_) => {}
                 Err(error) => {
                     let _ = failed.send(error);
@@ -290,6 +229,146 @@ pub(crate) fn run() -> Result<()> {
         Ok(error) => Err(error),
         Err(_) => Ok(()),
     }
+}
+
+/// The launch and macOS Dock reopen paths share one window, not two UI instances.
+fn show_main_window(
+    main_window: &Cell<Option<WindowHandle<Root>>>,
+    runtime: &std::sync::Arc<tokio::runtime::Runtime>,
+    store: &Rc<RefCell<crate::config::ConfigStore>>,
+    cx: &mut gpui_kit::App,
+) -> Result<()> {
+    if let Some(window) = main_window.get() {
+        if window
+            .update(cx, |_, window, _| window.activate_window())
+            .is_ok()
+        {
+            cx.activate(true);
+            return Ok(());
+        }
+        // The previous window was closed. A stale handle is not a live window.
+        main_window.set(None);
+    }
+    main_window.set(Some(open_main_window(runtime, store, cx)?));
+    cx.activate(true);
+    Ok(())
+}
+
+/// Build a fresh UI over the already-loaded profile; reopening must not reload or
+/// overwrite pending edits, reinitialize app globals, or start a second runtime.
+fn open_main_window(
+    runtime: &std::sync::Arc<tokio::runtime::Runtime>,
+    store: &Rc<RefCell<crate::config::ConfigStore>>,
+    cx: &mut gpui_kit::App,
+) -> Result<WindowHandle<Root>> {
+    // Sized before the window rather than after it, because
+    // `WindowBounds::centered` wants `&App` to ask which display to
+    // center on, and `open_window` takes `&mut App`. Two borrows of `cx`
+    // in one expression would not compile, and the order here is the only
+    // one that reads as "decide where, then open".
+    let bounds = WindowBounds::centered(size(px(1280.), px(800.)), cx);
+    let options = WindowOptions {
+        window_bounds: Some(bounds),
+        // A navigation rail and a terminal wide enough to be a terminal: below
+        // this the pane stops having room for a 40-column shell, and a terminal
+        // that loses columns reflows the user's output.
+        window_min_size: Some(size(px(1100.), px(520.))),
+        titlebar: Some(TitlebarOptions {
+            title: Some("XenTerm".into()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    cx.open_window(options, |window, cx| {
+        let shell = cx.new(|cx| {
+            // On macOS the event loop outlives the last window. Retire this
+            // window's prompts and session senders now, not only at app quit;
+            // detached panels may still hold clones of the session state.
+            cx.on_release(|shell: &mut Shell, cx| {
+                // These tools belong to this main window, not to the next one.
+                // WindowHandle is non-owning, so dropping the Shell alone leaves
+                // them open. GPUI's macOS Dock callback only runs with no visible
+                // windows; orphan tools would therefore prevent reopening main.
+                // Close only our registered tools, never unrelated app windows.
+                // This also cancels an unsubmitted process-kill confirmation;
+                // none of these tools owns an editable document or save dialog.
+                for window in [
+                    shell.process_window.window.take(),
+                    shell.system_info_window.window.take(),
+                    shell.execution_log_window.window.take(),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    // Already-closed tools and app shutdown leave stale handles.
+                    let _ = window.update(cx, |_, window, _| window.remove_window());
+                }
+                crate::session::abort_window(WINDOW_ID);
+                let tabs: Vec<_> = shell.state.handles.borrow().keys().cloned().collect();
+                for tab in tabs {
+                    if let Some(handle) = shell.state.handles.borrow().get(&tab) {
+                        let _ = handle.commands.send(SessionCommand::Close);
+                    }
+                    shell.state.end_tab(&tab);
+                }
+            })
+            .detach();
+            let gates: crate::terminal::RenderGates = std::sync::Arc::new(
+                std::sync::Mutex::new(std::collections::HashMap::new()),
+            );
+
+            // Everything a connect needs, built once for the window. The gates
+            // go in rather than being made twice: a producer's ticket and the
+            // view's flush have to be the same gate.
+            let state = SessionState::new(runtime.clone(), gates, store.clone());
+
+            // What the terminal page needs to derive its pane width from: the
+            // window's width, written here each frame. A shared `Cell` rather
+            // than a field on the shell, because the page is built before the
+            // shell that measures.
+            let window_width: Rc<Cell<f32>> = Rc::new(Cell::new(0.0));
+
+            // The terminal workspace. It is a page like the rest — but it is
+            // the window's reason to exist, it holds the first tab, and it is
+            // built now rather than on first entry.
+            let terminal = cx.new(|cx| {
+                super::pages::TerminalPage::new(
+                    state.clone(),
+                    window_width.clone(),
+                    window,
+                    cx,
+                )
+            });
+
+            let mut shell = Shell {
+                pages: Pages::new(terminal),
+                window_width,
+                webdav_task: None,
+                persistence_poll: None,
+                process_window: Detached::new(process_window_title),
+                execution_log_window: crate::ui::ExecutionLogWindowHandle::new(),
+                system_info_window: Detached::new(system_info_window_title),
+                open_file: None,
+                state,
+                overlay: Overlay::None,
+                persistence_warning: PersistenceWarning::default(),
+                status: None,
+                status_epoch: 0,
+                status_expiry: None,
+                quick_connect_pick: None,
+                _quick_connect_subscription: None,
+            };
+            shell.start_persistence_poll(cx);
+            shell
+        });
+        // `Root` has to be the window's first view. It is what the
+        // component library's dialogs, sheets, notifications and tooltips
+        // look up, and they panic rather than degrade when the window's
+        // root is anything else — so adding it now costs one line, and
+        // adding it at the first overlay would cost finding that panic.
+        cx.new(|cx| Root::new(shell, window, cx))
+    })
 }
 
 /// One note on the window's status line, with the bookkeeping its exit needs.
@@ -3076,3 +3155,7 @@ mod shell_close_focus_tests;
 mod sftp_delete_tests;
 #[path = "startup_language_tests.rs"]
 mod startup_language_tests;
+
+#[cfg(test)]
+#[path = "shell_reopen_tests.rs"]
+mod shell_reopen_tests;

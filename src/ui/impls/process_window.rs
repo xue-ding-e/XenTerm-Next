@@ -354,6 +354,18 @@ impl ProcessWindowView {
         });
     }
 
+    /// Reach the real confirmation path in lifecycle tests without a remote
+    /// process sample or coordinate-dependent context-menu interaction.
+    #[cfg(test)]
+    pub(super) fn confirm_terminate_for_test(
+        &mut self,
+        row: ProcRow,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.confirm_terminate(row, window, cx);
+    }
+
     /// Signal the process, and report what came back.
     ///
     /// The password only reaches SSH when the rule says it is needed, and it is wrapped
