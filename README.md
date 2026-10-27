@@ -643,6 +643,14 @@ xenterm/
 
 ## Development
 
+### Windows local update and build
+
+For XenTerm Next, install Git for Windows, Rust with the MSVC target, and Visual Studio C++ Build Tools, then run `Update-Local.cmd` from a checkout directly below your workspace directory. It pulls `xue-ding-e/XenTerm-Next` `main` into a separate `source-next` checkout, builds the desktop with `--release --locked`, and installs desktop shortcuts. Existing development changes are left in their checkout. An unchanged, verified commit reuses its build.
+
+The executable stays at `<workspace>\runtime\current\xenterm.exe` and uses the existing `<workspace>\data` profile. One `previous` package is retained. If current GUI/MCP processes are running, the update waits in `pending`; close those processes and open the desktop shortcut to apply it. Preview with `powershell -NoProfile -File scripts\update-local.ps1 -WorkspaceRoot <workspace> -DryRun`.
+
+`scripts\clean-local.ps1 -WorkspaceRoot <workspace>` previews obsolete local artifacts; add `-Apply` to remove them. It retains the reusable release cache, profile directories, directory links and registered WSL disks. Runtime handoff and cleanup tests are `tests\local_runtime_test.ps1 -Exe <portable-exe>` and `tests\local_cleanup_test.ps1`.
+
 Before contributing, read the [contribution guide](CONTRIBUTING.md) (also available in 简体中文) for PR scope, conflict handling, review readiness, and API compatibility checks.
 
 - **The interface is GPUI only.** There is no feature flag to build against and no second

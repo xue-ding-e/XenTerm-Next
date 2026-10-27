@@ -545,6 +545,14 @@ xenterm/
 
 ## 开发
 
+### Windows 本地更新与编译
+
+XenTerm Next 需要先安装 Git for Windows、Rust MSVC 工具链及 Visual Studio C++ Build Tools，再从工作目录下的源码仓库双击 `Update-Local.cmd`。脚本在独立的 `source-next` 目录拉取 `xue-ding-e/XenTerm-Next` 的 `main`，以 `--release --locked` 编译桌面版并安装桌面快捷方式，开发目录中的修改保留原样。相同提交的已校验产物会直接复用。
+
+程序固定为 `<工作目录>\runtime\current\xenterm.exe`，使用已有的 `<工作目录>\data` 配置，保留一个 `previous` 回退版本。如果当前 GUI/MCP 进程正在运行，新版暂存到 `pending`；关闭这些进程后，通过桌面快捷方式启动即可切换。可用 `powershell -NoProfile -File scripts\update-local.ps1 -WorkspaceRoot <工作目录> -DryRun` 预览。
+
+`scripts\clean-local.ps1 -WorkspaceRoot <工作目录>` 默认预览旧构建清理，加 `-Apply` 才删除；保留可复用的 Release 缓存、配置目录、目录链接及已注册的 WSL 磁盘。运行时切换与清理测试分别为 `tests\local_runtime_test.ps1 -Exe <便携版程序>` 和 `tests\local_cleanup_test.ps1`。
+
 贡献前请阅读[社区贡献指南](CONTRIBUTING.zh-CN.md)（[English](CONTRIBUTING.md)），了解 PR 组织、冲突处理、审核就绪和 API 版本核验要求。
 
 - **界面只有 GPUI。** 没有需要额外构建的特性开关，也没有第二个要同步维护的前端。
