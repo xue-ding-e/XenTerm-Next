@@ -4,13 +4,14 @@ $root = Join-Path ([IO.Path]::GetTempPath()) ('xenterm-clean-test-' + [Guid]::Ne
 $external = $root + '-outside'
 try {
     foreach ($relative in @('runtime\approval-ui-20261012', 'source\target\debug\deps\config',
-        'source\target\debug\build\obsolete', 'builds\windows-next', 'data')) {
+        'source\target\debug\build\obsolete', 'builds\windows-next', 'builds\wsl-ubuntu22\distro', 'data')) {
         [IO.Directory]::CreateDirectory((Join-Path $root $relative)) | Out-Null
     }
     [IO.Directory]::CreateDirectory($external) | Out-Null
     $files = @('runtime\approval-ui-20261012\xenterm.exe', 'source\target\debug\deps\obsolete.rlib',
         'source\target\debug\build\obsolete\output', 'source\target\debug\deps\config\secret.key',
-        'source\target\debug\deps\config\sessions.db', 'builds\windows-next\keep.rlib', 'data\secret.key')
+        'source\target\debug\deps\config\sessions.db', 'builds\windows-next\keep.rlib', 'data\secret.key',
+        'builds\wsl-ubuntu22\distro\ext4.vhdx', 'builds\wsl-ubuntu22\rustup-init-x86_64-unknown-linux-gnu')
     foreach ($relative in $files) { Set-Content -LiteralPath (Join-Path $root $relative) -Value 'synthetic' }
     Set-Content -LiteralPath (Join-Path $external 'xenterm.exe') -Value 'external-keep'
     New-Item -ItemType Junction -Path (Join-Path $root 'runtime\approval-ui-20261012\config') -Target $external | Out-Null
@@ -21,11 +22,11 @@ try {
     }
     & $script -WorkspaceRoot $root -Apply
     foreach ($relative in @('runtime\approval-ui-20261012\xenterm.exe', 'source\target\debug\deps\obsolete.rlib',
-        'source\target\debug\build\obsolete')) {
+        'source\target\debug\build\obsolete', 'builds\wsl-ubuntu22\rustup-init-x86_64-unknown-linux-gnu')) {
         if (Test-Path -LiteralPath (Join-Path $root $relative)) { throw "Obsolete artifact survived: $relative" }
     }
     foreach ($relative in @('source\target\debug\deps\config\secret.key', 'source\target\debug\deps\config\sessions.db',
-        'builds\windows-next\keep.rlib', 'data\secret.key')) {
+        'builds\windows-next\keep.rlib', 'data\secret.key', 'builds\wsl-ubuntu22\distro\ext4.vhdx')) {
         if ((Get-Content -LiteralPath (Join-Path $root $relative) -Raw).Trim() -ne 'synthetic') {
             throw "Protected file was changed: $relative"
         }

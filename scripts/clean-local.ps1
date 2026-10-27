@@ -114,6 +114,21 @@ try {
         if ($Apply -and $disposable.Count) { Remove-Item -LiteralPath @($disposable | ForEach-Object FullName) -Recurse -Force }
         $removedBytes += $bytes
     }
+    # These are completed installer downloads from the retired 2026-10-03 build,
+    # not the registered WSL distro. Never delete or unregister distro\ext4.vhdx.
+    $installers = @('cargo-1.99.0-x86_64-unknown-linux-gnu.tar.xz', 'channel-rust-1.99.0.toml',
+        'rust-std-1.99.0-x86_64-unknown-linux-gnu.tar.xz', 'rustc-1.99.0-x86_64-unknown-linux-gnu.tar.xz',
+        'rustup-init-x86_64-unknown-linux-gnu', 'ubuntu-jammy-wsl-amd64-ubuntu22.04lts.rootfs.tar.gz')
+    $installerRoot = Assert-LocalChildPath $WorkspaceRoot (Join-Path $WorkspaceRoot 'builds\wsl-ubuntu22')
+    foreach ($name in $installers) {
+        $file = Assert-LocalChildPath $WorkspaceRoot (Join-Path $installerRoot $name)
+        if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { continue }
+        $item = Get-Item -LiteralPath $file -Force
+        if ($item.DirectoryName -ne $installerRoot) { throw "Unexpected installer file: $file" }
+        Write-Host "REMOVE INSTALLER DOWNLOAD: $file"
+        if ($Apply) { Remove-Item -LiteralPath $file -Force }
+        $removedBytes += $item.Length
+    }
     $mode = if ($Apply) { 'Freed' } else { 'Would free (preview only)' }
     Write-Host ('{0}: {1:N2} GiB' -f $mode, ($removedBytes / 1GB))
 } finally {
