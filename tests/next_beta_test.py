@@ -706,6 +706,44 @@ class PackagingTests(unittest.TestCase):
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_attribution_update_keeps_ci_without_automatic_beta(self):
+        from types import SimpleNamespace
+        workflow = (ROOT / '.github/workflows/next-beta.yml').read_text(encoding='utf-8')
+        expression = workflow.split('    if: >-\n', 1)[1].split('    runs-on:', 1)[0]
+        expression = ' '.join(expression.split()).replace('&&', 'and').replace('||', 'or')
+        marker = 'chore(ci): isolate attribution correction 20261027-28547090'
+        for event in ('push', 'workflow_dispatch'):
+            for message in (marker, marker + ' follow-up', 'feat: next feature'):
+                for conclusion in ('success', 'failure', 'cancelled'):
+                    with self.subTest(event=event, message=message, conclusion=conclusion):
+                        run = SimpleNamespace(
+                            event=event, conclusion=conclusion, head_branch='main',
+                            head_repository=SimpleNamespace(full_name=release.REPOSITORY),
+                            head_commit=SimpleNamespace(message=message))
+                        github = SimpleNamespace(repository=release.REPOSITORY,
+                                                 event=SimpleNamespace(workflow_run=run))
+                        eligible = eval(expression, {'__builtins__': {}}, {'github': github})
+                        self.assertEqual(eligible, conclusion == 'success' and message != marker)
+        # GitHub expressions resolve missing object properties to null.
+        for event in ('push', 'workflow_dispatch'):
+            for payload in ({}, {'head_commit': None}, {'head_commit': {}},
+                            {'head_commit': {'message': None}}, {'head_commit': {'message': ''}}):
+                with self.subTest(payload=payload):
+                    message = (payload.get('head_commit') or {}).get('message')
+                    run = SimpleNamespace(
+                        event=event, conclusion='success', head_branch='main',
+                        head_repository=SimpleNamespace(full_name=release.REPOSITORY),
+                        head_commit=SimpleNamespace(message=message))
+                    github = SimpleNamespace(repository=release.REPOSITORY,
+                                             event=SimpleNamespace(workflow_run=run))
+                    self.assertFalse(eval(expression, {'__builtins__': {}}, {'github': github}))
+        # Even future heads that pass the message gate still need fresh, matching CI.
+        with self.assertRaises(RuntimeError):
+            release.gate(release.REPOSITORY, SHA, OLD, RUN)
+        ci = (ROOT / '.github/workflows/ci.yml').read_text(encoding='utf-8')
+        self.assertNotIn(marker, ci)
+        self.assertIn('".github/workflows/next-beta.yml"', ci)
+
     def test_single_publisher_and_pinned_actions(self):
         import re
         workflow = (ROOT / '.github/workflows/next-beta.yml').read_text(encoding='utf-8')

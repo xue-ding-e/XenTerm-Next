@@ -20,10 +20,14 @@ concurrency:
 
 jobs:
   gate:
+    # One attribution-only update: still run CI, but retain the existing beta.
+    # Exact head message only; later feature heads keep the normal release policy.
     if: >-
       github.repository == 'xue-ding-e/XenTerm-Next' &&
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_commit.message &&
+      github.event.workflow_run.head_commit.message != 'chore(ci): isolate attribution correction 20261027-28547090' &&
       github.event.workflow_run.head_repository.full_name == github.repository &&
       (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch')
     runs-on: ubuntu-latest
