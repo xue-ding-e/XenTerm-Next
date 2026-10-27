@@ -131,6 +131,272 @@ fn selected_output(fixture: &Fixture, cx: &mut VisualTestContext) -> String {
     fixture.view.read_with(cx, |view, _| view.buffer.lock().unwrap().extract_selection_text())
 }
 
+fn link_fixture_output(fixture: &Fixture, text: &str, cx: &mut VisualTestContext) {
+    fixture.view.update(cx, |view, cx| {
+        let bounds = view.grid_bounds.get().unwrap();
+        let (cols, rows) = view.metrics.unwrap().grid_size(bounds.size);
+        {
+            let mut buffer = view.buffer.lock().unwrap();
+            *buffer = TermBuffer::new(rows, cols);
+            buffer.ingest(text.as_bytes());
+        }
+        view.refresh();
+        cx.notify();
+    });
+    draw(cx);
+}
+
+fn link_cell(fixture: &Fixture, row: u16, col: u16, cx: &mut VisualTestContext) -> gpui_kit::Point<Pixels> {
+    fixture.view.read_with(cx, |view, _| {
+        let bounds = view.grid_bounds.get().unwrap();
+        let metrics = view.metrics.unwrap();
+        gpui_kit::point(
+            bounds.left() + metrics.width * (f32::from(col) + 0.5),
+            bounds.top() + metrics.height * (f32::from(row) + 0.5),
+        )
+    })
+}
+
+fn terminal_link_modifier() -> gpui_kit::Modifiers {
+    gpui_kit::Modifiers::secondary_key()
+}
+
+#[test]
+fn terminal_link_modifier_matches_platform_without_stealing_other_chords() {
+    assert!(link_modifiers(terminal_link_modifier()));
+    assert_eq!(link_modifiers(gpui_kit::Modifiers { control: true, ..Default::default() }), !cfg!(target_os = "macos"));
+    assert_eq!(link_modifiers(gpui_kit::Modifiers { platform: true, ..Default::default() }), cfg!(target_os = "macos"));
+    assert!(!link_modifiers(gpui_kit::Modifiers { control: true, platform: true, ..Default::default() }));
+}
+
+#[gpui_kit::gpui::test]
+fn terminal_link_modifier_release_and_repress_cannot_resurrect_click(cx: &mut TestAppContext) {
+    let (mut fixture, cx) = fixture(cx);
+    link_fixture_output(&fixture, "\x1b[?1000h\x1b[?1006hhttps://example.test/path", cx);
+    let at = link_cell(&fixture, 0, 10, cx);
+    cx.simulate_mouse_down(at, MouseButton::Left, terminal_link_modifier());
+    cx.simulate_modifiers_change(Default::default());
+    cx.simulate_modifiers_change(terminal_link_modifier());
+    cx.simulate_mouse_up(at, MouseButton::Left, terminal_link_modifier());
+    assert_eq!(cx.opened_url(), None);
+    assert!(raw_input(&mut fixture).is_empty());
+}
+
+#[gpui_kit::gpui::test]
+fn terminal_link_pointer_leave_and_return_cannot_resurrect_click(cx: &mut TestAppContext) {
+    let (mut fixture, cx) = fixture(cx);
+    link_fixture_output(&fixture, "\x1b[?1000h\x1b[?1006hhttps://example.test/path", cx);
+    let at = link_cell(&fixture, 0, 10, cx);
+    cx.simulate_mouse_down(at, MouseButton::Left, terminal_link_modifier());
+    cx.simulate_mouse_move(gpui_kit::point(px(-20.), px(-20.)), MouseButton::Left, terminal_link_modifier());
+    cx.simulate_mouse_move(at, MouseButton::Left, terminal_link_modifier());
+    cx.simulate_mouse_up(at, MouseButton::Left, terminal_link_modifier());
+    assert_eq!(cx.opened_url(), None);
+    assert!(raw_input(&mut fixture).is_empty());
+}
+
+#[gpui_kit::gpui::test]
+fn terminal_link_focus_and_activation_loss_cancel_even_after_restore(cx: &mut TestAppContext) {
+    let (mut fixture, cx) = fixture(cx);
+    link_fixture_output(&fixture, "\x1b[?1000h\x1b[?1006hhttps://example.test/path", cx);
+    let at = link_cell(&fixture, 0, 10, cx);
+    cx.simulate_mouse_down(at, MouseButton::Left, terminal_link_modifier());
+    let other = cx.update(|window, cx| {
+        let other = cx.focus_handle();
+        window.focus(&other, cx);
+        other
+    });
+    draw(cx);
+    cx.update(|window, cx| {
+        let focus = fixture.view.read(cx).focus.clone();
+        window.focus(&focus, cx);
+    });
+    draw(cx);
+    cx.simulate_mouse_up(at, MouseButton::Left, terminal_link_modifier());
+    assert_eq!(cx.opened_url(), None);
+    drop(other);
+
+    cx.simulate_mouse_down(at, MouseButton::Left, terminal_link_modifier());
+    cx.deactivate_window();
+    draw(cx);
+    cx.update(|window, _| window.activate_window());
+    draw(cx);
+    cx.simulate_mouse_up(at, MouseButton::Left, terminal_link_modifier());
+    assert_eq!(cx.opened_url(), None);
+    assert!(raw_input(&mut fixture).is_empty());
+}
+
+#[gpui_kit::gpui::test]
+fn terminal_link_opens_only_on_release_without_copying_or_sending_input(cx: &mut TestAppContext) {
+    let (mut fixture, cx) = fixture(cx);
+    link_fixture_output(&fixture, "https://example.test:8443/a?b=1&c=2\r\nkeep", cx);
+    fixture.view.update(cx, |view, _| {
+        let mut buffer = view.buffer.lock().unwrap();
+        buffer.begin_selection(1, 0, false, false);
+        buffer.extend_selection(1, 3);
+    });
+    clipboard("clipboard-stays", cx);
+    let at = link_cell(&fixture, 0, 10, cx);
+    cx.simulate_mouse_down(at, MouseButton::Left, terminal_link_modifier());
+    assert_eq!(cx.opened_url(), None, "press alone must not open a browser");
+    cx.simulate_mouse_up(at, MouseButton::Left, terminal_link_modifier());
+    assert_eq!(cx.opened_url().as_deref(), Some("https://example.test:8443/a?b=1&c=2"));
+    assert_eq!(selected_output(&fixture, cx), "keep");
+    assert_eq!(cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text())).as_deref(), Some("clipboard-stays"));
+    assert!(raw_input(&mut fixture).is_empty());
+    // A fresh click after the previous release must use the new output.
+    link_fixture_output(&fixture, "http://example.test/next", cx);
+    cx.simulate_click(at, terminal_link_modifier());
+    assert_eq!(cx.opened_url().as_deref(), Some("http://example.test/next"));
+}
+
+#[gpui_kit::gpui::test]
+fn terminal_link_does_not_change_plain_click_or_other_modifier_chords(cx: &mut TestAppContext) {
+    let (mut fixture, cx) = fixture(cx);
+    link_fixture_output(&fixture, "https://example.test/path", cx);
+    let at = link_cell(&fixture, 0, 10, cx);
+    for modifiers in [
+        Default::default(),
+        gpui_kit::Modifiers { shift: true, ..terminal_link_modifier() },
+        gpui_kit::Modifiers { alt: true, ..terminal_link_modifier() },
+        gpui_kit::Modifiers { control: true, platform: true, ..Default::default() },
+        gpui_kit::Modifiers { function: true, ..terminal_link_modifier() },
+    ] {
+        cx.simulate_click(at, modifiers);
+        assert_eq!(cx.opened_url(), None);
+    }
+    assert!(raw_input(&mut fixture).is_empty());
+}
+
+#[gpui_kit::gpui::test]
+fn terminal_link_drag_cancels_open_and_preserves_additive_selection(cx: &mut TestAppContext) {
+    let (mut fixture, cx) = fixture(cx);
+    link_fixture_output(&fixture, "https://example.test/path\r\nkeep", cx);
+    fixture.view.update(cx, |view, _| {
+        let mut buffer = view.buffer.lock().unwrap();
+        buffer.begin_selection(1, 0, false, false);
+        buffer.extend_selection(1, 3);
+    });
+    let start = link_cell(&fixture, 0, 0, cx);
+    let end = link_cell(&fixture, 0, 4, cx);
+    cx.simulate_mouse_down(start, MouseButton::Left, terminal_link_modifier());
+    cx.simulate_mouse_move(end, MouseButton::Left, terminal_link_modifier());
+    cx.simulate_mouse_up(end, MouseButton::Left, terminal_link_modifier());
+    assert_eq!(cx.opened_url(), None);
+    let expected = if cfg!(target_os = "macos") { "https" } else { "keep\nhttps" };
+    assert_eq!(selected_output(&fixture, cx), expected);
+    assert_eq!(cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text())).as_deref(), Some(expected));
+    assert!(raw_input(&mut fixture).is_empty());
+}
+
+#[gpui_kit::gpui::test]
+fn terminal_link_cancelled_modifier_output_escape_and_outside_release_never_open(cx: &mut TestAppContext) {
+    let (mut fixture, cx) = fixture(cx);
+    link_fixture_output(&fixture, "https://example.test/first", cx);
+    let at = link_cell(&fixture, 0, 10, cx);
+    cx.simulate_mouse_down(at, MouseButton::Left, terminal_link_modifier());
+    cx.simulate_mouse_up(at, MouseButton::Left, Default::default());
+    assert_eq!(cx.opened_url(), None);
+
+    cx.simulate_mouse_down(at, MouseButton::Left, terminal_link_modifier());
+    link_fixture_output(&fixture, "https://example.test/changed", cx);
+    cx.simulate_mouse_up(at, MouseButton::Left, terminal_link_modifier());
+    assert_eq!(cx.opened_url(), None);
+
+    cx.simulate_mouse_down(at, MouseButton::Left, terminal_link_modifier());
+    cx.simulate_keystrokes("escape");
+    cx.simulate_mouse_up(at, MouseButton::Left, terminal_link_modifier());
+    assert_eq!(cx.opened_url(), None);
+    // Escape may be forwarded normally; it is not a browser action.
+    let _ = raw_input(&mut fixture);
+
+    cx.simulate_mouse_down(at, MouseButton::Left, terminal_link_modifier());
+    cx.simulate_mouse_up(gpui_kit::point(px(-20.), px(-20.)), MouseButton::Left, terminal_link_modifier());
+    assert_eq!(cx.opened_url(), None);
+    assert!(fixture.view.read_with(cx, |view, _| view.link_press.is_none()));
+    cx.simulate_mouse_up(at, MouseButton::Left, terminal_link_modifier());
+    assert_eq!(cx.opened_url(), None, "a release cannot reuse a cancelled press");
+}
+
+#[gpui_kit::gpui::test]
+fn terminal_link_has_priority_over_mouse_reporting_only_on_a_safe_link(cx: &mut TestAppContext) {
+    let (mut fixture, cx) = fixture(cx);
+    link_fixture_output(&fixture, "\x1b[?1000h\x1b[?1006hhttps://example.test/path\r\nplain", cx);
+    let link = link_cell(&fixture, 0, 10, cx);
+    cx.simulate_click(link, Default::default());
+    assert!(!raw_input(&mut fixture).is_empty(), "unmodified click still reaches the TUI");
+    assert_eq!(cx.opened_url(), None);
+
+    cx.simulate_mouse_down(link, MouseButton::Left, terminal_link_modifier());
+    cx.simulate_mouse_up(link, MouseButton::Left, Default::default());
+    assert!(raw_input(&mut fixture).is_empty(), "cancelled link sends no orphan release");
+    assert_eq!(cx.opened_url(), None);
+
+    let plain = link_cell(&fixture, 1, 2, cx);
+    cx.simulate_click(plain, terminal_link_modifier());
+    let report = raw_input(&mut fixture);
+    assert!(report.starts_with(b"\x1b[<0;3;2M"));
+    assert!(report.ends_with(b"\x1b[<0;3;2m"));
+
+    cx.simulate_mouse_down(link, MouseButton::Left, terminal_link_modifier());
+    cx.simulate_mouse_move(plain, MouseButton::Left, terminal_link_modifier());
+    cx.simulate_mouse_up(plain, MouseButton::Left, terminal_link_modifier());
+    assert!(raw_input(&mut fixture).is_empty());
+    assert_eq!(cx.opened_url(), None, "TUI drag does not open");
+
+    cx.simulate_click(link, terminal_link_modifier());
+    assert_eq!(cx.opened_url().as_deref(), Some("https://example.test/path"));
+    assert!(raw_input(&mut fixture).is_empty());
+}
+
+#[gpui_kit::gpui::test]
+fn terminal_link_rejects_unsafe_schemes_and_retains_non_link_multiselect(cx: &mut TestAppContext) {
+    let (mut fixture, cx) = fixture(cx);
+    for text in ["file:///tmp/a", "javascript:alert(1)", "data:text/html,hello", "shell:calc"] {
+        link_fixture_output(&fixture, text, cx);
+        let at = link_cell(&fixture, 0, 2, cx);
+        cx.simulate_click(at, terminal_link_modifier());
+        assert_eq!(cx.opened_url(), None);
+    }
+    link_fixture_output(&fixture, "first second", cx);
+    let first = link_cell(&fixture, 0, 0, cx);
+    let first_end = link_cell(&fixture, 0, 4, cx);
+    let second = link_cell(&fixture, 0, 6, cx);
+    let second_end = link_cell(&fixture, 0, 11, cx);
+    cx.simulate_mouse_down(first, MouseButton::Left, Default::default());
+    cx.simulate_mouse_move(first_end, MouseButton::Left, Default::default());
+    cx.simulate_mouse_up(first_end, MouseButton::Left, Default::default());
+    let control = gpui_kit::Modifiers { control: true, ..Default::default() };
+    cx.simulate_mouse_down(second, MouseButton::Left, control);
+    cx.simulate_mouse_move(second_end, MouseButton::Left, control);
+    cx.simulate_mouse_up(second_end, MouseButton::Left, control);
+    assert_eq!(selected_output(&fixture, cx), "first\nsecond");
+    assert_eq!(cx.opened_url(), None);
+    assert!(raw_input(&mut fixture).is_empty());
+}
+
+#[gpui_kit::gpui::test]
+fn terminal_link_other_button_moves_keep_tui_release_suppressed(cx: &mut TestAppContext) {
+    let (mut fixture, cx) = fixture(cx);
+    link_fixture_output(&fixture, "\x1b[?1000h\x1b[?1006hhttps://example.test/path", cx);
+    let at = link_cell(&fixture, 0, 10, cx);
+    for pressed in [Some(MouseButton::Right), None] {
+        cx.simulate_mouse_down(at, MouseButton::Left, terminal_link_modifier());
+        cx.simulate_mouse_move(at, pressed, terminal_link_modifier());
+        assert!(fixture.view.read_with(cx, |view, _| view.link_press.as_ref().is_some_and(|press| press.cancelled)));
+        cx.simulate_mouse_up(at, MouseButton::Left, terminal_link_modifier());
+        assert!(raw_input(&mut fixture).is_empty(), "no release without a remote press");
+        assert_eq!(cx.opened_url(), None);
+        assert!(fixture.view.read_with(cx, |view, _| view.link_press.is_none()));
+    }
+    cx.simulate_mouse_down(at, MouseButton::Left, terminal_link_modifier());
+    cx.simulate_mouse_down(at, MouseButton::Right, terminal_link_modifier());
+    cx.simulate_mouse_up(at, MouseButton::Right, terminal_link_modifier());
+    cx.simulate_mouse_up(at, MouseButton::Left, terminal_link_modifier());
+    assert_eq!(cx.opened_url(), None, "a second button cancels even without motion");
+    assert!(raw_input(&mut fixture).is_empty());
+}
+
 #[gpui_kit::gpui::test]
 fn selection_clamps_rows_and_columns_independently(cx: &mut TestAppContext) {
     let (fixture, cx) = fixture(cx);

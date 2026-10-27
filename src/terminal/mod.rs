@@ -30,6 +30,11 @@ pub(crate) mod serial;
 pub(crate) mod telnet;
 #[path = "impls/term_buffer.rs"]
 mod term_buffer;
+#[cfg(feature = "desktop")]
+#[path = "impls/links.rs"]
+mod links;
+#[cfg(feature = "desktop")]
+pub(crate) use links::TerminalLink;
 #[path = "impls/zmodem.rs"]
 pub(crate) mod zmodem;
 

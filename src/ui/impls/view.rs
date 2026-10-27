@@ -52,6 +52,29 @@ const FIND_BAR_SLIDE: std::time::Duration = std::time::Duration::from_millis(160
 /// sidebar's own slide runs at.
 const FIND_BAR_TICK_MS: u64 = 16;
 
+/// A link is activated on release, never on press or after a drag. Keep the
+/// entire intercepted gesture local even if the modifier is released or a TUI enables
+/// mouse reporting meanwhile: it must not receive an orphan release event.
+struct LinkPress {
+    link: terminal::TerminalLink,
+    position: gpui_kit::Point<Pixels>,
+    mouse_tracked: bool,
+    cancelled: bool,
+    selecting: bool,
+}
+
+fn link_modifiers(modifiers: gpui_kit::Modifiers) -> bool {
+    // macOS reserves Ctrl-click for its native context menu. GPUI's secondary
+    // modifier is Command there and Control on Windows/Linux.
+    modifiers.secondary() && modifiers.number_of_modifiers() == 1
+}
+
+fn link_dragged(start: gpui_kit::Point<Pixels>, end: gpui_kit::Point<Pixels>) -> bool {
+    let dx = f32::from(end.x - start.x);
+    let dy = f32::from(end.y - start.y);
+    dx * dx + dy * dy > 16.0
+}
+
 /// The find bar lives on the terminal background, so it must use that palette
 /// even when the surrounding application is light. Keep the secondary text at
 /// readable contrast instead of inheriting the window's muted foreground.
@@ -271,6 +294,8 @@ pub(crate) struct TerminalView {
     /// decide a double click from a drag, and reading it back out of the buffer
     /// would mean locking the grid on every move event for one comparison.
     drag_anchor: Option<(i32, i32)>,
+    link_press: Option<LinkPress>,
+    link_subscriptions: Vec<gpui_kit::Subscription>,
     family: SharedString,
     font_size: Pixels,
     /// Whether the session's bold runs are drawn bold, and how far apart the rows sit.
@@ -388,6 +413,8 @@ impl TerminalView {
             zoom: crate::core::FontZoom::new(appearance.font_size as i32),
             grid_bounds: Rc::new(std::cell::Cell::new(None)),
             drag_anchor: None,
+            link_press: None,
+            link_subscriptions: Vec::new(),
             family,
             font_size,
             bold: appearance.bold,
@@ -474,6 +501,7 @@ impl TerminalView {
     /// The only thing this adds is taking the snapshot again, because the caller has to
     /// repaint and the screen it would repaint is the one the offset change produced.
     fn scroll(&mut self, delta: f32, cx: &mut Context<Self>) {
+        self.cancel_link_press();
         let moved = {
             let Ok(mut buffer) = self.buffer.lock() else {
                 return;
@@ -500,6 +528,80 @@ impl TerminalView {
         let col = (x / f32::from(metrics.width)).floor() as i32;
         let row = (y / f32::from(metrics.height)).floor() as i32;
         Some((row, col))
+    }
+
+    fn link_at(&self, position: gpui_kit::Point<Pixels>) -> Option<terminal::TerminalLink> {
+        // Selection clamps out-of-grid coordinates for dragging; links must not.
+        if !self.grid_bounds.get()?.contains(&position) {
+            return None;
+        }
+        let (row, col) = self.cell_at(position)?;
+        self.buffer.lock().ok()?.link_at(u16::try_from(row).ok()?, u16::try_from(col).ok()?)
+    }
+
+    fn begin_link_press(&mut self, event: &MouseDownEvent) -> bool {
+        self.link_press = None;
+        if event.click_count != 1 || !link_modifiers(event.modifiers) {
+            return false;
+        }
+        let Some(link) = self.link_at(event.position) else { return false; };
+        self.drag_anchor = None;
+        self.link_press = Some(LinkPress {
+            link,
+            position: event.position,
+            mouse_tracked: self.snapshot.mouse_tracked,
+            cancelled: false,
+            selecting: false,
+        });
+        true
+    }
+
+    fn cancel_link_press(&mut self) {
+        if let Some(press) = &mut self.link_press { press.cancelled = true; }
+    }
+
+    fn move_link_press(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) -> bool {
+        let Some(mut press) = self.link_press.take() else { return false; };
+        if event.pressed_button != Some(MouseButton::Left) {
+            // GPUI exposes one pressed button, not the full button set. A
+            // second button (or a missed outside release) cancels activation
+            // but must not leak the intercepted left release to the TUI.
+            press.cancelled = true;
+            self.link_press = Some(press);
+            return true;
+        }
+        if !link_modifiers(event.modifiers) { press.cancelled = true; }
+        if link_dragged(press.position, event.position) {
+            press.cancelled = true;
+            // In a normal terminal, Control-drag still adds a selection range;
+            // macOS Command-drag retains its existing ordinary selection.
+            // A TUI never saw this press, so suppress its whole mouse gesture.
+            if !press.mouse_tracked && !self.snapshot.mouse_tracked && !press.selecting {
+                self.begin_selection_at(press.position, !cfg!(target_os = "macos"), false, cx);
+                press.selecting = true;
+            }
+        }
+        if press.selecting { self.extend_selection_at(event.position, cx); }
+        self.link_press = Some(press);
+        true
+    }
+
+    fn finish_link_press(&mut self, event: &MouseUpEvent, window: &Window, cx: &mut Context<Self>) -> bool {
+        let Some(press) = self.link_press.take() else { return false; };
+        if press.selecting {
+            self.finish_selection(cx);
+        } else if !press.cancelled
+            && event.click_count == 1
+            && link_modifiers(event.modifiers)
+            && !link_dragged(press.position, event.position)
+            && window.is_window_active()
+            && self.focus.is_focused(window)
+            && self.link_at(event.position).as_ref() == Some(&press.link)
+        {
+            // GPUI delegates to the native browser opener; no shell interpolation.
+            cx.open_url(&press.link.url);
+        }
+        true
     }
 
     /// Clamp a cell into the grid, for the selection API's `u16` coordinates.
@@ -618,6 +720,7 @@ impl TerminalView {
         if self.last_grid == Some((cols, rows)) {
             return;
         }
+        self.cancel_link_press();
         self.last_grid = Some((cols, rows));
         if let Some(handle) = self.handles.borrow().get(&self.tab_id) {
             let _ = handle
@@ -1508,6 +1611,14 @@ impl EntityInputHandler for TerminalView {
 
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.link_subscriptions.is_empty() {
+            self.link_subscriptions.push(cx.on_blur(&self.focus, window, |this, _, _| {
+                this.cancel_link_press();
+            }));
+            self.link_subscriptions.push(cx.observe_window_activation(window, |this, window, _| {
+                if !window.is_window_active() { this.cancel_link_press(); }
+            }));
+        }
         // Measured here rather than at construction: the text system is only
         // reachable with an `App`, so the first render is the earliest point one
         // exists. Cached afterwards, because `measure` resolves a font id and reads
@@ -1627,13 +1738,18 @@ impl Render for TerminalView {
                 this.zoom_font(0, cx);
             }))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                this.cancel_link_press();
                 this.send_key(event, window, cx);
                 // Notified rather than waiting for the PTY to echo: a keystroke that
                 // produced no output would otherwise leave the cursor where it was
                 // until something else redrew.
                 cx.notify();
             }))
+            .on_modifiers_changed(cx.listener(|this, event: &gpui_kit::ModifiersChangedEvent, _, _| {
+                if !link_modifiers(event.modifiers) { this.cancel_link_press(); }
+            }))
             .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _, cx| {
+                this.cancel_link_press();
                 // A program that asked for the mouse wants the wheel too: inside btop
                 // or htop the wheel scrolls the program's own panel, and scrolling our
                 // scrollback instead would do nothing visible on the alternate screen.
@@ -1795,6 +1911,29 @@ impl Render for TerminalView {
                     // handed to the view through a shared cell instead.
                     let old_size = grid_bounds_cell.get().map(|old| old.size);
                     grid_bounds_cell.set(Some(bounds));
+                    // Div mouse-move listeners only see hovered events. Observe
+                    // the whole window so leaving and returning cannot resurrect
+                    // a click, even when another element consumes the drag.
+                    let link_observer = this.downgrade();
+                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+                        if phase != gpui_kit::DispatchPhase::Capture { return; }
+                        let _ = link_observer.update(cx, |this, _| {
+                            if this.link_press.as_ref().is_some_and(|press| {
+                                !bounds.contains(&event.position)
+                                    || link_dragged(press.position, event.position)
+                                    || event.pressed_button != Some(MouseButton::Left)
+                                    || !link_modifiers(event.modifiers)
+                            }) {
+                                this.cancel_link_press();
+                            }
+                        });
+                    });
+                    let link_observer = this.downgrade();
+                    window.on_mouse_event(move |_: &gpui_kit::MouseExitEvent, phase, _, cx| {
+                        if phase == gpui_kit::DispatchPhase::Capture {
+                            let _ = link_observer.update(cx, |this, _| this.cancel_link_press());
+                        }
+                    });
                     // A dock toggle can resize an otherwise idle terminal.
                     // Its PTY size is read on the next render, so request that
                     // frame instead of waiting for keyboard input or output.
@@ -1810,6 +1949,9 @@ impl Render for TerminalView {
                     // Any press re-takes keyboard focus, so typing after a click
                     // goes to the terminal rather than to whatever had focus.
                     window.focus(&this.focus, cx);
+                    // Ctrl-only (Command on macOS) on a safe text link wins over reporting;
+                    // non-links and every other chord retain their old routing.
+                    if this.begin_link_press(event) { return; }
                     // The program's event, if it asked for the mouse. Shift is the
                     // escape hatch that keeps a local selection possible inside a
                     // full-screen program.
@@ -1827,6 +1969,7 @@ impl Render for TerminalView {
             .on_mouse_down(
                 MouseButton::Middle,
                 cx.listener(|this, _, window, cx| {
+                    this.cancel_link_press();
                     // The X11 habit, behind the setting for the same reason as the other
                     // extras: a program that wants the middle button for itself would
                     // otherwise get a paste it never asked for.
@@ -1835,7 +1978,11 @@ impl Render for TerminalView {
                     }
                 }),
             )
+            .on_mouse_down(MouseButton::Right, cx.listener(|this, _, _, _| {
+                this.cancel_link_press();
+            }))
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                if this.move_link_press(event, cx) { return; }
                 // Only while a button is held: a move with nothing pressed is the
                 // pointer crossing the grid, which is not a selection.
                 if event.pressed_button.is_some() {
@@ -1850,7 +1997,8 @@ impl Render for TerminalView {
             }))
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|this, event: &MouseUpEvent, _, cx| {
+                cx.listener(|this, event: &MouseUpEvent, window, cx| {
+                    if this.finish_link_press(event, window, cx) { return; }
                     if this.report_mouse(1, 0, event.position, event.modifiers.shift) {
                         return;
                     }
@@ -1865,6 +2013,12 @@ impl Render for TerminalView {
                     }
                 }),
             )
+            .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                if let Some(press) = this.link_press.take() {
+                    if press.selecting { this.finish_selection(cx); }
+                }
+            }))
+            .on_mouse_down_out(cx.listener(|this, _, _, _| this.cancel_link_press()))
             .into_any_element()
     }
 }

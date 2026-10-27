@@ -15,7 +15,7 @@ rust-version = "1.88"
 # The default remains the complete GPUI application. Servers can exclude all
 # native window/dialog libraries with --no-default-features --features headless.
 default = ["desktop", "remote-mcp"]
-desktop = ["dep:gpui-kit", "dep:rfd", "dep:serialport", "keyring/apple-native", "keyring/windows-native", "keyring/sync-secret-service"]
+desktop = ["dep:gpui-kit", "dep:rfd", "dep:serialport", "dep:url", "keyring/apple-native", "keyring/windows-native", "keyring/sync-secret-service"]
 headless = ["remote-mcp"]
 remote-mcp = ["dep:rmcp", "dep:axum", "dep:jsonwebtoken", "dep:tokio-util", "dep:url"]
 

@@ -304,6 +304,16 @@ impl TerminalEngine {
         }
     }
 
+    /// Read native cells in the same oldest-first coordinates as selection.
+    #[cfg(feature = "desktop")]
+    pub(crate) fn row_at_abs(&self, index: usize) -> Option<TerminalRow<'_>> {
+        let history = if self.alternate_screen() { 0 } else { self.history_len() };
+        (index < history + self.size().0 as usize).then_some(TerminalRow {
+            grid: &self.terminal.grid,
+            row: Line(index as i32 - history as i32),
+        })
+    }
+
     /// Oldest-first across native history and the visible grid.
     pub(crate) fn line_at_abs(&self, index: usize) -> Option<RenderLine> {
         let history = if self.alternate_screen() {
