@@ -69,8 +69,8 @@ try {
                 $item.Name -in @('BUILD.json', 'SHA256SUMS', 'LICENSE', 'THIRD_PARTY_NOTICES.md',
                     'XenTerm-Next.txt', 'HeroGPUI-APACHE-2.0', 'HeroGPUI-NOTICE'))) {
                 Write-Host "REMOVE: $($item.FullName)"
-                if ($Apply) { Remove-Item -LiteralPath $item.FullName -Force }
                 $removedBytes += $item.Length
+                if ($Apply) { Remove-Item -LiteralPath $item.FullName -Force }
             }
         }
         if ($Apply) {
@@ -126,8 +126,8 @@ try {
         $item = Get-Item -LiteralPath $file -Force
         if ($item.DirectoryName -ne $installerRoot) { throw "Unexpected installer file: $file" }
         Write-Host "REMOVE INSTALLER DOWNLOAD: $file"
-        if ($Apply) { Remove-Item -LiteralPath $file -Force }
         $removedBytes += $item.Length
+        if ($Apply) { Remove-Item -LiteralPath $file -Force }
     }
     $mode = if ($Apply) { 'Freed' } else { 'Would free (preview only)' }
     Write-Host ('{0}: {1:N2} GiB' -f $mode, ($removedBytes / 1GB))
