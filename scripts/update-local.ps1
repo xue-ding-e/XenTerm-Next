@@ -27,7 +27,7 @@ $savedEnvironment = @{}
 $exitCode = 0
 
 function Invoke-LocalGit {
-    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$GitArguments)
+    param([string[]]$GitArguments)
     $result = & git @GitArguments
     if ($LASTEXITCODE -ne 0) { throw "git failed: $($GitArguments -join ' ')" }
     return $result
@@ -51,21 +51,21 @@ try {
     $buildLock = Enter-LocalRuntimeLock $WorkspaceRoot -Build
     Write-Host '[1/4] Updating the dedicated main checkout...'
     if (-not (Test-Path -LiteralPath $source)) {
-        Invoke-LocalGit @('clone', '--single-branch', '--branch', 'main', $repository, $source)
+        Invoke-LocalGit -GitArguments @('clone', '--single-branch', '--branch', 'main', $repository, $source)
     }
-    $top = [string](Invoke-LocalGit @('-C', $source, 'rev-parse', '--show-toplevel'))
+    $top = [string](Invoke-LocalGit -GitArguments @('-C', $source, 'rev-parse', '--show-toplevel'))
     if ([IO.Path]::GetFullPath($top) -ne $source) { throw 'Unexpected build checkout root.' }
-    $remote = [string](Invoke-LocalGit @('-C', $source, 'remote', 'get-url', 'origin'))
+    $remote = [string](Invoke-LocalGit -GitArguments @('-C', $source, 'remote', 'get-url', 'origin'))
     if ($remote -ne $repository) { throw "Unexpected build remote: $remote" }
-    $branch = [string](Invoke-LocalGit @('-C', $source, 'branch', '--show-current'))
+    $branch = [string](Invoke-LocalGit -GitArguments @('-C', $source, 'branch', '--show-current'))
     if ($branch -ne 'main') { throw 'The dedicated build checkout must stay on main.' }
-    $dirty = @(Invoke-LocalGit @('-C', $source, 'status', '--porcelain=v1', '--untracked-files=all'))
+    $dirty = @(Invoke-LocalGit -GitArguments @('-C', $source, 'status', '--porcelain=v1', '--untracked-files=all'))
     if ($dirty.Count) { throw 'source-next contains local changes. Preserve/review them before updating.' }
-    Invoke-LocalGit @('-C', $source, 'fetch', '--prune', 'origin', 'main')
+    Invoke-LocalGit -GitArguments @('-C', $source, 'fetch', '--prune', 'origin', 'main')
     & git -C $source merge-base --is-ancestor HEAD origin/main
     if ($LASTEXITCODE -ne 0) { throw 'Build checkout diverged from origin/main; no reset or overwrite was attempted.' }
-    Invoke-LocalGit @('-C', $source, 'merge', '--ff-only', 'origin/main')
-    $commit = [string](Invoke-LocalGit @('-C', $source, 'rev-parse', 'HEAD'))
+    Invoke-LocalGit -GitArguments @('-C', $source, 'merge', '--ff-only', 'origin/main')
+    $commit = [string](Invoke-LocalGit -GitArguments @('-C', $source, 'rev-parse', 'HEAD'))
     Write-Host "Source commit: $commit"
     $ready = $false
     $readyName = ''
