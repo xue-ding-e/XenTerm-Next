@@ -147,29 +147,28 @@ fn process_confirmation(
             )
         })
         .unwrap();
-    cx.update(|cx| {
-        tool.update(cx, |_, window, cx| {
-            view.update(cx, |view, cx| {
-                view.confirm_terminate_for_test(
-                    crate::resource::ProcRow {
-                        tab_id: "lifecycle-fixture".into(),
-                        pid: "42".into(),
-                        user: if own_process { "fixture" } else { "root" }.into(),
-                        cpu: "0".into(),
-                        mem: "0".into(),
-                        command: "inert-fixture".into(),
-                        cpu_frac: 0.,
-                        own_process,
-                    },
-                    window,
-                    cx,
-                );
-            })
-            .unwrap();
+    let mut visual = VisualTestContext::from_window(tool.into(), cx);
+    // WindowHandle<Root>::update mutably leases Root. Opening a dialog reads
+    // Root again, so enter through the window context just like a UI event.
+    visual.update(|window, cx| {
+        view.update(cx, |view, cx| {
+            view.confirm_terminate_for_test(
+                crate::resource::ProcRow {
+                    tab_id: "lifecycle-fixture".into(),
+                    pid: "42".into(),
+                    user: if own_process { "fixture" } else { "root" }.into(),
+                    cpu: "0".into(),
+                    mem: "0".into(),
+                    command: "inert-fixture".into(),
+                    cpu_frac: 0.,
+                    own_process,
+                },
+                window,
+                cx,
+            );
         })
         .unwrap();
     });
-    let mut visual = VisualTestContext::from_window(tool.into(), cx);
     visual.update(|window, cx| {
         window.simulate_next_frame(cx);
         window.draw(cx).clear(cx);
