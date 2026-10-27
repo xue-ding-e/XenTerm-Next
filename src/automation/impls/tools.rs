@@ -32,6 +32,7 @@ async fn call_inner(name: &str, arguments: &Value, frontend: Frontend) -> Result
         "read_remote_text_file" => read_remote_text_file(arguments, frontend).await,
         "upload_file" => upload_file(arguments, frontend).await,
         "download_file" => download_file(arguments, frontend).await,
+        "export_sessions" => export_sessions(arguments, frontend),
         _ => Err(anyhow!("unknown tool: {name}")),
     }
 }
@@ -80,6 +81,75 @@ fn import_sessions(arguments: &Value, frontend: Frontend) -> Result<Value> {
     let mut result = serde_json::to_value(summary)?;
     result["dry_run"] = json!(dry_run);
     Ok(result)
+}
+
+/// Export every saved session to a new private file.
+///
+/// Shared by the CLI (`xenterm cli export <file> --include-credentials`) and the
+/// MCP `export_sessions` tool so both adapters reach the same implementation.
+/// Before this existed, export lived only in the CLI adapter and MCP callers had
+/// no way to read the credentials they are already allowed to use for
+/// `run_command` -- the same data, gated by the same persisted permissions.
+///
+/// The destination is written with `export_to_new`, which refuses to replace an
+/// existing file, keeps the result outside the source profile directory and
+/// applies platform-specific private-file handling. This function never
+/// overwrites, so a mistaken repeat call cannot destroy an earlier export.
+fn export_sessions(arguments: &Value, frontend: Frontend) -> Result<Value> {
+    let object = arguments
+        .as_object()
+        .ok_or_else(|| anyhow!("export arguments must be an object"))?;
+    if object
+        .keys()
+        .any(|key| !matches!(key.as_str(), "local_path" | "include_credentials"))
+    {
+        return Err(anyhow!("unknown export argument"));
+    }
+    let path = required_string(arguments, "local_path")?;
+    if path.trim().is_empty() || path.chars().any(char::is_control) {
+        return Err(anyhow!("local_path must be a nonempty valid path"));
+    }
+    // A portable export is reversible obfuscation, not encryption. Requiring an
+    // explicit opt-in keeps callers from writing credentials by accident; the
+    // CLI requires the same `--include-credentials` flag.
+    if !optional_bool(arguments, "include_credentials")?.unwrap_or(false) {
+        return Err(anyhow!(
+            "portable exports contain recoverable credentials; pass include_credentials: true to write a private sessions export"
+        ));
+    }
+    let store = load_store(frontend)?;
+    // An export reads every credential in the profile, so it is at least as
+    // sensitive as the transfers it would let an unattended caller reconstruct.
+    enforce_export_permissions(
+        frontend,
+        store.mcp_use_saved_credentials(),
+        store.mcp_allow_file_transfers(),
+    )?;
+    let count = store.export_to_new(std::path::Path::new(path))?;
+    Ok(json!({
+        "exported": count,
+        "scope": "sessions",
+        "includes_credentials": true,
+        "local_path": path,
+    }))
+}
+
+fn enforce_export_permissions(
+    frontend: Frontend,
+    use_saved_credentials: bool,
+    allow_file_transfers: bool,
+) -> Result<()> {
+    if frontend.is_unattended() && !use_saved_credentials {
+        return Err(anyhow!(
+            "exporting saved credentials is disabled in Settings > MCP & permissions"
+        ));
+    }
+    if frontend.is_unattended() && !allow_file_transfers {
+        return Err(anyhow!(
+            "file transfers are disabled in Settings > MCP & permissions"
+        ));
+    }
+    Ok(())
 }
 
 async fn upload_file(arguments: &Value, frontend: Frontend) -> Result<Value> {
@@ -415,5 +485,23 @@ mod tests {
         assert_eq!(optional_u64(&json!({ "n": 12 }), "n").unwrap(), Some(12));
         assert!(optional_u64(&json!({ "n": -1 }), "n").is_err());
         assert!(optional_u64(&json!({ "n": "12" }), "n").is_err());
+    }
+
+    #[test]
+    fn export_requires_saved_credentials_for_unattended_callers() {
+        let frontend = Frontend::Mcp { allow_config_import: false };
+        let error = enforce_export_permissions(frontend, false, true).unwrap_err();
+        assert!(error.to_string().contains("saved credentials"));
+        assert!(enforce_export_permissions(frontend, true, true).is_ok());
+        assert!(enforce_export_permissions(Frontend::Cli, false, false).is_ok());
+    }
+
+    #[test]
+    fn export_requires_file_transfer_permission_for_unattended_callers() {
+        let frontend = Frontend::Mcp { allow_config_import: false };
+        let error = enforce_export_permissions(frontend, true, false).unwrap_err();
+        assert!(error.to_string().contains("file transfers"));
+        assert!(enforce_export_permissions(frontend, true, true).is_ok());
+        assert!(enforce_export_permissions(Frontend::Cli, false, false).is_ok());
     }
 }

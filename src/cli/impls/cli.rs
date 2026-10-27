@@ -38,12 +38,19 @@ pub(crate) fn run(args: &[String]) -> Result<()> {
                     "portable exports contain recoverable credentials; pass --include-credentials to write a private sessions export"
                 ));
             }
-            // Keep credential export local to an explicit CLI invocation. It is
-            // deliberately not registered as an automation or MCP tool.
-            let store = crate::config::ConfigStore::load().context("load XenTerm configuration")?;
-            let count = store.export_to_new(std::path::Path::new(path))?;
+            // Go through the shared automation layer, the same entry point the
+            // MCP `export_sessions` tool uses. Keeping one implementation stops
+            // the two adapters from drifting apart -- previously export existed
+            // only here, so protocol callers could not do what the CLI could.
+            let value = runtime.block_on(call_cli(
+                "export_sessions",
+                &json!({
+                    "local_path": path,
+                    "include_credentials": true,
+                }),
+            ))?;
             eprintln!("Warning: portable exports contain recoverable credentials. Keep the file private. Only saved sessions are exported; global settings, host trust and external key files are not included.");
-            json!({"exported": count, "scope": "sessions", "includes_credentials": true})
+            value
         }
         CliCommand::Import => {
             let path = args

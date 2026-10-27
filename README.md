@@ -524,16 +524,19 @@ Then register the stdio server in your MCP client:
 
 On Windows, `command` can be `C:\\path\\to\\xenterm.exe`. Restart or refresh the client and
 you should see an `xenterm` server exposing the tools registered in
-[`src/mcp/impls/tools.rs`](src/mcp/impls/tools.rs): `get_access_policy`, `import_sessions`,
-`list_sessions`, `get_session`,
-`run_command`, `list_remote_files`, `read_remote_text_file`, `upload_file`,
-`download_file`. MCP configuration files live in different places per client, so check that
-client's documentation.
+[`src/mcp/impls/tools.rs`](src/mcp/impls/tools.rs): `get_access_policy`, `export_sessions`,
+`import_sessions`, `list_sessions`, `get_session`, `run_command`, `list_remote_files`,
+`read_remote_text_file`, `upload_file`, and `download_file`. MCP configuration files live in
+different places per client, so check that client's documentation.
 
 `get_access_policy` is read-only. `import_sessions` previews by default; applying an import
 requires starting MCP with `--allow-config-import`, and file-transfer permission is required
-for both preview and apply. Credential export is deliberately available only through the
-local CLI, not as an MCP tool.
+for both preview and apply. `export_sessions` and `xenterm cli export` use the same shared
+implementation. It requires the saved-credentials permission and an explicit
+`include_credentials: true` acknowledgement. MCP callers need both saved-credentials and
+file-transfer permissions. The export is reversible obfuscation, not confidential encryption;
+treat the output as a password file. The destination must be new and outside the source profile
+directory.
 
 #### Debugging the stdio connection
 

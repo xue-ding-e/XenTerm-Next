@@ -438,12 +438,12 @@ Headless CLI / MCP 同样要求显式独立的 `--data-dir`（放在子命令之
 
 Windows 下 `command` 可以填 `C:\\path\\to\\xenterm.exe`。重启或刷新客户端后，应当能看到名为
 `xenterm` 的服务，工具以 [`src/mcp/impls/tools.rs`](src/mcp/impls/tools.rs) 的注册定义为准：
-`get_access_policy`、`import_sessions`、`list_sessions`、`get_session`、`run_command`、
+`get_access_policy`、`export_sessions`、`import_sessions`、`list_sessions`、`get_session`、`run_command`、
 `list_remote_files`、`read_remote_text_file`、`upload_file`、`download_file`。
 不同 AI 客户端的 MCP 配置文件位置不同，请以对应客户端的文档为准。
 
 `get_access_policy` 只读查询策略。`import_sessions` 默认预览；应用导入要求启动 MCP 时显式传入
-`--allow-config-import`，预览和应用都需要文件传输权限。凭据导出只通过本地 CLI 提供，不注册为 MCP 工具。
+`--allow-config-import`，预览和应用都需要文件传输权限。`export_sessions` 与 `xenterm cli export` 走同一套共享实现。MCP 导出需要 `saved-credentials` 和文件传输两项权限，并必须显式传 `include_credentials: true`——该标志用于防止误调用把整个配置泄露，而不提供额外安全保障：导出文件中的凭据是**可逆混淆**，请始终当密码文件对待。目标路径必须不存在，且位于源配置目录之外。
 
 #### 调试 stdio 连接
 
