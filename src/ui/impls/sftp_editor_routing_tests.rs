@@ -227,6 +227,9 @@ fn edit_and_save(fixture: &Fixture, cx: &mut VisualTestContext) {
     cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-a" } else { "ctrl-a" });
     cx.simulate_input(EDITED);
     assert_eq!(cx.update(|window, cx| window.focused_input(cx).unwrap().value(cx).to_string()), EDITED);
+    // Typing invalidates the viewer. Paint the new frame before reading its
+    // hitboxes, so the real Save click does not depend on stale layout timing.
+    draw(cx);
     let save = cx.debug_bounds("file-viewer-save").unwrap();
     cx.simulate_click(save.center(), Default::default());
     settle(cx);
@@ -242,8 +245,19 @@ fn assert_saved_only_to_source(fixture: &mut Fixture) {
         }
     }
     assert!(foreign_writes.is_empty(), "source editor sent WriteText to unrelated active tab: {foreign_writes:?}");
-    assert!(matches!(fixture.source_commands.try_recv(), Ok(crate::sftp::SftpCommand::WriteText { remote, content }) if remote == REMOTE && content == EDITED));
-    assert!(fixture.source_commands.try_recv().is_err(), "one click must write only once");
+    match fixture.source_commands.try_recv() {
+        Ok(crate::sftp::SftpCommand::WriteText { remote, content }) => {
+            assert_eq!(remote, REMOTE, "Save used the wrong synthetic remote path");
+            assert_eq!(content, EDITED, "Save used the wrong synthetic editor contents");
+        }
+        Ok(command) => panic!("expected source WriteText after Save, received {command:?}"),
+        Err(error) => panic!("expected source WriteText after Save, channel returned {error:?}"),
+    }
+    match fixture.source_commands.try_recv() {
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
+        Err(error) => panic!("source channel disconnected after Save: {error:?}"),
+        Ok(command) => panic!("one click must write only once; extra command: {command:?}"),
+    }
 }
 
 #[gpui_kit::gpui::test]
