@@ -168,6 +168,10 @@ pub struct ConfigFile {
     /// not stored here.
     #[serde(default)]
     pub groups: Vec<String>,
+    /// Optional manual display order, including system/default headings. Missing
+    /// retains the legacy order. This does not grant membership/edit permissions.
+    #[serde(default)]
+    pub session_group_order: Option<Vec<String>>,
     /// Quick Connect folders that were collapsed when the UI was last used.
     /// `None` is a legacy/new config and starts with every folder collapsed;
     /// `Some([])` means the user explicitly expanded every folder.

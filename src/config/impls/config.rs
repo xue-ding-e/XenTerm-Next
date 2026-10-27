@@ -422,10 +422,8 @@ pub(crate) fn is_reserved_session_group(name: &str) -> bool {
 
 /// Named display groups: explicit folders ∪ the groups sessions are filed
 /// under, with reserved names and ungrouped excluded, de-duplicated and
-/// sorted case-insensitively. The single source of truth for group display
-/// order — shared by the welcome list, drag-reorder target finding and the
-/// group dropdown; if these ever drift, drop targets and rendered rows
-/// disagree (#41).
+/// sorted case-insensitively as the legacy/default order. Manual display order
+/// is applied separately and never changes session group membership (#41).
 pub(crate) fn named_display_groups(explicit: &[String], sessions: &[Session]) -> Vec<String> {
     let mut named: Vec<String> = explicit
         .iter()
@@ -443,6 +441,30 @@ pub(crate) fn named_display_groups(explicit: &[String], sessions: &[Session]) ->
     named.sort_by_key(|group| group.to_lowercase());
     named.dedup();
     named
+}
+
+/// Apply a saved folder order to the live group names. Unknown/deleted names and
+/// duplicates are ignored; newly discovered folders append alphabetically.
+pub(crate) fn ordered_named_display_groups(
+    explicit: &[String],
+    sessions: &[Session],
+    order: Option<&[String]>,
+) -> Vec<String> {
+    apply_session_group_order(named_display_groups(explicit, sessions), order)
+}
+
+pub(crate) fn apply_session_group_order(
+    mut remaining: Vec<String>,
+    order: Option<&[String]>,
+) -> Vec<String> {
+    let mut ordered = Vec::with_capacity(remaining.len());
+    for name in order.unwrap_or_default() {
+        if let Some(index) = remaining.iter().position(|group| group == name) {
+            ordered.push(remaining.remove(index));
+        }
+    }
+    ordered.extend(remaining);
+    ordered
 }
 
 /// Repair configurations created before #316/#324, when the Move-to menu exposed
@@ -941,9 +963,9 @@ impl ConfigStore {
             return true;
         }
 
-        // Cross-group hop. Display order: "default" first (only when ungrouped
-        // sessions exist), then named groups — explicit folders ∪ sessions'
-        // groups — alphabetically. Collapsed groups are skipped: their rows
+        // Cross-group hop. Use the same saved order as the rendered headings,
+        // including default when ungrouped sessions exist. Collapsed groups are
+        // skipped: their rows
         // are hidden, so a card must never land inside one.
         let Some(collapsed_groups) = self.cache.collapsed_session_groups.clone() else {
             // Mirrors build_session_rows: no collapse list = everything
@@ -952,19 +974,12 @@ impl ConfigStore {
         };
         let is_collapsed = |name: &str| collapsed_groups.iter().any(|g| g == name);
 
-        let mut display: Vec<String> = Vec::new();
-        if self
-            .cache
-            .sessions
-            .iter()
-            .any(|s| display_group(s) == "default")
-        {
-            display.push("default".to_string());
-        }
-        display.extend(named_display_groups(
-            &self.cache.groups,
-            &self.cache.sessions,
-        ));
+        // The system heading is reorderable but can never receive saved sessions.
+        let display: Vec<String> = self
+            .ordered_session_groups()
+            .into_iter()
+            .filter(|group| group != "system")
+            .collect();
 
         let Some(pos) = display.iter().position(|g| g == &group) else {
             return false;
@@ -1948,6 +1963,57 @@ impl ConfigStore {
         &self.cache.groups
     }
 
+    pub fn session_group_order(&self) -> Option<&[String]> {
+        self.cache.session_group_order.as_deref()
+    }
+
+    /// All live display headings; built-in local shells always provide system.
+    /// Reserved names remain display-only, never user folders or move destinations.
+    pub fn ordered_session_groups(&self) -> Vec<String> {
+        let mut groups = vec!["system".to_string()];
+        if self.cache.sessions.iter().any(|session| {
+            session.group.is_empty() || is_reserved_session_group(session.group.trim())
+        }) {
+            groups.push("default".to_string());
+        }
+        groups.extend(named_display_groups(&self.cache.groups, &self.cache.sessions));
+        apply_session_group_order(groups, self.session_group_order())
+    }
+
+    /// Move a live heading to the target's current position. Downward moves
+    /// land after the target, upward moves before it. Neither sessions nor folds
+    /// change. Resolve names at commit time, not stale rendered row indices.
+    pub fn move_session_group(&mut self, source: &str, target: &str) -> bool {
+        if source == target {
+            return false;
+        }
+        let mut order = self.ordered_session_groups();
+        let Some(from) = order.iter().position(|group| group == source) else {
+            return false;
+        };
+        let Some(to) = order.iter().position(|group| group == target) else {
+            return false;
+        };
+        let moved = order.remove(from);
+        order.insert(to, moved);
+        self.cache.session_group_order = Some(order);
+        true
+    }
+
+    /// Both sorting surfaces share this transactional path. A failed write must
+    /// not leave a visually reordered list that will revert at the next launch.
+    pub fn move_session_group_and_save(&mut self, source: &str, target: &str) -> Result<bool> {
+        let previous = self.cache.session_group_order.clone();
+        if !self.move_session_group(source, target) {
+            return Ok(false);
+        }
+        if let Err(error) = self.save() {
+            self.cache.session_group_order = previous;
+            return Err(error);
+        }
+        Ok(true)
+    }
+
     pub fn collapsed_session_groups(&self) -> Option<&[String]> {
         self.cache.collapsed_session_groups.as_deref()
     }
@@ -1989,6 +2055,11 @@ impl ConfigStore {
         if n.is_empty() || is_reserved_session_group(&n) || self.session_group_exists(&n) {
             return;
         }
+        // A previously deleted name in imported preferences must not reclaim
+        // its old slot when this is a genuinely new folder.
+        if self.cache.session_group_order.is_some() {
+            self.cache.session_group_order = Some(self.ordered_session_groups());
+        }
         self.cache.groups.push(n.clone());
         if let Some(groups) = &mut self.cache.collapsed_session_groups {
             groups.push(n);
@@ -2004,6 +2075,9 @@ impl ConfigStore {
             return;
         }
         self.cache.groups.retain(|g| g != name);
+        if let Some(order) = &mut self.cache.session_group_order {
+            order.retain(|group| group != name);
+        }
         if let Some(groups) = &mut self.cache.collapsed_session_groups {
             groups.retain(|group| group != name);
         }
@@ -2024,6 +2098,17 @@ impl ConfigStore {
             || (!n.eq_ignore_ascii_case(old) && self.session_group_exists(&n))
         {
             return;
+        }
+        if self.cache.session_group_order.is_some() {
+            // Snapshot the live order first: stale target spellings must not
+            // override the source's slot, including inferred/unlisted folders.
+            let mut order = self.ordered_session_groups();
+            for group in &mut order {
+                if group == old {
+                    *group = n.clone();
+                }
+            }
+            self.cache.session_group_order = Some(order);
         }
         for g in &mut self.cache.groups {
             if g == old {
@@ -3184,6 +3269,111 @@ mod tests {
         // ... but crossing a boundary does not: no list means every group
         // renders collapsed (mirrors build_session_rows).
         assert!(!store.reorder_session(&id_of(&store, "b2"), 1));
+    }
+
+    #[test]
+    fn group_order_preserves_legacy_order_and_ignores_stale_preferences() {
+        let mut store = reorder_store();
+        store.cache.groups = vec!["zeta".into(), "alpha".into(), "empty".into()];
+        assert_eq!(store.ordered_session_groups(), ["system", "default", "alpha", "beta", "empty", "zeta"]);
+        store.cache.session_group_order = Some(vec![
+            "zeta".into(), "deleted".into(), "system".into(), "default".into(),
+            "zeta".into(), "beta".into(),
+        ]);
+        assert_eq!(store.ordered_session_groups(), ["zeta", "system", "default", "beta", "alpha", "empty"]);
+    }
+
+    #[test]
+    fn group_order_moves_both_directions_without_changing_membership_or_folds() {
+        let mut store = reorder_store();
+        store.cache.groups.push("empty".into());
+        store.cache.collapsed_session_groups = Some(vec!["beta".into(), "system".into()]);
+        let sessions = serde_json::to_value(store.sessions()).unwrap();
+        let folds = store.cache.collapsed_session_groups.clone();
+        assert!(store.move_session_group("alpha", "empty"));
+        assert_eq!(store.ordered_session_groups(), ["system", "default", "beta", "empty", "alpha"]);
+        assert!(store.move_session_group("alpha", "beta"));
+        assert_eq!(store.ordered_session_groups(), ["system", "default", "alpha", "beta", "empty"]);
+        assert!(store.move_session_group("system", "empty"));
+        assert!(store.move_session_group("default", "alpha"));
+        assert_eq!(store.ordered_session_groups(), ["alpha", "default", "beta", "empty", "system"]);
+        // Display reordering does not relax reserved-group editing protections.
+        store.rename_group("system", "renamed".into());
+        store.remove_group("default");
+        assert!(!store.groups().iter().any(|group| is_reserved_session_group(group)));
+        assert_eq!(serde_json::to_value(store.sessions()).unwrap(), sessions);
+        assert_eq!(store.cache.collapsed_session_groups, folds);
+        let before = store.cache.session_group_order.clone();
+        for (source, target) in [
+            ("alpha", "alpha"), ("missing", "alpha"), ("alpha", "missing"),
+            ("", "alpha"),
+        ] {
+            assert!(!store.move_session_group(source, target));
+            assert_eq!(store.cache.session_group_order, before);
+        }
+    }
+
+    #[test]
+    fn group_order_round_trips_and_rename_delete_keep_relative_positions() {
+        let mut store = reorder_store();
+        store.cache.groups.push("empty".into());
+        assert!(store.move_session_group_and_save("empty", "alpha").unwrap());
+        let (reopened, _) = ConfigStore::read_cache_snapshot(&store.path, &store.key).unwrap();
+        assert_eq!(reopened.session_group_order, Some(vec!["system".into(), "default".into(), "empty".into(), "alpha".into(), "beta".into()]));
+        // The session-only alpha group acquires the renamed slot without needing
+        // an explicit folder record; deleting it cannot leave a resurrectable slot.
+        store.rename_group("alpha", "renamed".into());
+        assert_eq!(store.ordered_session_groups(), ["system", "default", "empty", "renamed", "beta"]);
+        store.remove_group("renamed");
+        store.add_group("renamed".into());
+        assert_eq!(store.ordered_session_groups(), ["system", "default", "empty", "beta", "renamed"]);
+        store.save().unwrap();
+        let (reopened, _) = ConfigStore::read_cache_snapshot(&store.path, &store.key).unwrap();
+        assert_eq!(ordered_named_display_groups(&reopened.groups, &reopened.sessions, reopened.session_group_order.as_deref()), ["empty", "beta", "renamed"]);
+    }
+
+    #[test]
+    fn group_order_new_and_renamed_groups_do_not_resurrect_stale_slots() {
+        let mut store = reorder_store();
+        store.cache.session_group_order = Some(vec![
+            "new".into(), "renamed".into(), "beta".into(), "alpha".into(),
+        ]);
+        store.add_group("new".into());
+        assert_eq!(store.ordered_session_groups(), ["beta", "alpha", "system", "default", "new"]);
+        // Reintroduce a stale target after add_group normalized the preference,
+        // so rename must independently ignore its earlier, unrelated slot.
+        store.cache.session_group_order.as_mut().unwrap().insert(0, "renamed".into());
+        store.rename_group("alpha", "renamed".into());
+        assert_eq!(store.ordered_session_groups(), ["beta", "renamed", "system", "default", "new"]);
+    }
+
+    #[test]
+    fn group_order_does_not_create_absent_default_or_allow_system_membership() {
+        let mut store = temp_store();
+        store.add_group("empty".into());
+        assert_eq!(store.ordered_session_groups(), ["system", "empty"]);
+        assert!(!store.move_session_group("default", "empty"));
+
+        let mut store = reorder_store();
+        assert!(store.move_session_group("system", "alpha"));
+        assert_eq!(store.ordered_session_groups(), ["default", "alpha", "system", "beta"]);
+        // The visible system heading between alpha and beta is skipped by the
+        // existing session move API; built-in shell ownership is unchanged.
+        assert!(store.reorder_session(&id_of(&store, "a1"), 1));
+        assert_eq!(store.sessions().iter().find(|session| session.name == "a1").unwrap().group, "beta");
+        assert!(store.sessions().iter().all(|session| session.group != "system"));
+    }
+
+    #[test]
+    fn group_order_failed_save_rolls_back_and_noop_does_not_write() {
+        let mut store = reorder_store();
+        let invalid = tempfile::tempdir().unwrap();
+        store.path = invalid.path().to_path_buf();
+        assert!(store.move_session_group_and_save("beta", "alpha").is_err());
+        assert!(store.cache.session_group_order.is_none());
+        assert_eq!(store.ordered_session_groups(), ["system", "default", "alpha", "beta"]);
+        assert!(!store.move_session_group_and_save("alpha", "alpha").unwrap());
+        assert!(!store.move_session_group_and_save("missing", "alpha").unwrap());
     }
 
     #[test]

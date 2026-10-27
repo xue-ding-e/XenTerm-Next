@@ -46,9 +46,10 @@ fn build_session_rows(
     collapsed_groups: Option<&[String]>,
     builtin_sessions: &[Session],
     query: &str,
+    group_order: Option<&[String]>,
 ) -> Vec<crate::core::SessionRow> {
-    // Group sessions by their `group` (named groups alphabetically, ungrouped
-    // last), then by name within each group, and tag the first row of every
+    // Group sessions by their `group` (legacy order before applying saved order),
+    // retaining session order within each group, and tag the first row of every
     // group with a header so the welcome list can render a folder heading (#41).
     let query = normalized_query(query);
     let searching = !query.is_empty();
@@ -65,26 +66,21 @@ fn build_session_rows(
     // Ordered list of display groups:
     //  - "default" only when there are ungrouped sessions (group == "")
     //  - named groups: explicit folders (incl. empty ones) ∪ sessions' groups,
-    //    de-duplicated, alphabetical.
+    //    de-duplicated, in saved order with new groups appended alphabetically.
     let has_default = sessions.iter().any(|session| {
         (session.group.is_empty() || is_reserved_session_group(session.group.trim()))
             && matches(session)
     });
-    let mut named: Vec<String> = if searching {
-        sessions
-            .iter()
-            .filter(|session| {
-                !session.group.is_empty()
-                    && !is_reserved_session_group(session.group.trim())
-                    && matches(session)
-            })
-            .map(|session| session.group.clone())
-            .collect()
-    } else {
-        named_display_groups(explicit_groups, sessions)
-    };
-    named.sort_by_key(|g| g.to_lowercase());
-    named.dedup();
+    let mut named = crate::config::ordered_named_display_groups(
+        explicit_groups,
+        sessions,
+        group_order,
+    );
+    if searching {
+        named.retain(|group| {
+            sessions.iter().any(|session| &session.group == group && matches(session))
+        });
+    }
 
     let mut display_groups: Vec<String> = Vec::new();
     if has_default {
@@ -173,6 +169,18 @@ fn build_session_rows(
             }
         }
     }
+    // Stable sorting moves complete group blocks, preserving session order and
+    // each block's first-row header. Missing/search-hidden headings are harmless.
+    let order = crate::config::apply_session_group_order(
+        rows.iter()
+            .filter(|row| !row.group_header.is_empty())
+            .map(|row| row.group.to_string())
+            .collect(),
+        group_order,
+    );
+    rows.sort_by_key(|row| {
+        order.iter().position(|group| group == &row.group).unwrap_or(usize::MAX)
+    });
     rows
 }
 
@@ -189,6 +197,7 @@ pub(crate) fn session_rows(
     collapsed_groups: Option<&[String]>,
     builtin_sessions: &[Session],
     query: &str,
+    group_order: Option<&[String]>,
 ) -> Vec<crate::core::SessionRow> {
     build_session_rows(
         sessions,
@@ -196,6 +205,7 @@ pub(crate) fn session_rows(
         collapsed_groups,
         builtin_sessions,
         query,
+        group_order,
     )
 }
 
@@ -541,12 +551,32 @@ mod search_tests {
         let groups = vec!["empty".to_string(), "prod".to_string()];
         let collapsed = vec!["prod".to_string(), "system".to_string()];
 
-        let rows = build_session_rows(&saved, &groups, Some(&collapsed), &builtins, "prod");
+        let rows = build_session_rows(&saved, &groups, Some(&collapsed), &builtins, "prod", None);
 
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].name.as_str(), "Prod API");
         assert_eq!(rows[0].group_header.as_str(), "prod");
         assert!(!rows[0].collapsed);
+    }
+
+    #[test]
+    fn saved_group_order_is_shared_by_search_and_full_list_including_reserved_headers() {
+        let saved = vec![
+            session("a", "Match A", "host-a", "alpha"),
+            session("b", "Match B", "host-b", "beta"),
+            session("d", "Match D", "host-d", ""),
+        ];
+        let builtins = vec![session("local", "Match local", "localhost", "system")];
+        let explicit = vec!["empty".into()];
+        let order = vec!["beta".into(), "default".into(), "empty".into(), "alpha".into(), "system".into()];
+        let headers = |rows: Vec<crate::core::SessionRow>| -> Vec<String> {
+            rows.into_iter().filter(|row| !row.group_header.is_empty())
+                .map(|row| row.group_header.to_string()).collect()
+        };
+        assert_eq!(headers(build_session_rows(&saved, &explicit, None, &builtins, "", Some(&order))),
+            ["beta", "default", "empty", "alpha", "system"]);
+        assert_eq!(headers(build_session_rows(&saved, &explicit, None, &builtins, "match", Some(&order))),
+            ["beta", "default", "alpha", "system"]);
     }
 
     #[test]
@@ -559,6 +589,7 @@ mod search_tests {
             Some(&["system".to_string()]),
             &builtins,
             "LOCALHOST",
+            None,
         );
 
         assert_eq!(rows.len(), 1);
@@ -573,7 +604,7 @@ mod search_tests {
         let saved = vec![session("1", "Prod API", "10.0.0.8", "prod")];
         let builtins = vec![session("local", "Local terminal", "localhost", "system")];
 
-        let rows = build_session_rows(&saved, &[], None, &builtins, "staging");
+        let rows = build_session_rows(&saved, &[], None, &builtins, "staging", None);
 
         assert!(rows.is_empty());
     }
@@ -584,7 +615,7 @@ mod search_tests {
         let groups = vec!["empty".to_string(), "prod".to_string()];
         let collapsed = vec!["prod".to_string()];
 
-        let rows = build_session_rows(&saved, &groups, Some(&collapsed), &[], "");
+        let rows = build_session_rows(&saved, &groups, Some(&collapsed), &[], "", None);
 
         assert!(rows
             .iter()
@@ -627,7 +658,7 @@ mod serial_display_tests {
             session.data_bits = bits;
             session.parity = parity.into();
             session.stop_bits = stops;
-            let rows = build_session_rows(&[session], &[], None, &[], "");
+            let rows = build_session_rows(&[session], &[], None, &[], "", None);
             assert_eq!(rows.len(), 1);
             assert_eq!(rows[0].serial_detail.as_str(), expected);
         }
@@ -641,7 +672,7 @@ mod serial_display_tests {
             session.host = "example.com".into();
             session.port = 2222;
             session.user = "alice".into();
-            let rows = build_session_rows(&[session], &[], None, &[], "");
+            let rows = build_session_rows(&[session], &[], None, &[], "", None);
             assert!(rows[0].serial_detail.is_empty());
             assert_eq!(rows[0].host.as_str(), "example.com");
             assert_eq!(rows[0].port, 2222);

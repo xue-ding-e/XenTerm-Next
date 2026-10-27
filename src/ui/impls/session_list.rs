@@ -9,11 +9,9 @@
 //! group-header bookkeeping and names no toolkit type — so this view renders the same
 //! rows that projection defines, in the same order, because it is the same function.
 //!
-//! What it does not have is drag-to-reorder, which in the original was some four
-//! hundred lines of pointer-grab bookkeeping. Moving a session between groups is a
-//! menu action here, and dragging can be added later if anyone misses it. Carrying that
-//! machinery over would also mean building it against a toolkit that offers list
-//! virtualisation instead and has no drag model at all.
+//! Folder headings support toolkit drag-and-drop ordering. Session moves
+//! between folders remain explicit menu actions; dragging a folder changes only
+//! its display order, never session membership.
 
 use std::rc::Rc;
 
@@ -39,6 +37,27 @@ use crate::core::SessionRow;
 /// two-line sessions. GPUI Kit measures a single item and section-header height;
 /// mixing absent headers with expanded headers leaves gaps or overlaps.
 const FULL_ROW_HEIGHT: f32 = 48.;
+
+/// A typed, profile-scoped payload: unrelated windows cannot reorder one
+/// another's stores merely because their group names happen to match.
+#[derive(Clone)]
+struct DraggedSessionGroup {
+    name: String,
+    store: Rc<std::cell::RefCell<ConfigStore>>,
+}
+
+impl Render for DraggedSessionGroup {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        h_flex()
+            .gap_2()
+            .px_3()
+            .py_2()
+            .rounded_sm()
+            .bg(cx.theme().muted)
+            .child(Icon::new(IconName::Folder).size_3())
+            .child(SharedString::from(self.name.clone()))
+    }
+}
 
 /// A fold is a saved preference. Keep the displayed state unchanged on a
 /// failed save; ConfigStore retains a sanitized persistence_error for the
@@ -278,6 +297,34 @@ impl SessionListDelegate {
                         .rounded_sm()
                         .when(!searching, |this| {
                             this.cursor_pointer().hover(|this| this.bg(hover))
+                        })
+                        .when(!searching, |this| {
+                            let target = group.clone();
+                            let store = self.store.clone();
+                            let list = self.list.clone();
+                            this.on_drag(
+                                DraggedSessionGroup { name: group.clone(), store: store.clone() },
+                                |drag, _, _, cx| cx.new(|_| drag.clone()),
+                            )
+                            .drag_over::<DraggedSessionGroup>(|style, _, _, cx| {
+                                style.bg(cx.theme().accent.opacity(0.2))
+                            })
+                            .on_drop(move |drag: &DraggedSessionGroup, window, cx| {
+                                cx.stop_propagation();
+                                if !Rc::ptr_eq(&store, &drag.store) {
+                                    return;
+                                }
+                                // Commit only on drop. Leaving the target/cancelling
+                                // never changes persisted order or folded state.
+                                let changed = store.borrow_mut()
+                                    .move_session_group_and_save(&drag.name, &target)
+                                    .unwrap_or(false);
+                                if changed {
+                                    if let Some(list) = list.as_ref().and_then(|list| list.upgrade()) {
+                                        list.update(cx, |state, cx| reload_list(state, window, cx));
+                                    }
+                                }
+                            })
                         })
                         .on_click(move |_, window, cx| {
                             // The list wrapper emits Confirm for any item click,
@@ -784,6 +831,7 @@ pub(crate) fn rows_for(
         store.collapsed_session_groups(),
         &builtin,
         query,
+        store.session_group_order(),
     )
 }
 

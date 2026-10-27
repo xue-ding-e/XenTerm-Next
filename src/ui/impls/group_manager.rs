@@ -52,6 +52,7 @@ pub(crate) struct GroupManagerView {
     /// into the "add" field.
     editing: Option<(String, Entity<InputState>, Subscription)>,
     rename_error: Option<SharedString>,
+    order_error: Option<SharedString>,
     /// The always-present creation box at the top of the list.
     create: Entity<InputState>,
     pending: Option<GroupManagerAction>,
@@ -79,6 +80,7 @@ impl GroupManagerView {
             store,
             editing: None,
             rename_error: None,
+            order_error: None,
             create,
             pending: None,
             _create_subscription,
@@ -92,21 +94,25 @@ impl GroupManagerView {
 
     /// The groups this dialog manages, with how many sessions each holds.
     ///
-    /// Reserved names are excluded because they are not the user's folders: `system` is
-    /// where the built-in local shells live and `default` is the heading the ungrouped
-    /// rows are shown under. Renaming one of those would be renaming a part of the
-    /// interface.
+    /// Built-in headings participate in ordering but remain protected from
+    /// rename/delete: their identities determine shell and ungrouped membership.
     fn groups(&self) -> Vec<(String, usize)> {
         let store = self.store.borrow();
-        let names = crate::config::named_display_groups(store.groups(), store.sessions());
+        let names = store.ordered_session_groups();
         names
             .into_iter()
             .map(|name| {
-                let count = store
-                    .sessions()
-                    .iter()
-                    .filter(|session| session.group == name)
-                    .count();
+                let count = if name == "system" {
+                    crate::app::session_models::builtin_local_sessions(store.wsl_profiles()).len()
+                } else {
+                    store.sessions().iter().filter(|session| {
+                        if name == "default" {
+                            session.group.is_empty() || crate::config::is_reserved_session_group(session.group.trim())
+                        } else {
+                            session.group == name
+                        }
+                    }).count()
+                };
                 (name, count)
             })
             .collect()
@@ -255,6 +261,32 @@ impl GroupManagerView {
         self.finish_edit(window, cx);
     }
 
+    /// Resolve neighbors at click time, so a stale row cannot use an old index.
+    fn move_group(&mut self, name: &str, down: bool, cx: &mut Context<Self>) {
+        let groups = self.store.borrow().ordered_session_groups();
+        let Some(index) = groups.iter().position(|group| group == name) else {
+            return;
+        };
+        let target = if down { index.checked_add(1) } else { index.checked_sub(1) };
+        let Some(target) = target.and_then(|index| groups.get(index)) else {
+            return;
+        };
+        let result = self.store.borrow_mut().move_session_group_and_save(name, target);
+        match result {
+            Ok(true) => {
+                self.order_error = None;
+                self.pending = Some(GroupManagerAction::Saved);
+            }
+            Ok(false) => {}
+            Err(_) => {
+                self.order_error = Some(crate::i18n::t(
+                    "排序保存失败，请重试。", "Couldn't save the order. Please try again."
+                ).into());
+            }
+        }
+        cx.notify();
+    }
+
     /// Delete a group, leaving its sessions ungrouped.
     fn delete(&mut self, group: &str, window: &mut Window, cx: &mut Context<Self>) {
         {
@@ -304,15 +336,18 @@ impl GroupManagerView {
     /// it. The row being renamed swaps its name for the input in place — the
     /// same inline-rename doctrine the tab strip follows, so the edit happens
     /// where the name lives instead of in a form somewhere else.
-    fn row(&mut self, name: &str, count: usize, cx: &Context<Self>) -> AnyElement {
+    fn row(&mut self, name: &str, count: usize, first: bool, last: bool, cx: &Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let selected = self
             .editing
             .as_ref()
             .map(|(g, _, _)| g == name)
             .unwrap_or(false);
+        let reserved = crate::config::is_reserved_session_group(name);
         let for_rename = name.to_string();
         let for_delete = name.to_string();
+        let for_up = name.to_string();
+        let for_down = name.to_string();
         let sessions = if count == 1 {
             crate::i18n::t("1 个会话", "1 session").to_string()
         } else {
@@ -410,8 +445,33 @@ impl GroupManagerView {
                         .gap_1()
                         .flex_shrink_0()
                         .child(
+                            Button::new(SharedString::from(format!("group-up-{name}")))
+                                .icon(Icon::new(IconName::ArrowUp))
+                                .ghost()
+                                .small()
+                                .disabled(first)
+                                .tooltip(crate::i18n::t("上移", "Move up"))
+                                .accessibility_label(crate::i18n::t("上移", "Move up"))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.move_group(&for_up, false, cx)
+                                })),
+                        )
+                        .child(
+                            Button::new(SharedString::from(format!("group-down-{name}")))
+                                .icon(Icon::new(IconName::ArrowDown))
+                                .ghost()
+                                .small()
+                                .disabled(last)
+                                .tooltip(crate::i18n::t("下移", "Move down"))
+                                .accessibility_label(crate::i18n::t("下移", "Move down"))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.move_group(&for_down, true, cx)
+                                })),
+                        )
+                        .child(
                             Button::new(SharedString::from(format!("group-edit-{name}")))
                                 .icon(Icon::new(IconName::Pencil))
+                                .disabled(reserved)
                                 .ghost()
                                 .small()
                                 .tooltip(crate::i18n::t("重命名", "Rename"))
@@ -423,6 +483,7 @@ impl GroupManagerView {
                         .child(
                             Button::new(SharedString::from(format!("group-delete-{name}")))
                                 .icon(Icon::new(IconName::Trash))
+                                .disabled(reserved)
                                 .ghost()
                                 .small()
                                 .tooltip(crate::i18n::t("删除分组", "Delete group"))
@@ -440,6 +501,7 @@ impl GroupManagerView {
 impl Render for GroupManagerView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
+        let danger = theme.danger;
         let groups = self.groups();
 
         let mut list: Vec<AnyElement> = Vec::new();
@@ -458,8 +520,8 @@ impl Render for GroupManagerView {
                     .into_any_element(),
             );
         }
-        for (name, count) in &groups {
-            list.push(self.row(name, *count, cx));
+        for (index, (name, count)) in groups.iter().enumerate() {
+            list.push(self.row(name, *count, index == 0, index + 1 == groups.len(), cx));
         }
 
         // Creation is a row of the list, not a titled card above it: the
@@ -475,6 +537,9 @@ impl Render for GroupManagerView {
                 .gap_1()
                 .p_3()
                 .child(self.create_row(cx))
+                .when_some(self.order_error.clone(), |this, error| {
+                    this.child(div().id("group-order-error").text_xs().text_color(danger).child(error))
+                })
                 .children(list),
         )
     }
@@ -520,11 +585,17 @@ mod tests {
 
         let store = store.borrow();
         for (name, count) in &listed {
-            let actual = store
-                .sessions()
-                .iter()
-                .filter(|session| &session.group == name)
-                .count();
+            let actual = if name == "system" {
+                crate::app::session_models::builtin_local_sessions(store.wsl_profiles()).len()
+            } else {
+                store.sessions().iter().filter(|session| {
+                    if name == "default" {
+                        session.group.is_empty() || crate::config::is_reserved_session_group(session.group.trim())
+                    } else {
+                        &session.group == name
+                    }
+                }).count()
+            };
             assert_eq!(
                 *count, actual,
                 "the count beside {name:?} is the number of sessions in it"

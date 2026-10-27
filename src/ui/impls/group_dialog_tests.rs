@@ -728,3 +728,49 @@ fn inline_rename_enter_scope_preserves_escape_and_outer_close_for_unsaved_edits(
         assert_eq!(group_disk(&directory), saved);
     }
 }
+
+#[gpui_kit::gpui::test]
+fn group_order_manager_buttons_share_sidebar_order_and_keep_reserved_identity(cx: &mut TestAppContext) {
+    let (shell, _directory, cx) = fixture(cx);
+    shell.update(cx, |shell, _| {
+        let mut store = shell.state.store.borrow_mut();
+        store.add_group("QA-Order-A".into());
+        store.add_group("QA-Order-B".into());
+        store.save().unwrap();
+    });
+    open_groups(&shell, cx);
+    click("group-up-QA-Order-B", cx);
+    let store = shell.read_with(cx, |shell, _| shell.state.store.clone());
+    assert_eq!(store.borrow().ordered_session_groups(), vec!["system", "QA-Order-B", "QA-Order-A"]);
+    click("group-up-QA-Order-B", cx);
+    assert_eq!(store.borrow().ordered_session_groups(), vec!["QA-Order-B", "system", "QA-Order-A"]);
+    click("group-up-QA-Order-B", cx); // Disabled at the boundary.
+    assert_eq!(store.borrow().ordered_session_groups()[0], "QA-Order-B");
+    click("group-delete-system", cx);
+    click("group-edit-system", cx);
+    assert_eq!(store.borrow().ordered_session_groups(), vec!["QA-Order-B", "system", "QA-Order-A"]);
+    let rows = crate::ui::session_list::rows_for(&store, "");
+    let headers: Vec<_> = rows.iter().filter(|row| !row.group_header.is_empty()).map(|row| row.group_header.as_str()).collect();
+    assert_eq!(headers, vec!["QA-Order-B", "system", "QA-Order-A"]);
+    click("group-down-QA-Order-B", cx);
+    assert_eq!(store.borrow().ordered_session_groups(), vec!["system", "QA-Order-B", "QA-Order-A"]);
+}
+
+#[gpui_kit::gpui::test]
+fn group_order_default_heading_moves_but_cannot_be_renamed_or_deleted(cx: &mut TestAppContext) {
+    let (shell, _directory, cx) = fixture(cx);
+    let store = shell.read_with(cx, |shell, _| shell.state.store.clone());
+    let mut session = crate::config::Session::new_empty();
+    session.id = "synthetic-ungrouped-order".into();
+    session.name = "Synthetic ungrouped".into();
+    session.group.clear();
+    store.borrow_mut().cache.sessions.push(session);
+    open_groups(&shell, cx);
+    click("group-up-default", cx);
+    assert_eq!(store.borrow().ordered_session_groups(), vec!["default", "system"]);
+    click("group-delete-default", cx);
+    click("group-edit-default", cx);
+    assert_eq!(store.borrow().ordered_session_groups(), vec!["default", "system"]);
+    assert!(store.borrow().sessions()[0].group.is_empty());
+    assert_eq!(store.borrow().sessions()[0].id, "synthetic-ungrouped-order");
+}

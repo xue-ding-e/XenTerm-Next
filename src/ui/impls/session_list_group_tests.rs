@@ -352,3 +352,83 @@ fn compact_palette_keeps_all_group_headers_and_candidates_when_sidebar_groups_ar
         "compact palette keeps its existing index space"
     );
 }
+
+fn drag_header(source: &'static str, target: &'static str, cx: &mut VisualTestContext) {
+    let source = cx.debug_bounds(source).expect("source header").center();
+    let target = cx.debug_bounds(target).expect("target header").center();
+    cx.simulate_mouse_down(source, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(source + gpui_kit::point(px(12.), px(0.)), MouseButton::Left, Modifiers::default());
+    draw(cx);
+    cx.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    draw(cx);
+    cx.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    draw(cx);
+}
+
+#[gpui_kit::gpui::test]
+fn group_order_drag_reorders_headers_without_folding_or_connecting(cx: &mut TestAppContext) {
+    let fixture = Fixture::new();
+    let (view, cx) = open_fixture(cx, &fixture, false);
+    let list = list(&view, cx);
+    let (confirms, _subscription) = observe_confirms(&list, cx);
+    let folds = fixture.saved_groups();
+    drag_header("group-hdr-z", "group-hdr-system", cx);
+    assert_eq!(fixture.store.borrow().ordered_session_groups(), vec!["z", "system", "empty", "ops"]);
+    assert!(cx.debug_bounds("group-hdr-z").unwrap().top() < cx.debug_bounds("group-hdr-system").unwrap().top());
+    assert_eq!(fixture.saved_groups(), folds);
+    assert!(confirms.borrow().is_empty(), "dragging a header never connects a session");
+    assert_eq!(fixture.store.borrow().sessions()[0].group, "ops");
+    drag_header("group-hdr-z", "group-hdr-ops", cx);
+    assert_eq!(fixture.store.borrow().ordered_session_groups(), vec!["system", "empty", "ops", "z"]);
+}
+
+#[gpui_kit::gpui::test]
+fn group_order_drag_outside_a_target_cancels_without_saving(cx: &mut TestAppContext) {
+    let fixture = Fixture::new();
+    let (_, cx) = open_fixture(cx, &fixture, false);
+    let before = fixture.store.borrow().session_group_order().map(<[_]>::to_vec);
+    let folds = fixture.saved_groups();
+    let source = cx.debug_bounds("group-hdr-ops").unwrap().center();
+    cx.simulate_mouse_down(source, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(source + gpui_kit::point(px(12.), px(0.)), MouseButton::Left, Modifiers::default());
+    draw(cx);
+    let outside = gpui_kit::point(px(470.), px(1490.));
+    cx.simulate_mouse_move(outside, MouseButton::Left, Modifiers::default());
+    draw(cx);
+    cx.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
+    draw(cx);
+    assert_eq!(fixture.store.borrow().session_group_order(), before.as_deref());
+    assert_eq!(fixture.saved_groups(), folds);
+}
+
+#[gpui_kit::gpui::test]
+fn group_order_drag_rejects_a_stale_source(cx: &mut TestAppContext) {
+    let fixture = Fixture::new();
+    let (_, cx) = open_fixture(cx, &fixture, false);
+    let source = cx.debug_bounds("group-hdr-empty").unwrap().center();
+    let target = cx.debug_bounds("group-hdr-system").unwrap().center();
+    cx.simulate_mouse_down(source, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(source + gpui_kit::point(px(12.), px(0.)), MouseButton::Left, Modifiers::default());
+    draw(cx);
+    fixture.store.borrow_mut().remove_group("empty");
+    cx.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    draw(cx);
+    cx.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    draw(cx);
+    assert!(fixture.store.borrow().session_group_order().is_none());
+    assert!(!fixture.store.borrow().groups().iter().any(|group| group == "empty"));
+}
+
+#[gpui_kit::gpui::test]
+fn group_order_drag_save_failure_keeps_visible_and_cached_order(cx: &mut TestAppContext) {
+    let fixture = Fixture::new();
+    let (_, cx) = open_fixture(cx, &fixture, false);
+    let before = fixture.store.borrow().ordered_session_groups();
+    let top = cx.debug_bounds("group-hdr-system").unwrap().top();
+    // A directory cannot become the settings database; no user path is touched.
+    fixture.store.borrow_mut().path = fixture.directory.path().to_path_buf();
+    drag_header("group-hdr-z", "group-hdr-system", cx);
+    assert_eq!(fixture.store.borrow().ordered_session_groups(), before);
+    assert!(fixture.store.borrow().session_group_order().is_none());
+    assert_eq!(cx.debug_bounds("group-hdr-system").unwrap().top(), top);
+}
