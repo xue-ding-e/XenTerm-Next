@@ -7,7 +7,7 @@ import sys
 import unittest
 
 ROOT = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else Path(__file__).resolve().parents[1]
-SOURCE = (ROOT / "src/ui/impls/shell.rs").read_text()
+SOURCE = (ROOT / "src/ui/impls/shell.rs").read_text(encoding="utf-8")
 
 
 class MacosReopenWiring(unittest.TestCase):
