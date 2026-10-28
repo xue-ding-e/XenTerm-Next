@@ -170,6 +170,7 @@ jobs:
     needs: desktop
     if: ${{ !cancelled() }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       max-parallel: 1
@@ -214,6 +215,7 @@ jobs:
     needs: migration-e2e
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -268,6 +270,7 @@ jobs:
     needs: msrv-headless
     if: ${{ !cancelled() }}
     runs-on: windows-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -289,6 +292,7 @@ jobs:
     needs: windows-ssh
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - name: Install desktop validation tools
@@ -308,6 +312,7 @@ jobs:
     needs: installer
     if: ${{ !cancelled() }}
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -338,6 +343,7 @@ jobs:
     needs: installer-windows
     if: ${{ !cancelled() }}
     runs-on: macos-14
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
