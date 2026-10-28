@@ -1,6 +1,7 @@
 import importlib.util
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 import tempfile
 import json
 import os
@@ -32,7 +33,26 @@ class Gates(unittest.TestCase):
             data = dict(version='xt-dev-'+d.SHA[:7]+'-T1793220000', channel='dev', semver=None,
                         hash=d.SHA[:7], timestamp=1793220000, source='branch', branch='validation/forwarding-slots-20261028',tag=None,generated_at='2026-10-28T21:00:00Z')
             path.write_text(json.dumps(data))
+            os.utime(path, ns=(1, 1))
             self.assertEqual(d.version_receipt(path)['content']['hash'],d.SHA[:7])
+            # Mutation after the read must still fail; receipt hashes the same bytes parsed.
+            original_read = Path.read_bytes
+            for change in ('rewrite', 'replace', 'mtime'):
+                def mutate(target):
+                    raw = original_read(target)
+                    if change == 'replace':
+                        other = root/'replacement'
+                        other.write_bytes(raw)
+                        other.replace(target)
+                    elif change == 'mtime':
+                        st = target.stat()
+                        os.utime(target, ns=(st.st_atime_ns, st.st_mtime_ns + 1000000))
+                    else:
+                        target.write_bytes(raw + b' ')
+                    return raw
+                with patch.object(Path, 'read_bytes', mutate):
+                    with self.assertRaises(AssertionError): d.version_receipt(path)
+                path.write_text(json.dumps(data))
             with self.assertRaises(AssertionError): d.version_preflight(root)
             data['hash']='e9232fd'
             path.write_text(json.dumps(data))

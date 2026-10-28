@@ -145,13 +145,16 @@ def version_receipt(path):
     assert not any(p.is_symlink() for p in path.parents), 'symlink output parent'
     info = path.lstat()
     assert stat.S_ISREG(info.st_mode) and info.st_size <= 16384, 'version type/size'
-    content = json.loads(path.read_text())
+    raw = path.read_bytes()
+    content = json.loads(raw)
     assert isinstance(content, dict) and set(content) == {'version','channel','semver','hash','timestamp','source','branch','tag','generated_at'}, 'version schema'
     assert content['hash'] == SHA[:7], 'version hash not product base'
     assert isinstance(content['version'], str) and re.fullmatch(r'xt-dev-' + SHA[:7] + r'-T[0-9]{10}', content['version']), 'version identity'
     assert content['channel'] == 'dev' and content['source'] == 'branch', 'version derivation'
-    assert path.lstat() == info, 'version changed during validation'
-    return {'sha256': digest(path), 'bytes': info.st_size, 'content': content}
+    # Reading can update atime; compare only identity and content-change metadata.
+    stable = lambda st: (st.st_dev, st.st_ino, st.st_mode, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+    assert stable(path.lstat()) == stable(info), 'version changed during validation'
+    return {'sha256': hashlib.sha256(raw).hexdigest(), 'bytes': len(raw), 'content': content}
 
 
 def validate():
