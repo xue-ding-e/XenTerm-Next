@@ -4329,6 +4329,7 @@ mod unmapped_forwarding_tests {
         callback_done: UnboundedReceiver<(usize, Option<usize>)>,
         disconnect_seen: UnboundedReceiver<()>,
         counter: Option<Arc<AtomicUsize>>,
+        events: UnboundedReceiver<SessionEvent>,
     }
 
     impl Fixture {
@@ -4347,7 +4348,7 @@ mod unmapped_forwarding_tests {
                 keys: vec![key],
                 ..Default::default()
             };
-            let (events, _event_rx) = mpsc::unbounded_channel();
+            let (events, event_rx) = mpsc::unbounded_channel();
             let (callback_done, callback_rx) = mpsc::unbounded_channel();
             let (disconnect_seen, disconnect_rx) = mpsc::unbounded_channel();
             let counter = initial_count.map(|count| Arc::new(AtomicUsize::new(count)));
@@ -4386,6 +4387,7 @@ mod unmapped_forwarding_tests {
                 callback_done: callback_rx,
                 disconnect_seen: disconnect_rx,
                 counter,
+                events: event_rx,
             })
         }
 
@@ -4560,6 +4562,96 @@ mod unmapped_forwarding_tests {
                     count.load(Ordering::Relaxed) == 0,
                     "mapped connection slot was not released"
                 );
+                Ok(())
+            }
+            .await;
+            let cleanup = fixture.shutdown().await;
+            drop(listener);
+            finish_result(result, cleanup)
+        })
+        .await?
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn mapped_connect_failure_releases_connection_count() -> Result<()> {
+        tokio::time::timeout(Duration::from_secs(45), async {
+            // Own the port without listening throughout the fixture: no
+            // bind/drop/reconnect race can redirect the dial to another service.
+            let reservation = tokio::net::TcpSocket::new_v4()?;
+            reservation.bind((std::net::Ipv4Addr::LOCALHOST, 0).into())?;
+            let port = reservation.local_addr()?.port();
+            let mut fixture = Fixture::with_target(Some(0), Some(port)).await?;
+            let result: Result<()> = async {
+                let (channel, snapshot) = fixture.open().await?;
+                anyhow::ensure!(
+                    snapshot == (1, Some(1)),
+                    "failed-target callback did not reserve exactly one slot"
+                );
+                let event = bounded("local connect failure output", fixture.events.recv())
+                    .await?
+                    .context("events closed before local connect failure")?;
+                let SessionEvent::Output(text) = event else {
+                    anyhow::bail!("expected local connect failure output");
+                };
+                let prefix = format!("\r\n[xenterm] -R 127.0.0.1:{port} 连接失败 / connect failed: ");
+                let error = text.strip_prefix(&prefix)
+                    .and_then(|tail| tail.strip_suffix("\r\n"));
+                anyhow::ensure!(
+                    error.is_some_and(|error| !error.is_empty()),
+                    "expected target-specific local connect failure output"
+                );
+                // On this current-thread runtime, receiving the event requires
+                // the sending poll to finish; send and fetch_sub have no await
+                // between them. Do not substitute a sleep or a counter-only poll.
+                anyhow::ensure!(
+                    fixture.counter.as_ref().context("missing mapped counter")?
+                        .load(Ordering::Relaxed) == 0,
+                    "failed local connection slot was not released"
+                );
+                bounded("failed target channel close", channel.close()).await??;
+                Ok(())
+            }
+            .await;
+            let cleanup = fixture.shutdown().await;
+            drop(reservation);
+            finish_result(result, cleanup)
+        })
+        .await?
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn mapped_channel_at_cap_does_not_dial_target() -> Result<()> {
+        tokio::time::timeout(Duration::from_secs(45), async {
+            let listener = bounded(
+                "bind capped loopback target",
+                tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)),
+            )
+            .await??;
+            let mut fixture =
+                Fixture::with_target(Some(256), Some(listener.local_addr()?.port())).await?;
+            let result: Result<()> = async {
+                let (channel, snapshot) = fixture.open().await?;
+                anyhow::ensure!(
+                    snapshot == (1, Some(256)),
+                    "capped forwarding changed connection accounting"
+                );
+                // A finite negative observation after the actual callback,
+                // not a claim that arbitrary future network activity is absent.
+                anyhow::ensure!(
+                    tokio::time::timeout(Duration::from_millis(100), listener.accept())
+                        .await.is_err(),
+                    "capped forwarding unexpectedly dialed its target"
+                );
+                anyhow::ensure!(
+                    fixture.counter.as_ref().context("missing capped counter")?
+                        .load(Ordering::Relaxed) == 256,
+                    "capped forwarding changed the existing count"
+                );
+                anyhow::ensure!(
+                    matches!(fixture.events.try_recv(), Err(mpsc::error::TryRecvError::Empty)),
+                    "capped forwarding unexpectedly emitted a session event"
+                );
+                bounded("capped channel close", channel.close()).await??;
                 Ok(())
             }
             .await;
