@@ -591,16 +591,22 @@ class PublisherTests(unittest.TestCase):
                 self.assertNotIn('move_tag', api.events)
                 self.assertFalse(any(e.startswith(('PATCH:', 'DELETE:')) for e in api.events))
 
-    def test_success_keeps_manual_attachment_and_replaces_only_managed_old_assets(self):
+    def test_success_labels_gpui_and_preserves_old_and_other_channel_assets(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp); archives(path); api = FakeGitHub()
+            flutter = 'XenTerm-Flutter-beta-windows.zip'
+            api.files[flutter] = b'other channel'
+            api.ids[flutter] = 3
             release.publish(api, path, SHA, '12', '34')
             self.assertEqual(api.ref, SHA)
-            self.assertIn('manual.txt', api.files)
-            self.assertNotIn(release.prefix(OLD) + 'windows-x86_64.zip', api.files)
-            self.assertEqual(len(api.files), 6)
+            self.assertEqual(api.files['manual.txt'], b'keep')
+            self.assertEqual(api.files[flutter], b'other channel')
+            self.assertEqual(api.files[release.prefix(OLD) + 'windows-x86_64.zip'], b'old')
+            self.assertEqual(len(api.files), 8)
+            self.assertIn('GPUI', api.current['name'])
+            self.assertIn('不替换 Flutter 版本', api.current['body'])
             self.assertGreater(api.events.index('move_tag'), max(i for i, event in enumerate(api.events) if event == 'verify'))
-            self.assertGreater(next(i for i, event in enumerate(api.events) if event.startswith('DELETE:')), api.events.index('PATCH:releases/1'))
+            self.assertFalse(any(event.startswith('DELETE:') for event in api.events))
 
     def test_any_pre_cleanup_failure_preserves_old_and_manual_downloads(self):
         for failure in ('upload', 'checksum', 'main_changed', 'lease', 'metadata'):

@@ -340,24 +340,20 @@ def publish(api, directory, sha, ci_id, build_id):
         raise RuntimeError('Beta tag changed concurrently')
     links = '\n'.join(f'- [{name}](https://github.com/{REPOSITORY}/releases/download/beta/{name})'
                       for name in expected)
-    body = (f'XenTerm Next 独立增强预览版，基于 [XenTerm](https://github.com/ixbaicn/XenTerm)，保留 MIT 归属。\n\n'
+    body = (f'XenTerm Next GPUI 独立增强预览版（Rust + GPUI 桌面渠道，不替换 Flutter 版本），基于 [XenTerm](https://github.com/ixbaicn/XenTerm)，保留 MIT 归属。\n\n'
             f'源码 SHA: `{sha}`\nCI: https://github.com/{REPOSITORY}/actions/runs/{ci_id}\n'
             f'Build: https://github.com/{REPOSITORY}/actions/runs/{build_id}\n\n'
             'Windows portable 未签名（unsigned）；macOS 仅 ad-hoc 签名、未公证。请核对 SHA256SUMS；不要关闭系统安全保护。\n'
             'Linux x86_64 构建于 Ubuntu 22.04，不宣称 glibc 2.28 兼容。可执行文件内部名称仍为 xenterm。\n'
             '滚动预览更新时不同 SHA 资产可能短暂共存；以下链接明确指定本次构建。\n\n' + links)
-    api.api(f'releases/{rid}', 'PATCH', {'name': f'XenTerm Next beta ({sha[:12]})',
+    api.api(f'releases/{rid}', 'PATCH', {'name': f'XenTerm Next GPUI beta ({sha[:12]})',
             'body': body, 'draft': False, 'prerelease': True, 'make_latest': 'false'})
     verified = api.api(f'releases/{rid}')
     if verified['body'] != body or verified['draft'] or api.tag() != sha:
         raise RuntimeError('Release readback mismatch; preserving all old assets')
-    # Never delete unknown/manual attachments. Abort cleanup if main moved; a
-    # subsequent successful generation can remove recognized stale assets.
-    for asset in obsolete_assets(api.assets(rid), expected):
-        api.check(sha, ci_id)
-        if api.tag() != sha:
-            raise RuntimeError('Tag changed before cleanup')
-        api.api(f'releases/assets/{asset["id"]}', 'DELETE')
+    # Publication preserves every prior/manual asset, including other channels.
+    # Only a separate reviewed cleanup may remove old GPUI assets after the new
+    # downloads are verified and a recoverable copy of the old assets is secured.
 
 
 if __name__ == '__main__':
