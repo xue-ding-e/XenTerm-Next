@@ -8,6 +8,7 @@ import re
 import selectors
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -133,6 +134,26 @@ def interrupted(signum, _frame):
     raise RuntimeError('driver interrupted by signal ' + str(signum))
 
 
+def version_preflight(out):
+    path = out / 'version.json'
+    assert not any(p.is_symlink() for p in [out, *out.parents]), 'symlink output parent'
+    assert not os.path.lexists(path), 'pre-existing version output'
+    return path
+
+
+def version_receipt(path):
+    assert not any(p.is_symlink() for p in path.parents), 'symlink output parent'
+    info = path.lstat()
+    assert stat.S_ISREG(info.st_mode) and info.st_size <= 16384, 'version type/size'
+    content = json.loads(path.read_text())
+    assert isinstance(content, dict) and set(content) == {'version','channel','semver','hash','timestamp','source','branch','tag','generated_at'}, 'version schema'
+    assert content['hash'] == SHA[:7], 'version hash not product base'
+    assert isinstance(content['version'], str) and re.fullmatch(r'xt-dev-' + SHA[:7] + r'-T[0-9]{10}', content['version']), 'version identity'
+    assert content['channel'] == 'dev' and content['source'] == 'branch', 'version derivation'
+    assert path.lstat() == info, 'version changed during validation'
+    return {'sha256': digest(path), 'bytes': info.st_size, 'content': content}
+
+
 def validate():
     control = Path(__file__).resolve().parent.parent
     control_sha = os.environ['GITHUB_SHA']
@@ -140,6 +161,7 @@ def validate():
     assert run(['git', '-C', str(control), 'rev-parse', 'HEAD'], 'control-head', 10).strip() == control_sha
     assert run(['git', 'rev-parse', 'HEAD'], 'source-head', 10).strip() == SHA
     assert not run(['git', 'status', '--porcelain', '--untracked-files=all', '--ignored'], 'clean-before', 10).strip()
+    version_output = version_preflight(OUT)
     patch = control / 'scripts/forwarding.patch'
     assert digest(patch) == PATCH_HASH
     run(['git', 'apply', '--check', '--whitespace=error', str(patch)], 'patch-check', 10)
@@ -151,6 +173,10 @@ def validate():
         (OUT / name).mkdir()
     for key in ['ALL_PROXY','all_proxy','HTTP_PROXY','http_proxy','HTTPS_PROXY','https_proxy']:
         ENV.pop(key, None)
+    for key in ['XT_VERSION', 'XT_CHANNEL']:
+        ENV.pop(key, None)
+    ENV.update(XT_VERSION_JSON=str(version_output), GITHUB_SHA=SHA,
+               GITHUB_REF_TYPE='branch', GITHUB_REF_NAME='validation/forwarding-slots-20261028')
     output = run([CARGO, 'test', '--locked', '--no-default-features', '--features', 'headless',
                   '--jobs', '1', '--no-run', '--message-format=json'], 'compile', 2400, 64*1024*1024)
     artifacts = []
@@ -179,6 +205,7 @@ def validate():
     assert run(['git', 'status', '--porcelain', '--untracked-files=all', '--ignored'], 'status-after', 10).strip() == 'M  src/ssh/impls/ssh.rs'
     (OUT / 'receipt.json').write_text(json.dumps({'source_sha': SHA, 'candidate_tree': TREE,
         'patch_sha256': PATCH_HASH, 'control_sha': control_sha, 'binary_sha256': binary_hash,
+        'version_metadata': version_receipt(version_output), 'source_identity': 'base plus patch/tree, not a candidate commit SHA',
         'tests': sorted(EXPECTED), 'scope': 'two synthetic loopback SSH headless tests; not native GUI or full suite'}, indent=2))
 
 
