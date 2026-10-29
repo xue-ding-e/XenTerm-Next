@@ -1,4 +1,4 @@
-name: Installed VS discovery metadata (manual, no compiler execution)
+name: Paired VS directory discovery metadata (manual, no compiler execution)
 # Local proposal: hosted lifecycle only. No raw logs or binaries uploaded.
 on:
   workflow_dispatch:
@@ -60,7 +60,7 @@ jobs:
       - name: Prepare exact candidate
         timeout-minutes: 2
         run: python control/scripts/native-key-import.py prepare
-      - name: Record bounded installed VS discovery metadata
+      - name: Record paired installed VS directory discovery metadata
         timeout-minutes: 3
         run: python control/scripts/msvc-proof.py
       - name: Preserve structured evidence only
@@ -83,3 +83,4 @@ jobs:
             ${{ runner.temp }}/key-import-native-evidence/msvc-proof.json
             ${{ runner.temp }}/key-import-native-evidence/bootstrap-status.json
             ${{ runner.temp }}/key-import-native-evidence/vs-discovery.json
+            ${{ runner.temp }}/key-import-native-evidence/vs-paired-discovery.json

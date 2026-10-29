@@ -214,10 +214,57 @@ def discovery_only():
     result['stage']=stage;n.write('vs-discovery.json',result)
     return code
 
+# Paired metadata experiment only; no permanent build-environment change.
+def programdata_overlay(env):
+    fold={k.upper():v for k,v in env.items()}
+    if 'SYSTEMROOT' not in fold:raise ControlGate('ab-systemroot-missing')
+    system=Path(fold['SYSTEMROOT'])
+    if not system.is_absolute() or system.name.casefold()!='windows':raise ControlGate('ab-systemroot-invalid')
+    known=system.parent/'ProgramData'
+    # Read exactly two named directory variables, never copy ambient values.
+    selected={k.upper():os.environ[k] for k in os.environ if k.upper() in ('PROGRAMDATA','ALLUSERSPROFILE')}
+    if set(selected)!= {'PROGRAMDATA','ALLUSERSPROFILE'}:raise ControlGate('ab-directory-variable-missing')
+    for value in selected.values():
+        if not isinstance(value,str):raise ControlGate('ab-directory-invalid')
+        if '\x00' in value:raise ControlGate('ab-directory-invalid')
+        path=Path(value);safe_cmd_path(path)
+        for part in (path,*path.parents):
+            if not part.is_dir() or part.is_symlink() or getattr(part.lstat(),'st_file_attributes',0)&0x400:raise ControlGate('ab-directory-reparse-or-invalid')
+        if path.resolve()!=known.resolve():raise ControlGate('ab-directory-not-known-root')
+    return {**env,**selected}
+
+def paired_discovery_only():
+    result={'smoke_attempted':False,'product_compile_attempted':False,'sdk_batch_attempted':False,'raw_logs_uploaded':False,'state':'incomplete','queries':{}}
+    stage='environment'
+    try:
+        env=n.compile_env();other=programdata_overlay(env)
+        fold={k.upper():v for k,v in env.items()}
+        if 'PROGRAMFILES(X86)' not in fold:raise ControlGate('ab-tool-root-missing')
+        stage='tool-path';vswhere=Path(fold['PROGRAMFILES(X86)'])/'Microsoft Visual Studio'/'Installer'/'vswhere.exe';safe_cmd_path(vswhere)
+        result['vswhere_sha256']=n.digest(vswhere);failed=False
+        for name,childenv in (('baseline',env),('directory-overlay',other)):
+            stage=name
+            try:
+                child=subprocess.run([str(vswhere),*DISCOVERY_QUERIES['standard-component']],env=childenv,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=10,check=False)
+                result['queries'][name]={'exit':child.returncode}
+                if child.returncode!=0:raise ControlGate('discovery-child-nonzero')
+                result['queries'][name].update(discovery_parse('standard-component',child.stdout))
+            except ControlGate as exc:result['queries'].setdefault(name,{})['reason']=exc.reason;failed=True
+            except BaseException as exc:
+                kinds={'TimeoutExpired':'child-timeout','JSONDecodeError':'invalid-json','UnicodeDecodeError':'invalid-encoding','FileNotFoundError':'file-not-found','PermissionError':'permission-denied','OSError':'os-error'}
+                result['queries'].setdefault(name,{})['reason']=kinds.get(type(exc).__name__,'unknown-error');failed=True
+        stage='final-identities';discovery_final_identities()
+        result.update(state='paired-discovery-failed' if failed else 'paired-discovery-recorded',reason='query-failed' if failed else None);code=1 if failed else 0
+    except ControlGate as exc:result.update(state='paired-discovery-failed',reason=exc.reason);code=1
+    except BaseException as exc:
+        kinds={'TimeoutExpired':'child-timeout','JSONDecodeError':'invalid-json','UnicodeDecodeError':'invalid-encoding','FileNotFoundError':'file-not-found','PermissionError':'permission-denied','OSError':'os-error','TypeError':'invalid-type','ValueError':'invalid-value','KeyError':'missing-field'}
+        result.update(state='paired-discovery-error',reason=kinds.get(type(exc).__name__,'unknown-error'));code=1
+    result['stage']=stage;n.write('vs-paired-discovery.json',result);return code
+
 if __name__=='__main__':
     try:
         if sys.argv[1:]==['--capture-env']:capture_env();code=0
-        else:code=discovery_only()
+        else:code=paired_discovery_only()
     except BaseException as exc:
         if n.OUT.is_dir():n.write('failure.json',{'stage':'msvc-environment-proof','error_type':type(exc).__name__,'classification':'control/environment failure; no product test','product_compile_attempted':False,'raw_logs_uploaded':False})
         code=1

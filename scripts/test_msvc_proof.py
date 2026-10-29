@@ -5,6 +5,32 @@ from unittest.mock import patch
 spec=importlib.util.spec_from_file_location('proof',Path(__file__).with_name('msvc-proof.py'));p=importlib.util.module_from_spec(spec);spec.loader.exec_module(p)
 spec=importlib.util.spec_from_file_location('previous',Path(__file__).with_name('test_diagnose_native.py'));previous=importlib.util.module_from_spec(spec);spec.loader.exec_module(previous)
 class BootstrapGuards(unittest.TestCase):
+    def test_programdata_overlay_only_two_directories(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);data=root/'ProgramData';data.mkdir();env={'SYSTEMROOT':str(root/'Windows'),'PATH':'fixed','TEMP':tmp}
+            with patch.dict(os.environ,{'ProgramData':str(data),'ALLUSERSPROFILE':str(data),'GITHUB_TOKEN':'SECRET'},clear=True):
+                out=p.programdata_overlay(env);self.assertEqual(set(out)-set(env),{'PROGRAMDATA','ALLUSERSPROFILE'});self.assertEqual(out['PATH'],'fixed');self.assertNotIn('SECRET',str(out));self.assertNotIn('PROGRAMDATA',env)
+    def test_programdata_overlay_rejects_missing_outside_relative_nul(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);data=root/'ProgramData';data.mkdir();other=root/'Other';other.mkdir();env={'SYSTEMROOT':str(root/'Windows')}
+            for values in [{},{'PROGRAMDATA':str(data)},{'PROGRAMDATA':str(other),'ALLUSERSPROFILE':str(other)},{'PROGRAMDATA':'relative','ALLUSERSPROFILE':'relative'},{'PROGRAMDATA':'nul\x00','ALLUSERSPROFILE':str(data)}]:
+                with patch.object(os,'environ',previous.prior.WindowsEnvironment(values)),self.assertRaises(p.ControlGate):p.programdata_overlay(env)
+    def test_programdata_overlay_reparse_ancestor_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);data=root/'ProgramData';data.mkdir();env={'SYSTEMROOT':str(root/'Windows')};original=Path.lstat
+            class Reparse:st_file_attributes=0x400;st_mode=0o040755
+            def stat(path):return Reparse() if path==root else original(path)
+            with patch.dict(os.environ,{'PROGRAMDATA':str(data),'ALLUSERSPROFILE':str(data)},clear=True),patch.object(Path,'lstat',stat),self.assertRaises(p.ControlGate):p.programdata_overlay(env)
+    def test_paired_query_exact_delta_and_no_compiler(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);data=root/'ProgramData';data.mkdir();env={'SYSTEMROOT':str(root/'Windows'),'PROGRAMFILES(X86)':tmp,'PATH':'fixed'};calls=[]
+            def run(argv,**kw):
+                calls.append((argv,kw));return subprocess.CompletedProcess(argv,0,b'[]' if len(calls)==1 else b'[{"installationVersion":"17.1","isComplete":true}]')
+            with patch.dict(os.environ,{'PROGRAMDATA':str(data),'ALLUSERSPROFILE':str(data),'TOKEN':'SECRET'},clear=True),patch.object(p.n,'compile_env',return_value=env),patch.object(p.n,'OUT',root),patch.object(p,'safe_cmd_path'),patch.object(p.n,'digest',return_value='0'*64),patch.object(p,'discovery_final_identities'),patch.object(p.subprocess,'run',side_effect=run),patch.object(p,'bootstrap') as boot,patch.object(p,'proof') as smoke:
+                self.assertEqual(p.paired_discovery_only(),0);r=json.loads((root/'vs-paired-discovery.json').read_text());self.assertEqual(r['queries']['baseline']['count'],0);self.assertEqual(r['queries']['directory-overlay']['count'],1);self.assertNotIn('SECRET',json.dumps(r));self.assertEqual(calls[0][0],calls[1][0]);self.assertEqual(calls[0][1]['env'],env);self.assertEqual(set(calls[1][1]['env'])-set(env),{'PROGRAMDATA','ALLUSERSPROFILE'});self.assertEqual(calls[1][1]['timeout'],10);boot.assert_not_called();smoke.assert_not_called()
+    def test_paired_query_error_continues_non_green(self):
+        with tempfile.TemporaryDirectory() as tmp,patch.object(p.n,'OUT',Path(tmp)),patch.object(p.n,'compile_env',return_value={'PROGRAMFILES(X86)':tmp}),patch.object(p,'programdata_overlay',return_value={'PROGRAMFILES(X86)':tmp,'PROGRAMDATA':tmp,'ALLUSERSPROFILE':tmp}),patch.object(p,'safe_cmd_path'),patch.object(p.n,'digest',return_value='0'*64),patch.object(p,'discovery_final_identities'),patch.object(p.subprocess,'run',side_effect=[subprocess.TimeoutExpired(['SECRET'],10),subprocess.CompletedProcess([],0,b'[]')]) as run:
+            self.assertEqual(p.paired_discovery_only(),1);r=json.loads((Path(tmp)/'vs-paired-discovery.json').read_text());self.assertEqual(run.call_count,2);self.assertEqual(r['queries']['baseline']['reason'],'child-timeout');self.assertNotIn('SECRET',json.dumps(r))
     def test_discovery_ambient_presence_reads_keys_only(self):
         code=(p.HERE/'msvc-proof.py').read_text().split('def discovery_only():',1)[1].split("if __name__==",1)[0]
         self.assertIn('parent={k.upper() for k in os.environ}',code);self.assertNotIn('os.environ.items()',code);self.assertNotIn('os.environ.values()',code)
@@ -97,7 +123,7 @@ class BootstrapGuards(unittest.TestCase):
             with tempfile.TemporaryDirectory() as tmp,patch.object(p.n,'OUT',Path(tmp)),patch.object(p,'bootstrap',side_effect=error):
                 self.assertEqual(p.metadata_only(),1);text=(Path(tmp)/'bootstrap-status.json').read_text();self.assertEqual(json.loads(text)['reason'],reason);self.assertNotIn('SECRET',text)
     def test_entrypoint_metadata_only(self):
-        code=(p.HERE/'msvc-proof.py').read_text();self.assertIn('else:code=discovery_only()',code);self.assertNotIn('else:code=proof()',code)
+        code=(p.HERE/'msvc-proof.py').read_text();self.assertIn('else:code=paired_discovery_only()',code);self.assertNotIn('else:code=proof()',code)
     def test_signer_script_no_raw_export(self):
         code=(p.HERE/'tool-signatures.ps1').read_text();self.assertIn('Get-AuthenticodeSignature',code);self.assertIn("$signature.Status -eq 'Valid'",code);self.assertIn("$version.CompanyName -eq 'Microsoft Corporation'",code);self.assertNotIn('Write-Host',code);self.assertNotIn('ExecutionPolicy',code)
 if __name__=='__main__':
