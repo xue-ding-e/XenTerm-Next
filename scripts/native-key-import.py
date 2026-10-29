@@ -104,7 +104,7 @@ def prepare():
         git('apply','--check','--whitespace=error',str(HERE/n));git('apply','--index',str(HERE/n));require(git('write-tree')==tree,'tree mismatch')
     git('diff','--cached','--check')
     for n,h in I['FIXTURES'].items():require(digest(SOURCE/n)==h,'fixture mismatch')
-    files=[HERE/'native-key-import.py',HERE/'test_native_key_import.py',HERE/'inputs.json',CONTROL/'.github/workflows/ci.yml',*[HERE/n for n in I['PATCHES']]]
+    files=[HERE/'native-key-import.py',HERE/'test_native_key_import.py',HERE/'inputs.json',CONTROL/'.github/workflows/ci.yml',HERE/'diagnose-native.py',HERE/'test_diagnose_native.py',*[HERE/n for n in I['PATCHES']]]
     write('prepared.json',{'source_sha':I['SHA'],'product_tree':I['PRODUCT_TREE'],'test_tree':I['TEST_TREE'],'control_sha':os.environ['EXPECTED_CONTROL_SHA'],'control_files':{str(p.relative_to(CONTROL)):digest(p) for p in files},'status':git('status','--porcelain','--untracked-files=all','--ignored'),'started_monotonic':time.monotonic()})
 
 def compile_env():
@@ -132,13 +132,13 @@ def compile_env():
     for k in ('HOME','USERPROFILE','APPDATA','LOCALAPPDATA','XDG_CONFIG_HOME','XDG_DATA_HOME','XDG_CACHE_HOME','XDG_RUNTIME_DIR','XENTERM_DATA_DIR','TEMP','TMP','TMPDIR'):env[k]=sandbox[k]
     return env
 
-def compile_product(target):
+def compile_product(target, compile_seconds=45*60):
     require(target==platform_target(),'wrong native target')
     env=compile_env()
     env.update(CARGO_TARGET_DIR=str(OUT/'target'),XT_VERSION_JSON=str(OUT/'version.json'),GITHUB_SHA=I['SHA'],GITHUB_REF_TYPE='branch',GITHUB_REF_NAME=BRANCH,CARGO_BUILD_JOBS='2',CARGO_INCREMENTAL='0',CARGO_PROFILE_DEV_DEBUG='0',CARGO_PROFILE_TEST_DEBUG='0')
     cargo=shutil.which('cargo');require(cargo is not None,'cargo missing')
     deadline=read('prepared.json')['started_monotonic']+57*60
-    output=run([cargo,'+1.99.1','test','--locked','--bin','xenterm','--target',target,'--jobs','2','--no-run','--message-format=json'],'compile',remaining(45*60,deadline),env)
+    output=run([cargo,'+1.99.1','test','--locked','--bin','xenterm','--target',target,'--jobs','2','--no-run','--message-format=json'],'compile',remaining(compile_seconds,deadline),env)
     write('binary.json',artifact_from_log(output,target))
 
 def runtime():
