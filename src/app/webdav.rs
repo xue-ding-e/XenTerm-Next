@@ -456,4 +456,109 @@ mod tests {
         // A file at the root has no parents to create.
         assert!(webdav_parent_dirs("https://dav.example.com/sessions.json").is_empty());
     }
+
+    // This certificate/key pair is public synthetic test data, never a credential.
+    // No system trust, user profile, external service or TLS dependency is added.
+    fn check_loopback_webdav_certificate_policy(accept_invalid_certs: bool) {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::time::{Duration, Instant};
+        use ureq::rustls::{pki_types, ServerConfig, ServerConnection, StreamOwned};
+
+        // Do not route even synthetic requests through an inherited real proxy.
+        for name in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"] {
+            assert!(std::env::var_os(name).map_or(true, |v| v.is_empty()), "unset {name} for loopback TLS tests");
+        }
+        let certificate = pki_types::CertificateDer::from(
+            include_bytes!("../../tests/fixtures/webdav-untrusted-cert.der").to_vec(),
+        );
+        let key = pki_types::PrivatePkcs8KeyDer::from(
+            include_bytes!("../../tests/fixtures/webdav-test-only-key.der").to_vec(),
+        );
+        let config = ServerConfig::builder_with_provider(
+            ureq::rustls::crypto::ring::default_provider().into(),
+        )
+        .with_protocol_versions(&[&ureq::rustls::version::TLS13])
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(vec![certificate], key.into())
+        .unwrap();
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        // Scoped ownership also joins the fixture if the client panics.
+        let (result, served_http) = std::thread::scope(|scope| {
+            let server = scope.spawn(move || -> std::io::Result<bool> {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                let (socket, peer) = loop {
+                    match listener.accept() {
+                        Ok(pair) => break pair,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline => {
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => return Err(error),
+                    }
+                };
+                assert!(peer.ip().is_loopback());
+                // Windows accept inherits nonblocking mode from the listener.
+                // Only accept polling is nonblocking; bounded TLS I/O is blocking.
+                socket.set_nonblocking(false)?;
+                socket.set_read_timeout(Some(Duration::from_secs(3)))?;
+                socket.set_write_timeout(Some(Duration::from_secs(3)))?;
+                let connection = ServerConnection::new(Arc::new(config)).unwrap();
+                let mut stream = StreamOwned::new(connection, socket);
+                let handshake_deadline = Instant::now() + Duration::from_secs(5);
+                while stream.conn.is_handshaking() {
+                    assert!(Instant::now() < handshake_deadline, "bounded TLS handshake");
+                    if let Err(error) = stream.conn.complete_io(&mut stream.sock) {
+                        if !accept_invalid_certs && error.kind() == std::io::ErrorKind::InvalidData {
+                            return Ok(false); // Peer rejected the certificate, no HTTP read.
+                        }
+                        return Err(error);
+                    }
+                }
+                let header_deadline = Instant::now() + Duration::from_secs(5);
+                let mut header = Vec::new();
+                while !header.ends_with(b"\r\n\r\n") {
+                    assert!(Instant::now() < header_deadline, "bounded HTTP header read");
+                    assert!(header.len() < 8192, "bounded synthetic HTTP header");
+                    let mut byte = [0];
+                    stream.read_exact(&mut byte)?;
+                    header.push(byte[0]);
+                }
+                assert!(header.starts_with(b"GET /fixture.json HTTP/1.1\r\n"));
+                assert!(String::from_utf8_lossy(&header).to_ascii_lowercase().contains("authorization: basic "));
+                stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")?;
+                stream.flush()?;
+                stream.conn.send_close_notify();
+                stream.flush()?;
+                Ok(true)
+            });
+            let result = webdav_get_json(
+                &format!("https://{address}"), "/fixture.json", "synthetic-user", "synthetic-password",
+                accept_invalid_certs,
+            );
+            // Always join before asserting the client outcome, including failure paths.
+            let served_http = server.join().expect("TLS fixture thread panicked").expect("TLS fixture failed");
+            (result, served_http)
+        });
+        if accept_invalid_certs {
+            assert_eq!(result.unwrap(), "{}");
+            assert!(served_http);
+        } else {
+            let error = result.unwrap_err().to_string();
+            assert!(error.contains("UnknownIssuer"), "expected certificate rejection: {error}");
+            assert!(!served_http);
+        }
+    }
+
+    #[test]
+    fn webdav_default_rejects_untrusted_loopback_certificate() {
+        check_loopback_webdav_certificate_policy(false);
+    }
+
+    #[test]
+    fn webdav_explicit_opt_in_allows_untrusted_loopback_certificate() {
+        check_loopback_webdav_certificate_policy(true);
+    }
 }
