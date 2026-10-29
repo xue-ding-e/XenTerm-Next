@@ -135,10 +135,89 @@ def proof():
         for path,h in p['control_files'].items():require(n.digest(n.CONTROL/path)==h,'control changed')
         for path,h in n.I['FIXTURES'].items():require(n.digest(n.SOURCE/path)==h,'fixture changed')
     return code
+
+# Read-only discovery probes. They never run the SDK batch or any compiler.
+DISCOVERY_QUERIES={
+    'original-property':['-latest','-products','*','-requires','Microsoft.VisualStudio.Component.VC.Tools.x86.x64','-property','installationPath'],
+    'standard-component':['-latest','-products','*','-requires','Microsoft.VisualStudio.Component.VC.Tools.x86.x64','-format','json','-utf8'],
+    'all-instances':['-all','-prerelease','-products','*','-format','json','-utf8'],
+    'all-component':['-all','-prerelease','-products','*','-requires','Microsoft.VisualStudio.Component.VC.Tools.x86.x64','-format','json','-utf8'],
+}
+def discovery_inventory(raw):
+    if len(raw)>65536:raise ControlGate('discovery-output-too-large')
+    data=json.loads(raw.decode('utf-8-sig'))
+    if not isinstance(data,list) or len(data)>32:raise ControlGate('discovery-schema-invalid')
+    items=[]
+    for item in data:
+        if not isinstance(item,dict):raise ControlGate('discovery-schema-invalid')
+        # Unknown fields are intentionally ignored, never echoed or forwarded.
+        version=item.get('installationVersion')
+        if not isinstance(version,str) or not re.fullmatch(r'[0-9]{1,6}(?:\.[0-9]{1,6}){1,3}',version):raise ControlGate('discovery-version-invalid')
+        record={'version':[int(v) for v in version.split('.')]}
+        for key in ('isComplete','isLaunchable','isPrerelease'):
+            value=item.get(key)
+            if value is not None and type(value) is not bool:raise ControlGate('discovery-state-invalid')
+            record[key]=value
+        state=item.get('state')
+        if state is not None and (type(state) is not int or not 0<=state<=4294967295):raise ControlGate('discovery-state-invalid')
+        record['state']=state;items.append(record)
+    return {'count':len(items),'instances':items}
+
+def discovery_parse(name,raw):
+    if name not in DISCOVERY_QUERIES:raise ControlGate('discovery-query-invalid')
+    if not isinstance(raw,bytes) or len(raw)>65536:raise ControlGate('discovery-output-too-large')
+    result={'bytes':len(raw),'sha256':hashlib.sha256(raw).hexdigest()}
+    if name=='original-property':
+        # Byte split works without assuming the old default Windows encoding.
+        lines=raw.splitlines();result.update(lines=len(lines),nonempty_lines=sum(bool(x.strip()) for x in lines))
+    else:result.update(discovery_inventory(raw))
+    return result
+
+def discovery_final_identities():
+    n.identities();n.patch_hashes()
+    require(n.git('write-tree')==n.I['TEST_TREE'],'tree changed')
+    require(not n.git('diff','--exit-code'),'source changed')
+    prepared=n.read('prepared.json')
+    require(n.git('status','--porcelain','--untracked-files=all','--ignored')==prepared['status'],'status changed')
+    for path,h in prepared['control_files'].items():require(n.digest(n.CONTROL/path)==h,'control changed')
+    for path,h in n.I['FIXTURES'].items():require(n.digest(n.SOURCE/path)==h,'fixture changed')
+
+def discovery_only():
+    result={'smoke_attempted':False,'product_compile_attempted':False,'sdk_batch_attempted':False,'raw_logs_uploaded':False,'queries':{},'state':'incomplete'}
+    stage='environment'
+    try:
+        env=n.compile_env();fold={k.upper():v for k,v in env.items()}
+        parent={k.upper() for k in os.environ}
+        result['environment_presence']={key:{'parent':key in parent,'isolated':key in fold} for key in ('PROGRAMDATA','ALLUSERSPROFILE')}
+        stage='tool-path'
+        require('PROGRAMFILES(X86)' in fold,'OS tool roots absent')
+        vswhere=Path(fold['PROGRAMFILES(X86)'])/'Microsoft Visual Studio'/'Installer'/'vswhere.exe';safe_cmd_path(vswhere)
+        result['vswhere_sha256']=n.digest(vswhere)
+        failed=False
+        for name,args in DISCOVERY_QUERIES.items():
+            stage=name
+            try:
+                child=subprocess.run([str(vswhere),*args],env=env,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=10,check=False)
+                result['queries'][name]={'exit':child.returncode}
+                if child.returncode!=0:raise ControlGate('discovery-child-nonzero')
+                result['queries'][name].update(discovery_parse(name,child.stdout))
+            except ControlGate as exc:result['queries'].setdefault(name,{})['reason']=exc.reason;failed=True
+            except BaseException as exc:
+                kinds={'TimeoutExpired':'child-timeout','JSONDecodeError':'invalid-json','UnicodeDecodeError':'invalid-encoding','FileNotFoundError':'file-not-found','PermissionError':'permission-denied','OSError':'os-error'}
+                result['queries'].setdefault(name,{})['reason']=kinds.get(type(exc).__name__,'unknown-error');failed=True
+        stage='final-identities';discovery_final_identities()
+        result.update(state='discovery-failed' if failed else 'discovery-recorded',reason='query-failed' if failed else None);code=1 if failed else 0
+    except ControlGate as exc:result.update(state='discovery-failed',reason=exc.reason);code=1
+    except BaseException as exc:
+        kinds={'TimeoutExpired':'child-timeout','JSONDecodeError':'invalid-json','UnicodeDecodeError':'invalid-encoding','FileNotFoundError':'file-not-found','PermissionError':'permission-denied','OSError':'os-error','TypeError':'invalid-type','ValueError':'invalid-value','KeyError':'missing-field'}
+        result.update(state='discovery-error',reason=kinds.get(type(exc).__name__,'unknown-error'));code=1
+    result['stage']=stage;n.write('vs-discovery.json',result)
+    return code
+
 if __name__=='__main__':
     try:
         if sys.argv[1:]==['--capture-env']:capture_env();code=0
-        else:code=metadata_only()
+        else:code=discovery_only()
     except BaseException as exc:
         if n.OUT.is_dir():n.write('failure.json',{'stage':'msvc-environment-proof','error_type':type(exc).__name__,'classification':'control/environment failure; no product test','product_compile_attempted':False,'raw_logs_uploaded':False})
         code=1

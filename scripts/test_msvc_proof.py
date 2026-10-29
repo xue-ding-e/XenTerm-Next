@@ -5,6 +5,41 @@ from unittest.mock import patch
 spec=importlib.util.spec_from_file_location('proof',Path(__file__).with_name('msvc-proof.py'));p=importlib.util.module_from_spec(spec);spec.loader.exec_module(p)
 spec=importlib.util.spec_from_file_location('previous',Path(__file__).with_name('test_diagnose_native.py'));previous=importlib.util.module_from_spec(spec);spec.loader.exec_module(previous)
 class BootstrapGuards(unittest.TestCase):
+    def test_discovery_ambient_presence_reads_keys_only(self):
+        code=(p.HERE/'msvc-proof.py').read_text().split('def discovery_only():',1)[1].split("if __name__==",1)[0]
+        self.assertIn('parent={k.upper() for k in os.environ}',code);self.assertNotIn('os.environ.items()',code);self.assertNotIn('os.environ.values()',code)
+    def test_discovery_original_counts_no_decoding_or_paths(self):
+        for raw,count,nonempty in [(b'',0,0),(b'PRIVATE\r\n',1,1),(b'PRIVATE\r\n\r\n',2,1),(b'\xffPRIVATE',1,1)]:
+            r=p.discovery_parse('original-property',raw);self.assertEqual(r['lines'],count);self.assertEqual(r['nonempty_lines'],nonempty);self.assertEqual(r['bytes'],len(raw));self.assertNotIn('PRIVATE',json.dumps(r))
+    def test_discovery_inventory_secret_fields_omitted(self):
+        raw=json.dumps([{'installationVersion':'17.14.123.4','isComplete':True,'isLaunchable':False,'isPrerelease':True,'state':4294967295,'installationPath':'SYNTHETIC_SECRET','catalog':{'displayName':'SYNTHETIC_SECRET'}}]).encode()
+        r=p.discovery_parse('all-instances',raw);self.assertEqual(r['count'],1);self.assertEqual(r['instances'][0]['version'],[17,14,123,4]);self.assertNotIn('SECRET',json.dumps(r))
+    def test_discovery_inventory_malformed_and_size_fail_closed(self):
+        bad=[{},[None],[{'installationVersion':'SECRET'}],[{'installationVersion':'17.0','isComplete':1}],[{'installationVersion':'17.0','state':True}],[{'installationVersion':'17.0','state':-1}],[{'installationVersion':'17.0'}]*33]
+        for value in bad:
+            with self.assertRaises(p.ControlGate):p.discovery_inventory(json.dumps(value).encode())
+        with self.assertRaises(p.ControlGate):p.discovery_parse('all-instances',b'x'*65537)
+        with self.assertRaises(p.ControlGate):p.discovery_parse('UNKNOWN',b'[]')
+    def test_discovery_only_queries_no_batch_compiler_secrets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);vs=root/'Microsoft Visual Studio'/'Installer'/'vswhere.exe';vs.parent.mkdir(parents=True);vs.write_bytes(b'fixture')
+            env={'PROGRAMFILES(X86)':str(root),'PATH':'fixed'}
+            calls=[]
+            def run(argv,**kw):
+                calls.append((argv,kw));self.assertEqual(kw['env'],env);self.assertEqual(kw['timeout'],10);self.assertEqual(argv[0],str(vs));self.assertNotIn('SECRET',str(kw))
+                return subprocess.CompletedProcess(argv,0,b'PRIVATE\r\n' if '-property' in argv else b'[]')
+            with patch.object(p.n,'OUT',root),patch.object(p.n,'compile_env',return_value=env),patch.object(p.subprocess,'run',side_effect=run),patch.object(p,'discovery_final_identities') as identities,patch.object(p,'bootstrap') as boot,patch.object(p,'proof') as smoke:
+                self.assertEqual(p.discovery_only(),0);r=json.loads((root/'vs-discovery.json').read_text());self.assertEqual(len(calls),4);self.assertEqual(r['state'],'discovery-recorded');self.assertFalse(r['sdk_batch_attempted']);self.assertNotIn('PRIVATE',json.dumps(r));identities.assert_called_once();boot.assert_not_called();smoke.assert_not_called()
+                for argv,_ in calls[1:]:self.assertIn('-utf8',argv)
+    def test_discovery_query_failure_continues_and_non_green(self):
+        for failure in [subprocess.TimeoutExpired(['SECRET'],10),subprocess.CompletedProcess([],7,b'SECRET'),subprocess.CompletedProcess([],0,b'bad SECRET')]:
+            with tempfile.TemporaryDirectory() as tmp,patch.object(p.n,'OUT',Path(tmp)),patch.object(p.n,'compile_env',return_value={'PROGRAMFILES(X86)':tmp}),patch.object(p,'safe_cmd_path'),patch.object(p.n,'digest',return_value='0'*64),patch.object(p,'discovery_final_identities'):
+                replies=[subprocess.CompletedProcess([],0,b''),failure,subprocess.CompletedProcess([],0,b'[]'),subprocess.CompletedProcess([],0,b'[]')]
+                with patch.object(p.subprocess,'run',side_effect=replies) as run:
+                    self.assertEqual(p.discovery_only(),1);r=json.loads((Path(tmp)/'vs-discovery.json').read_text());self.assertEqual(run.call_count,4);self.assertEqual(r['queries']['all-component']['count'],0);self.assertNotIn('SECRET',json.dumps(r))
+    def test_discovery_identity_failure_not_green(self):
+        with tempfile.TemporaryDirectory() as tmp,patch.object(p.n,'OUT',Path(tmp)),patch.object(p.n,'compile_env',return_value={'PROGRAMFILES(X86)':tmp}),patch.object(p,'safe_cmd_path'),patch.object(p.n,'digest',return_value='0'*64),patch.object(p,'discovery_final_identities',side_effect=p.ControlGate('tree-changed')),patch.object(p.subprocess,'run',return_value=subprocess.CompletedProcess([],0,b'[]')):
+            self.assertEqual(p.discovery_only(),1);r=json.loads((Path(tmp)/'vs-discovery.json').read_text());self.assertEqual(r['reason'],'tree-changed');self.assertFalse(r['product_compile_attempted'])
     def test_export_whitelist_never_all_environment(self):
         with patch.dict(os.environ,{'GITHUB_TOKEN':'SYNTHETIC_SECRET','ACTIONS_RUNTIME_TOKEN':'SYNTHETIC_SECRET','PATH':'sdk-path','INCLUDE':'sdk-include'},clear=True),patch.object(sys,'stdout',io.StringIO()) as out:p.capture_env()
         self.assertEqual(json.loads(out.getvalue()),{'PATH':'sdk-path','INCLUDE':'sdk-include'});self.assertNotIn('SECRET',out.getvalue())
@@ -62,7 +97,7 @@ class BootstrapGuards(unittest.TestCase):
             with tempfile.TemporaryDirectory() as tmp,patch.object(p.n,'OUT',Path(tmp)),patch.object(p,'bootstrap',side_effect=error):
                 self.assertEqual(p.metadata_only(),1);text=(Path(tmp)/'bootstrap-status.json').read_text();self.assertEqual(json.loads(text)['reason'],reason);self.assertNotIn('SECRET',text)
     def test_entrypoint_metadata_only(self):
-        code=(p.HERE/'msvc-proof.py').read_text();self.assertIn('else:code=metadata_only()',code);self.assertNotIn('else:code=proof()',code)
+        code=(p.HERE/'msvc-proof.py').read_text();self.assertIn('else:code=discovery_only()',code);self.assertNotIn('else:code=proof()',code)
     def test_signer_script_no_raw_export(self):
         code=(p.HERE/'tool-signatures.ps1').read_text();self.assertIn('Get-AuthenticodeSignature',code);self.assertIn("$signature.Status -eq 'Valid'",code);self.assertIn("$version.CompanyName -eq 'Microsoft Corporation'",code);self.assertNotIn('Write-Host',code);self.assertNotIn('ExecutionPolicy',code)
 if __name__=='__main__':
