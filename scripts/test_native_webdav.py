@@ -2,6 +2,8 @@
 import importlib.util
 import json
 import os
+import sys
+import subprocess
 from pathlib import Path
 import tempfile
 import unittest
@@ -60,9 +62,17 @@ class Gates(unittest.TestCase):
         source=(d.HERE/'native-webdav.py').read_text()
         for forbidden in ['killpg(', 'os.kill(', 'taskkill', 'Stop-Process', 'Popen(']:self.assertNotIn(forbidden,source)
         start=source.index("elif action=='exec':")
-        self.assertLess(source.index('binary=verify_binary()',start),source.index('os.execv(',start))
+        self.assertLess(source.index('binary=verify_binary()',start),source.index('sys.exit(execute_binary(',start))
         self.assertIn("require(git('write-tree')==TREE",source)
         self.assertIn('control file changed',source)
+    def test_waited_child_exit_codes_propagate(self):
+        # This runs tiny Python children, never Rust or network fixtures.
+        for code in [0,7]:
+            self.assertEqual(d.execute_binary([sys.executable,'-c',f'import sys; sys.exit({code})']),code)
+        # Exercise the same outer sys.exit(returncode) contract as the CLI.
+        script="import importlib.util,sys; s=importlib.util.spec_from_file_location('n',sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); sys.exit(m.execute_binary([sys.executable,'-c','import sys; sys.exit(7)']))"
+        result=subprocess.run([sys.executable,'-c',script,str(d.HERE/'native-webdav.py')],check=False)
+        self.assertEqual(result.returncode,7)
     def test_fixture_restores_blocking_without_weakening_tls(self):
         patchtext=(d.HERE/'webdav-tls-policy-tests.patch').read_text()
         self.assertLess(patchtext.index('socket.set_nonblocking(false)?;'),patchtext.index('socket.set_read_timeout'))

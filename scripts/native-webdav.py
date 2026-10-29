@@ -94,6 +94,14 @@ def parse_result(text,name):
     require(len(summaries)==1 and SUMMARY.fullmatch(summaries[0]),'not 1 passed / 0 ignored')
 
 
+def execute_binary(argv):
+    # Windows execv may terminate its caller before the launched process exits.
+    # Wait using the standard library and propagate the real child return code.
+    # Hosted step/job timeouts remain the only lifecycle boundary: no PID kills,
+    # descendant cleanup or hard memory guarantee is implemented here.
+    return subprocess.run(argv, stdin=subprocess.DEVNULL, check=False).returncode
+
+
 def prepare():
     require(not OUT.exists(),'evidence output exists')
     OUT.mkdir(mode=0o700)
@@ -145,9 +153,8 @@ if __name__=='__main__':
         mode=sys.argv[3];require(mode in ['list','test'],'bad mode')
         if mode=='test':parse_inventory((OUT/f'list-{i}.log').read_text(encoding='utf-8'),NAMES[i])
         args=['--exact','--list','--format','terse'] if mode=='list' else ['--exact','--test-threads=1','--format','pretty','--color','never']
-        # No subprocess supervisor or PID signaling: direct execution inherits
-        # the hosted Actions step boundary. On failure do not attempt cleanup.
-        os.execv(str(binary),[str(binary),NAMES[i],*args])
+        # Wait/exit propagation only, not a custom lifecycle supervisor.
+        sys.exit(execute_binary([str(binary),NAMES[i],*args]))
     elif action=='verify-test':
         i=int(sys.argv[2]);verify_binary()
         parse_inventory((OUT/f'list-{i}.log').read_text(encoding='utf-8'),NAMES[i])
