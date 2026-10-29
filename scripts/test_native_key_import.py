@@ -40,6 +40,15 @@ class Gates(unittest.TestCase):
             for k in ('GITHUB_TOKEN','GH_TOKEN','ACTIONS_RUNTIME_TOKEN','ACTIONS_ID_TOKEN_REQUEST_TOKEN','CARGO_REGISTRIES_CRATES_IO_TOKEN','AWS_SECRET_ACCESS_KEY','HTTPS_PROXY','RUSTFLAGS','ARBITRARY_AUTH'):self.assertNotIn(k,env)
             for k in ('PATH','INCLUDE','LIB','WindowsSdkDir','SDKROOT','DEVELOPER_DIR','CARGO_HOME','RUSTUP_HOME'):self.assertEqual(env[k],inherited[k])
             self.assertTrue(Path(env['HOME']).is_relative_to(Path(tmp)))
+    def test_known_caches_do_not_resolve_home(self):
+        with tempfile.TemporaryDirectory() as tmp,patch.object(d,'OUT',Path(tmp)),patch.dict(os.environ,{'CARGO_HOME':'cargo-cache','RUSTUP_HOME':'rustup-cache'},clear=True),patch.object(Path,'home',side_effect=RuntimeError('synthetic no home')) as home:
+            env=d.compile_env()
+            self.assertEqual(env['CARGO_HOME'],'cargo-cache');self.assertEqual(env['RUSTUP_HOME'],'rustup-cache');home.assert_not_called()
+    def test_missing_cache_resolves_home_only_when_needed(self):
+        with tempfile.TemporaryDirectory() as tmp,patch.object(d,'OUT',Path(tmp)),patch.dict(os.environ,{'CARGO_HOME':'cargo-cache'},clear=True),patch.object(Path,'home',return_value=Path(tmp)) as home:
+            env=d.compile_env();self.assertEqual(env['CARGO_HOME'],'cargo-cache');self.assertEqual(env['RUSTUP_HOME'],str(Path(tmp)/'.rustup'));home.assert_called_once()
+        with tempfile.TemporaryDirectory() as tmp,patch.object(d,'OUT',Path(tmp)),patch.dict(os.environ,{'CARGO_HOME':'cargo-cache'},clear=True),patch.object(Path,'home',side_effect=RuntimeError('synthetic no home')),self.assertRaisesRegex(RuntimeError,'synthetic no home'):
+            d.compile_env()
     def test_platform_target_mismatch(self):
         for platform,system,target in [('Windows','win32','x86_64-pc-windows-msvc'),('macOS','darwin','aarch64-apple-darwin')]:
             with patch.dict(os.environ,{'RUNNER_OS':platform}),patch.object(d.sys,'platform',system):self.assertEqual(d.platform_target(),target)

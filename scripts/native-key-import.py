@@ -124,7 +124,10 @@ def compile_env():
         'LANG','LC_ALL','TZ')}
     env={k:v for k,v in os.environ.items() if k.casefold() in allowed}
     # Capture the already configured toolchain locations before isolated HOME.
-    for k in ('CARGO_HOME','RUSTUP_HOME'):env.setdefault(k,str(Path.home()/('.cargo' if k=='CARGO_HOME' else '.rustup')))
+    for k in ('CARGO_HOME','RUSTUP_HOME'):
+        # Do not resolve HOME when a configured cache already supplies the path.
+        # Windows has no passwd fallback if USERPROFILE is absent in a guard.
+        if k not in env:env[k]=str(Path.home()/('.cargo' if k=='CARGO_HOME' else '.rustup'))
     sandbox=sandbox_env()
     for k in ('HOME','USERPROFILE','APPDATA','LOCALAPPDATA','XDG_CONFIG_HOME','XDG_DATA_HOME','XDG_CACHE_HOME','XDG_RUNTIME_DIR','XENTERM_DATA_DIR','TEMP','TMP','TMPDIR'):env[k]=sandbox[k]
     return env
