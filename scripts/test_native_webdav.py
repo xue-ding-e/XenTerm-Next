@@ -24,7 +24,7 @@ class Gates(unittest.TestCase):
             for bad in ['',good+good,good.replace('1 passed','0 passed'),good.replace(' ... ok',' ... ignored'),good.replace(name,'other')]:
                 with self.assertRaises(RuntimeError): d.parse_result(bad,name)
     def test_compiler_product_and_features(self):
-        with tempfile.TemporaryDirectory() as tmp,patch.object(d,'SOURCE',Path(tmp)):
+        with tempfile.TemporaryDirectory() as tmp,patch.object(d,'SOURCE',Path(tmp).resolve()):
             binary=Path(tmp)/'target'/'test-target'/'debug'/'deps'/'xenterm';binary.parent.mkdir(parents=True);binary.write_bytes(b'synthetic')
             item={'reason':'compiler-artifact','target':{'name':'xenterm','kind':['bin'],'src_path':str(Path(tmp)/'src/main.rs')},'features':d.FEATURES,'executable':str(binary),'profile':{'test':True}}
             receipt=d.artifact_from_log(json.dumps(item),'test-target');self.assertEqual(receipt['sha256'],d.digest(binary))
@@ -32,6 +32,19 @@ class Gates(unittest.TestCase):
             for field,value in [('features',['headless']),('executable',str(Path(tmp)/'elsewhere'))]:
                 changed=dict(item);changed[field]=value
                 with self.assertRaises(RuntimeError):d.artifact_from_log(json.dumps(changed),'test-target')
+    def test_equivalent_path_fixture_normalization_red_green(self):
+        # A lexical alias models a Windows temporary-path canonicalization
+        # difference without requiring symlink privileges on either platform.
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp).resolve();(root/'hop').mkdir();(root/'real').mkdir()
+            alias=root/'hop'/'..'/'real'
+            binary=alias/'target'/'test-target'/'debug'/'deps'/'xenterm'
+            binary.parent.mkdir(parents=True);binary.write_bytes(b'synthetic')
+            item={'reason':'compiler-artifact','target':{'name':'xenterm','kind':['bin'],'src_path':str(alias/'src/main.rs')},'features':d.FEATURES,'executable':str(binary),'profile':{'test':True}}
+            with patch.object(d,'SOURCE',alias),self.assertRaisesRegex(RuntimeError,'wrong product source'):
+                d.artifact_from_log(json.dumps(item),'test-target')
+            with patch.object(d,'SOURCE',alias.resolve()):
+                self.assertEqual(d.artifact_from_log(json.dumps(item),'test-target')['sha256'],d.digest(binary))
     def test_binary_hash_change_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp,patch.object(d,'OUT',Path(tmp)):
             binary=Path(tmp)/'binary';binary.write_bytes(b'synthetic');d.write('binary.json',{'path':str(binary),'sha256':d.digest(binary)})
