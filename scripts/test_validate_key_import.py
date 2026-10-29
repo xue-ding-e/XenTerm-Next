@@ -8,7 +8,7 @@ class Guards(unittest.TestCase):
         self.assertEqual(d.b.digest(d.HERE/'owned-supervisor.py'),d.OWNER_HASH)
         self.assertEqual(d.b.digest(d.HERE/'bounded-runtime.py'),d.RUNTIME_HASH)
     def test_unique_exact_cases(self):
-        self.assertEqual(len(set(d.NAMES)),3)
+        self.assertEqual(len(set(d.NAMES)),29)
         for name in d.NAMES:
             d.b.parse_inventory(name+': test\n',name)
             with self.assertRaises(AssertionError):d.b.parse_inventory('',name)
@@ -30,8 +30,9 @@ class Guards(unittest.TestCase):
         self.assertEqual(d.safe_failure_evidence('unknown failure SECRET')['markers'],[])
     def test_frozen_source_and_budgets(self):
         self.assertEqual(d.SHA,'8819e2ec132760047209e9dcff7341c5f8a15f94')
+        self.assertEqual((len(d.CORE),len(d.UI),len(d.CONTROLS)),(19,7,3))
         self.assertEqual(d.FEATURES,['default','desktop','remote-mcp'])
         s=(d.HERE/'validate-key-import.py').read_text()
-        for marker in ["'compile',2700",'time.monotonic()+300','remaining(60)',"'final-control-clean'","'final-tree'",'source-unchanged']:
+        for marker in ["'compile',2700",'time.monotonic()+600','remaining(60)',"'final-control-clean'","'final-tree'",'source-unchanged']:
             self.assertIn(marker,s)
 if __name__=='__main__':unittest.main()

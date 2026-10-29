@@ -17,7 +17,7 @@ jobs:
   desktop:
     if: github.repository == 'xue-ding-e/XenTerm-Next' && github.ref == 'refs/heads/validation/key-import-busy-save-20261029' && inputs.expected_sha == github.sha
     runs-on: ubuntu-22.04
-    timeout-minutes: 60
+    timeout-minutes: 65
     steps:
       - name: Checkout exact reviewed control
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -54,8 +54,8 @@ jobs:
           workspaces: source -> target
           key: desktop-check-x86_64-unknown-linux-gnu
           cache-targets: false
-      - name: Compile original crate and run three exact synthetic GPUI cases
-        timeout-minutes: 54
+      - name: Compile original crate and run 19 core, 7 UI and 3 control exact cases
+        timeout-minutes: 59
         env:
           EXPECTED_CONTROL_SHA: ${{ inputs.expected_sha }}
           PYTHONDONTWRITEBYTECODE: '1'
