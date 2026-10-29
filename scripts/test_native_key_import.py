@@ -1,8 +1,17 @@
 """Pure controls only: no Rust build, network, real keys or native GUI claims."""
 import importlib.util,json,os,sys,tempfile,unittest,subprocess
+from collections import UserDict
 from pathlib import Path
 from unittest.mock import patch
 spec=importlib.util.spec_from_file_location('native',Path(__file__).with_name('native-key-import.py'));d=importlib.util.module_from_spec(spec);spec.loader.exec_module(d)
+class WindowsEnvironment(UserDict):
+    # Python 3.12 os.environ Windows contract: keys uppercased on get/set/delete.
+    # This only models mapping semantics, not a Windows OS/runtime substitute.
+    def __getitem__(self,key):return self.data[key.upper()]
+    def __setitem__(self,key,value):self.data[key.upper()]=value
+    def __delitem__(self,key):del self.data[key.upper()]
+    def __contains__(self,key):return key.upper() in self.data
+
 class Gates(unittest.TestCase):
     def test_patches(self):d.patch_hashes()
     def test_platform_counts(self):
@@ -38,7 +47,8 @@ class Gates(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp,patch.object(d,'OUT',Path(tmp)),patch.dict(os.environ,inherited,clear=True):
             env=d.compile_env()
             for k in ('GITHUB_TOKEN','GH_TOKEN','ACTIONS_RUNTIME_TOKEN','ACTIONS_ID_TOKEN_REQUEST_TOKEN','CARGO_REGISTRIES_CRATES_IO_TOKEN','AWS_SECRET_ACCESS_KEY','HTTPS_PROXY','RUSTFLAGS','ARBITRARY_AUTH'):self.assertNotIn(k,env)
-            for k in ('PATH','INCLUDE','LIB','WindowsSdkDir','SDKROOT','DEVELOPER_DIR','CARGO_HOME','RUSTUP_HOME'):self.assertEqual(env[k],inherited[k])
+            folded={k.casefold():v for k,v in env.items()}
+            for k in ('PATH','INCLUDE','LIB','WindowsSdkDir','SDKROOT','DEVELOPER_DIR','CARGO_HOME','RUSTUP_HOME'):self.assertEqual(folded[k.casefold()],inherited[k])
             self.assertTrue(Path(env['HOME']).is_relative_to(Path(tmp)))
     def test_known_caches_do_not_resolve_home(self):
         with tempfile.TemporaryDirectory() as tmp,patch.object(d,'OUT',Path(tmp)),patch.dict(os.environ,{'CARGO_HOME':'cargo-cache','RUSTUP_HOME':'rustup-cache'},clear=True),patch.object(Path,'home',side_effect=RuntimeError('synthetic no home')) as home:
@@ -49,6 +59,15 @@ class Gates(unittest.TestCase):
             env=d.compile_env();self.assertEqual(env['CARGO_HOME'],'cargo-cache');self.assertEqual(env['RUSTUP_HOME'],str(Path(tmp)/'.rustup'));home.assert_called_once()
         with tempfile.TemporaryDirectory() as tmp,patch.object(d,'OUT',Path(tmp)),patch.dict(os.environ,{'CARGO_HOME':'cargo-cache'},clear=True),patch.object(Path,'home',side_effect=RuntimeError('synthetic no home')),self.assertRaisesRegex(RuntimeError,'synthetic no home'):
             d.compile_env()
+    def test_windows_mapping_case_variants(self):
+        mapping=WindowsEnvironment({'Path':'synthetic-path','windowsSdkDir':'synthetic-sdk','cargo_home':'cargo-cache','rustup_home':'rustup-cache','gItHuB_tOkEn':'synthetic-secret','actions_runtime_token':'synthetic-secret'})
+        self.assertEqual(mapping['WiNdOwSsDkDiR'],'synthetic-sdk');self.assertIn('WINDOWSSDKDIR',list(mapping))
+        with tempfile.TemporaryDirectory() as tmp,patch.object(d,'OUT',Path(tmp)),patch.object(os,'environ',mapping),patch.object(Path,'home',side_effect=RuntimeError('no home')):
+            build=d.compile_env();runtime=d.sandbox_env()
+            self.assertEqual(build['WINDOWSSDKDIR'],'synthetic-sdk');self.assertEqual(build['CARGO_HOME'],'cargo-cache');self.assertEqual(build['PATH'],'synthetic-path')
+            for env in (build,runtime):
+                folded={k.casefold() for k in env}
+                for key in ('github_token','actions_runtime_token'):self.assertNotIn(key,folded)
     def test_platform_target_mismatch(self):
         for platform,system,target in [('Windows','win32','x86_64-pc-windows-msvc'),('macOS','darwin','aarch64-apple-darwin')]:
             with patch.dict(os.environ,{'RUNNER_OS':platform}),patch.object(d.sys,'platform',system):self.assertEqual(d.platform_target(),target)
@@ -90,4 +109,11 @@ class Gates(unittest.TestCase):
         code=(d.HERE/'native-key-import.py').read_text()
         for bad in ('execv(', 'killpg(', 'taskkill', 'Popen('):self.assertNotIn(bad,code)
         self.assertIn('subprocess.run(',code);self.assertIn('p[\'started_monotonic\']+57*60',code)
-if __name__=='__main__':unittest.main()
+if __name__=='__main__':
+    # Run every guard twice, including every environment test, so Windows
+    # normalization is exercised locally before a native CI dispatch.
+    runner=unittest.TextTestRunner()
+    normal=runner.run(unittest.defaultTestLoader.loadTestsFromTestCase(Gates))
+    with patch.object(os,'environ',WindowsEnvironment(dict(os.environ))):
+        normalized=runner.run(unittest.defaultTestLoader.loadTestsFromTestCase(Gates))
+    sys.exit(0 if normal.wasSuccessful() and normalized.wasSuccessful() else 1)
