@@ -47,6 +47,22 @@ class BootstrapGuards(unittest.TestCase):
     def test_workflow_smoke_only(self):
         text=(p.n.CONTROL/'.github/workflows/ci.yml').read_text();self.assertIn('python control/scripts/msvc-proof.py',text);self.assertNotIn('python control/scripts/diagnose-native.py',text);self.assertNotIn('native-key-import.py runtime',text);self.assertNotIn('  macos:',text);self.assertNotIn('*.log',text)
         code=(p.HERE/'msvc-proof.py').read_text();self.assertNotIn('compile_product(',code);self.assertNotIn('n.runtime(',code);self.assertIn("'msvc-link-proof',20,env",code);self.assertIn("'linker='+str(linker)",code);self.assertNotIn('&& set',code);self.assertNotIn('os.environ.update(',code)
+    def test_every_bootstrap_guard_emits_fixed_reason(self):
+        for message,reason in p.REASONS.items():
+            with tempfile.TemporaryDirectory() as tmp,patch.object(p.n,'OUT',Path(tmp)),patch.object(p,'bootstrap',side_effect=lambda m=message:p.require(False,m)),patch.object(p,'proof') as smoke:
+                self.assertEqual(p.metadata_only(),1);r=json.loads((Path(tmp)/'bootstrap-status.json').read_text());self.assertEqual(r['reason'],reason);self.assertFalse(r['smoke_attempted']);smoke.assert_not_called()
+    def test_each_checkpoint_exception_is_payload_free(self):
+        for stage in p.CHECKPOINTS:
+            def fail(stage=stage):p.checkpoint(stage);raise OSError('SYNTHETIC_SECRET path=private')
+            with tempfile.TemporaryDirectory() as tmp,patch.object(p.n,'OUT',Path(tmp)),patch.object(p,'bootstrap',side_effect=fail),patch.object(p,'proof') as smoke:
+                self.assertEqual(p.metadata_only(),1);text=(Path(tmp)/'bootstrap-status.json').read_text();r=json.loads(text);self.assertEqual(r['checkpoint'],stage);self.assertEqual(r['reason'],'os-error');self.assertNotIn('SECRET',text);self.assertNotIn('private',text);smoke.assert_not_called()
+    def test_child_timeout_and_parse_errors_fixed(self):
+        errors=[(subprocess.TimeoutExpired(['SECRET'],1),'child-timeout'),(json.JSONDecodeError('SECRET','SECRET',0),'invalid-json'),(UnicodeDecodeError('utf-8',b'x',0,1,'SECRET'),'invalid-encoding'),(FileNotFoundError('SECRET'),'file-not-found')]
+        for error,reason in errors:
+            with tempfile.TemporaryDirectory() as tmp,patch.object(p.n,'OUT',Path(tmp)),patch.object(p,'bootstrap',side_effect=error):
+                self.assertEqual(p.metadata_only(),1);text=(Path(tmp)/'bootstrap-status.json').read_text();self.assertEqual(json.loads(text)['reason'],reason);self.assertNotIn('SECRET',text)
+    def test_entrypoint_metadata_only(self):
+        code=(p.HERE/'msvc-proof.py').read_text();self.assertIn('else:code=metadata_only()',code);self.assertNotIn('else:code=proof()',code)
     def test_signer_script_no_raw_export(self):
         code=(p.HERE/'tool-signatures.ps1').read_text();self.assertIn('Get-AuthenticodeSignature',code);self.assertIn("$signature.Status -eq 'Valid'",code);self.assertIn("$version.CompanyName -eq 'Microsoft Corporation'",code);self.assertNotIn('Write-Host',code);self.assertNotIn('ExecutionPolicy',code)
 if __name__=='__main__':

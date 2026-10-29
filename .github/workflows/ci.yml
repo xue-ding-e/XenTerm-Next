@@ -1,4 +1,4 @@
-name: Installed MSVC environment proof (manual, no product build)
+name: Installed MSVC bootstrap metadata (manual, no compiler execution)
 # Local proposal: hosted lifecycle only. No raw logs or binaries uploaded.
 on:
   workflow_dispatch:
@@ -60,7 +60,7 @@ jobs:
       - name: Prepare exact candidate
         timeout-minutes: 2
         run: python control/scripts/native-key-import.py prepare
-      - name: Verify installed MSVC and link fixed synthetic empty main
+      - name: Verify installed MSVC bootstrap and record fixed checkpoints
         timeout-minutes: 3
         run: python control/scripts/msvc-proof.py
       - name: Preserve structured evidence only
@@ -81,3 +81,4 @@ jobs:
             ${{ runner.temp }}/key-import-native-evidence/link-smoke.json
             ${{ runner.temp }}/key-import-native-evidence/msvc-environment.json
             ${{ runner.temp }}/key-import-native-evidence/msvc-proof.json
+            ${{ runner.temp }}/key-import-native-evidence/bootstrap-status.json
