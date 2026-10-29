@@ -1,4 +1,4 @@
-name: Native key import compile diagnostic (manual, no release)
+name: Installed MSVC environment proof (manual, no product build)
 # Local proposal: hosted lifecycle only. No raw logs or binaries uploaded.
 on:
   workflow_dispatch:
@@ -47,7 +47,7 @@ jobs:
           python-version: '3.12'
       - name: Pure synthetic control guards
         timeout-minutes: 2
-        run: python control/scripts/test_diagnose_native.py
+        run: python control/scripts/test_msvc_proof.py
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
         with:
           toolchain: '1.99.1'
@@ -60,9 +60,9 @@ jobs:
       - name: Prepare exact candidate
         timeout-minutes: 2
         run: python control/scripts/native-key-import.py prepare
-      - name: Compile original native crate once
+      - name: Verify installed MSVC and link fixed synthetic empty main
         timeout-minutes: 3
-        run: python control/scripts/diagnose-native.py
+        run: python control/scripts/msvc-proof.py
       - name: Preserve structured evidence only
         if: always()
         uses: actions/upload-artifact@v4
@@ -79,3 +79,5 @@ jobs:
             ${{ runner.temp }}/key-import-native-evidence/diagnostic.json
             ${{ runner.temp }}/key-import-native-evidence/tool-metadata.json
             ${{ runner.temp }}/key-import-native-evidence/link-smoke.json
+            ${{ runner.temp }}/key-import-native-evidence/msvc-environment.json
+            ${{ runner.temp }}/key-import-native-evidence/msvc-proof.json

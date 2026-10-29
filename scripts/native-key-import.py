@@ -104,7 +104,7 @@ def prepare():
         git('apply','--check','--whitespace=error',str(HERE/n));git('apply','--index',str(HERE/n));require(git('write-tree')==tree,'tree mismatch')
     git('diff','--cached','--check')
     for n,h in I['FIXTURES'].items():require(digest(SOURCE/n)==h,'fixture mismatch')
-    files=[HERE/'native-key-import.py',HERE/'test_native_key_import.py',HERE/'inputs.json',CONTROL/'.github/workflows/ci.yml',HERE/'diagnose-native.py',HERE/'test_diagnose_native.py',*[HERE/n for n in I['PATCHES']]]
+    files=[HERE/'native-key-import.py',HERE/'test_native_key_import.py',HERE/'inputs.json',CONTROL/'.github/workflows/ci.yml',HERE/'diagnose-native.py',HERE/'test_diagnose_native.py',HERE/'msvc-proof.py',HERE/'test_msvc_proof.py',HERE/'tool-signatures.ps1',*[HERE/n for n in I['PATCHES']]]
     write('prepared.json',{'source_sha':I['SHA'],'product_tree':I['PRODUCT_TREE'],'test_tree':I['TEST_TREE'],'control_sha':os.environ['EXPECTED_CONTROL_SHA'],'control_files':{str(p.relative_to(CONTROL)):digest(p) for p in files},'status':git('status','--porcelain','--untracked-files=all','--ignored'),'started_monotonic':time.monotonic()})
 
 def compile_env():
