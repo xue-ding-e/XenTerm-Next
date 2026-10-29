@@ -14,6 +14,14 @@ spec.loader.exec_module(d)
 class Guards(unittest.TestCase):
     def test_patch_identity(self):
         for name,digest in d.PATCHES.items(): self.assertEqual(d.b.digest(d.HERE/name),digest)
+    def test_fixed_corrected_trees_and_actual_features(self):
+        self.assertEqual(d.BASELINE_TREE, 'c53e35dae6a951efa51f0c751e8366f7460c84c8')
+        self.assertEqual(d.CANDIDATE_TREE, 'fc25d67215b44310ef9ba2fa857dad94f3993f16')
+        self.assertEqual(d.FEATURES, ['default', 'desktop', 'remote-mcp'])
+        source = (d.HERE/'validate-webdav.py').read_text()
+        self.assertIn("assert sorted(item.get('features', [])) == FEATURES", source)
+        self.assertIn('assert baseline_tree == BASELINE_TREE', source)
+        self.assertIn('assert candidate_tree == CANDIDATE_TREE', source)
     def test_exact_inventory(self):
         for name in d.NAMES:
             d.b.parse_inventory(name+': test\n',name)

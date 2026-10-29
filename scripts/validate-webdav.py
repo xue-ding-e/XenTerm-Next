@@ -1,7 +1,7 @@
 """Linux-only adaptation of reviewed bounded runner; not a release or advisory proof.
 
 Reuse the process-group owner, bounded cleanup, output/disk/RSS limits and strict
-libtest parsers unchanged. Windows/macOS actual TLS execution remains unverified.
+libtest parsers unchanged. Windows/macOS fc25 native evidence is recorded separately; this run qualifies Linux only.
 """
 import hashlib
 import importlib.util
@@ -20,7 +20,7 @@ b = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(b)
 SHA = '79ef3363f0f600f5674ee2c245b5eb357f855961'
 PATCHES = {
-    'webdav-tls-policy-tests.patch': '7281721d8ad6bc293d7225cb6e9a97f899867e720f77984d018ec81e02151e34',
+    'webdav-tls-policy-tests.patch': '095a847ea749a001f42c292bd9c5d03e22fe24b9b4946f27c45c9fd28bd5f129',
     'rustls-02346.patch': 'e36557a7e31b935199afd1f268a1dfbb5c87175d474f1b3c9e3abed461db4f23',
 }
 NAMES = (
@@ -28,6 +28,9 @@ NAMES = (
     'app::webdav::tests::webdav_explicit_opt_in_allows_untrusted_loopback_certificate',
 )
 TARGET = 'x86_64-unknown-linux-gnu'
+BASELINE_TREE = 'c53e35dae6a951efa51f0c751e8366f7460c84c8'
+CANDIDATE_TREE = 'fc25d67215b44310ef9ba2fa857dad94f3993f16'
+FEATURES = ['default', 'desktop', 'remote-mcp']
 
 
 def apply_patch(name):
@@ -48,6 +51,8 @@ def desktop(stage):
         except json.JSONDecodeError: continue
         if (item.get('reason') == 'compiler-artifact' and item.get('profile',{}).get('test')
             and item.get('executable') and Path(item['target']['src_path']).resolve() == b.SOURCE/'src/main.rs'):
+            assert sorted(item.get('features', [])) == FEATURES, 'actual Cargo features differ'
+            assert item['target']['name'] == 'xenterm' and 'bin' in item['target']['kind']
             artifacts.append(Path(item['executable']).resolve())
     assert len(artifacts) == 1, artifacts
     binary = artifacts[0]
@@ -59,7 +64,7 @@ def desktop(stage):
         b.verify_hash(b.digest(binary),digest)  # Recheck after listing, before execution.
         b.parse_result(b.run([str(binary),name,'--exact','--test-threads=1','--format','pretty','--color','never'],stage+f'-test-{i}',60),name)
     b.verify_hash(b.digest(binary),digest)
-    return {'binary_sha256':digest,'tests':list(NAMES),'features':'default: desktop,remote-mcp','target':TARGET,'toolchain':'1.99.1'}
+    return {'binary_sha256':digest,'tests':list(NAMES),'features':FEATURES,'target':TARGET,'toolchain':'1.99.1'}
 
 
 def validate():
@@ -88,6 +93,7 @@ def validate():
     b.ENV.update(XT_VERSION_JSON=str(version),GITHUB_SHA=SHA,GITHUB_REF_TYPE='branch',GITHUB_REF_NAME='validation/webdav-tls-20261029')
     apply_patch('webdav-tls-policy-tests.patch')
     baseline_tree = b.run(['git','write-tree'],'baseline-tree',10).strip()
+    assert baseline_tree == BASELINE_TREE
     baseline_status = b.run(['git','status','--porcelain','--untracked-files=all','--ignored'],'baseline-status',10).strip()
     b.run([b.CARGO,'+1.99.1','tree','--locked','-e','features','-i','rustls'],'original-rustls-features',120)
     baseline = desktop('original-lock')
@@ -96,6 +102,7 @@ def validate():
     assert not b.run(['git','diff','--exit-code'],'baseline-source-unchanged',10).strip()
     apply_patch('rustls-02346.patch')
     candidate_tree = b.run(['git','write-tree'],'upgraded-tree',10).strip()
+    assert candidate_tree == CANDIDATE_TREE
     b.run([b.CARGO,'+1.99.1','tree','--locked','-e','features','-i','rustls'],'rustls-features',120)
     upgraded_status = b.run(['git','status','--porcelain','--untracked-files=all','--ignored'],'upgraded-status',10).strip()
     upgraded = desktop('upgraded-lock')
@@ -110,7 +117,7 @@ def validate():
     for name,digest in PATCHES.items(): assert b.digest(HERE/name) == digest
     assert b.digest(HERE/'bounded-runtime.py') == RUNTIME_HASH
     assert b.digest(HERE/'owned-supervisor.py') == 'bc48ae5497f44cbdd97d73bce1a67c36e970c3dd13995336ce992de6c750b62c'
-    (b.OUT/'receipt.json').write_text(json.dumps({'source_sha':SHA,'control_sha':expected,'patches':PATCHES,'runtime_sha256':RUNTIME_HASH,'baseline_tree':baseline_tree,'candidate_tree':candidate_tree,'original_lock':baseline,'upgraded_lock':upgraded,'msrv':'1.88.0 Linux headless passed','version_metadata':b.version_receipt(version),'limits':'Linux only; Windows/macOS native TLS pending; GET only; not advisory reproduction or full desktop CI'},indent=2))
+    (b.OUT/'receipt.json').write_text(json.dumps({'source_sha':SHA,'control_sha':expected,'patches':PATCHES,'runtime_sha256':RUNTIME_HASH,'baseline_tree':baseline_tree,'candidate_tree':candidate_tree,'original_lock':baseline,'upgraded_lock':upgraded,'msrv':'1.88.0 Linux headless passed','version_metadata':b.version_receipt(version),'limits':'Linux corrected fixture qualification only; separate Windows/macOS run 40899306966 passed; GET only; not advisory reproduction or full desktop CI'},indent=2))
 
 
 if __name__ == '__main__':
