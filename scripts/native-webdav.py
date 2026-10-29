@@ -13,10 +13,10 @@ import subprocess
 import sys
 
 BASE = '79ef3363f0f600f5674ee2c245b5eb357f855961'
-TREE = '0129b1513f8bfe50d143e5b7ed5c62554611c2a6'
+TREE = 'fc25d67215b44310ef9ba2fa857dad94f3993f16'
 BRANCH = 'validation/webdav-native-20261029'
 PATCHES = {'rustls-02346.patch':'e36557a7e31b935199afd1f268a1dfbb5c87175d474f1b3c9e3abed461db4f23',
-           'webdav-tls-policy-tests.patch':'7281721d8ad6bc293d7225cb6e9a97f899867e720f77984d018ec81e02151e34'}
+           'webdav-tls-policy-tests.patch':'095a847ea749a001f42c292bd9c5d03e22fe24b9b4946f27c45c9fd28bd5f129'}
 NAMES = ('app::webdav::tests::webdav_default_rejects_untrusted_loopback_certificate',
          'app::webdav::tests::webdav_explicit_opt_in_allows_untrusted_loopback_certificate')
 FEATURES = ['default','desktop','remote-mcp']

@@ -1,8 +1,8 @@
 diff --git a/src/app/webdav.rs b/src/app/webdav.rs
-index c4100d3..42c8af1 100644
+index c4100d3..1a2cf6d 100644
 --- a/src/app/webdav.rs
 +++ b/src/app/webdav.rs
-@@ -456,4 +456,106 @@ mod tests {
+@@ -456,4 +456,109 @@ mod tests {
          // A file at the root has no parents to create.
          assert!(webdav_parent_dirs("https://dav.example.com/sessions.json").is_empty());
      }
@@ -50,6 +50,9 @@ index c4100d3..42c8af1 100644
 +                    }
 +                };
 +                assert!(peer.ip().is_loopback());
++                // Windows accept inherits nonblocking mode from the listener.
++                // Only accept polling is nonblocking; bounded TLS I/O is blocking.
++                socket.set_nonblocking(false)?;
 +                socket.set_read_timeout(Some(Duration::from_secs(3)))?;
 +                socket.set_write_timeout(Some(Duration::from_secs(3)))?;
 +                let connection = ServerConnection::new(Arc::new(config)).unwrap();

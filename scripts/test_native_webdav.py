@@ -63,6 +63,14 @@ class Gates(unittest.TestCase):
         self.assertLess(source.index('binary=verify_binary()',start),source.index('os.execv(',start))
         self.assertIn("require(git('write-tree')==TREE",source)
         self.assertIn('control file changed',source)
+    def test_fixture_restores_blocking_without_weakening_tls(self):
+        patchtext=(d.HERE/'webdav-tls-policy-tests.patch').read_text()
+        self.assertLess(patchtext.index('socket.set_nonblocking(false)?;'),patchtext.index('socket.set_read_timeout'))
+        for required in ['socket.set_read_timeout(Some(Duration::from_secs(3)))?;',
+                         'socket.set_write_timeout(Some(Duration::from_secs(3)))?;',
+                         'assert!(error.contains("UnknownIssuer")',
+                         'assert!(!served_http);']:
+            self.assertIn(required,patchtext)
     def test_workflow_serial_native_boundaries(self):
         text=(d.CONTROL/'.github/workflows/ci.yml').read_text()
         self.assertEqual(text.count('timeout-minutes: 60'),2)
