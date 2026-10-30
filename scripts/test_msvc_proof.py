@@ -218,6 +218,13 @@ class BootstrapGuards(unittest.TestCase):
         self.assertNotIn('ConvertTo-Json',code);self.assertNotIn('SetLength',code)
         for required in ["[Array]::IndexOf($stages,$Stage)","'signature-stage-'",'InvariantCulture','$number -isnot [int]','$number -gt 65535','$numbers.Count -ne 4','$row[$key] -isnot [bool]','[Console]::Out.WriteLine']:
             self.assertIn(required,code)
+    def test_security_import_stays_inside_same_owned_child_and_verified_pshome(self):
+        code=(p.HERE/'tool-signatures.ps1').read_text()
+        for required in ["Record-Stage 'security-import-before'","Record-Stage 'security-import-after'",'Import-Module -Name $manifest -ErrorAction Stop','MainModule.FileName','[IO.FileAttributes]::ReparsePoint','[StringComparison]::OrdinalIgnoreCase','Microsoft.PowerShell.Security\\Get-AuthenticodeSignature','signature-stage-error.json','OtherException']:
+            self.assertIn(required,code)
+        for forbidden in ['Install-Module','RevocationMode','CacheOnly','Set-ExecutionPolicy','StatusMessage']:
+            self.assertNotIn(forbidden,code)
+        self.assertIn("'signatures',20,env",(p.HERE/'msvc-proof.py').read_text())
     def test_signer_script_no_raw_export(self):
         code=(p.HERE/'tool-signatures.ps1').read_text();self.assertIn('Get-AuthenticodeSignature',code);self.assertIn("$signature.Status -eq 'Valid'",code);self.assertIn("$version.CompanyName -eq 'Microsoft Corporation'",code);self.assertNotIn('Write-Host',code);self.assertNotIn('ExecutionPolicy',code)
 if __name__=='__main__':
