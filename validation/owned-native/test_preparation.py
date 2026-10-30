@@ -13,8 +13,8 @@ class Preparation(unittest.TestCase):
         self.assertEqual(set(inventory),actual)
         script=(P/'run-native.ps1').read_text()
         for name in inventory:self.assertIn("'"+name+"'",script)
-        self.assertIn('Source manifest changed',script)
-        self.assertIn('Unexpected or missing candidate source',script)
+        self.assertIn("Stop-Identity 'manifest-changed'",script)
+        self.assertIn("Stop-Identity 'source-inventory'",script)
     def test_failure_metadata_preserves_original_failure(self):
         script=(P/'run-native.ps1').read_text();workflow=(P/'.github/workflows/ci.yml').read_text()
         self.assertIn('} finally {',script)
@@ -22,6 +22,12 @@ class Preparation(unittest.TestCase):
         self.assertIn('if (-not $passed) { exit 1 }',script)
         self.assertIn('if: always() &&',workflow);self.assertIn('if-no-files-found: ignore',workflow)
         self.assertNotIn('*.log',workflow);self.assertNotIn('*.exe',workflow)
+    def test_windows_checkout_preserves_byte_identity(self):
+        workflow=(P/'.github/workflows/ci.yml').read_text()
+        for expected in ["GIT_CONFIG_COUNT: '2'",'GIT_CONFIG_KEY_0: core.autocrlf',"GIT_CONFIG_VALUE_0: 'false'",'GIT_CONFIG_KEY_1: core.eol',"GIT_CONFIG_VALUE_1: lf"]:
+            self.assertIn(expected,workflow)
+        source=(P/'Fixture/Program.cs').read_bytes()
+        self.assertNotEqual(hashlib.sha256(source).hexdigest(),hashlib.sha256(source.replace(b'\n',b'\r\n')).hexdigest())
     def test_fault_variant_only_injects_after_real_cleanup(self):
         source=(P/'Harness/windows-owned-process.cs').read_text()
         expected='// Test-only fault injection, not a product transport. Native cleanup and capture join run first.\n'+source.replace('public static class XenOwnedProcess {','public static class XenOwnedProcessFaultFixture {\n    public static bool CleanupObservedEmpty { get; private set; }').replace('result.treeEmpty=true;safeToStart=true;','result.treeEmpty=true;CleanupObservedEmpty=true;throw new InvalidOperationException("injected after verified empty and capture join");')

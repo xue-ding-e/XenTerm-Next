@@ -16,6 +16,12 @@ jobs:
     if: github.repository == 'xue-ding-e/XenTerm-Next' && github.ref == 'refs/heads/validation/xenterm-owned-process-20261030' && github.event_name == 'workflow_dispatch' && inputs.expected_sha == github.sha
     runs-on: windows-latest
     timeout-minutes: 6
+    env:
+      GIT_CONFIG_COUNT: '2'
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: 'false'
+      GIT_CONFIG_KEY_1: core.eol
+      GIT_CONFIG_VALUE_1: lf
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:

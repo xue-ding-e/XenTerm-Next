@@ -7,6 +7,12 @@ $passed = $false
 $initialIdentity = $false
 $finalIdentity = $false
 $failureType = $null
+$identityFailureCode = $null
+$initialIdentityFailureCode = $null
+$finalIdentityFailureCode = $null
+$identityPathSha256 = $null
+$initialIdentityPathSha256 = $null
+$finalIdentityPathSha256 = $null
 $fixtureHash = $null
 $harnessHash = $null
 $manifestHash = $null
@@ -14,19 +20,28 @@ $receipt = $null
 $metadataPreexisting = Test-Path -LiteralPath ./native-metadata
 # The expected inventory is explicit, including this bootstrap and every build input.
 $required = @('.github/workflows/ci.yml','Fixture/Fixture.csproj','Fixture/Program.cs','Harness/Harness.csproj','Harness/Program.cs','Harness/windows-owned-process-fault-fixture.cs','Harness/windows-owned-process.cs','NuGet.Config','global.json','run-native.ps1','test_preparation.py')
+function Stop-Identity([string]$Code) {
+    $script:identityFailureCode = $Code
+    throw 'Source identity gate failed'
+}
 function Assert-SourceIdentity {
     param([bool]$AllowBuildOutputs = $false)
-    if ((Get-FileHash ./source-hashes.json -Algorithm SHA256).Hash -ne $script:manifestHash) { throw 'Source manifest changed' }
-    if ((Get-FileHash ../../.github/workflows/ci.yml -Algorithm SHA256).Hash -ne (Get-FileHash ./.github/workflows/ci.yml -Algorithm SHA256).Hash) { throw 'Dispatch workflow identity mismatch' }
+    $script:identityFailureCode = 'identity-read'
+    $script:identityPathSha256 = $null
+    if ((Get-FileHash ./source-hashes.json -Algorithm SHA256).Hash -ne $script:manifestHash) { Stop-Identity 'manifest-changed' }
+    if ((Get-FileHash ../../.github/workflows/ci.yml -Algorithm SHA256).Hash -ne (Get-FileHash ./.github/workflows/ci.yml -Algorithm SHA256).Hash) { Stop-Identity 'workflow-mirror' }
     $inventory = Get-Content ./source-hashes.json -Raw | ConvertFrom-Json -AsHashtable
-    if (@(Compare-Object ($script:required | Sort-Object) (@($inventory.Keys) | Sort-Object)).Count -ne 0) { throw 'Source manifest inventory incomplete' }
+    if (@(Compare-Object ($script:required | Sort-Object) (@($inventory.Keys) | Sort-Object)).Count -ne 0) { Stop-Identity 'manifest-inventory' }
     $actual = @(Get-ChildItem -LiteralPath $PSScriptRoot -Recurse -Force -File | ForEach-Object {
         [IO.Path]::GetRelativePath($PSScriptRoot,$_.FullName).Replace('\','/')
     } | Where-Object { $_ -ne 'source-hashes.json' -and $_ -notmatch '^\.git/' -and (-not $AllowBuildOutputs -or ($_ -notmatch '^(Fixture/(bin|obj)/|Harness/(bin|obj)/|native-output/|native-metadata/)' -and $_ -notin @('fixture-build.log','harness-build.log'))) })
-    if (@(Compare-Object ($script:required | Sort-Object) ($actual | Sort-Object)).Count -ne 0) { throw 'Unexpected or missing candidate source' }
+    if (@(Compare-Object ($script:required | Sort-Object) ($actual | Sort-Object)).Count -ne 0) { Stop-Identity 'source-inventory' }
     foreach ($item in $inventory.GetEnumerator()) {
-        if ((Get-FileHash -LiteralPath $item.Key -Algorithm SHA256).Hash.ToLowerInvariant() -ne $item.Value) { throw 'Candidate source identity mismatch' }
+        $script:identityPathSha256 = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($item.Key))).ToLowerInvariant()
+        if ((Get-FileHash -LiteralPath $item.Key -Algorithm SHA256).Hash.ToLowerInvariant() -ne $item.Value) { Stop-Identity 'source-digest' }
     }
+    $script:identityFailureCode = $null
+    $script:identityPathSha256 = $null
 }
 try {
     if ($metadataPreexisting) { throw 'Refusing preexisting metadata' }
@@ -69,8 +84,11 @@ try {
 } catch {
     # No exception messages, compiler diagnostics, process output, or environment values are exported.
     $failureType = $_.Exception.GetType().Name
+    if (-not $initialIdentity) { $initialIdentityFailureCode = $identityFailureCode; $initialIdentityPathSha256 = $identityPathSha256 }
 } finally {
     try { Assert-SourceIdentity -AllowBuildOutputs $true; $finalIdentity = $true } catch {
+        $finalIdentityFailureCode = $identityFailureCode
+        $finalIdentityPathSha256 = $identityPathSha256
         $passed = $false
         if ($null -eq $failureType) { $failureType = $_.Exception.GetType().Name; $stage = 'final-source-identity' }
     }
@@ -80,7 +98,7 @@ try {
     if ($initialIdentity -and $finalIdentity -and $null -ne $receipt) {
         $receipt | ConvertTo-Json -Depth 8 | Set-Content native-metadata/native-receipt.json -Encoding utf8NoBOM
     }
-    @{schema=1;passed=$passed;stage=$stage;failureType=$failureType;initialSourceIdentityVerified=$initialIdentity;finalSourceIdentityVerified=$finalIdentity;fixtureSha256=$fixtureHash;harnessSha256=$harnessHash;controlSha=$env:GITHUB_SHA;nativeExit=$nativeExit;productExecuted=$false} | ConvertTo-Json | Set-Content native-metadata/provenance.json -Encoding utf8NoBOM
+    @{schema=1;passed=$passed;stage=$stage;failureType=$failureType;initialIdentityPathSha256=$initialIdentityPathSha256;finalIdentityPathSha256=$finalIdentityPathSha256;initialIdentityFailureCode=$initialIdentityFailureCode;finalIdentityFailureCode=$finalIdentityFailureCode;initialSourceIdentityVerified=$initialIdentity;finalSourceIdentityVerified=$finalIdentity;fixtureSha256=$fixtureHash;harnessSha256=$harnessHash;controlSha=$env:GITHUB_SHA;nativeExit=$nativeExit;productExecuted=$false} | ConvertTo-Json | Set-Content native-metadata/provenance.json -Encoding utf8NoBOM
     if ($env:GITHUB_OUTPUT) { 'metadata_ready=true' | Add-Content -LiteralPath $env:GITHUB_OUTPUT }
     }
 }
