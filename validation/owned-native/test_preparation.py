@@ -32,6 +32,17 @@ class Preparation(unittest.TestCase):
         source=(P/'Harness/windows-owned-process.cs').read_text()
         expected='// Test-only fault injection, not a product transport. Native cleanup and capture join run first.\n'+source.replace('public static class XenOwnedProcess {','public static class XenOwnedProcessFaultFixture {\n    public static bool CleanupObservedEmpty { get; private set; }\n    public static bool InjectCleanupUncertainty { get; set; }').replace('result.treeEmpty=true;safeToStart=true;','result.treeEmpty=true;CleanupObservedEmpty=true;if(InjectCleanupUncertainty) throw new InvalidOperationException("injected after verified empty and capture join");safeToStart=true;')
         self.assertEqual(expected,(P/'Harness/windows-owned-process-fault-fixture.cs').read_text())
+    def test_boundary_diagnostics_do_not_change_success_or_cleanup(self):
+        source=(P/'Harness/windows-owned-process.cs').read_text()
+        snapshot=source.index('uint boundaryWait=');cleanup=source.index('var cleanupTimer=')
+        self.assertLess(snapshot,cleanup)
+        self.assertIn('result.boundaryActiveProcessCount=Active(job);',source)
+        self.assertIn('if(boundaryWait==0)',source)
+        self.assertIn('exitCode.HasValue && exitCode.Value==0 && treeEmpty && !timedOut && !outputExceeded && !captureFailed',source)
+        self.assertNotIn('Process.GetProcesses',source)
+        harness=(P/'Harness/Program.cs').read_text()
+        for assertion in ['normal boundary empty','timeout root live','parent exit descendants remain rejected']:
+            self.assertIn(assertion,harness)
     def test_root_confirmation_uses_remaining_cleanup_budget_and_checked_exit(self):
         source=(P/'Harness/windows-owned-process.cs').read_text()
         self.assertIn('var cleanupTimer=Stopwatch.StartNew();',source)

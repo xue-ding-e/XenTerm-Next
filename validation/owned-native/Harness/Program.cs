@@ -30,13 +30,18 @@ class Harness {
     }
     static void Case(string name,string mode,int seconds,bool expectedSuccess,bool timeout,bool over) {
         activeCase=name;activeTimer=Stopwatch.StartNew();lastObservation=null;string p=DirectoryFor(name);var r=Run(p,mode,seconds);
-        lastObservation=new {name,elapsedMilliseconds=activeTimer.ElapsedMilliseconds,actualExecutions=Count(p),r.treeEmpty,r.timedOut,r.outputExceeded,r.captureFailed,exitCode=r.exitCode,succeeded=r.Succeeded};
+        lastObservation=new {name,elapsedMilliseconds=activeTimer.ElapsedMilliseconds,actualExecutions=Count(p),r.treeEmpty,r.timedOut,r.outputExceeded,r.captureFailed,exitCode=r.exitCode,r.boundaryRootSignaled,r.boundaryActiveProcessCount,r.boundaryRootExitCodeKnown,r.boundaryRootExitCode,succeeded=r.Succeeded};
         CheckCounts(p);
         long retained=new FileInfo(Path.Combine(p,"stdout.log")).Length+new FileInfo(Path.Combine(p,"stderr.log")).Length;
         Require(r.treeEmpty && !r.captureFailed && r.exitCode.HasValue,"native cleanup and final result");
         Require(r.Succeeded==expectedSuccess && r.timedOut==timeout && r.outputExceeded==over,"native result contract");
         Require(retained<=1024*1024,"combined retained bytes exceed cap");
-        cases.Add(new {name,actualExecutions=3,r.treeEmpty,r.timedOut,r.outputExceeded,r.captureFailed,exitCode=r.exitCode,retainedBytes=retained,passed=true});
+        Require(r.boundaryRootSignaled.HasValue && r.boundaryActiveProcessCount.HasValue,"boundary observations present");
+        Require(r.boundaryRootExitCodeKnown==r.boundaryRootSignaled.Value,"boundary exit knowledge");
+        if(name=="normal") Require(r.boundaryRootSignaled==true && r.boundaryActiveProcessCount==0 && r.boundaryRootExitCode==0,"normal boundary empty");
+        if(name=="timeout") Require(r.boundaryRootSignaled==false && r.boundaryActiveProcessCount>0 && !r.boundaryRootExitCodeKnown,"timeout root live");
+        if(name=="parent-exit") Require(r.boundaryRootSignaled==true && r.boundaryActiveProcessCount>0 && r.boundaryRootExitCode==0 && !r.Succeeded,"parent exit descendants remain rejected");
+        cases.Add(new {name,actualExecutions=3,r.treeEmpty,r.timedOut,r.outputExceeded,r.captureFailed,exitCode=r.exitCode,r.boundaryRootSignaled,r.boundaryActiveProcessCount,r.boundaryRootExitCodeKnown,r.boundaryRootExitCode,retainedBytes=retained,passed=true});
     }
     static void Rejected(string name,Action<string> action) {
         activeCase=name;activeTimer=Stopwatch.StartNew();lastObservation=null;string p=DirectoryFor(name);bool rejected=false;
