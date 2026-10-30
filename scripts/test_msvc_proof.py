@@ -123,6 +123,18 @@ class BootstrapGuards(unittest.TestCase):
             for row in result['fields']['INCLUDE']['paths']:self.assertEqual(len(row['path_sha256']),64)
             values['LIB']=';'.join([str(unknown)]*129)
             with self.assertRaises(p.ControlGate):p.sdk_path_diagnostics(values,vs,sdk,pf)
+    def test_empty_link_narrowing_is_copy_and_unknown_or_empty_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base=Path(tmp);pf=base/'PF';vs=base/'VS';sdk=pf/'Windows Kits/10';sibling=pf/'Windows Kits/NETFXSDK';unknown=base/'unknown'
+            for path in (vs,sdk,sibling,unknown):path.mkdir(parents=True,exist_ok=True)
+            values={'INCLUDE':f'{vs};{sibling};{sdk}','LIB':f'{sibling};{sdk}','PATH':'unchanged'};before=dict(values)
+            narrow,meta=p.narrow_empty_link_paths(values,vs,sdk,pf)
+            self.assertEqual(values,before);self.assertEqual(narrow['INCLUDE'],f'{vs};{sdk}');self.assertEqual(narrow['LIB'],str(sdk));self.assertEqual(narrow['PATH'],'unchanged')
+            self.assertEqual(meta['removed_windows_kits_siblings']['LIB']['count'],1);self.assertNotIn(tmp,json.dumps(meta));self.assertFalse(meta['global_environment_changed'])
+            for invalid in (str(sibling),f'{sdk};{unknown}'):
+                changed=dict(values,LIB=invalid)
+                with self.assertRaises(p.ControlGate):p.narrow_empty_link_paths(changed,vs,sdk,pf)
+                self.assertEqual(changed['LIB'],invalid)
     def test_selected_tools_and_sdk_containment(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp).resolve()/'VS';tool=root/'VC/Tools/MSVC/14.4';sdk=Path(tmp).resolve()/'SDK';include=sdk/'Include';lib=sdk/'Lib';include.mkdir(parents=True);lib.mkdir();bin=tool/'bin/Hostx64/x64';bin.mkdir(parents=True)
