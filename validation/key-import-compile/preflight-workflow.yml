@@ -1,0 +1,88 @@
+name: Compile preflight capture (manual source candidate)
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: xenterm-compile-preflight
+  cancel-in-progress: false
+jobs:
+  preflight:
+    if: github.repository == 'xue-ding-e/XenTerm-Next' && github.ref == 'refs/heads/validation/xenterm-compile-preflight-20261030' && github.event_name == 'workflow_dispatch' && inputs.expected_sha == github.sha
+    runs-on: windows-2025
+    timeout-minutes: 18
+    env:
+      EXPECTED_CONTROL_SHA: ${{ inputs.expected_sha }}
+      GIT_CONFIG_COUNT: '2'
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: 'false'
+      GIT_CONFIG_KEY_1: core.eol
+      GIT_CONFIG_VALUE_1: lf
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Own a fresh output directory and bind control source
+        id: initial_scope
+        shell: pwsh
+        timeout-minutes: 1
+        run: ./validation/key-import-compile/preflight-identity.ps1 -Phase Initial
+      - name: Prepare isolated Rust setup scope
+        id: rust_scope
+        shell: pwsh
+        timeout-minutes: 1
+        run: ./validation/key-import-compile/prepare-rust-scope.ps1
+      - id: rust_setup
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        timeout-minutes: 10
+        env:
+          PATH: ${{ steps.rust_scope.outputs.setup_path }}
+          CARGO_HOME: ${{ runner.temp }}/key-import-compile-evidence/cargo-home
+          RUSTUP_HOME: ${{ runner.temp }}/key-import-compile-evidence/rustup-home
+          HOME: ${{ runner.temp }}/key-import-compile-evidence/home
+          USERPROFILE: ${{ runner.temp }}/key-import-compile-evidence/home
+          APPDATA: ${{ runner.temp }}/key-import-compile-evidence/appdata
+          LOCALAPPDATA: ${{ runner.temp }}/key-import-compile-evidence/localappdata
+          TEMP: ${{ runner.temp }}/key-import-compile-evidence/tmp
+          TMP: ${{ runner.temp }}/key-import-compile-evidence/tmp
+          RUSTUP_DIST_SERVER: https://static.rust-lang.org
+          RUSTUP_UPDATE_ROOT: https://static.rust-lang.org/rustup
+        with:
+          toolchain: '1.99.1'
+          targets: x86_64-pc-windows-msvc
+
+      - name: Build only the compile-control Host (never invoke it)
+        id: host_build
+        shell: pwsh
+        timeout-minutes: 3
+        run: ./validation/key-import-compile/build-compile-host.ps1
+      - name: Capture fixed SDK installation metadata
+        id: sdk_capture
+        shell: pwsh
+        timeout-minutes: 1
+        run: ./validation/key-import-compile/capture-sdk.ps1
+      - name: Final identity and bounded preflight outcome
+        if: always() && steps.initial_scope.outcome == 'success'
+        shell: pwsh
+        timeout-minutes: 1
+        env:
+          SETUP_OUTCOME: ${{ steps.rust_setup.outcome }}
+          HOST_OUTCOME: ${{ steps.host_build.outcome }}
+          SDK_OUTCOME: ${{ steps.sdk_capture.outcome }}
+        run: ./validation/key-import-compile/preflight-identity.ps1 -Phase Final
+      - name: Upload only available sanitized capture metadata
+        if: always() && steps.initial_scope.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: compile-preflight-metadata
+          path: |
+            ${{ runner.temp }}/key-import-compile-evidence/preflight.json
+            ${{ runner.temp }}/key-import-compile-evidence/sdk-metadata.json
+            ${{ runner.temp }}/key-import-compile-evidence/host-build.json
+          if-no-files-found: ignore
+          retention-days: 7
