@@ -80,7 +80,7 @@ jobs:
             ${{ runner.temp }}/key-import-native-evidence/diagnostic.json
             ${{ runner.temp }}/key-import-native-evidence/tool-metadata.json
             ${{ runner.temp }}/key-import-native-evidence/link-smoke.json
-            ${{ runner.temp }}/key-import-native-evidence/signature-stage.json
+            ${{ runner.temp }}/key-import-native-evidence/signature-stage-*.json
             ${{ runner.temp }}/key-import-native-evidence/sdk-path-narrowing.json
             ${{ runner.temp }}/key-import-native-evidence/sdk-path-diagnostic.json
             ${{ runner.temp }}/key-import-native-evidence/msvc-environment.json
