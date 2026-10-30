@@ -1,0 +1,18 @@
+{
+  ".github/workflows/ci.yml": "c8c7f7002ef1527ec8ef8181ed99924fb39de8ef3d06223d16fa35b2a7a25494",
+  "Default15/Fixture/Fixture.csproj": "eafe692b786cd2d39f0486b02d8cfd8d1f682546dddb1e5688cca929c180e06f",
+  "Default15/Fixture/Program.cs": "420e26b1637817b8e4c5bffe857b501dd2513e7cfa1f20c924f8a6bc4a540f7f",
+  "Default15/Harness/Harness.csproj": "eafe692b786cd2d39f0486b02d8cfd8d1f682546dddb1e5688cca929c180e06f",
+  "Default15/Harness/Program.cs": "6b5fac954e97860b83111333185e0d7affab8bbbefbddb115152751d098b69fa",
+  "Default15/Harness/windows-owned-process-fault-fixture.cs": "602a8ed49f5245ba7707302f3c8b0ec4e94df60ded0b5d8c99f810b61a63da09",
+  "Default15/Harness/windows-owned-process.cs": "62f2b8a074e57524840f5f56134fdf63eccb6079f9d3c199e5a6e5c372728dbb",
+  "Fixture/Fixture.csproj": "f266a043c6377894aa71007bf87d3b69760880f248a158b8fb3ef7922cf061e3",
+  "Fixture/Program.cs": "98ce7dd26f73cccceed6b3bfb6bbc90d42ba00ebd0935d95825d8f4afe86d084",
+  "Harness/Harness.csproj": "cfaafc62b0cff9c612f3aaace91e676cd72453a706362c4d3ed30374311ffd12",
+  "Harness/Program.cs": "53befaac363bd7f87e57119202e9bfd9385f40c662ee97155076b4c8b81ba48d",
+  "Harness/short-clock-owned-process.cs": "d840c6cd5863a209d66117e1666f04dc917c9c5029a1e8f00c1515275ef1646e",
+  "Harness/windows-owned-process.cs": "62f2b8a074e57524840f5f56134fdf63eccb6079f9d3c199e5a6e5c372728dbb",
+  "NuGet.Config": "9508cae5f76364f56e80eb97cb16493977243cf38e5cca6284e3d74f83b20a2c",
+  "global.json": "0503dacfc3e664e4b7fc0ac7da920e5939da4ee62ab852ce7aec1a0bdbdf38a2",
+  "run-combined.ps1": "49709cae40f457d914faef8d2db53ece05c82aad914700cac511510d6411dbb8"
+}
