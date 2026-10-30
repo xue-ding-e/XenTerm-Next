@@ -27,7 +27,7 @@ class OwnedAdapter {
             var request=JsonSerializer.Deserialize<Request>(text);
             if(request==null) throw new ArgumentException("request absent");
             var result=XenOwnedProcess.Run(request.executable,request.args,request.cwd,request.seconds,request.stdout,request.stderr,request.environment);
-            receipt=new {schema=1,state="returned",result.exitCode,result.timedOut,result.outputExceeded,result.treeEmpty,result.captureFailed,succeeded=result.Succeeded,safeToStart=XenOwnedProcess.SafeToStart,productExecuted=false};
+            receipt=new {schema=1,state="returned",result.exitCode,result.boundaryRootSignaled,result.boundaryActiveProcessCount,result.boundaryRootExitCodeKnown,result.boundaryRootExitCode,result.timedOut,result.outputExceeded,result.treeEmpty,result.captureFailed,succeeded=result.Succeeded,safeToStart=XenOwnedProcess.SafeToStart,productExecuted=false};
             code=0; // Python separately checks all child flags and the requested command's exit.
         } catch(Exception error) {
             receipt=new {schema=1,state="host-error",errorType=error.GetType().Name,treeEmpty=false,safeToStart=XenOwnedProcess.SafeToStart,productExecuted=false};

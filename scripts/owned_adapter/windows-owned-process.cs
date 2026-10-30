@@ -99,6 +99,9 @@ public static class XenOwnedProcess {
     public sealed class Result {
         // Null means no verified final exit code, never a successful default zero.
         public uint? exitCode; public bool timedOut,outputExceeded,treeEmpty,captureFailed;
+        // Sequential owned-handle observations before cleanup, not an atomic OS snapshot.
+        public bool? boundaryRootSignaled; public uint? boundaryActiveProcessCount,boundaryRootExitCode;
+        public bool boundaryRootExitCodeKnown { get { return boundaryRootExitCode.HasValue; } }
         public bool Succeeded { get { return exitCode.HasValue && exitCode.Value==0 && treeEmpty && !timedOut && !outputExceeded && !captureFailed; } }
     }
     public static Result Run(string executable,string[] args,string cwd,int seconds,string stdout,string stderr,Dictionary<string,string> environment) {
@@ -157,6 +160,13 @@ public static class XenOwnedProcess {
                 result.outputExceeded=capture.Exceeded;result.captureFailed=capture.Failed;
                 if(wait==0 && Active(job)==0 && !result.timedOut && !result.outputExceeded && !result.captureFailed) break;
                 if(result.timedOut || result.outputExceeded || result.captureFailed) break;
+            }
+            uint boundaryWait=WaitForSingleObject(p.process,0);Check(boundaryWait!=0xffffffff,"boundary root signal");
+            result.boundaryRootSignaled=boundaryWait==0;
+            result.boundaryActiveProcessCount=Active(job);
+            if(boundaryWait==0) {
+                uint boundaryCode;Check(GetExitCodeProcess(p.process,out boundaryCode),"boundary root exit code");
+                result.boundaryRootExitCode=boundaryCode;
             }
         } finally {
             var cleanupTimer=Stopwatch.StartNew();

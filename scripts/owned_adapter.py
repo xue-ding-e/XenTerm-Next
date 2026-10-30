@@ -1,6 +1,6 @@
 """Windows smoke-only adapter; no product execution is authorized by this module.
 
-The exact C# transport passed native fixture run 41049970699 at 39fc7d4.
+The exact C# transport passed native fixture run 41056633320 at 8d81aca5.
 A killed/stalled Host has UNKNOWN descendant lifecycle, never verified cleanup.
 That poisons this Python owner and ends the proof; the disposable CI step/job
 is the final boundary. No outer-Host kill is claimed to prove tree cleanup.
@@ -9,7 +9,7 @@ import hashlib,json,os,re,subprocess,time
 from pathlib import Path
 from types import SimpleNamespace
 
-TRANSPORT_SHA256='feb96ef4773e3f5364edea77f2a5268f5f03d93ee0207f330a32e620b7bb6685'
+TRANSPORT_SHA256='3d5a75d1baa1c90a843f26cb47a5a5a7c9328fbc73eb992326495cf23d6aaaef'
 HERE=Path(__file__).resolve().parent
 ARTIFACTS={'OwnedAdapter.exe','OwnedAdapter.dll','OwnedAdapter.deps.json','OwnedAdapter.runtimeconfig.json'}
 ENV_KEYS=set('PATH SYSTEMROOT WINDIR COMSPEC PATHEXT OS NUMBER_OF_PROCESSORS PROCESSOR_ARCHITECTURE PROCESSOR_IDENTIFIER PROGRAMFILES PROGRAMFILES(X86) PROGRAMW6432 COMMONPROGRAMFILES COMMONPROGRAMFILES(X86) INCLUDE LIB LIBPATH VCINSTALLDIR VCTOOLSINSTALLDIR VCTOOLSVERSION VSINSTALLDIR VISUALSTUDIOVERSION WINDOWSSDKDIR WINDOWSSDKVERSION WINDOWSSDKLIBVERSION UNIVERSALCRTSDKDIR UCRTVERSION VSCMD_ARG_HOST_ARCH VSCMD_ARG_TGT_ARCH CARGO_HOME RUSTUP_HOME LANG LC_ALL TZ HOME USERPROFILE APPDATA LOCALAPPDATA XDG_CONFIG_HOME XDG_DATA_HOME XDG_CACHE_HOME XDG_RUNTIME_DIR XENTERM_DATA_DIR TEMP TMP TMPDIR RUST_BACKTRACE PROGRAMDATA ALLUSERSPROFILE PYTHONUTF8 CARGO_TARGET_DIR'.split())
@@ -62,6 +62,10 @@ def validate_receipt(data):
     code=data.get('exitCode');check(type(code) is int and 0<=code<=4294967295,'unknown-final-exit')
     check(data['treeEmpty'] and data['safeToStart'] and not data['captureFailed'],'cleanup-not-verified')
     check(data['succeeded']==(code==0 and not data['timedOut'] and not data['outputExceeded']),'inconsistent-success-flag')
+    check(type(data.get('boundaryRootSignaled')) is bool and type(data.get('boundaryRootExitCodeKnown')) is bool,'invalid-boundary-flags')
+    active=data.get('boundaryActiveProcessCount');check(type(active) is int and 0<=active<=4294967295,'invalid-boundary-count')
+    known=data['boundaryRootExitCodeKnown'];boundary=data.get('boundaryRootExitCode')
+    check(known==data['boundaryRootSignaled'] and ((type(boundary) is int and 0<=boundary<=4294967295) if known else boundary is None),'invalid-boundary-exit')
     return data
 
 def run(argv,label,seconds,env,cwd,out):
@@ -86,6 +90,7 @@ def run(argv,label,seconds,env,cwd,out):
         sizes={p.name:p.stat().st_size for p in (stdout,stderr)}
         check(sum(sizes.values())<=1048576,'retained-output-budget-exceeded')
         record.update(state='returned',tree_empty=True,host_lifecycle='returned-verified',exit_code=data['exitCode'],timed_out=data['timedOut'],output_exceeded=data['outputExceeded'],capture_failed=data['captureFailed'],logs={stream:{'bytes':path.stat().st_size,'sha256':digest(path)} for stream,path in [('stdout',stdout),('stderr',stderr)]})
+        record['before_cleanup']={key:data[key] for key in ('boundaryRootSignaled','boundaryActiveProcessCount','boundaryRootExitCodeKnown','boundaryRootExitCode')}
         POISONED=False
         check(not data['timedOut'] and not data['outputExceeded'],'child-budget-failed')
         return SimpleNamespace(returncode=data['exitCode'],stdout=stdout.read_bytes())
@@ -104,4 +109,4 @@ def smoke_receipts():
     check(not POISONED,'owner-poisoned')
     check([r['label'] for r in RECORDS]==['vswhere','vc-bootstrap','signatures','msvc-link-proof'],'smoke-command-inventory')
     check(all(r.get('state')=='returned' and r.get('tree_empty') is True and r.get('host_lifecycle')=='returned-verified' and r.get('exit_code')==0 and r.get('timed_out') is False and r.get('output_exceeded') is False and r.get('capture_failed') is False for r in RECORDS),'smoke-command-incomplete')
-    return {'command_count':4,'all_child_trees_verified':True,'transport_sha256':TRANSPORT_SHA256,'qualification_run':41049970699,'outer_host_failure_cleanup':'unknown; disposable CI final boundary'}
+    return {'command_count':4,'all_child_trees_verified':True,'transport_sha256':TRANSPORT_SHA256,'qualification_run':41056633320,'outer_host_failure_cleanup':'unknown; disposable CI final boundary'}

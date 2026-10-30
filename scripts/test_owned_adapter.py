@@ -11,7 +11,7 @@ class Adapter(unittest.TestCase):
         self.target=self.root/'synthetic-tool.exe';self.target.write_bytes(b'fixture')
         self.host=self.root/'OwnedAdapter.exe';self.host.write_bytes(b'host-fixture')
         a.POISONED=False;a.RECORDS=[]
-        self.good=dict(schema=1,state='returned',exitCode=0,timedOut=False,outputExceeded=False,treeEmpty=True,captureFailed=False,succeeded=True,safeToStart=True,productExecuted=False)
+        self.good=dict(schema=1,state='returned',boundaryRootSignaled=True,boundaryActiveProcessCount=0,boundaryRootExitCodeKnown=True,boundaryRootExitCode=0,exitCode=0,timedOut=False,outputExceeded=False,treeEmpty=True,captureFailed=False,succeeded=True,safeToStart=True,productExecuted=False)
     def tearDown(self):self.tmp.cleanup()
     def invoke(self,label='test',env=None):
         return a.run([str(self.target),'synthetic'],label,20,{'PATH':'synthetic'} if env is None else env,self.root,self.root)
@@ -28,6 +28,13 @@ class Adapter(unittest.TestCase):
         with patch.object(a,'identity',return_value=(self.host,{})),patch.object(a.subprocess,'run',side_effect=self.fake()) as host:
             self.assertEqual(self.invoke().returncode,0);self.assertEqual(host.call_count,1)
         self.assertFalse(a.POISONED);self.assertTrue(a.RECORDS[0]['tree_empty'])
+    def test_boundary_diagnostics_never_turn_parent_exit_timeout_into_success(self):
+        data=dict(self.good,timedOut=True,succeeded=False,boundaryActiveProcessCount=3)
+        with patch.object(a,'identity',return_value=(self.host,{})),patch.object(a.subprocess,'run',side_effect=self.fake(data)):
+            with self.assertRaisesRegex(a.OwnedFailure,'child-budget-failed'):self.invoke()
+        self.assertEqual(a.RECORDS[0]['before_cleanup']['boundaryActiveProcessCount'],3)
+        for delta in [dict(boundaryActiveProcessCount=True),dict(boundaryRootExitCodeKnown=False),dict(boundaryRootExitCode=None)]:
+            with self.assertRaises(a.OwnedFailure):a.validate_receipt(dict(self.good,**delta))
     def test_outer_host_timeout_poison_never_claims_cleanup_or_continues(self):
         with patch.object(a,'identity',return_value=(self.host,{})),patch.object(a.subprocess,'run',side_effect=subprocess.TimeoutExpired(['PRIVATE_ARG'],35)) as host:
             with self.assertRaisesRegex(a.OwnedFailure,'unknown-host-lifecycle'):self.invoke()
