@@ -12,7 +12,7 @@ CONTROL=HERE.parent
 I=json.loads((HERE/'inputs.json').read_text())
 SOURCE=Path(os.environ.get('GITHUB_WORKSPACE','.')).resolve()/'source'
 OUT=Path(os.environ.get('RUNNER_TEMP','.')).resolve()/'key-import-native-evidence'
-BRANCH='validation/key-import-native-20261029'
+BRANCH='validation/msvc-owned-smoke-20261030'
 FEATURES=I['FEATURES']
 UNIX_ONLY=tuple('ssh::key_import::tests::'+n for n in ('rejects_symlinks_without_reading_the_target','refuses_replacement_file_symlink_and_fifo_after_metadata_check'))
 SUMMARY=re.compile(r'^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; \d+ filtered out; finished in [0-9.]+s$')
@@ -104,7 +104,7 @@ def prepare():
         git('apply','--check','--whitespace=error',str(HERE/n));git('apply','--index',str(HERE/n));require(git('write-tree')==tree,'tree mismatch')
     git('diff','--cached','--check')
     for n,h in I['FIXTURES'].items():require(digest(SOURCE/n)==h,'fixture mismatch')
-    files=[HERE/'native-key-import.py',HERE/'test_native_key_import.py',HERE/'inputs.json',CONTROL/'.github/workflows/ci.yml',HERE/'diagnose-native.py',HERE/'test_diagnose_native.py',HERE/'msvc-proof.py',HERE/'test_msvc_proof.py',HERE/'tool-signatures.ps1',*[HERE/n for n in I['PATCHES']]]
+    files=[HERE/'native-key-import.py',HERE/'test_native_key_import.py',HERE/'inputs.json',CONTROL/'.github/workflows/ci.yml',HERE/'diagnose-native.py',HERE/'test_diagnose_native.py',HERE/'msvc-proof.py',HERE/'test_msvc_proof.py',HERE/'tool-signatures.ps1',HERE/'owned_adapter.py',HERE/'test_owned_adapter.py',HERE/'build-owned-adapter.ps1',*sorted((HERE/'owned_adapter').glob('*')),*[HERE/n for n in I['PATCHES']]]
     write('prepared.json',{'source_sha':I['SHA'],'product_tree':I['PRODUCT_TREE'],'test_tree':I['TEST_TREE'],'control_sha':os.environ['EXPECTED_CONTROL_SHA'],'control_files':{str(p.relative_to(CONTROL)):digest(p) for p in files},'status':git('status','--porcelain','--untracked-files=all','--ignored'),'started_monotonic':time.monotonic()})
 
 def compile_env():

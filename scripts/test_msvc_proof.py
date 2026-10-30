@@ -66,6 +66,40 @@ class BootstrapGuards(unittest.TestCase):
     def test_discovery_identity_failure_not_green(self):
         with tempfile.TemporaryDirectory() as tmp,patch.object(p.n,'OUT',Path(tmp)),patch.object(p.n,'compile_env',return_value={'PROGRAMFILES(X86)':tmp}),patch.object(p,'safe_cmd_path'),patch.object(p.n,'digest',return_value='0'*64),patch.object(p,'discovery_final_identities',side_effect=p.ControlGate('tree-changed')),patch.object(p.subprocess,'run',return_value=subprocess.CompletedProcess([],0,b'[]')):
             self.assertEqual(p.discovery_only(),1);r=json.loads((Path(tmp)/'vs-discovery.json').read_text());self.assertEqual(r['reason'],'tree-changed');self.assertFalse(r['product_compile_attempted'])
+    def test_bootstrap_overlay_rejection_prevents_children(self):
+        with patch.object(p.n,'compile_env',return_value={'SYSTEMROOT':'unused'}),patch.object(p,'programdata_overlay',side_effect=p.ControlGate('ab-directory-variable-missing')) as overlay,patch.object(p,'owned_child') as child:
+            with self.assertRaises(p.ControlGate) as error:p.bootstrap()
+            self.assertEqual(error.exception.reason,'ab-directory-variable-missing');overlay.assert_called_once();child.assert_not_called()
+    def test_proof_links_only_and_checks_final_identity_on_success_and_failure(self):
+        for fail in (False,True):
+            with self.subTest(fail=fail),tempfile.TemporaryDirectory() as tmp:
+                root=Path(tmp);env={'PATH':'isolated'};linker=root/'link.exe';calls=[]
+                def link(argv,label,seconds,actual_env):
+                    calls.append((argv,label,seconds,actual_env))
+                    if fail:raise RuntimeError('SYNTHETIC_PRIVATE_ERROR')
+                    Path(argv[-1]).write_bytes(b'synthetic-not-executed')
+                with patch.object(p.n,'OUT',root),patch.object(p.n,'platform_target',return_value='x86_64-pc-windows-msvc'),patch.object(p,'bootstrap',return_value=(env,linker)),patch.object(p.shutil,'which',return_value='rustc'),patch.object(p,'owned_link',side_effect=link),patch.object(p.owned,'smoke_receipts',return_value={'command_count':4,'all_child_trees_verified':True}),patch.object(p.n,'identities') as identities,patch.object(p.n,'patch_hashes') as hashes,patch.object(p.n,'git',side_effect=lambda *args:p.n.I['TEST_TREE'] if args==('write-tree',) else ''),patch.object(p.n,'read',return_value={'status':'','control_files':{}}),patch.dict(p.n.I,{'FIXTURES':{}}),patch.object(p.subprocess,'run') as child:
+                    self.assertEqual(p.proof(),int(fail));identities.assert_called_once();hashes.assert_called_once();child.assert_not_called()
+                    self.assertEqual(len(calls),1);argv,label,seconds,actual_env=calls[0]
+                    self.assertEqual((label,seconds,actual_env),('msvc-link-proof',20,env));self.assertIn('linker='+str(linker),argv)
+                    self.assertEqual((root/'msvc-link-proof/probe.rs').read_bytes(),p.d.SMOKE_SOURCE)
+                    text=(root/'msvc-proof.json').read_text();result=json.loads(text)
+                    self.assertFalse(result['executed_binary']);self.assertFalse(result['product_compile_attempted']);self.assertNotIn('PRIVATE',text)
+                    self.assertEqual(result['state'],'failed-or-timeout' if fail else 'linked-not-executed')
+    def test_final_identity_failure_cannot_leave_success_receipt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            def link(argv,*args):Path(argv[-1]).write_bytes(b'synthetic-not-executed')
+            with patch.object(p.n,'OUT',root),patch.object(p.n,'platform_target',return_value='x86_64-pc-windows-msvc'),patch.object(p,'bootstrap',return_value=({'PATH':'isolated'},root/'link.exe')),patch.object(p.shutil,'which',return_value='rustc'),patch.object(p,'owned_link',side_effect=link),patch.object(p.owned,'smoke_receipts',return_value={'command_count':4,'all_child_trees_verified':True}),patch.object(p.n,'identities',side_effect=RuntimeError('SYNTHETIC_PRIVATE_IDENTITY')):
+                with self.assertRaises(RuntimeError):p.proof()
+            self.assertFalse((root/'msvc-proof.json').exists(), 'success-shaped receipt must not precede identity verification')
+    def test_bootstrap_failure_checks_identity_and_is_not_success(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            with patch.object(p.n,'OUT',root),patch.object(p.n,'platform_target',return_value='x86_64-pc-windows-msvc'),patch.object(p,'bootstrap',side_effect=RuntimeError('PRIVATE_BOOTSTRAP')),patch.object(p.n,'identities') as identities,patch.object(p.n,'patch_hashes'),patch.object(p.n,'git',side_effect=lambda *args:p.n.I['TEST_TREE'] if args==('write-tree',) else ''),patch.object(p.n,'read',return_value={'status':'','control_files':{}}),patch.dict(p.n.I,{'FIXTURES':{}}),patch.object(p.n,'run') as compiler:
+                self.assertEqual(p.proof(),1);identities.assert_called_once();compiler.assert_not_called()
+            text=(root/'msvc-proof.json').read_text();result=json.loads(text)
+            self.assertEqual(result['state'],'failed-or-timeout');self.assertTrue(result['final_identity_verified']);self.assertNotIn('PRIVATE',text)
     def test_export_whitelist_never_all_environment(self):
         with patch.dict(os.environ,{'GITHUB_TOKEN':'SYNTHETIC_SECRET','ACTIONS_RUNTIME_TOKEN':'SYNTHETIC_SECRET','PATH':'sdk-path','INCLUDE':'sdk-include'},clear=True),patch.object(sys,'stdout',io.StringIO()) as out:p.capture_env()
         self.assertEqual(json.loads(out.getvalue()),{'PATH':'sdk-path','INCLUDE':'sdk-include'});self.assertNotIn('SECRET',out.getvalue())
@@ -95,13 +129,18 @@ class BootstrapGuards(unittest.TestCase):
             for f in files:f.parent.mkdir(parents=True,exist_ok=True);f.write_bytes(b'synthetic')
             for f in (sdk/'Include',sdk/'Lib'):f.mkdir(parents=True)
             sdkvalues={'PATH':str(bin),'VCTOOLSINSTALLDIR':str(tool),'WINDOWSSDKDIR':str(sdk),'INCLUDE':str(sdk/'Include'),'LIB':str(sdk/'Lib')}
+            data=root/'ProgramData';data.mkdir()
             clean={'ProgramFiles(x86)':str(pf),'SystemRoot':str(win),'PATH':'synthetic-parent'}
             signatures={name:{'valid_signature':True,'microsoft_signer':True,'microsoft_company':True,'version':[1,2,3,4]} for name in ('cl','link')}
             responses=[subprocess.CompletedProcess([],0,(str(vs)+'\n').encode()),subprocess.CompletedProcess([],0,json.dumps(sdkvalues).encode()),subprocess.CompletedProcess([],0,json.dumps(signatures).encode())]
-            with patch.object(p.sys,'executable',str(root/'python.exe')),patch.object(p.n,'OUT',out),patch.object(p.n,'compile_env',return_value=clean),patch.object(p.subprocess,'run',side_effect=responses) as run,patch.object(p.shutil,'which',side_effect=lambda name,**kw:str(bin/name)),patch.dict(os.environ,{'GITHUB_TOKEN':'SYNTHETIC_SECRET'}):
+            with patch.object(p.sys,'executable',str(root/'python.exe')),patch.object(p.n,'OUT',out),patch.object(p.n,'compile_env',return_value=clean),patch.object(p,'owned_child',side_effect=responses) as run,patch.object(p.shutil,'which',side_effect=lambda name,**kw:str(bin/name)),patch.dict(os.environ,{'GITHUB_TOKEN':'SYNTHETIC_SECRET','PROGRAMDATA':str(data),'ALLUSERSPROFILE':str(data)},clear=True):
                 env,linker=p.bootstrap();self.assertEqual(linker,bin/'link.exe');self.assertEqual(env['PATH'],str(bin));self.assertEqual(run.call_count,3)
                 child=run.call_args_list[1];self.assertEqual(child.args[0][1:4],['/d','/s','/c']);self.assertIn('" -B "',child.args[0][4]);self.assertIn('--capture-env',child.args[0][4]);self.assertNotIn('&& set',child.args[0][4])
-                for call in run.call_args_list:self.assertNotIn('GITHUB_TOKEN',call.kwargs['env'])
+                for call in run.call_args_list:
+                    self.assertNotIn('GITHUB_TOKEN',call.args[3])
+                    self.assertEqual(call.args[3]['PROGRAMDATA'],str(data))
+                    self.assertEqual(call.args[3]['ALLUSERSPROFILE'],str(data))
+                self.assertNotIn('PROGRAMDATA',clean)
                 self.assertEqual(os.environ['GITHUB_TOKEN'],'SYNTHETIC_SECRET')
                 self.assertFalse((p.HERE/'__pycache__').exists())
                 self.assertNotIn('SYNTHETIC_SECRET',(out/'msvc-environment.json').read_text())
@@ -122,8 +161,8 @@ class BootstrapGuards(unittest.TestCase):
         for error,reason in errors:
             with tempfile.TemporaryDirectory() as tmp,patch.object(p.n,'OUT',Path(tmp)),patch.object(p,'bootstrap',side_effect=error):
                 self.assertEqual(p.metadata_only(),1);text=(Path(tmp)/'bootstrap-status.json').read_text();self.assertEqual(json.loads(text)['reason'],reason);self.assertNotIn('SECRET',text)
-    def test_entrypoint_metadata_only(self):
-        code=(p.HERE/'msvc-proof.py').read_text();self.assertIn('else:code=paired_discovery_only()',code);self.assertNotIn('else:code=proof()',code)
+    def test_entrypoint_smoke_only(self):
+        code=(p.HERE/'msvc-proof.py').read_text();self.assertIn('else:code=proof()',code);self.assertNotIn('else:code=paired_discovery_only()',code)
     def test_signer_script_no_raw_export(self):
         code=(p.HERE/'tool-signatures.ps1').read_text();self.assertIn('Get-AuthenticodeSignature',code);self.assertIn("$signature.Status -eq 'Valid'",code);self.assertIn("$version.CompanyName -eq 'Microsoft Corporation'",code);self.assertNotIn('Write-Host',code);self.assertNotIn('ExecutionPolicy',code)
 if __name__=='__main__':

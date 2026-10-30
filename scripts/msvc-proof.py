@@ -3,6 +3,13 @@ import importlib.util,json,os,re,subprocess,sys,hashlib,shutil
 from pathlib import Path
 HERE=Path(__file__).resolve().parent
 spec=importlib.util.spec_from_file_location('diag',HERE/'diagnose-native.py');d=importlib.util.module_from_spec(spec);spec.loader.exec_module(d);n=d.n
+adapter_spec=importlib.util.spec_from_file_location('owned_adapter',HERE/'owned_adapter.py');owned=importlib.util.module_from_spec(adapter_spec);adapter_spec.loader.exec_module(owned)
+def owned_child(argv,label,seconds,env):
+    return owned.run(argv,label,seconds,env,n.SOURCE,n.OUT)
+def owned_link(argv,label,seconds,env):
+    child=owned_child(argv,label,seconds,env)
+    require(child.returncode==0,'link-child-nonzero')
+
 SDK_KEYS={'PATH','INCLUDE','LIB','LIBPATH','VCTOOLSINSTALLDIR','VCINSTALLDIR','VCTOOLSVERSION','VSINSTALLDIR','VISUALSTUDIOVERSION','WINDOWSSDKDIR','WINDOWSSDKVERSION','WINDOWSSDKLIBVERSION','UNIVERSALCRTSDKDIR','UCRTVERSION','VSCMD_ARG_HOST_ARCH','VSCMD_ARG_TGT_ARCH'}
 
 REASONS={'OS tool roots absent': 'os-tool-roots-absent', 'SDK bootstrap failed': 'sdk-bootstrap-failed', 'SDK directories outside VS/SDK': 'sdk-directories-outside-vs-sdk', 'SDK directory absent': 'sdk-directory-absent', 'SDK export too large': 'sdk-export-too-large', 'SDK field absent': 'sdk-field-absent', 'SDK keys invalid': 'sdk-keys-invalid', 'SDK missing': 'sdk-missing', 'SDK value invalid': 'sdk-value-invalid', 'Windows-only proof': 'windows-only-proof', 'ambiguous VS root': 'ambiguous-vs-root', 'control changed': 'control-changed', 'fixture changed': 'fixture-changed', 'invalid tool version': 'invalid-tool-version', 'missing or symlink bootstrap path': 'missing-or-symlink-bootstrap-path', 'not verified Microsoft tools': 'not-verified-microsoft-tools', 'proof binary missing': 'proof-binary-missing', 'proof source changed': 'proof-source-changed', 'rustc absent': 'rustc-absent', 'signature fields': 'signature-fields', 'signature schema': 'signature-schema', 'source changed': 'source-changed', 'status changed': 'status-changed', 'tool missing': 'tool-missing', 'tool signer verification failed': 'tool-signer-verification-failed', 'toolset outside chosen VS': 'toolset-outside-chosen-vs', 'tree changed': 'tree-changed', 'unsafe shell path': 'unsafe-shell-path', 'vswhere failed': 'vswhere-failed', 'wrong tool precedence': 'wrong-tool-precedence'}
@@ -72,7 +79,8 @@ def validate_sdk(values,root):
 
 def bootstrap():
     checkpoint('compile-environment')
-    env=n.compile_env();env['PYTHONUTF8']='1';fold={k.upper():v for k,v in env.items()}
+    # Preserve only the validated OS directory delta proved by paired discovery.
+    env=programdata_overlay(n.compile_env());env['PYTHONUTF8']='1';fold={k.upper():v for k,v in env.items()}
     checkpoint('os-roots')
     require('PROGRAMFILES(X86)' in fold and 'SYSTEMROOT' in fold,'OS tool roots absent')
     vswhere=Path(fold['PROGRAMFILES(X86)'])/'Microsoft Visual Studio'/'Installer'/'vswhere.exe'
@@ -80,7 +88,7 @@ def bootstrap():
     checkpoint('bootstrap-paths')
     for path in (vswhere,cmd,Path(sys.executable),HERE/'msvc-proof.py'):safe_cmd_path(path)
     checkpoint('vswhere-child')
-    result=subprocess.run([str(vswhere),'-latest','-products','*','-requires','Microsoft.VisualStudio.Component.VC.Tools.x86.x64','-property','installationPath'],env=env,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=10,check=False)
+    result=owned_child([str(vswhere),'-latest','-products','*','-requires','Microsoft.VisualStudio.Component.VC.Tools.x86.x64','-property','installationPath'],'vswhere',10,env)
     CHILD_EXITS['vswhere']=result.returncode
     checkpoint('vswhere-result')
     require(result.returncode==0 and len(result.stdout)<=4096,'vswhere failed')
@@ -90,7 +98,7 @@ def bootstrap():
     script=root/'Common7'/'Tools'/'VsDevCmd.bat';safe_cmd_path(script)
     command=f'call "{script}" -arch=x64 -host_arch=x64 >nul 2>nul && "{sys.executable}" -B "{HERE / "msvc-proof.py"}" --capture-env'
     checkpoint('vc-child')
-    result=subprocess.run([str(cmd),'/d','/s','/c',command],env=env,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=30,check=False)
+    result=owned_child([str(cmd),'/d','/s','/c',command],'vc-bootstrap',30,env)
     CHILD_EXITS['vc-bootstrap']=result.returncode
     require(result.returncode==0,'SDK bootstrap failed')
     checkpoint('sdk-json');values=parse_sdk_output(result.stdout.decode('utf-8-sig'))
@@ -102,7 +110,7 @@ def bootstrap():
     checkpoint('signer-path')
     powershell=Path(fold['SYSTEMROOT'])/'System32'/'WindowsPowerShell'/'v1.0'/'powershell.exe';safe_cmd_path(powershell)
     checkpoint('signer-child')
-    result=subprocess.run([str(powershell),'-NoProfile','-NonInteractive','-File',str(HERE/'tool-signatures.ps1'),'-ClPath',str(expected['cl.exe']),'-LinkPath',str(expected['link.exe'])],env=env,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=20,check=False)
+    result=owned_child([str(powershell),'-NoProfile','-NonInteractive','-File',str(HERE/'tool-signatures.ps1'),'-ClPath',str(expected['cl.exe']),'-LinkPath',str(expected['link.exe'])],'signatures',20,env)
     CHILD_EXITS['signatures']=result.returncode
     require(result.returncode==0 and len(result.stdout)<4096,'tool signer verification failed')
     checkpoint('signer-json')
@@ -118,22 +126,26 @@ def bootstrap():
 
 def proof():
     require(n.platform_target()=='x86_64-pc-windows-msvc','Windows-only proof')
-    env,linker=bootstrap();root=n.OUT/'msvc-link-proof';root.mkdir(mode=0o700);source=root/'probe.rs';source.write_bytes(d.SMOKE_SOURCE);binary=root/'probe.exe'
-    rustc=shutil.which('rustc',path=env['PATH']);require(rustc is not None,'rustc absent')
-    result={'source_sha256':hashlib.sha256(d.SMOKE_SOURCE).hexdigest(),'executed_binary':False,'product_compile_attempted':False,'selected_linker_path_sha256':d.sha(str(linker)),'timeout_seconds':20}
-    code=0
+    result={'executed_binary':False,'product_compile_attempted':False,'timeout_seconds':20,'transport_sha256':owned.TRANSPORT_SHA256,'host_failure_lifecycle':'unknown; stop proof; disposable CI step/job final boundary'}
+    code=0;source=None
     try:
-        n.run([rustc,'+1.99.1','--target','x86_64-pc-windows-msvc','--crate-name','synthetic_msvc_proof','--crate-type','bin','-C','linker='+str(linker),str(source),'-o',str(binary)],'msvc-link-proof',20,env)
+        env,linker=bootstrap();root=n.OUT/'msvc-link-proof';root.mkdir(mode=0o700);source=root/'probe.rs';source.write_bytes(d.SMOKE_SOURCE);binary=root/'probe.exe'
+        rustc=shutil.which('rustc',path=env['PATH']);require(rustc is not None,'rustc absent')
+        result.update(source_sha256=hashlib.sha256(d.SMOKE_SOURCE).hexdigest(),selected_linker_path_sha256=d.sha(str(linker)))
+        owned_link([rustc,'+1.99.1','--target','x86_64-pc-windows-msvc','--crate-name','synthetic_msvc_proof','--crate-type','bin','-C','linker='+str(linker),str(source),'-o',str(binary)],'msvc-link-proof',20,env)
+        result['owned_transport']=owned.smoke_receipts()
         require(binary.is_file() and not binary.is_symlink(),'proof binary missing');result.update(state='linked-not-executed',binary_sha256=n.digest(binary))
     except BaseException as exc:code=1;result.update(state='failed-or-timeout',error_type=type(exc).__name__)
     finally:
-        require(source.read_bytes()==d.SMOKE_SOURCE,'proof source changed')
+        if source is not None:require(source.read_bytes()==d.SMOKE_SOURCE,'proof source changed')
         stderr=n.OUT/'msvc-link-proof.stderr.log';result['diagnostic']=d.diagnose('',stderr.read_text(errors='replace') if stderr.is_file() and stderr.stat().st_size<=64*1024*1024 else '')
-        n.write('msvc-proof.json',result)
         n.identities();n.patch_hashes();require(n.git('write-tree')==n.I['TEST_TREE'],'tree changed');require(not n.git('diff','--exit-code'),'source changed')
         p=n.read('prepared.json');require(n.git('status','--porcelain','--untracked-files=all','--ignored')==p['status'],'status changed')
         for path,h in p['control_files'].items():require(n.digest(n.CONTROL/path)==h,'control changed')
         for path,h in n.I['FIXTURES'].items():require(n.digest(n.SOURCE/path)==h,'fixture changed')
+        # Publish the link receipt only after all final identity guards succeed.
+        result['final_identity_verified']=True
+        n.write('msvc-proof.json',result)
     return code
 
 # Read-only discovery probes. They never run the SDK batch or any compiler.
@@ -264,7 +276,7 @@ def paired_discovery_only():
 if __name__=='__main__':
     try:
         if sys.argv[1:]==['--capture-env']:capture_env();code=0
-        else:code=paired_discovery_only()
+        else:code=proof()
     except BaseException as exc:
         if n.OUT.is_dir():n.write('failure.json',{'stage':'msvc-environment-proof','error_type':type(exc).__name__,'classification':'control/environment failure; no product test','product_compile_attempted':False,'raw_logs_uploaded':False})
         code=1

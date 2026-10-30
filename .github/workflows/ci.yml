@@ -1,4 +1,4 @@
-name: Paired VS directory discovery metadata (manual, no compiler execution)
+name: Owned MSVC empty-link smoke (manual, no product execution)
 # Local proposal: hosted lifecycle only. No raw logs or binaries uploaded.
 on:
   workflow_dispatch:
@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   windows:
-    if: github.repository == 'xue-ding-e/XenTerm-Next' && github.ref == 'refs/heads/validation/key-import-native-20261029' && github.event_name == 'workflow_dispatch' && inputs.expected_sha == github.sha
+    if: github.repository == 'xue-ding-e/XenTerm-Next' && github.ref == 'refs/heads/validation/msvc-owned-smoke-20261030' && github.event_name == 'workflow_dispatch' && inputs.expected_sha == github.sha
     runs-on: windows-latest
     timeout-minutes: 15
     defaults:
@@ -47,20 +47,21 @@ jobs:
           python-version: '3.12'
       - name: Pure synthetic control guards
         timeout-minutes: 2
-        run: python control/scripts/test_msvc_proof.py
+        run: |
+          python control/scripts/test_msvc_proof.py
+          python control/scripts/test_owned_adapter.py
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
         with:
           toolchain: '1.99.1'
           targets: x86_64-pc-windows-msvc
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: source -> target
-          cache-targets: false
-          key: desktop-check-x86_64-pc-windows-msvc
       - name: Prepare exact candidate
         timeout-minutes: 2
         run: python control/scripts/native-key-import.py prepare
-      - name: Record paired installed VS directory discovery metadata
+      - name: Compile exact qualified transport and thin Host only
+        shell: pwsh
+        timeout-minutes: 2
+        run: ./control/scripts/build-owned-adapter.ps1
+      - name: Verify installed MSVC with empty Rust link only
         timeout-minutes: 3
         run: python control/scripts/msvc-proof.py
       - name: Preserve structured evidence only
@@ -81,6 +82,8 @@ jobs:
             ${{ runner.temp }}/key-import-native-evidence/link-smoke.json
             ${{ runner.temp }}/key-import-native-evidence/msvc-environment.json
             ${{ runner.temp }}/key-import-native-evidence/msvc-proof.json
+            ${{ runner.temp }}/key-import-native-evidence/owned-commands.json
+            ${{ runner.temp }}/key-import-native-evidence/owned-adapter-build.json
             ${{ runner.temp }}/key-import-native-evidence/bootstrap-status.json
             ${{ runner.temp }}/key-import-native-evidence/vs-discovery.json
             ${{ runner.temp }}/key-import-native-evidence/vs-paired-discovery.json
