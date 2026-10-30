@@ -1,0 +1,13 @@
+{
+  ".github/workflows/ci.yml": "d46675a40da4f199f6b98ad1ee63b916311e1b8827eb93351af3b9706de87ea4",
+  "Fixture/Fixture.csproj": "eafe692b786cd2d39f0486b02d8cfd8d1f682546dddb1e5688cca929c180e06f",
+  "Fixture/Program.cs": "c02fe67436fea8f797474ead881643ff2e2733f17751b452909f1027d1580abe",
+  "Harness/Harness.csproj": "eafe692b786cd2d39f0486b02d8cfd8d1f682546dddb1e5688cca929c180e06f",
+  "Harness/Program.cs": "68c6f0f90e908100fe94db70ffb1588a0a74215d4163eff3eda8f63e174162a4",
+  "Harness/windows-owned-process-fault-fixture.cs": "4bf3ce428695745ab1fe8bf139603208e49725a78d3e0b7b45f299576ef17b84",
+  "Harness/windows-owned-process.cs": "34f3d84f02189c6767db4671d4adbf6b614587048a85b338ce2fee210785e208",
+  "NuGet.Config": "7d59a339f0f6022f0710d690fe52e2a0f868519847651f6c10f6c9ff1bd7213a",
+  "global.json": "0503dacfc3e664e4b7fc0ac7da920e5939da4ee62ab852ce7aec1a0bdbdf38a2",
+  "run-native.ps1": "d6ac784cac74cc1a481003da70717228b3799f11c403e32201ed7c26bda8b8f7",
+  "test_preparation.py": "b67972cd0f4ba37cac6ee8a96b2956c1972bfa9ae25845b9a7d34827466d8dee"
+}

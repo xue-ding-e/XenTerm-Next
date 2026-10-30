@@ -1,0 +1,38 @@
+name: Owned Windows transport native fixtures (manual proposal)
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Exact independently reviewed synthetic control SHA
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: xenterm-owned-native-fixtures
+  cancel-in-progress: false
+jobs:
+  synthetic:
+    if: github.repository == 'xue-ding-e/XenTerm-Next' && github.ref == 'refs/heads/validation/xenterm-owned-process-20261030' && github.event_name == 'workflow_dispatch' && inputs.expected_sha == github.sha
+    runs-on: windows-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Compile and execute only synthetic parent-child-grandchild fixtures
+        id: native
+        shell: pwsh
+        timeout-minutes: 3
+        run: ./validation/owned-native/run-native.ps1
+      - name: Upload available sanitized metadata, including failures
+        if: always() && steps.native.outputs.metadata_ready == 'true' && (hashFiles('validation/owned-native/native-metadata/provenance.json', 'validation/owned-native/native-metadata/native-receipt.json') != '')
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: owned-native-metadata
+          path: |
+            validation/owned-native/native-metadata/native-receipt.json
+            validation/owned-native/native-metadata/provenance.json
+          if-no-files-found: ignore
+          retention-days: 7
