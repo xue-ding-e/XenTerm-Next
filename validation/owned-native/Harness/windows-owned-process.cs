@@ -74,7 +74,7 @@ public static class XenOwnedProcess {
                 }
             } catch { lock(gate) failed=true; }
         }
-        public bool Join() { return first.Join(2500) && second.Join(2500); }
+        public bool Join(Stopwatch deadline) { return first.Join(Remaining(deadline)) && second.Join(Remaining(deadline)); }
     }
     static string Quote(string value) {
         if (value.Length>0 && value.IndexOfAny(new[]{' ','\t','\n','\r','\v','"'})<0) return value;
@@ -89,10 +89,12 @@ public static class XenOwnedProcess {
 
     static void Check(bool value,string stage) { if(!value) throw new Win32Exception(Marshal.GetLastWin32Error(),stage); }
     static uint Active(IntPtr job) { ACCOUNTING a; Check(QueryInformationJobObject(job,1,out a,(uint)Marshal.SizeOf<ACCOUNTING>(),IntPtr.Zero),"query owned job"); return a.active; }
-    static void Empty(IntPtr job) {
-        var deadline=Stopwatch.StartNew();
-        while(Active(job)!=0 && deadline.ElapsedMilliseconds<5000) System.Threading.Thread.Sleep(25);
-        if(Active(job)!=0) throw new Exception("owned cleanup uncertain");
+    static int Remaining(Stopwatch deadline) { return (int)Math.Max(0,5000-deadline.ElapsedMilliseconds); }
+    static void Empty(IntPtr job,Stopwatch deadline) {
+        while(Active(job)!=0) {
+            if(Remaining(deadline)==0) throw new Exception("owned cleanup uncertain");
+            Thread.Sleep(Math.Min(25,Remaining(deadline)));
+        }
     }
     public sealed class Result {
         // Null means no verified final exit code, never a successful default zero.
@@ -157,20 +159,23 @@ public static class XenOwnedProcess {
                 if(result.timedOut || result.outputExceeded || result.captureFailed) break;
             }
         } finally {
+            var cleanupTimer=Stopwatch.StartNew();
             try {
-                if(assigned) { if(Active(job)!=0) Check(TerminateJobObject(job,124),"terminate owned tree");Empty(job); }
-                else if(created) { Check(TerminateProcess(p.process,125),"terminate suspended root");if(WaitForSingleObject(p.process,5000)!=0) throw new Exception("suspended cleanup uncertain"); }
+                if(assigned) { if(Active(job)!=0) Check(TerminateJobObject(job,124),"terminate owned tree");Empty(job,cleanupTimer); }
+                else if(created) { Check(TerminateProcess(p.process,125),"terminate suspended root");if(WaitForSingleObject(p.process,(uint)Remaining(cleanupTimer))!=0) throw new Exception("suspended cleanup uncertain"); }
+                if(created) {
+                    uint remaining=(uint)Remaining(cleanupTimer);
+                    uint wait=WaitForSingleObject(p.process,remaining);
+                    Check(wait!=0xffffffff,"root exit wait");
+                    if(wait!=0) throw new Exception("root exit confirmation uncertain");
+                    uint code;Check(GetExitCodeProcess(p.process,out code),"final root exit code");result.exitCode=code;
+                }
                 if(output!=IntPtr.Zero && output!=new IntPtr(-1)) {Check(CloseHandle(output),"close stdout writer");output=IntPtr.Zero;}
                 if(error!=IntPtr.Zero && error!=new IntPtr(-1)) {Check(CloseHandle(error),"close stderr writer");error=IntPtr.Zero;}
                 if(capture!=null) {
-                    if(!capture.Join()) throw new Exception("capture cleanup uncertain");
+                    if(!capture.Join(cleanupTimer)) throw new Exception("capture cleanup uncertain");
                     result.outputExceeded=result.outputExceeded || capture.Exceeded;
                     result.captureFailed=result.captureFailed || capture.Failed;
-                }
-                // Query only after owned cleanup and a signaled root. A live 259 is
-                // never confused with a final exit code; unknown remains null.
-                if(created && WaitForSingleObject(p.process,0)==0) {
-                    uint code;if(GetExitCodeProcess(p.process,out code)) result.exitCode=code;
                 }
                 result.treeEmpty=true;safeToStart=true;
             } finally {
