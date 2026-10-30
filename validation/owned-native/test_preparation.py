@@ -1,6 +1,6 @@
 """Pure preparation checks. Passing these is not a native execution receipt."""
 from pathlib import Path
-import hashlib,json,unittest
+import hashlib,json,unittest,re
 P=Path(__file__).resolve().parent
 class Preparation(unittest.TestCase):
     def test_exact_source_inventory(self):
@@ -30,8 +30,22 @@ class Preparation(unittest.TestCase):
         self.assertNotEqual(hashlib.sha256(source).hexdigest(),hashlib.sha256(source.replace(b'\n',b'\r\n')).hexdigest())
     def test_fault_variant_only_injects_after_real_cleanup(self):
         source=(P/'Harness/windows-owned-process.cs').read_text()
-        expected='// Test-only fault injection, not a product transport. Native cleanup and capture join run first.\n'+source.replace('public static class XenOwnedProcess {','public static class XenOwnedProcessFaultFixture {\n    public static bool CleanupObservedEmpty { get; private set; }').replace('result.treeEmpty=true;safeToStart=true;','result.treeEmpty=true;CleanupObservedEmpty=true;throw new InvalidOperationException("injected after verified empty and capture join");')
+        expected='// Test-only fault injection, not a product transport. Native cleanup and capture join run first.\n'+source.replace('public static class XenOwnedProcess {','public static class XenOwnedProcessFaultFixture {\n    public static bool CleanupObservedEmpty { get; private set; }\n    public static bool InjectCleanupUncertainty { get; set; }').replace('result.treeEmpty=true;safeToStart=true;','result.treeEmpty=true;CleanupObservedEmpty=true;if(InjectCleanupUncertainty) throw new InvalidOperationException("injected after verified empty and capture join");safeToStart=true;')
         self.assertEqual(expected,(P/'Harness/windows-owned-process-fault-fixture.cs').read_text())
+    def test_compiler_metadata_excludes_raw_diagnostics(self):
+        script=(P/'run-native.ps1').read_text()
+        pattern=re.search(r"Matches\(\$line,'([^']+)'\)",script).group(1)
+        synthetic='C:/private/path.cs(189,9): error CS0162: PRIVATE_VALUE\nerror MSB1009: PRIVATE_VALUE\nwarning CS9999: PRIVATE_VALUE\nerror UNKNOWN123: PRIVATE_VALUE'
+        self.assertEqual(re.findall(pattern,synthetic),['CS0162','MSB1009'])
+        self.assertIn('@{code=$code;count=$counts[$code]}',script)
+        self.assertIn('16777216',script);self.assertIn('$counts.Count -ge 32',script)
+    def test_fault_switch_is_runtime_default_off_and_explicitly_enabled(self):
+        source=(P/'Harness/windows-owned-process-fault-fixture.cs').read_text()
+        self.assertIn('public static bool InjectCleanupUncertainty { get; set; }',source)
+        self.assertNotIn('InjectCleanupUncertainty { get; set; } = true',source)
+        self.assertIn('if(InjectCleanupUncertainty) throw',source)
+        harness=(P/'Harness/Program.cs').read_text()
+        self.assertLess(harness.index('InjectCleanupUncertainty=true'),harness.index('try {XenOwnedProcessFaultFixture.Run('))
     def test_native_cases_demand_executed_three_process_tree(self):
         s=(P/'Harness/Program.cs').read_text()
         for mode in ['normal','timeout','overflow','parent-exit','invalid-env','null-args','nul-arg','same-logs','concurrent','injected-cleanup-uncertainty']:

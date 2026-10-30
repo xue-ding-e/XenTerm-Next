@@ -3,6 +3,10 @@ Set-StrictMode -Version Latest
 Set-Location $PSScriptRoot
 $stage = 'source-identity'
 $nativeExit = $null
+$fixtureCompileExit = $null
+$harnessCompileExit = $null
+$compilerCodes = @()
+$compilerCodeExtraction = 'not-needed'
 $passed = $false
 $initialIdentity = $false
 $finalIdentity = $false
@@ -20,6 +24,22 @@ $receipt = $null
 $metadataPreexisting = Test-Path -LiteralPath ./native-metadata
 # The expected inventory is explicit, including this bootstrap and every build input.
 $required = @('.github/workflows/ci.yml','Fixture/Fixture.csproj','Fixture/Program.cs','Harness/Harness.csproj','Harness/Program.cs','Harness/windows-owned-process-fault-fixture.cs','Harness/windows-owned-process.cs','NuGet.Config','global.json','run-native.ps1','test_preparation.py')
+function Get-CompilerCodeCounts([string]$Path) {
+    # Local compiler diagnostics never leave the runner; only allowlisted code counts do.
+    if (-not (Test-Path -LiteralPath $Path) -or (Get-Item -LiteralPath $Path).Length -gt 16777216) { throw 'Diagnostic unavailable or oversized' }
+    $counts = @{}
+    foreach ($line in [IO.File]::ReadLines($Path)) {
+        foreach ($match in [regex]::Matches($line,'\berror\s+(CS[0-9]{4}|MSB[0-9]{4}|NU[0-9]{4})\b')) {
+            $code = $match.Groups[1].Value
+            if (-not $counts.ContainsKey($code)) {
+                if ($counts.Count -ge 32) { throw 'Too many diagnostic codes' }
+                $counts[$code] = 0
+            }
+            $counts[$code] = [Math]::Min(1000,$counts[$code]+1)
+        }
+    }
+    foreach ($code in @($counts.Keys | Sort-Object)) { @{code=$code;count=$counts[$code]} }
+}
 function Stop-Identity([string]$Code) {
     $script:identityFailureCode = $Code
     throw 'Source identity gate failed'
@@ -56,10 +76,12 @@ try {
     # Compiler diagnostics remain local; bootstrap is not evidence of owned-job containment.
     $stage = 'fixture-compile'
     & dotnet build Fixture/Fixture.csproj -c Release "-p:RestoreConfigFile=$PSScriptRoot/NuGet.Config" -p:NuGetAudit=false -v:q *> fixture-build.log
-    if ($LASTEXITCODE -ne 0) { throw 'Fixture compilation failed' }
+    $fixtureCompileExit = $LASTEXITCODE
+    if ($fixtureCompileExit -ne 0) { throw 'Fixture compilation failed' }
     $stage = 'harness-compile'
     & dotnet build Harness/Harness.csproj -c Release "-p:RestoreConfigFile=$PSScriptRoot/NuGet.Config" -p:NuGetAudit=false -v:q *> harness-build.log
-    if ($LASTEXITCODE -ne 0) { throw 'Harness compilation failed' }
+    $harnessCompileExit = $LASTEXITCODE
+    if ($harnessCompileExit -ne 0) { throw 'Harness compilation failed' }
     $fixture = (Resolve-Path ./Fixture/bin/Release/net8.0/Fixture.exe).Path
     $harness = (Resolve-Path ./Harness/bin/Release/net8.0/Harness.exe).Path
     $fixtureHash = (Get-FileHash $fixture).Hash.ToLowerInvariant()
@@ -86,6 +108,13 @@ try {
     $failureType = $_.Exception.GetType().Name
     if (-not $initialIdentity) { $initialIdentityFailureCode = $identityFailureCode; $initialIdentityPathSha256 = $identityPathSha256 }
 } finally {
+    if ($stage -in @('fixture-compile','harness-compile')) {
+        try {
+            $log = if ($stage -eq 'fixture-compile') { Join-Path $PSScriptRoot 'fixture-build.log' } else { Join-Path $PSScriptRoot 'harness-build.log' }
+            $compilerCodes = @(Get-CompilerCodeCounts $log)
+            $compilerCodeExtraction = 'codes-only'
+        } catch { $compilerCodeExtraction = 'unavailable' }
+    }
     try { Assert-SourceIdentity -AllowBuildOutputs $true; $finalIdentity = $true } catch {
         $finalIdentityFailureCode = $identityFailureCode
         $finalIdentityPathSha256 = $identityPathSha256
@@ -98,7 +127,7 @@ try {
     if ($initialIdentity -and $finalIdentity -and $null -ne $receipt) {
         $receipt | ConvertTo-Json -Depth 8 | Set-Content native-metadata/native-receipt.json -Encoding utf8NoBOM
     }
-    @{schema=1;passed=$passed;stage=$stage;failureType=$failureType;initialIdentityPathSha256=$initialIdentityPathSha256;finalIdentityPathSha256=$finalIdentityPathSha256;initialIdentityFailureCode=$initialIdentityFailureCode;finalIdentityFailureCode=$finalIdentityFailureCode;initialSourceIdentityVerified=$initialIdentity;finalSourceIdentityVerified=$finalIdentity;fixtureSha256=$fixtureHash;harnessSha256=$harnessHash;controlSha=$env:GITHUB_SHA;nativeExit=$nativeExit;productExecuted=$false} | ConvertTo-Json | Set-Content native-metadata/provenance.json -Encoding utf8NoBOM
+    @{schema=1;passed=$passed;stage=$stage;fixtureCompileExit=$fixtureCompileExit;harnessCompileExit=$harnessCompileExit;compilerCodes=$compilerCodes;compilerCodeExtraction=$compilerCodeExtraction;failureType=$failureType;initialIdentityPathSha256=$initialIdentityPathSha256;finalIdentityPathSha256=$finalIdentityPathSha256;initialIdentityFailureCode=$initialIdentityFailureCode;finalIdentityFailureCode=$finalIdentityFailureCode;initialSourceIdentityVerified=$initialIdentity;finalSourceIdentityVerified=$finalIdentity;fixtureSha256=$fixtureHash;harnessSha256=$harnessHash;controlSha=$env:GITHUB_SHA;nativeExit=$nativeExit;productExecuted=$false} | ConvertTo-Json -Depth 8 | Set-Content native-metadata/provenance.json -Encoding utf8NoBOM
     if ($env:GITHUB_OUTPUT) { 'metadata_ready=true' | Add-Content -LiteralPath $env:GITHUB_OUTPUT }
     }
 }

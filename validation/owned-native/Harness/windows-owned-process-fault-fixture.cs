@@ -11,6 +11,7 @@ using System.Threading;
 using Microsoft.Win32.SafeHandles;
 public static class XenOwnedProcessFaultFixture {
     public static bool CleanupObservedEmpty { get; private set; }
+    public static bool InjectCleanupUncertainty { get; set; }
     private static readonly object runGate=new object();
     private static bool safeToStart=true;
     public static bool SafeToStart { get { lock(runGate) return safeToStart; } }
@@ -174,7 +175,7 @@ public static class XenOwnedProcessFaultFixture {
                 if(created && WaitForSingleObject(p.process,0)==0) {
                     uint code;if(GetExitCodeProcess(p.process,out code)) result.exitCode=code;
                 }
-                result.treeEmpty=true;CleanupObservedEmpty=true;throw new InvalidOperationException("injected after verified empty and capture join");
+                result.treeEmpty=true;CleanupObservedEmpty=true;if(InjectCleanupUncertainty) throw new InvalidOperationException("injected after verified empty and capture join");safeToStart=true;
             } finally {
                 // Serialize callback disable with overflow termination before releasing its job handle.
                 if(capture!=null) capture.DisableStop();

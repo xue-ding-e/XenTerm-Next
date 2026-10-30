@@ -64,6 +64,7 @@ class Harness {
             Require(busy && Count(denied)==0 && concurrent.treeEmpty && concurrent.timedOut && !concurrent.Succeeded,"single-run admission");
             cases.Add(new{name="concurrent",actualExecutions=3,deniedExecutions=0,concurrent.treeEmpty,passed=true});
             string fault=DirectoryFor("injected-cleanup-uncertainty"),after=DirectoryFor("poisoned-next");bool injected=false,blocked=false;
+            XenOwnedProcessFaultFixture.InjectCleanupUncertainty=true;
             try {XenOwnedProcessFaultFixture.Run(fixture,new[]{"root","normal",fault},fault,10,Path.Combine(fault,"out"),Path.Combine(fault,"err"),env);} catch(InvalidOperationException) {injected=true;}
             CheckCounts(fault);
             try {XenOwnedProcessFaultFixture.Run(fixture,new[]{"root","normal",after},after,3,Path.Combine(after,"out"),Path.Combine(after,"err"),env);} catch(Exception) {blocked=true;}
