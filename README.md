@@ -8,6 +8,8 @@
   <b>English</b> · <a href="README.zh.md">简体中文</a>
 </p>
 
+**[Download / Install](#install)**
+
 <h1 align="center">XenTerm Next</h1>
 
 <p align="center">
@@ -226,112 +228,84 @@ behaviour still require platform testing.
 
 ## Install
 
-The [rolling beta](https://github.com/xue-ding-e/XenTerm-Next/releases/tag/beta) provides portable archives for Windows x86_64 (ZIP), Linux x86_64 (tar.gz) and macOS Apple Silicon (ZIP). The current beta does not include MSI or PKG installers; installer CI checks do not imply that those packages are available for download. Check the release's exact source SHA, `BUILD.json` and `SHA256SUMS`, or build `main` from source using [Quick start](#quick-start). The packaging instructions below describe supported build formats; only the assets listed in [this repository’s Releases](https://github.com/xue-ding-e/XenTerm-Next/releases) are published downloads. [Official upstream releases](https://github.com/ixbaicn/XenTerm/releases) do not include all enhancements from this repository.
+### Download the verified GPUI preview
 
-### Windows
+No Rust toolchain is needed for these portable downloads. These links select source
+[`8819e2ec1327`](https://github.com/xue-ding-e/XenTerm-Next/commit/8819e2ec132760047209e9dcff7341c5f8a15f94)
+from the [rolling beta](https://github.com/xue-ding-e/XenTerm-Next/releases/tag/beta),
+verified on 2026-10-30. The beta page may also contain older source versions;
+download the archive and manifests with the **same full SHA**.
 
-- **Installer** — run `xenterm-<version>-windows-x86_64.msi` and choose an install
-  location.
-- **Portable** — unzip `xenterm-<version>-windows-x86_64.zip` and run `xenterm.exe`.
-
-The MSI feature page initially selects PATH, desktop and Start menu integration;
-each can be disabled. Upgrades between different numeric versions preserve feature
-selection. Rebuilt previews with the same version number are not seamless upgrades;
-uninstall the old package through Windows Installed apps before installing another
-build with that version. PATH is maintained by
-Windows Installer without replacing unrelated entries; reopen terminals afterward.
-
-### macOS
-
-The packaging workflow also builds an Apple `.pkg`: required `/Applications`
-app plus an optional, initially selected CLI entry. It does not modify the Dock
-or guess a desktop user. Each installer run starts with CLI selected; deselection
-skips that component without removing an existing link, and does not yet remember
-an earlier opt-out. See the [installer notes](packaging/macos/README.zh-CN.md).
-Unsigned packages are not Developer ID signed or notarized; check the actual
-assets provided by the version you download.
-
-
-The download is a `.zip` containing `xenterm.app`:
-
-```bash
-# aarch64 = Apple Silicon, x86_64 = Intel
-unzip xenterm-*-macos-*.zip
-
-# Optional: move it into Applications (running it in place also works)
-mv xenterm.app /Applications/
-
-# Clear the quarantine flag, or macOS reports "xenterm is damaged and can't be opened"
-xattr -dr com.apple.quarantine /Applications/xenterm.app
-
-open /Applications/xenterm.app
-```
-
-If you did not move it, point both paths above at wherever the `.app` actually is.
-Requires macOS 11 Big Sur or later.
-
-### Linux
-
-User script installs offer PATH, desktop and application-menu integration;
-`--no-add-to-path`, `--no-desktop-shortcut` and `--no-start-menu` opt out, with
-choices preserved on repeat installs. `--uninstall` with the original prefix
-removes only unchanged managed files. A headless user without an XDG desktop gets
-no desktop shortcut. System installs do not edit user shell profiles. Debian
-packages keep package-manager semantics; Flatpak does not promise a host CLI.
-
-| Package | Command |
+| Platform | Direct download |
 | --- | --- |
-| Debian / Ubuntu | `sudo apt install ./xenterm-*-linux-amd64.deb` |
-| Fedora / others | `tar -xzf xenterm-*-linux-x86_64.tar.gz` |
-| Flatpak | `flatpak install --user xenterm-*.flatpak` |
-| AppImage | `chmod +x xenterm-*.AppImage && ./xenterm-*.AppImage` |
-| Arch (AUR) | `yay -S xenterm-bin` |
+| Windows x86_64 | [ZIP](https://github.com/xue-ding-e/XenTerm-Next/releases/download/beta/XenTerm-Next-beta-8819e2ec132760047209e9dcff7341c5f8a15f94-windows-x86_64.zip) |
+| Linux x86_64 | [tar.gz](https://github.com/xue-ding-e/XenTerm-Next/releases/download/beta/XenTerm-Next-beta-8819e2ec132760047209e9dcff7341c5f8a15f94-linux-x86_64.tar.gz) |
+| macOS Apple Silicon | [ZIP](https://github.com/xue-ding-e/XenTerm-Next/releases/download/beta/XenTerm-Next-beta-8819e2ec132760047209e9dcff7341c5f8a15f94-macos-aarch64.zip) |
 
-The tarball runs directly:
+[SHA256 checksums](https://github.com/xue-ding-e/XenTerm-Next/releases/download/beta/XenTerm-Next-beta-8819e2ec132760047209e9dcff7341c5f8a15f94-SHA256SUMS) ·
+[Build provenance](https://github.com/xue-ding-e/XenTerm-Next/releases/download/beta/XenTerm-Next-beta-8819e2ec132760047209e9dcff7341c5f8a15f94-BUILD.json)
+
+Before opening a download, compare its SHA256 with its exact filename in the
+checksum file: Windows PowerShell `Get-FileHash -Algorithm SHA256 <archive>`,
+macOS `shasum -a 256 <archive>`, or Linux `sha256sum <archive>`.
+A matching checksum detects corruption; it is not a publisher signature.
+These are beta previews, not a stable-release or full native-UI validation claim.
+
+### Windows: extract and open
+
+1. Download the Windows ZIP above and verify its checksum.
+2. Use **Extract All**; open the extracted
+   `XenTerm-Next-beta-8819e2ec132760047209e9dcff7341c5f8a15f94-windows-x86_64` folder.
+3. Double-click `xenterm.exe`. Keep the accompanying license and attribution files.
+   Optionally create a shortcut to this executable.
+
+This preview is **unsigned**. If Windows blocks it or reports a security warning,
+stop and review the source and release provenance; do not disable security protections.
+The current beta does not publish an MSI installer.
+
+### macOS: Apple Silicon only
+
+1. Download the macOS ZIP above and verify its checksum.
+2. Double-click it in Finder to extract **XenTerm Next.app**.
+3. Optionally move that app to Applications without overwriting an existing copy,
+   then open it.
+
+This preview is ad-hoc signed, **not Developer ID signed or notarized**. If macOS
+blocks it, stop and review the release provenance; do not remove quarantine or
+disable Gatekeeper as a routine installation step. No Intel Mac or PKG download
+is provided by this beta.
+
+### Linux: extract and open
+
+Built on Ubuntu 22.04; requires glibc ≥ 2.35 and system GUI libraries.
+After downloading the Linux archive and verifying its checksum, run from the
+download directory:
 
 ```bash
-tar -xzf xenterm-*-linux-x86_64.tar.gz
-cd xenterm-*-linux-x86_64
+tar -xzf XenTerm-Next-beta-8819e2ec132760047209e9dcff7341c5f8a15f94-linux-x86_64.tar.gz
+cd XenTerm-Next-beta-8819e2ec132760047209e9dcff7341c5f8a15f94-linux-x86_64
 ./xenterm
-
-# Optional: install the binary, icon and launcher under /usr/local
-# sudo is requested only when the destination needs it; root does not need sudo
-chmod +x install-linux.sh && ./install-linux.sh
-
-# Or install for this user under ~/.local, without sudo
-./install-linux.sh --user
-
-# Or choose an installation directory (quote paths containing spaces)
-./install-linux.sh --prefix "$HOME/Apps/XenTerm"
-# Equivalent environment setting; an optional binary path still works
-PREFIX="$HOME/Apps/XenTerm" ./install-linux.sh /path/to/xenterm
 ```
 
-The default prefix is `/usr/local`. The installer creates `<prefix>/bin/xenterm`,
-`<prefix>/share/applications/xenterm.desktop` and
-`<prefix>/share/icons/hicolor/512x512/apps/xenterm.png`. Prefix precedence is
-`--prefix` > `PREFIX` > the default (`$HOME/.local` with `--user`). `--user` never
-invokes sudo and fails with a clear error if the selected destination is not writable.
-Relative prefixes are resolved to absolute paths. Prefixes containing `=` or control
-characters are rejected because they cannot form a safe desktop launcher path.
+Keep the extracted directory intact. Its `RUNTIME.txt` lists the build's runtime
+library dependencies; missing libraries must be installed with your distribution's
+package manager. This archive does **not** contain `install-linux.sh`; it is not a
+deb, Flatpak, AppImage, AUR package or a glibc 2.28 build.
 
-The launcher and its **New Window** action use the installed binary's absolute path,
-so they do not depend on `PATH`. For command-line use, add `<prefix>/bin` to `PATH`.
-For a custom prefix outside the desktop's search path, also add `<prefix>/share` to
-`XDG_DATA_DIRS` in your desktop session environment, then log out and back in.
+### Other packaging and source builds
 
-Other user launchers are preserved; the installer warns if one may override the new
-installation. Rerunning the installer updates launchers marked as managed by it, and
-also upgrades the original installer's unchanged launcher (an exact content match).
-If an existing destination launcher is unmarked and differs from that original
-template, installation stops before changing files. Review and move that customized
-launcher before retrying.
+Only assets listed in [Next Releases](https://github.com/xue-ding-e/XenTerm-Next/releases)
+are published Next downloads. Installer source capabilities are separate:
+[Windows MSI](wix/main.wxs), [macOS PKG notes](packaging/macos/README.zh-CN.md),
+and the [Linux installation script](assets/install-linux.sh). Their existence or
+CI checks do not mean an installer has been published for this preview.
+For developer builds, see [Quick start](#quick-start).
+[Official upstream releases](https://github.com/ixbaicn/XenTerm/releases) are a
+different distribution and do not include all Next enhancements.
 
-> Requires glibc ≥ 2.35 (Ubuntu 22.04+ / Debian 12+). If you need an older baseline, the
-> `-glibc228` tarballs are built against glibc 2.28 (Debian 10).
-
-> On Wayland you may need to log out and back in once after installing the icon, so the
-> shell picks it up.
+Before upgrading, close XenTerm and back up your complete profile, including
+external key and wallpaper files. Extract a new version separately rather than
+overwriting a running installation; see [Configuration and data](#configuration-and-data).
 
 ## Quick start
 

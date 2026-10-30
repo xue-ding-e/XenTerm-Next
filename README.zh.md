@@ -8,6 +8,8 @@
   <a href="README.md">English</a> · <b>简体中文</b>
 </p>
 
+**[下载 / 安装](#安装)**
+
 <h1 align="center">XenTerm Next</h1>
 
 <p align="center">
@@ -197,88 +199,72 @@ Linux 原生界面的验证不能代替 Windows、macOS 原生交互验证；请
 
 ## 安装
 
-[滚动 beta](https://github.com/xue-ding-e/XenTerm-Next/releases/tag/beta) 已提供 Windows x86_64（ZIP）、Linux x86_64（tar.gz）和 macOS Apple Silicon（ZIP）三平台便携包。当前 beta 不含 MSI 或 PKG 安装器；安装器 CI 检查通过不代表对应安装包已可下载。请核对发布页的精确源码 SHA、`BUILD.json` 和 `SHA256SUMS`，也可按[快速开始](#快速开始)从源码构建 `main`。下述打包说明介绍支持的构建格式，已发布下载仅以[本仓库 Releases](https://github.com/xue-ding-e/XenTerm-Next/releases) 列出的资产为准。上游安装包见[官方 Releases](https://github.com/ixbaicn/XenTerm/releases)，不包含本仓库全部增强功能。
+### 下载已验证的 GPUI 预览版
 
-### Windows
+以下便携包不需要安装 Rust 工具链。链接固定到[滚动 beta](https://github.com/xue-ding-e/XenTerm-Next/releases/tag/beta)
+中的源码 [`8819e2ec1327`](https://github.com/xue-ding-e/XenTerm-Next/commit/8819e2ec132760047209e9dcff7341c5f8a15f94)，
+于 2026-10-30 核对。beta 页面可能同时保留旧版本；请下载**完整 SHA 相同**的包与校验清单。
 
-- **安装程序** —— 运行 `xenterm-<版本>-windows-x86_64.msi`，可自选安装位置。原生功能选择页默认选中「加入 PATH」「桌面快捷方式」「开始菜单」，可分别取消；不同数字版本之间的升级保留所选功能。同一版本号的重复构建不视为无缝升级；安装新的同版本预览包前，请先通过 Windows「已安装的应用」卸载旧包。PATH 采用 Windows Installer 增量维护，卸载不覆盖其他 PATH 项；新终端才能读取更新。
-- **免安装** —— 解压 `xenterm-<版本>-windows-x86_64.zip`，双击 `xenterm.exe`。
-
-### macOS
-
-除便携 ZIP 外，打包流水线新增 `.pkg` 安装器：安装应用到 `/Applications`，在“自定”中默认选中可取消的 CLI 入口。macOS 没有开始菜单，不自动修改 Dock 或猜测用户桌面。每次安装仍默认选中 CLI；取消只跳过本次组件，不删除既有入口，也尚未记忆上次取消偏好。未签名/未公证的包不能视为已通过系统安全认证。构建及安全卸载见 [macOS 安装器说明](packaging/macos/README.zh-CN.md)；以所下载版本实际包含的资产为准。
-
-
-下载得到的是包含 `xenterm.app` 的 `.zip`：
-
-```bash
-# aarch64 = Apple 芯片，x86_64 = Intel
-unzip xenterm-*-macos-*.zip
-
-# 可选：移动到「应用程序」（留在原地也能运行）
-mv xenterm.app /Applications/
-
-# 去掉隔离属性，否则 macOS 会提示「xenterm 已损坏，无法打开」
-xattr -dr com.apple.quarantine /Applications/xenterm.app
-
-open /Applications/xenterm.app
-```
-
-如果没有移动它，把上面两条路径换成 `.app` 实际所在的位置即可。需要 macOS 11 Big Sur 或更高版本。
-
-### Linux
-
-| 安装包 | 命令 |
+| 平台 | 直接下载 |
 | --- | --- |
-| Debian / Ubuntu | `sudo apt install ./xenterm-*-linux-amd64.deb` |
-| Fedora / 其他 | `tar -xzf xenterm-*-linux-x86_64.tar.gz` |
-| Flatpak | `flatpak install --user xenterm-*.flatpak` |
-| AppImage | `chmod +x xenterm-*.AppImage && ./xenterm-*.AppImage` |
-| Arch（AUR） | `yay -S xenterm-bin` |
+| Windows x86_64 | [ZIP](https://github.com/xue-ding-e/XenTerm-Next/releases/download/beta/XenTerm-Next-beta-8819e2ec132760047209e9dcff7341c5f8a15f94-windows-x86_64.zip) |
+| Linux x86_64 | [tar.gz](https://github.com/xue-ding-e/XenTerm-Next/releases/download/beta/XenTerm-Next-beta-8819e2ec132760047209e9dcff7341c5f8a15f94-linux-x86_64.tar.gz) |
+| macOS Apple Silicon | [ZIP](https://github.com/xue-ding-e/XenTerm-Next/releases/download/beta/XenTerm-Next-beta-8819e2ec132760047209e9dcff7341c5f8a15f94-macos-aarch64.zip) |
 
-tar 包可直接运行：
+[SHA256 校验清单](https://github.com/xue-ding-e/XenTerm-Next/releases/download/beta/XenTerm-Next-beta-8819e2ec132760047209e9dcff7341c5f8a15f94-SHA256SUMS) ·
+[构建来源](https://github.com/xue-ding-e/XenTerm-Next/releases/download/beta/XenTerm-Next-beta-8819e2ec132760047209e9dcff7341c5f8a15f94-BUILD.json)
+
+打开前，将下载文件的 SHA256 与清单中对应的完整文件名逐一比较：
+Windows PowerShell 使用 `Get-FileHash -Algorithm SHA256 <压缩包>`，
+macOS 使用 `shasum -a 256 <压缩包>`，Linux 使用 `sha256sum <压缩包>`。
+校验和一致用于发现文件损坏，不等于发布者签名。
+这是 beta 预览版，不表示稳定版或全部原生界面交互已验证。
+
+### Windows：解压后打开
+
+1. 下载上方 Windows ZIP 并核对校验和。
+2. 选择「全部解压缩」，打开解压得到的
+   `XenTerm-Next-beta-8819e2ec132760047209e9dcff7341c5f8a15f94-windows-x86_64` 文件夹。
+3. 双击 `xenterm.exe`，保留随包许可证与作者归属文件；可为该程序创建快捷方式。
+
+此预览版**未签名**。如果 Windows 阻止运行或发出安全警告，请停止并核查源码与发布来源，
+不要关闭系统安全保护。当前 beta 没有发布 MSI 安装器。
+
+### macOS：仅 Apple Silicon
+
+1. 下载上方 macOS ZIP 并核对校验和。
+2. 在 Finder 中双击，解压得到 **XenTerm Next.app**。
+3. 可将应用移入「应用程序」，不要覆盖已有副本，然后打开应用。
+
+此预览版使用临时签名，**没有 Developer ID 签名或 Apple 公证**。
+如果 macOS 阻止运行，请停止并核查发布来源；不要把清除隔离属性或关闭 Gatekeeper
+作为常规安装步骤。当前 beta 不提供 Intel Mac 或 PKG 下载。
+
+### Linux：解压后打开
+
+构建基线为 Ubuntu 22.04，需要 glibc ≥ 2.35 及系统 GUI 库。
+下载 Linux 压缩包并核对校验和后，在下载目录执行：
 
 ```bash
-tar -xzf xenterm-*-linux-x86_64.tar.gz
-cd xenterm-*-linux-x86_64
+tar -xzf XenTerm-Next-beta-8819e2ec132760047209e9dcff7341c5f8a15f94-linux-x86_64.tar.gz
+cd XenTerm-Next-beta-8819e2ec132760047209e9dcff7341c5f8a15f94-linux-x86_64
 ./xenterm
-
-# 可选：将程序、图标和启动器安装到 /usr/local
-# 仅目标目录需要权限时请求 sudo；root 不需要 sudo
-chmod +x install-linux.sh && ./install-linux.sh
-
-# 或仅为当前用户安装到 ~/.local，不使用 sudo
-./install-linux.sh --user
-
-# 或指定安装目录（路径包含空格时请加引号）
-./install-linux.sh --prefix "$HOME/Apps/XenTerm"
-# 等价的环境变量写法；仍可传入可选的二进制文件路径
-PREFIX="$HOME/Apps/XenTerm" ./install-linux.sh /path/to/xenterm
 ```
 
-用户安装默认启用 shell PATH、桌面快捷方式及应用菜单；没有 XDG 桌面的服务器会跳过桌面。可用 `--no-add-to-path`、`--no-desktop-shortcut`、`--no-start-menu` 分别取消，后续安装保留选择。用同一前缀执行 `./install-linux.sh --user --uninstall` 仅清理未被修改的托管文件，用户配置不删除。系统安装不猜测登录用户，也不修改用户 shell；`/usr/local/bin` 是否在 PATH 中取决于系统环境。已有 `.deb` 继续由包管理器维护，Flatpak 不承诺宿主机 CLI 入口。
+保留完整解压目录，其中 `RUNTIME.txt` 列出构建时的运行库依赖；缺少的库应通过发行版包管理器安装。
+该包**不包含** `install-linux.sh`，也不是 deb、Flatpak、AppImage、AUR 包或 glibc 2.28 构建。
 
-默认安装前缀为 `/usr/local`。安装器会创建 `<prefix>/bin/xenterm`、
-`<prefix>/share/applications/xenterm.desktop` 和
-`<prefix>/share/icons/hicolor/512x512/apps/xenterm.png`。前缀优先级为
-`--prefix` > `PREFIX` 环境变量 > 默认值（使用 `--user` 时为 `$HOME/.local`）。
-`--user` 绝不调用 sudo；所选目标不可写时会明确报错。
-相对前缀会转换为绝对路径。包含 `=` 或控制字符的前缀无法构成安全的桌面启动路径，会被拒绝。
+### 其他打包方式与源码构建
 
-启动器及其「新建窗口」动作均使用已安装程序的绝对路径，不依赖 `PATH`。
-若要在命令行使用，请将 `<prefix>/bin` 加入 `PATH`。
-自定义前缀若不在桌面搜索路径内，还需在桌面会话环境中将 `<prefix>/share` 加入
-`XDG_DATA_DIRS`，然后注销并重新登录。
+已发布的 Next 下载仅以 [Next Releases](https://github.com/xue-ding-e/XenTerm-Next/releases)
+实际资产为准。仓库另有安装器构建能力：[Windows MSI](wix/main.wxs)、
+[macOS PKG 说明](packaging/macos/README.zh-CN.md)和 [Linux 安装脚本](assets/install-linux.sh)；
+源码存在或安装器 CI 通过，不表示本预览版已经发布对应安装包。
+开发者构建请看[快速开始](#快速开始)。
+[官方上游发布](https://github.com/ixbaicn/XenTerm/releases)是不同发行版本，不包含 Next 的全部增强。
 
-其他位置的用户启动器会保留；若可能遮蔽本次安装，安装器会给出提示。
-再次运行脚本可以更新带有本安装器管理标记的启动器，也能升级原版安装器生成且
-未经修改的启动器（要求内容完全一致）。如果目标启动器没有管理标记，且与原版模板
-不一致，安装会在修改文件前停止。请检查并移走该自定义启动器后重试。
-
-> 需要 glibc ≥ 2.35（Ubuntu 22.04+ / Debian 12+）。如果需要更老的基线，`-glibc228`
-> 后缀的 tar 包是针对 glibc 2.28（Debian 10）构建的。
-
-> 在 Wayland 下，安装图标后可能需要注销重登一次，桌面环境才会认到这个图标。
+升级前请关闭 XenTerm，并备份完整配置及外部密钥、壁纸文件。新版应解压到独立目录，
+不要覆盖正在运行的安装；配置位置见[配置与数据](#配置与数据)。
 
 ## 快速开始
 
