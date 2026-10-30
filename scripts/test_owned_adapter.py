@@ -11,7 +11,7 @@ class Adapter(unittest.TestCase):
         self.target=self.root/'synthetic-tool.exe';self.target.write_bytes(b'fixture')
         self.host=self.root/'OwnedAdapter.exe';self.host.write_bytes(b'host-fixture')
         a.POISONED=False;a.RECORDS=[]
-        self.good=dict(schema=1,state='returned',boundaryRootSignaled=True,boundaryActiveProcessCount=0,boundaryRootExitCodeKnown=True,boundaryRootExitCode=0,exitCode=0,timedOut=False,outputExceeded=False,treeEmpty=True,captureFailed=False,succeeded=True,safeToStart=True,productExecuted=False)
+        self.good=dict(schema=1,state='returned',completionMode='natural-tree',forcedOwnedCleanup=False,boundaryRootSignaled=True,boundaryActiveProcessCount=0,boundaryRootExitCodeKnown=True,boundaryRootExitCode=0,exitCode=0,timedOut=False,outputExceeded=False,treeEmpty=True,captureFailed=False,succeeded=True,safeToStart=True,productExecuted=False)
     def tearDown(self):self.tmp.cleanup()
     def invoke(self,label='test',env=None):
         return a.run([str(self.target),'synthetic'],label,20,{'PATH':'synthetic'} if env is None else env,self.root,self.root)
@@ -33,8 +33,18 @@ class Adapter(unittest.TestCase):
         with patch.object(a,'identity',return_value=(self.host,{})),patch.object(a.subprocess,'run',side_effect=self.fake(data)):
             with self.assertRaisesRegex(a.OwnedFailure,'child-budget-failed'):self.invoke()
         self.assertEqual(a.RECORDS[0]['before_cleanup']['boundaryActiveProcessCount'],3)
-        for delta in [dict(boundaryActiveProcessCount=True),dict(boundaryRootExitCodeKnown=False),dict(boundaryRootExitCode=None)]:
+        for delta in [dict(boundaryActiveProcessCount=True),dict(boundaryRootExitCodeKnown=False),dict(boundaryRootExitCode=None),dict(boundaryRootSignaled=False,boundaryRootExitCodeKnown=False,boundaryRootExitCode=None)]:
             with self.assertRaises(a.OwnedFailure):a.validate_receipt(dict(self.good,**delta))
+    def test_root_mode_only_for_exact_empty_rust_command(self):
+        source=self.root/'msvc-link-proof/probe.rs';source.parent.mkdir();source.write_bytes(b'fn main() {}\n');binary=source.with_suffix('.exe')
+        argv=[str(self.root/'rustc.exe'),'+1.99.1','--target','x86_64-pc-windows-msvc','--crate-name','synthetic_msvc_proof','--crate-type','bin','-C','linker='+str(self.root/'link.exe'),str(source),'-o',str(binary)]
+        self.assertEqual(a.completion_mode(argv,'msvc-link-proof',20,self.root),'root-completed-then-owned-cleanup')
+        self.assertEqual(a.completion_mode(argv,'signatures',20,self.root),'natural-tree')
+        for bad in [argv[:-1],argv[:4]+['product']+argv[5:]]:
+            with self.assertRaises(a.OwnedFailure):a.completion_mode(bad,'msvc-link-proof',20,self.root)
+        source.write_bytes(b'fn main() { panic!(); }')
+        with self.assertRaises(a.OwnedFailure):a.completion_mode(argv,'msvc-link-proof',20,self.root)
+        host=(a.HERE/'owned_adapter/Program.cs').read_text();self.assertIn('ValidateCompletion(request);',host);self.assertIn('r.label!="msvc-link-proof"',host)
     def test_outer_host_timeout_poison_never_claims_cleanup_or_continues(self):
         with patch.object(a,'identity',return_value=(self.host,{})),patch.object(a.subprocess,'run',side_effect=subprocess.TimeoutExpired(['PRIVATE_ARG'],35)) as host:
             with self.assertRaisesRegex(a.OwnedFailure,'unknown-host-lifecycle'):self.invoke()

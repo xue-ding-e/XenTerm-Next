@@ -1,6 +1,6 @@
 """Windows smoke-only adapter; no product execution is authorized by this module.
 
-The exact C# transport passed native fixture run 41056633320 at 8d81aca5.
+The exact C# transport passed native fixture run 41057844918 at c0e42d97.
 A killed/stalled Host has UNKNOWN descendant lifecycle, never verified cleanup.
 That poisons this Python owner and ends the proof; the disposable CI step/job
 is the final boundary. No outer-Host kill is claimed to prove tree cleanup.
@@ -9,7 +9,7 @@ import hashlib,json,os,re,subprocess,time
 from pathlib import Path
 from types import SimpleNamespace
 
-TRANSPORT_SHA256='3d5a75d1baa1c90a843f26cb47a5a5a7c9328fbc73eb992326495cf23d6aaaef'
+TRANSPORT_SHA256='a5a398c91becc29a58a6912810ccc900d3675536eea887a134a0688ee7c1ceed'
 HERE=Path(__file__).resolve().parent
 ARTIFACTS={'OwnedAdapter.exe','OwnedAdapter.dll','OwnedAdapter.deps.json','OwnedAdapter.runtimeconfig.json'}
 ENV_KEYS=set('PATH SYSTEMROOT WINDIR COMSPEC PATHEXT OS NUMBER_OF_PROCESSORS PROCESSOR_ARCHITECTURE PROCESSOR_IDENTIFIER PROGRAMFILES PROGRAMFILES(X86) PROGRAMW6432 COMMONPROGRAMFILES COMMONPROGRAMFILES(X86) INCLUDE LIB LIBPATH VCINSTALLDIR VCTOOLSINSTALLDIR VCTOOLSVERSION VSINSTALLDIR VISUALSTUDIOVERSION WINDOWSSDKDIR WINDOWSSDKVERSION WINDOWSSDKLIBVERSION UNIVERSALCRTSDKDIR UCRTVERSION VSCMD_ARG_HOST_ARCH VSCMD_ARG_TGT_ARCH CARGO_HOME RUSTUP_HOME LANG LC_ALL TZ HOME USERPROFILE APPDATA LOCALAPPDATA XDG_CONFIG_HOME XDG_DATA_HOME XDG_CACHE_HOME XDG_RUNTIME_DIR XENTERM_DATA_DIR TEMP TMP TMPDIR RUST_BACKTRACE PROGRAMDATA ALLUSERSPROFILE PYTHONUTF8 CARGO_TARGET_DIR'.split())
@@ -54,6 +54,16 @@ def identity(out):
         check(path.is_file() and not any(p.is_symlink() for p in (path,*path.parents)) and digest(path)==expected,'adapter-binary-mismatch')
     return base/'OwnedAdapter.exe',info
 
+def completion_mode(argv,label,seconds,out):
+    if label!='msvc-link-proof':return 'natural-tree'
+    source=out/'msvc-link-proof/probe.rs';binary=out/'msvc-link-proof/probe.exe'
+    check(seconds==20 and len(argv)==13 and Path(argv[0]).name.lower()=='rustc.exe','invalid-empty-compiler')
+    check(argv[1:9]==['+1.99.1','--target','x86_64-pc-windows-msvc','--crate-name','synthetic_msvc_proof','--crate-type','bin','-C'],'invalid-empty-compiler')
+    check(argv[9].startswith('linker=') and Path(argv[9][7:]).is_absolute() and Path(argv[9][7:]).name.lower()=='link.exe','invalid-empty-linker')
+    check(argv[10:]==[str(source),'-o',str(binary)] and not binary.exists(),'invalid-empty-output')
+    check(source.is_file() and not any(x.is_symlink() for x in (source,*source.parents)) and source.read_bytes()==b'fn main() {}\n','invalid-empty-source')
+    return 'root-completed-then-owned-cleanup'
+
 def validate_receipt(data):
     check(isinstance(data,dict) and type(data.get('schema')) is int and data.get('schema')==1 and data.get('state')=='returned','host-receipt-invalid')
     check(data.get('productExecuted') is False,'invalid-scope')
@@ -66,18 +76,20 @@ def validate_receipt(data):
     active=data.get('boundaryActiveProcessCount');check(type(active) is int and 0<=active<=4294967295,'invalid-boundary-count')
     known=data['boundaryRootExitCodeKnown'];boundary=data.get('boundaryRootExitCode')
     check(known==data['boundaryRootSignaled'] and ((type(boundary) is int and 0<=boundary<=4294967295) if known else boundary is None),'invalid-boundary-exit')
+    check(data.get('completionMode') in ('natural-tree','root-completed-then-owned-cleanup') and type(data.get('forcedOwnedCleanup')) is bool,'invalid-completion-receipt')
+    check(not data['succeeded'] or (data['boundaryRootSignaled'] and boundary==0),'success-without-root-completion')
     return data
 
 def run(argv,label,seconds,env,cwd,out):
     global POISONED
     check(not POISONED,'owner-poisoned')
     check(re.fullmatch('[a-z0-9-]{1,48}',label) is not None,'invalid-label')
-    out=Path(out).resolve();fold=validate_request(argv,seconds,env,cwd)
+    out=Path(out).resolve();fold=validate_request(argv,seconds,env,cwd);mode=completion_mode(argv,label,seconds,out)
     host,before=identity(out);start=time.monotonic()
     request=out/(label+'.request.json');receipt=out/(label+'.host.json')
     stdout=out/(label+'.stdout.log');stderr=out/(label+'.stderr.log')
     check(not any(p.exists() for p in (request,receipt,stdout,stderr)),'command-evidence-exists')
-    payload=json.dumps(dict(executable=argv[0],args=argv[1:],cwd=str(cwd),seconds=seconds,stdout=str(stdout),stderr=str(stderr),environment=fold)).encode('utf-8')
+    payload=json.dumps(dict(label=label,completionMode=mode,executable=argv[0],args=argv[1:],cwd=str(cwd),seconds=seconds,stdout=str(stdout),stderr=str(stderr),environment=fold)).encode('utf-8')
     check(len(payload)<=131072,'request-too-large')
     with request.open('xb') as file:file.write(payload)
     record={'label':label,'child_deadline_seconds':seconds,'host_deadline_seconds':seconds+15,'transport_sha256':TRANSPORT_SHA256,'state':'unknown','tree_empty':False,'host_lifecycle':'unknown','product_compile_attempted':False}
@@ -86,10 +98,12 @@ def run(argv,label,seconds,env,cwd,out):
         completed=subprocess.run([str(host),str(request),str(receipt)],cwd=str(host.parent),env=fold,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=seconds+15,check=False)
         check(completed.returncode==0,'host-did-not-complete')
         data=validate_receipt(checked_json(receipt,16384))
+        check(data['completionMode']==mode,'completion-mode-mismatch')
         check(identity(out)==(host,before),'adapter-identity-changed')
         sizes={p.name:p.stat().st_size for p in (stdout,stderr)}
         check(sum(sizes.values())<=1048576,'retained-output-budget-exceeded')
         record.update(state='returned',tree_empty=True,host_lifecycle='returned-verified',exit_code=data['exitCode'],timed_out=data['timedOut'],output_exceeded=data['outputExceeded'],capture_failed=data['captureFailed'],logs={stream:{'bytes':path.stat().st_size,'sha256':digest(path)} for stream,path in [('stdout',stdout),('stderr',stderr)]})
+        record.update(completion_mode=mode,forced_owned_cleanup=data['forcedOwnedCleanup'])
         record['before_cleanup']={key:data[key] for key in ('boundaryRootSignaled','boundaryActiveProcessCount','boundaryRootExitCodeKnown','boundaryRootExitCode')}
         POISONED=False
         check(not data['timedOut'] and not data['outputExceeded'],'child-budget-failed')
@@ -109,4 +123,4 @@ def smoke_receipts():
     check(not POISONED,'owner-poisoned')
     check([r['label'] for r in RECORDS]==['vswhere','vc-bootstrap','signatures','msvc-link-proof'],'smoke-command-inventory')
     check(all(r.get('state')=='returned' and r.get('tree_empty') is True and r.get('host_lifecycle')=='returned-verified' and r.get('exit_code')==0 and r.get('timed_out') is False and r.get('output_exceeded') is False and r.get('capture_failed') is False for r in RECORDS),'smoke-command-incomplete')
-    return {'command_count':4,'all_child_trees_verified':True,'transport_sha256':TRANSPORT_SHA256,'qualification_run':41056633320,'outer_host_failure_cleanup':'unknown; disposable CI final boundary'}
+    return {'command_count':4,'all_child_trees_verified':True,'transport_sha256':TRANSPORT_SHA256,'qualification_run':41057844918,'outer_host_failure_cleanup':'unknown; disposable CI final boundary'}

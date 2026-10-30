@@ -11,7 +11,7 @@ function Verify-Control {
     }
 }
 Verify-Control
-$transport = '3d5a75d1baa1c90a843f26cb47a5a5a7c9328fbc73eb992326495cf23d6aaaef'
+$transport = 'a5a398c91becc29a58a6912810ccc900d3675536eea887a134a0688ee7c1ceed'
 if ((Get-FileHash (Join-Path $PSScriptRoot 'owned_adapter/windows-owned-process.cs')).Hash.ToLowerInvariant() -ne $transport) { throw 'Unqualified transport source' }
 $build = Join-Path $out 'owned-adapter-build'
 if (Test-Path $build) { throw 'Adapter build output exists' }
