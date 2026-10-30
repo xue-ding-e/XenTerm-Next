@@ -4,17 +4,40 @@ No Cargo fetch or compile. Raw version outputs remain local, never artifact uplo
 """
 import subprocess
 import json
+import stat
 from pathlib import Path
 from compile_adapter import plain,digest,require
 from product_identity import host_build_files,read_json
 from verify_rust_setup import verify
+
+def fixed_install_diagnostic(root):
+    # Fixed scope only: no directory scan, raw path, environment or tool output.
+    names=['cargo-home','rustup-home','rustup-home/toolchains/1.99.1-x86_64-pc-windows-msvc']
+    names += ['cargo-home/bin/'+n for n in ('rustup.exe','cargo.exe','rustc.exe')]
+    names += ['rustup-home/toolchains/1.99.1-x86_64-pc-windows-msvc/bin/'+n for n in ('cargo.exe','rustc.exe')]
+    rows=[]
+    for index,name in enumerate(names):
+        p=root/name;state='unknown';reparse=False
+        try:
+            info=p.lstat();state='file' if stat.S_ISREG(info.st_mode) else 'directory' if stat.S_ISDIR(info.st_mode) else 'other'
+        except FileNotFoundError:state='missing'
+        except OSError:state='unreadable'
+        ancestors_known=True
+        for parent in (p,*p.parents):
+            try:
+                value=parent.lstat();reparse |= stat.S_ISLNK(value.st_mode) or bool(getattr(value,'st_file_attributes',0)&0x400)
+            except FileNotFoundError:continue
+            except OSError:ancestors_known=False
+        rows.append(dict(relative=name,state=state,reparse=reparse,ancestors_readable=ancestors_known))
+    return rows
 
 def query(root,host_directory,control,run,host_sources,identity_gate):
     root=plain(root);host_directory=plain(host_directory);identity_gate()
     before=host_build_files(root/'host-build.json',host_directory,control,run,host_sources)
     # CreateNew consumes this root permanently, even if launch or cleanup fails.
     with (root/"rust-query-started.marker").open("x") as f:f.write("single-use\n")
-    result=None;called=False;rows=None;outer="not-started";final_identity=False
+    result=None;called=False;rows=None;outer="not-started";final_identity=False;error_type=None;gate=None
+    install_diagnostic=fixed_install_diagnostic(root)
     def owned(command,label,seconds):
         nonlocal called,rows,outer
         require(label in ('rustc-version','cargo-version','resolved-rustc') and seconds==20,'fixed query')
@@ -37,13 +60,18 @@ def query(root,host_directory,control,run,host_sources,identity_gate):
         result=verify(root,owned)
         outer="verified-return"
         return result
+    except Exception as e:
+        error_type=type(e).__name__
+        allowed={"missing ancestor","reparse point","canonical absolute path required","rustc version target","cargo version","toolchain resolved outside synthetic root","tool changed during verification"}
+        gate=str(e) if str(e) in allowed else "other"
+        raise
     finally:
         try:
             identity_gate()
             require(before==host_build_files(root/'host-build.json',host_directory,control,run,host_sources),'Host runtime identity changed')
             final_identity=True
         finally:
-            with (root/'rust-query-state.json').open('x') as f:json.dump(dict(outer_lifecycle=outer,final_identity=final_identity,verified=result is not None and final_identity,reusable=False),f)
+            with (root/'rust-query-state.json').open('x') as f:json.dump(dict(outer_lifecycle=outer,final_identity=final_identity,verified=result is not None and final_identity,reusable=False,install_diagnostic=install_diagnostic,error_type=error_type,gate=gate),f)
 
 def main():
     import os,re
