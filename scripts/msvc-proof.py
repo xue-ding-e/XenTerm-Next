@@ -160,7 +160,7 @@ def bootstrap():
     checkpoint('signer-path')
     powershell=Path(fold['SYSTEMROOT'])/'System32'/'WindowsPowerShell'/'v1.0'/'powershell.exe';safe_cmd_path(powershell)
     checkpoint('signer-child')
-    result=owned_child([str(powershell),'-NoProfile','-NonInteractive','-File',str(HERE/'tool-signatures.ps1'),'-ClPath',str(expected['cl.exe']),'-LinkPath',str(expected['link.exe'])],'signatures',20,env)
+    result=owned_child([str(powershell),'-NoProfile','-NonInteractive','-File',str(HERE/'tool-signatures.ps1'),'-ClPath',str(expected['cl.exe']),'-LinkPath',str(expected['link.exe']),'-MetadataPath',str(n.OUT/'signature-stage.json')],'signatures',20,env)
     CHILD_EXITS['signatures']=result.returncode
     require(result.returncode==0 and len(result.stdout)<4096,'tool signer verification failed')
     checkpoint('signer-json')

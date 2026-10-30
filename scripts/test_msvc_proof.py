@@ -205,6 +205,14 @@ class BootstrapGuards(unittest.TestCase):
                 self.assertEqual(p.metadata_only(),1);text=(Path(tmp)/'bootstrap-status.json').read_text();self.assertEqual(json.loads(text)['reason'],reason);self.assertNotIn('SECRET',text)
     def test_entrypoint_smoke_only(self):
         code=(p.HERE/'msvc-proof.py').read_text();self.assertIn('else:code=proof()',code);self.assertNotIn('else:code=paired_discovery_only()',code)
+    def test_signer_stage_metadata_is_fixed_local_and_monotonic(self):
+        code=(p.HERE/'tool-signatures.ps1').read_text()
+        for required in ["[Diagnostics.Stopwatch]::StartNew()",'[IO.FileMode]::CreateNew','signature-stage.json',"Record-Stage 'powershell-entered'","'-signature-before'","'-signature-after'","'-version-before'","'-version-after'",'$metadata.Flush($true)']:
+            self.assertIn(required,code)
+        payload=code[code.index('@{schema=1;stage='):code.index(' | ConvertTo-Json -Compress')]
+        for forbidden in ('$ClPath','$LinkPath','Certificate','Subject','Message'):self.assertNotIn(forbidden,payload)
+        self.assertEqual(code.count('Get-AuthenticodeSignature -LiteralPath $pair[1]'),1)
+        proof=(p.HERE/'msvc-proof.py').read_text();self.assertIn("'signatures',20,env",proof);self.assertIn("'-MetadataPath',str(n.OUT/'signature-stage.json')",proof)
     def test_signer_script_no_raw_export(self):
         code=(p.HERE/'tool-signatures.ps1').read_text();self.assertIn('Get-AuthenticodeSignature',code);self.assertIn("$signature.Status -eq 'Valid'",code);self.assertIn("$version.CompanyName -eq 'Microsoft Corporation'",code);self.assertNotIn('Write-Host',code);self.assertNotIn('ExecutionPolicy',code)
 if __name__=='__main__':
