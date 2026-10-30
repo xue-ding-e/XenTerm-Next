@@ -23,10 +23,10 @@ if($Phase -eq 'Initial'){
  if(-not [IO.Directory]::Exists($root)){throw 'Initial scope missing'}
  $final=$false
  try{Control;$final=([IO.File]::ReadAllText((Join-Path $root 'control.identity')) -ceq ($env:GITHUB_RUN_ID+':'+$env:EXPECTED_CONTROL_SHA))}finally{
-   $steps=@{};foreach($n in @('SETUP_OUTCOME','HOST_OUTCOME','SDK_OUTCOME')){$v=[Environment]::GetEnvironmentVariable($n);$steps[$n]=if($v -in @('success','failure','cancelled','skipped')){$v}else{'unknown'}}
-   $record=@{schema=1;run=$env:GITHUB_RUN_ID;control=$env:EXPECTED_CONTROL_SHA;final_identity=$final;steps=$steps;product_compile_executed=$false;product_runtime_executed=$false;rust_toolchain_verified=$false;product_environment_qualified=$false}
+   $steps=@{};foreach($n in @('SETUP_OUTCOME','HOST_OUTCOME','SDK_OUTCOME','QUERY_OUTCOME')){$v=[Environment]::GetEnvironmentVariable($n);$steps[$n]=if($v -in @('success','failure','cancelled','skipped')){$v}else{'unknown'}}
+   $record=@{schema=1;run=$env:GITHUB_RUN_ID;control=$env:EXPECTED_CONTROL_SHA;final_identity=$final;steps=$steps;product_compile_executed=$false;product_runtime_executed=$false;rust_toolchain_verified=($env:QUERY_OUTCOME -eq 'success');product_environment_qualified=$false}
    $f=[IO.File]::Open((Join-Path $root 'preflight.json'),[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
    try{$b=[Text.Encoding]::UTF8.GetBytes(($record|ConvertTo-Json -Depth 8 -Compress));$f.Write($b,0,$b.Length)}finally{$f.Dispose()}
  }
- if(-not $final -or $env:SETUP_OUTCOME -ne 'success' -or $env:HOST_OUTCOME -ne 'success' -or $env:SDK_OUTCOME -ne 'success'){throw 'Preflight incomplete'}
+ if(-not $final -or $env:SETUP_OUTCOME -ne 'success' -or $env:HOST_OUTCOME -ne 'success' -or $env:SDK_OUTCOME -ne 'success' -or $env:QUERY_OUTCOME -ne 'success'){throw 'Preflight incomplete'}
 }

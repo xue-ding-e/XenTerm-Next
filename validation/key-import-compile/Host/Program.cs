@@ -37,8 +37,38 @@ class CompileOnlyHost {
         foreach(var pair in constants) Require(env.TryGetValue(pair.Key,out string value) && value==pair.Value);
         PlainPath(Path.Combine(root,"version.json"),false);
     }
+    // Three fixed read-only setup queries; never invokes the compile-only path.
+    static int QueryRust(string root) {
+        PlainPath(root,true);
+        string report=Path.Combine(root,"rust-query-receipts.json");PlainPath(report,false);Require(!File.Exists(report));
+        var env=new Dictionary<string,string>(StringComparer.OrdinalIgnoreCase);
+        foreach(var pair in new Dictionary<string,string>{{"HOME","home"},{"USERPROFILE","home"},{"APPDATA","appdata"},{"LOCALAPPDATA","localappdata"},{"TEMP","tmp"},{"TMP","tmp"},{"CARGO_HOME","cargo-home"},{"RUSTUP_HOME","rustup-home"}}) {
+            string path=Path.Combine(root,pair.Value);PlainPath(path,true);env.Add(pair.Key,path);
+        }
+        string os=Environment.GetFolderPath(Environment.SpecialFolder.Windows);PlainPath(os,true);
+        env.Add("SYSTEMROOT",os);env.Add("WINDIR",os);
+        env.Add("PATH",Path.Combine(root,"cargo-home","bin")+";"+Path.Combine(os,"System32"));
+        string[] labels={"rustc-version","cargo-version","resolved-rustc"};
+        string[] tools={"rustc.exe","cargo.exe","rustup.exe"};
+        string[][] argv={new[]{"+1.99.1","-vV"},new[]{"+1.99.1","-V"},new[]{"which","--toolchain","1.99.1","rustc"}};
+        var rows=new List<object>();bool all=false;
+        try {
+            for(int i=0;i<labels.Length;i++) {
+                string exe=Path.Combine(root,"cargo-home","bin",tools[i]);PlainPath(exe,true);
+                string stdout=Path.Combine(root,labels[i]+".stdout.log"),stderr=Path.Combine(root,labels[i]+".stderr.log");
+                PlainPath(stdout,false);PlainPath(stderr,false);Require(!File.Exists(stdout)&&!File.Exists(stderr));
+                var v=XenOwnedProcess.Run(exe,argv[i],root,20,stdout,stderr,env,"natural-tree","smoke-v1");
+                rows.Add(new {label=labels[i],v.exitCode,v.timedOut,v.outputExceeded,v.captureFailed,v.treeEmpty,v.forcedOwnedCleanup,v.completionMode,v.commandPolicy,v.outputBudget,v.cleanupMilliseconds,safeToStart=XenOwnedProcess.SafeToStart,succeeded=v.Succeeded});
+                Require(v.Succeeded && XenOwnedProcess.SafeToStart && new FileInfo(stdout).Length<=16384);
+            }
+            all=true;return 0;
+        } finally {
+            using(var file=new FileStream(report,FileMode.CreateNew,FileAccess.Write,FileShare.None)) JsonSerializer.Serialize(file,new {schema=1,completed=all,query_count=rows.Count,rows,productCompileAttempted=false,productRuntimeAttempted=false});
+        }
+    }
     static int Main(string[] args) {
         if(args.Length!=2 || !OperatingSystem.IsWindows()) return 64;
+        if(args[0]=="--verify-rust-setup") {try{return QueryRust(args[1]);}catch{return 1;}}
         try {
             PlainPath(args[0],true);PlainPath(args[1],false);
             string root=Path.GetDirectoryName(args[0]);

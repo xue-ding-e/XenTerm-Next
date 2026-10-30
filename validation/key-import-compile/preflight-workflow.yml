@@ -61,6 +61,15 @@ jobs:
         shell: pwsh
         timeout-minutes: 3
         run: ./validation/key-import-compile/build-compile-host.ps1
+      - name: Verify fixed Rust toolchain through three owned read-only queries
+        id: rust_verify
+        shell: pwsh
+        timeout-minutes: 3
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+          SETUP_OUTCOME: ${{ steps.rust_setup.outcome }}
+          HOST_OUTCOME: ${{ steps.host_build.outcome }}
+        run: python ./validation/key-import-compile/query_rust_host.py
       - name: Capture fixed SDK installation metadata
         id: sdk_capture
         shell: pwsh
@@ -73,6 +82,7 @@ jobs:
         env:
           SETUP_OUTCOME: ${{ steps.rust_setup.outcome }}
           HOST_OUTCOME: ${{ steps.host_build.outcome }}
+          QUERY_OUTCOME: ${{ steps.rust_verify.outcome }}
           SDK_OUTCOME: ${{ steps.sdk_capture.outcome }}
         run: ./validation/key-import-compile/preflight-identity.ps1 -Phase Final
       - name: Upload only available sanitized capture metadata
@@ -81,6 +91,9 @@ jobs:
         with:
           name: compile-preflight-metadata
           path: |
+            ${{ runner.temp }}/key-import-compile-evidence/rust-verified.json
+            ${{ runner.temp }}/key-import-compile-evidence/rust-query-state.json
+            ${{ runner.temp }}/key-import-compile-evidence/rust-query-receipts.json
             ${{ runner.temp }}/key-import-compile-evidence/preflight.json
             ${{ runner.temp }}/key-import-compile-evidence/sdk-metadata.json
             ${{ runner.temp }}/key-import-compile-evidence/host-build.json
