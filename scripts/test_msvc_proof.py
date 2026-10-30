@@ -135,7 +135,7 @@ class BootstrapGuards(unittest.TestCase):
             responses=[subprocess.CompletedProcess([],0,(str(vs)+'\n').encode()),subprocess.CompletedProcess([],0,json.dumps(sdkvalues).encode()),subprocess.CompletedProcess([],0,json.dumps(signatures).encode())]
             with patch.object(p.sys,'executable',str(root/'python.exe')),patch.object(p.n,'OUT',out),patch.object(p.n,'compile_env',return_value=clean),patch.object(p,'owned_child',side_effect=responses) as run,patch.object(p.shutil,'which',side_effect=lambda name,**kw:str(bin/name)),patch.dict(os.environ,{'GITHUB_TOKEN':'SYNTHETIC_SECRET','PROGRAMDATA':str(data),'ALLUSERSPROFILE':str(data)},clear=True):
                 env,linker=p.bootstrap();self.assertEqual(linker,bin/'link.exe');self.assertEqual(env['PATH'],str(bin));self.assertEqual(run.call_count,3)
-                child=run.call_args_list[1];self.assertEqual(child.args[0][1:4],['/d','/s','/c']);self.assertIn('" -B "',child.args[0][4]);self.assertIn('--capture-env',child.args[0][4]);self.assertNotIn('&& set',child.args[0][4])
+                child=run.call_args_list[1];self.assertEqual(child.args[0][1:4],['/d','/s','/c']);self.assertEqual(child.args[0][4],str(out/'owned-vc-bootstrap.cmd'));self.assertNotIn('"',child.args[0][4]);batch=(out/'owned-vc-bootstrap.cmd').read_text();self.assertIn('" -B "',batch);self.assertIn('--capture-env',batch);self.assertNotIn('&& set',batch)
                 for call in run.call_args_list:
                     self.assertNotIn('GITHUB_TOKEN',call.args[3])
                     self.assertEqual(call.args[3]['PROGRAMDATA'],str(data))
@@ -144,6 +144,25 @@ class BootstrapGuards(unittest.TestCase):
                 self.assertEqual(os.environ['GITHUB_TOKEN'],'SYNTHETIC_SECRET')
                 self.assertFalse((p.HERE/'__pycache__').exists())
                 self.assertNotIn('SYNTHETIC_SECRET',(out/'msvc-environment.json').read_text())
+    def test_bootstrap_batch_rejects_drift_and_existing_file(self):
+        with tempfile.TemporaryDirectory(prefix='owned path ') as tmp:
+            root=Path(tmp);cmd=root/'cmd.exe';script=root/'vc.cmd';python=root/'python.exe'
+            for f in (cmd,script,python):f.write_bytes(b'fixture')
+            with patch.object(p.n,'OUT',root),patch.object(p,'owned_child') as child:
+                def mutate(*args):
+                    (root/'owned-vc-bootstrap.cmd').write_bytes(b'changed')
+                    return subprocess.CompletedProcess([],0,b'')
+                child.side_effect=mutate
+                with self.assertRaises(p.ControlGate):p.bootstrap_batch(cmd,script,python,{})
+                child.reset_mock()
+                with self.assertRaises(FileExistsError):p.bootstrap_batch(cmd,script,python,{})
+                child.assert_not_called()
+    def test_crt_quote_command_counterexample(self):
+        command='call "C:\\Program Files\\VS\\vc.cmd" && "C:\\Python\\python.exe" -B proof.py'
+        encoded=subprocess.list2cmdline(['cmd.exe','/d','/s','/c',command])
+        self.assertIn('\\"',encoded)  # cmd does not use CRT backslash quote escapes.
+        batch=subprocess.list2cmdline(['cmd.exe','/d','/s','/c','C:\\owned path\\bootstrap.cmd'])
+        self.assertNotIn('\\"',batch)
     def test_workflow_smoke_only(self):
         text=(p.n.CONTROL/'.github/workflows/ci.yml').read_text();self.assertIn('python control/scripts/msvc-proof.py',text);self.assertNotIn('python control/scripts/diagnose-native.py',text);self.assertNotIn('native-key-import.py runtime',text);self.assertNotIn('  macos:',text);self.assertNotIn('*.log',text)
         code=(p.HERE/'msvc-proof.py').read_text();self.assertNotIn('compile_product(',code);self.assertNotIn('n.runtime(',code);self.assertIn("'msvc-link-proof',20,env",code);self.assertIn("'linker='+str(linker)",code);self.assertNotIn('&& set',code);self.assertNotIn('os.environ.update(',code)

@@ -67,7 +67,9 @@ class Adapter(unittest.TestCase):
         host=(a.HERE/'owned_adapter/Program.cs').read_text()
         self.assertIn('XenOwnedProcess.Run(',host);self.assertNotIn('Process.Start(',host)
         proof=(a.HERE/'msvc-proof.py').read_text();bootstrap=proof[proof.index('def bootstrap():'):proof.index('def proof():')]
-        self.assertNotIn('subprocess.run',bootstrap);self.assertEqual(bootstrap.count('result=owned_child('),3)
+        self.assertNotIn('subprocess.run',bootstrap);self.assertEqual(bootstrap.count('result=owned_child('),2);self.assertIn('result=bootstrap_batch(cmd,script,Path(sys.executable),env)',bootstrap)
+        batch=proof[proof.index('def bootstrap_batch('):proof.index('def bootstrap():')]
+        self.assertIn("owned_child([str(cmd),'/d','/s','/c',str(batch)]",batch);self.assertNotIn('subprocess.run',batch)
         self.assertIn("owned_link([rustc,'+1.99.1'",proof)
     def test_smoke_receipt_cannot_accept_missing_duplicate_or_incomplete_children(self):
         good=lambda label:dict(label=label,state='returned',tree_empty=True,host_lifecycle='returned-verified',exit_code=0,timed_out=False,output_exceeded=False,capture_failed=False)

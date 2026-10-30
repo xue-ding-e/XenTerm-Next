@@ -12,7 +12,7 @@ def owned_link(argv,label,seconds,env):
 
 SDK_KEYS={'PATH','INCLUDE','LIB','LIBPATH','VCTOOLSINSTALLDIR','VCINSTALLDIR','VCTOOLSVERSION','VSINSTALLDIR','VISUALSTUDIOVERSION','WINDOWSSDKDIR','WINDOWSSDKVERSION','WINDOWSSDKLIBVERSION','UNIVERSALCRTSDKDIR','UCRTVERSION','VSCMD_ARG_HOST_ARCH','VSCMD_ARG_TGT_ARCH'}
 
-REASONS={'OS tool roots absent': 'os-tool-roots-absent', 'SDK bootstrap failed': 'sdk-bootstrap-failed', 'SDK directories outside VS/SDK': 'sdk-directories-outside-vs-sdk', 'SDK directory absent': 'sdk-directory-absent', 'SDK export too large': 'sdk-export-too-large', 'SDK field absent': 'sdk-field-absent', 'SDK keys invalid': 'sdk-keys-invalid', 'SDK missing': 'sdk-missing', 'SDK value invalid': 'sdk-value-invalid', 'Windows-only proof': 'windows-only-proof', 'ambiguous VS root': 'ambiguous-vs-root', 'control changed': 'control-changed', 'fixture changed': 'fixture-changed', 'invalid tool version': 'invalid-tool-version', 'missing or symlink bootstrap path': 'missing-or-symlink-bootstrap-path', 'not verified Microsoft tools': 'not-verified-microsoft-tools', 'proof binary missing': 'proof-binary-missing', 'proof source changed': 'proof-source-changed', 'rustc absent': 'rustc-absent', 'signature fields': 'signature-fields', 'signature schema': 'signature-schema', 'source changed': 'source-changed', 'status changed': 'status-changed', 'tool missing': 'tool-missing', 'tool signer verification failed': 'tool-signer-verification-failed', 'toolset outside chosen VS': 'toolset-outside-chosen-vs', 'tree changed': 'tree-changed', 'unsafe shell path': 'unsafe-shell-path', 'vswhere failed': 'vswhere-failed', 'wrong tool precedence': 'wrong-tool-precedence'}
+REASONS={'bootstrap script changed':'bootstrap-script-changed','OS tool roots absent': 'os-tool-roots-absent', 'SDK bootstrap failed': 'sdk-bootstrap-failed', 'SDK directories outside VS/SDK': 'sdk-directories-outside-vs-sdk', 'SDK directory absent': 'sdk-directory-absent', 'SDK export too large': 'sdk-export-too-large', 'SDK field absent': 'sdk-field-absent', 'SDK keys invalid': 'sdk-keys-invalid', 'SDK missing': 'sdk-missing', 'SDK value invalid': 'sdk-value-invalid', 'Windows-only proof': 'windows-only-proof', 'ambiguous VS root': 'ambiguous-vs-root', 'control changed': 'control-changed', 'fixture changed': 'fixture-changed', 'invalid tool version': 'invalid-tool-version', 'missing or symlink bootstrap path': 'missing-or-symlink-bootstrap-path', 'not verified Microsoft tools': 'not-verified-microsoft-tools', 'proof binary missing': 'proof-binary-missing', 'proof source changed': 'proof-source-changed', 'rustc absent': 'rustc-absent', 'signature fields': 'signature-fields', 'signature schema': 'signature-schema', 'source changed': 'source-changed', 'status changed': 'status-changed', 'tool missing': 'tool-missing', 'tool signer verification failed': 'tool-signer-verification-failed', 'toolset outside chosen VS': 'toolset-outside-chosen-vs', 'tree changed': 'tree-changed', 'unsafe shell path': 'unsafe-shell-path', 'vswhere failed': 'vswhere-failed', 'wrong tool precedence': 'wrong-tool-precedence'}
 CHECKPOINTS=('start','compile-environment','os-roots','bootstrap-paths','vswhere-child','vswhere-result','vs-root','vsdevcmd-path','vc-child','sdk-json','sdk-validation','signer-path','signer-child','signer-json','signer-fields','write-metadata','final-identities','finished')
 CURRENT='start'
 CHILD_EXITS={}
@@ -77,6 +77,19 @@ def validate_sdk(values,root):
         require(all(p.is_relative_to(root) or p.is_relative_to(sdk) for p in paths),'SDK directories outside VS/SDK')
     return expected,sdk
 
+def bootstrap_batch(cmd,script,python,env):
+    # cmd.exe is not a CRT argv parser: never pass embedded quotes as a /c arg.
+    for path in (cmd,script,python,HERE/'msvc-proof.py',n.OUT):safe_cmd_path(path)
+    batch=n.OUT/'owned-vc-bootstrap.cmd'
+    body=(f'@echo off\r\nsetlocal DisableDelayedExpansion\r\ncall "{script}" -arch=x64 -host_arch=x64 >nul 2>nul && "{python}" -B "{HERE / "msvc-proof.py"}" --capture-env\r\n').encode('ascii')
+    with batch.open('xb') as handle:handle.write(body)
+    try:
+        safe_cmd_path(batch)
+        require(batch.read_bytes()==body,'bootstrap script changed')
+        return owned_child([str(cmd),'/d','/s','/c',str(batch)],'vc-bootstrap',30,env)
+    finally:
+        require(not batch.is_symlink() and batch.is_file() and batch.read_bytes()==body,'bootstrap script changed')
+
 def bootstrap():
     checkpoint('compile-environment')
     # Preserve only the validated OS directory delta proved by paired discovery.
@@ -96,9 +109,8 @@ def bootstrap():
     rows=result.stdout.decode('utf-8-sig').splitlines();require(len(rows)==1,'ambiguous VS root');root=Path(rows[0]).resolve();safe_cmd_path(root)
     checkpoint('vsdevcmd-path')
     script=root/'Common7'/'Tools'/'VsDevCmd.bat';safe_cmd_path(script)
-    command=f'call "{script}" -arch=x64 -host_arch=x64 >nul 2>nul && "{sys.executable}" -B "{HERE / "msvc-proof.py"}" --capture-env'
     checkpoint('vc-child')
-    result=owned_child([str(cmd),'/d','/s','/c',command],'vc-bootstrap',30,env)
+    result=bootstrap_batch(cmd,script,Path(sys.executable),env)
     CHILD_EXITS['vc-bootstrap']=result.returncode
     require(result.returncode==0,'SDK bootstrap failed')
     checkpoint('sdk-json');values=parse_sdk_output(result.stdout.decode('utf-8-sig'))
@@ -135,7 +147,8 @@ def proof():
         owned_link([rustc,'+1.99.1','--target','x86_64-pc-windows-msvc','--crate-name','synthetic_msvc_proof','--crate-type','bin','-C','linker='+str(linker),str(source),'-o',str(binary)],'msvc-link-proof',20,env)
         result['owned_transport']=owned.smoke_receipts()
         require(binary.is_file() and not binary.is_symlink(),'proof binary missing');result.update(state='linked-not-executed',binary_sha256=n.digest(binary))
-    except BaseException as exc:code=1;result.update(state='failed-or-timeout',error_type=type(exc).__name__)
+    except BaseException as exc:
+        code=1;result.update(state='failed-or-timeout',error_type=type(exc).__name__,checkpoint=CURRENT,child_exits=CHILD_EXITS,reason=exc.reason if isinstance(exc,ControlGate) else 'unexpected-error')
     finally:
         if source is not None:require(source.read_bytes()==d.SMOKE_SOURCE,'proof source changed')
         stderr=n.OUT/'msvc-link-proof.stderr.log';result['diagnostic']=d.diagnose('',stderr.read_text(errors='replace') if stderr.is_file() and stderr.stat().st_size<=64*1024*1024 else '')
