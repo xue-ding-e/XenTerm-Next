@@ -225,6 +225,11 @@ class BootstrapGuards(unittest.TestCase):
         for forbidden in ['Install-Module','RevocationMode','CacheOnly','Set-ExecutionPolicy','StatusMessage']:
             self.assertNotIn(forbidden,code)
         self.assertIn("'signatures',20,env",(p.HERE/'msvc-proof.py').read_text())
+    def test_version_info_reads_same_fields_without_management_autoload(self):
+        code=(p.HERE/'tool-signatures.ps1').read_text()
+        self.assertIn('[Diagnostics.FileVersionInfo]::GetVersionInfo($pair[1])',code);self.assertNotIn('Get-Item',code)
+        for field in ['CompanyName','FileMajorPart','FileMinorPart','FileBuildPart','FilePrivatePart']:self.assertIn('$version.'+field,code)
+        self.assertIn("$signature.Status -eq 'Valid'",code);self.assertIn('$number -gt 65535',code)
     def test_signer_script_no_raw_export(self):
         code=(p.HERE/'tool-signatures.ps1').read_text();self.assertIn('Get-AuthenticodeSignature',code);self.assertIn("$signature.Status -eq 'Valid'",code);self.assertIn("$version.CompanyName -eq 'Microsoft Corporation'",code);self.assertNotIn('Write-Host',code);self.assertNotIn('ExecutionPolicy',code)
 if __name__=='__main__':

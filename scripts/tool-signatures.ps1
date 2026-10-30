@@ -62,7 +62,7 @@ try {
     $signature = Microsoft.PowerShell.Security\Get-AuthenticodeSignature -LiteralPath $pair[1]
     Record-Stage ($pair[0]+'-signature-after')
     Record-Stage ($pair[0]+'-version-before')
-    $version = (Get-Item -LiteralPath $pair[1]).VersionInfo
+    $version = [Diagnostics.FileVersionInfo]::GetVersionInfo($pair[1])
     Record-Stage ($pair[0]+'-version-after')
     $result[$pair[0]] = @{
       valid_signature = ($signature.Status -eq 'Valid')
