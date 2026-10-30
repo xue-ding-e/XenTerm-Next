@@ -1,0 +1,40 @@
+name: Compile-policy synthetic Windows qualification (manual proposal)
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: xenterm-owned-native-fixtures
+  cancel-in-progress: false
+jobs:
+  synthetic:
+    if: github.repository == 'xue-ding-e/XenTerm-Next' && github.ref == 'refs/heads/validation/xenterm-compile-policy-v2-20261030' && github.event_name == 'workflow_dispatch' && inputs.expected_sha == github.sha
+    runs-on: windows-latest
+    timeout-minutes: 6
+    env:
+      GIT_CONFIG_COUNT: '2'
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: 'false'
+      GIT_CONFIG_KEY_1: core.eol
+      GIT_CONFIG_VALUE_1: lf
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Qualify only synthetic default and compile command policies
+        shell: pwsh
+        timeout-minutes: 3
+        run: ./validation/compile-native/run-combined.ps1
+      - name: Upload only available sanitized metadata
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: compile-policy-native-metadata
+          path: ${{ runner.temp }}/xenterm-compile-qualification-${{ github.sha }}/metadata.json
+          if-no-files-found: ignore
+          retention-days: 7
