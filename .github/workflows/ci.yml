@@ -80,6 +80,7 @@ jobs:
             ${{ runner.temp }}/key-import-native-evidence/diagnostic.json
             ${{ runner.temp }}/key-import-native-evidence/tool-metadata.json
             ${{ runner.temp }}/key-import-native-evidence/link-smoke.json
+            ${{ runner.temp }}/key-import-native-evidence/sdk-path-diagnostic.json
             ${{ runner.temp }}/key-import-native-evidence/msvc-environment.json
             ${{ runner.temp }}/key-import-native-evidence/msvc-proof.json
             ${{ runner.temp }}/key-import-native-evidence/owned-commands.json

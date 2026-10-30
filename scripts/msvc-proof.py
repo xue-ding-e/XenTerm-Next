@@ -12,7 +12,7 @@ def owned_link(argv,label,seconds,env):
 
 SDK_KEYS={'PATH','INCLUDE','LIB','LIBPATH','VCTOOLSINSTALLDIR','VCINSTALLDIR','VCTOOLSVERSION','VSINSTALLDIR','VISUALSTUDIOVERSION','WINDOWSSDKDIR','WINDOWSSDKVERSION','WINDOWSSDKLIBVERSION','UNIVERSALCRTSDKDIR','UCRTVERSION','VSCMD_ARG_HOST_ARCH','VSCMD_ARG_TGT_ARCH'}
 
-REASONS={'bootstrap script changed':'bootstrap-script-changed','OS tool roots absent': 'os-tool-roots-absent', 'SDK bootstrap failed': 'sdk-bootstrap-failed', 'SDK directories outside VS/SDK': 'sdk-directories-outside-vs-sdk', 'SDK directory absent': 'sdk-directory-absent', 'SDK export too large': 'sdk-export-too-large', 'SDK field absent': 'sdk-field-absent', 'SDK keys invalid': 'sdk-keys-invalid', 'SDK missing': 'sdk-missing', 'SDK value invalid': 'sdk-value-invalid', 'Windows-only proof': 'windows-only-proof', 'ambiguous VS root': 'ambiguous-vs-root', 'control changed': 'control-changed', 'fixture changed': 'fixture-changed', 'invalid tool version': 'invalid-tool-version', 'missing or symlink bootstrap path': 'missing-or-symlink-bootstrap-path', 'not verified Microsoft tools': 'not-verified-microsoft-tools', 'proof binary missing': 'proof-binary-missing', 'proof source changed': 'proof-source-changed', 'rustc absent': 'rustc-absent', 'signature fields': 'signature-fields', 'signature schema': 'signature-schema', 'source changed': 'source-changed', 'status changed': 'status-changed', 'tool missing': 'tool-missing', 'tool signer verification failed': 'tool-signer-verification-failed', 'toolset outside chosen VS': 'toolset-outside-chosen-vs', 'tree changed': 'tree-changed', 'unsafe shell path': 'unsafe-shell-path', 'vswhere failed': 'vswhere-failed', 'wrong tool precedence': 'wrong-tool-precedence'}
+REASONS={'SDK diagnostic path count':'sdk-diagnostic-path-count','bootstrap script changed':'bootstrap-script-changed','OS tool roots absent': 'os-tool-roots-absent', 'SDK bootstrap failed': 'sdk-bootstrap-failed', 'SDK directories outside VS/SDK': 'sdk-directories-outside-vs-sdk', 'SDK directory absent': 'sdk-directory-absent', 'SDK export too large': 'sdk-export-too-large', 'SDK field absent': 'sdk-field-absent', 'SDK keys invalid': 'sdk-keys-invalid', 'SDK missing': 'sdk-missing', 'SDK value invalid': 'sdk-value-invalid', 'Windows-only proof': 'windows-only-proof', 'ambiguous VS root': 'ambiguous-vs-root', 'control changed': 'control-changed', 'fixture changed': 'fixture-changed', 'invalid tool version': 'invalid-tool-version', 'missing or symlink bootstrap path': 'missing-or-symlink-bootstrap-path', 'not verified Microsoft tools': 'not-verified-microsoft-tools', 'proof binary missing': 'proof-binary-missing', 'proof source changed': 'proof-source-changed', 'rustc absent': 'rustc-absent', 'signature fields': 'signature-fields', 'signature schema': 'signature-schema', 'source changed': 'source-changed', 'status changed': 'status-changed', 'tool missing': 'tool-missing', 'tool signer verification failed': 'tool-signer-verification-failed', 'toolset outside chosen VS': 'toolset-outside-chosen-vs', 'tree changed': 'tree-changed', 'unsafe shell path': 'unsafe-shell-path', 'vswhere failed': 'vswhere-failed', 'wrong tool precedence': 'wrong-tool-precedence'}
 CHECKPOINTS=('start','compile-environment','os-roots','bootstrap-paths','vswhere-child','vswhere-result','vs-root','vsdevcmd-path','vc-child','sdk-json','sdk-validation','signer-path','signer-child','signer-json','signer-fields','write-metadata','final-identities','finished')
 CURRENT='start'
 CHILD_EXITS={}
@@ -62,6 +62,24 @@ def parse_sdk_output(raw):
     require(all(isinstance(v,str) and len(v)<=32768 and '\n' not in v and '\r' not in v for v in values.values()),'SDK value invalid')
     for k in ('PATH','INCLUDE','LIB','VCTOOLSINSTALLDIR','WINDOWSSDKDIR'):require(bool(values.get(k)),'SDK field absent')
     return values
+
+def sdk_path_diagnostics(values,root,sdk,program_files_x86):
+    # Evidence only: these categories never grant a directory access or acceptance.
+    result={'schema':1,'changes_acceptance':False,'fields':{}}
+    pf=program_files_x86.resolve();vs=root.resolve();sdk=sdk.resolve()
+    for key in ('INCLUDE','LIB'):
+        paths=[Path(x).resolve() for x in values[key].split(';') if x]
+        require(len(paths)<=128,'SDK diagnostic path count')
+        rows=[];counts={}
+        for path in paths:
+            in_vs=path.is_relative_to(vs);in_sdk=path.is_relative_to(sdk)
+            microsoft_netfx=path.is_relative_to(pf/'Microsoft SDKs'/'NETFXSDK')
+            kits_sibling=path.is_relative_to(pf/'Windows Kits') and not in_sdk
+            category='vs-root' if in_vs else 'current-sdk-root' if in_sdk else 'microsoft-netfxsdk' if microsoft_netfx else 'windows-kits-sibling' if kits_sibling else 'unknown'
+            counts[category]=counts.get(category,0)+1
+            rows.append({'path_sha256':d.sha(str(path)),'exists_directory':path.is_dir(),'inside_vs':in_vs,'inside_current_sdk':in_sdk,'category':category})
+        result['fields'][key]={'count':len(rows),'categories':counts,'paths':rows}
+    return result
 
 def validate_sdk(values,root):
     tool=Path(values['VCTOOLSINSTALLDIR']).resolve();sdk=Path(values['WINDOWSSDKDIR']).resolve()
@@ -114,7 +132,9 @@ def bootstrap():
     CHILD_EXITS['vc-bootstrap']=result.returncode
     require(result.returncode==0,'SDK bootstrap failed')
     checkpoint('sdk-json');values=parse_sdk_output(result.stdout.decode('utf-8-sig'))
-    checkpoint('sdk-validation');expected,sdk=validate_sdk(values,root)
+    checkpoint('sdk-validation')
+    n.write('sdk-path-diagnostic.json',sdk_path_diagnostics(values,root,Path(values['WINDOWSSDKDIR']),Path(fold['PROGRAMFILES(X86)'])))
+    expected,sdk=validate_sdk(values,root)
     # Only this isolated child-environment dictionary is amended. No GITHUB_ENV,
     # global PATH, machine registry, install, permissions or runtime env mutation.
     env.update(values)

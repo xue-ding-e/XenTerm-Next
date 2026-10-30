@@ -112,6 +112,17 @@ class BootstrapGuards(unittest.TestCase):
             good=Path(tmp).resolve();self.assertEqual(p.safe_cmd_path(good),str(good))
             for character in '%!^&|<>"\r\n':
                 with self.assertRaises(RuntimeError):p.safe_cmd_path(good/('bad'+character))
+    def test_sdk_diagnostics_are_hashes_categories_only_and_do_not_accept_outside(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base=Path(tmp);pf=base/'Program Files x86';vs=base/'VS';sdk=pf/'Windows Kits/10';netfx=pf/'Microsoft SDKs/NETFXSDK/4.8';sibling=pf/'Windows Kits/NETFXSDK/4.8';unknown=base/'SECRET_UNKNOWN'
+            for path in (vs,sdk,netfx,sibling,unknown):path.mkdir(parents=True,exist_ok=True)
+            values={'INCLUDE':';'.join(map(str,[vs,sdk,netfx,sibling,unknown])),'LIB':str(unknown)}
+            result=p.sdk_path_diagnostics(values,vs,sdk,pf);text=json.dumps(result)
+            self.assertEqual(result['fields']['INCLUDE']['categories'],{'vs-root':1,'current-sdk-root':1,'microsoft-netfxsdk':1,'windows-kits-sibling':1,'unknown':1})
+            self.assertFalse(result['changes_acceptance']);self.assertNotIn(tmp,text);self.assertNotIn('SECRET_UNKNOWN',text)
+            for row in result['fields']['INCLUDE']['paths']:self.assertEqual(len(row['path_sha256']),64)
+            values['LIB']=';'.join([str(unknown)]*129)
+            with self.assertRaises(p.ControlGate):p.sdk_path_diagnostics(values,vs,sdk,pf)
     def test_selected_tools_and_sdk_containment(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp).resolve()/'VS';tool=root/'VC/Tools/MSVC/14.4';sdk=Path(tmp).resolve()/'SDK';include=sdk/'Include';lib=sdk/'Lib';include.mkdir(parents=True);lib.mkdir();bin=tool/'bin/Hostx64/x64';bin.mkdir(parents=True)
