@@ -25,6 +25,7 @@ class Fixture {
             if(child==null) return 65;
             WaitMarker(Path.Combine(directory,"grandchild.started"));
             if(role=="root" && mode=="parent-exit") return 0;
+            if(role=="root" && mode=="parent-nonzero") return 7;
             if(role=="root" && mode=="overflow") {
                 var block=new byte[4096];Array.Fill<byte>(block,65);
                 using(var output=Console.OpenStandardOutput()) while(true) output.Write(block,0,block.Length);

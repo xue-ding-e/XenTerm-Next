@@ -25,23 +25,26 @@ class Harness {
         var pids=Directory.GetFiles(p,"*.started").Select(f=>Int32.Parse(File.ReadAllText(f))).ToArray();
         Require(pids.All(pid=>pid>0) && pids.Distinct().Count()==3,"three distinct executed process identities");
     }
-    static XenOwnedProcess.Result Run(string dir,string mode,int seconds) {
-        return XenOwnedProcess.Run(fixture,new[]{"root",mode,dir},dir,seconds,Path.Combine(dir,"stdout.log"),Path.Combine(dir,"stderr.log"),env);
+    static XenOwnedProcess.Result Run(string dir,string mode,int seconds,string completionMode="natural-tree") {
+        return XenOwnedProcess.Run(fixture,new[]{"root",mode,dir},dir,seconds,Path.Combine(dir,"stdout.log"),Path.Combine(dir,"stderr.log"),env,completionMode);
     }
-    static void Case(string name,string mode,int seconds,bool expectedSuccess,bool timeout,bool over) {
-        activeCase=name;activeTimer=Stopwatch.StartNew();lastObservation=null;string p=DirectoryFor(name);var r=Run(p,mode,seconds);
-        lastObservation=new {name,elapsedMilliseconds=activeTimer.ElapsedMilliseconds,actualExecutions=Count(p),r.treeEmpty,r.timedOut,r.outputExceeded,r.captureFailed,exitCode=r.exitCode,r.boundaryRootSignaled,r.boundaryActiveProcessCount,r.boundaryRootExitCodeKnown,r.boundaryRootExitCode,succeeded=r.Succeeded};
+    static void Case(string name,string mode,int seconds,bool expectedSuccess,bool timeout,bool over,string completionMode="natural-tree") {
+        activeCase=name;activeTimer=Stopwatch.StartNew();lastObservation=null;string p=DirectoryFor(name);var r=Run(p,mode,seconds,completionMode);
+        lastObservation=new {name,elapsedMilliseconds=activeTimer.ElapsedMilliseconds,actualExecutions=Count(p),r.treeEmpty,r.timedOut,r.outputExceeded,r.captureFailed,exitCode=r.exitCode,r.completionMode,r.forcedOwnedCleanup,r.boundaryRootSignaled,r.boundaryActiveProcessCount,r.boundaryRootExitCodeKnown,r.boundaryRootExitCode,succeeded=r.Succeeded};
         CheckCounts(p);
         long retained=new FileInfo(Path.Combine(p,"stdout.log")).Length+new FileInfo(Path.Combine(p,"stderr.log")).Length;
         Require(r.treeEmpty && !r.captureFailed && r.exitCode.HasValue,"native cleanup and final result");
         Require(r.Succeeded==expectedSuccess && r.timedOut==timeout && r.outputExceeded==over,"native result contract");
+        Require(r.completionMode==completionMode,"completion mode receipt");
         Require(retained<=1024*1024,"combined retained bytes exceed cap");
         Require(r.boundaryRootSignaled.HasValue && r.boundaryActiveProcessCount.HasValue,"boundary observations present");
         Require(r.boundaryRootExitCodeKnown==r.boundaryRootSignaled.Value,"boundary exit knowledge");
         if(name=="normal") Require(r.boundaryRootSignaled==true && r.boundaryActiveProcessCount==0 && r.boundaryRootExitCode==0,"normal boundary empty");
         if(name=="timeout") Require(r.boundaryRootSignaled==false && r.boundaryActiveProcessCount>0 && !r.boundaryRootExitCodeKnown,"timeout root live");
         if(name=="parent-exit") Require(r.boundaryRootSignaled==true && r.boundaryActiveProcessCount>0 && r.boundaryRootExitCode==0 && !r.Succeeded,"parent exit descendants remain rejected");
-        cases.Add(new {name,actualExecutions=3,r.treeEmpty,r.timedOut,r.outputExceeded,r.captureFailed,exitCode=r.exitCode,r.boundaryRootSignaled,r.boundaryActiveProcessCount,r.boundaryRootExitCodeKnown,r.boundaryRootExitCode,retainedBytes=retained,passed=true});
+        if(name=="root-completed-cleanup") Require(r.boundaryRootSignaled==true && r.boundaryRootExitCode==0 && r.boundaryActiveProcessCount>0 && r.forcedOwnedCleanup && r.Succeeded,"explicit root completion cleans descendants");
+        if(name=="root-nonzero") Require(r.boundaryRootExitCode==7 && r.exitCode==7 && r.forcedOwnedCleanup && !r.Succeeded,"root nonzero never success");
+        cases.Add(new {name,actualExecutions=3,r.treeEmpty,r.timedOut,r.outputExceeded,r.captureFailed,exitCode=r.exitCode,r.completionMode,r.forcedOwnedCleanup,r.boundaryRootSignaled,r.boundaryActiveProcessCount,r.boundaryRootExitCodeKnown,r.boundaryRootExitCode,retainedBytes=retained,passed=true});
     }
     static void Rejected(string name,Action<string> action) {
         activeCase=name;activeTimer=Stopwatch.StartNew();lastObservation=null;string p=DirectoryFor(name);bool rejected=false;
@@ -64,6 +67,11 @@ class Harness {
             Case("timeout","timeout",3,false,true,false);
             Case("output-budget","overflow",10,false,false,true);
             Case("parent-exit","parent-exit",3,false,true,false);
+            Case("root-completed-cleanup","parent-exit",10,true,false,false,"root-completed-then-owned-cleanup");
+            Case("root-nonzero","parent-nonzero",10,false,false,false,"root-completed-then-owned-cleanup");
+            Case("root-mode-timeout","timeout",3,false,true,false,"root-completed-then-owned-cleanup");
+            Case("root-mode-output-budget","overflow",10,false,false,true,"root-completed-then-owned-cleanup");
+            Rejected("invalid-completion-mode",p=>Run(p,"normal",3,"unknown"));
             Rejected("invalid-env",p=>{var bad=new Dictionary<string,string>(env);bad.Add("UNAPPROVED_FIXTURE_KEY","synthetic");XenOwnedProcess.Run(fixture,new[]{"root","normal",p},p,3,Path.Combine(p,"out"),Path.Combine(p,"err"),bad);});
             Rejected("null-args",p=>XenOwnedProcess.Run(fixture,null,p,3,Path.Combine(p,"out"),Path.Combine(p,"err"),env));
             Rejected("nul-arg",p=>XenOwnedProcess.Run(fixture,new[]{"root\0other"},p,3,Path.Combine(p,"out"),Path.Combine(p,"err"),env));
@@ -86,7 +94,7 @@ class Harness {
             try {XenOwnedProcessFaultFixture.Run(fixture,new[]{"root","normal",after},after,3,Path.Combine(after,"out"),Path.Combine(after,"err"),env);} catch(Exception) {blocked=true;}
             Require(injected && XenOwnedProcessFaultFixture.CleanupObservedEmpty && !XenOwnedProcessFaultFixture.SafeToStart && blocked && Count(after)==0,"injected uncertainty poison");
             cases.Add(new{name="injected-cleanup-uncertainty",actualExecutions=3,deniedExecutions=0,treeEmpty=XenOwnedProcessFaultFixture.CleanupObservedEmpty,injectedAfterRealEmpty=true,passed=true});
-            Require(cases.Count==10,"required cases executed");passed=true;
+            Require(cases.Count==15,"required cases executed");passed=true;
         } catch(Exception e) { failureType=e.GetType().Name;failureCode=(e as AssertionFailure)?.Code;nativeErrorCode=(e as System.ComponentModel.Win32Exception)?.NativeErrorCode; }
         File.WriteAllText(Path.Combine(root,"native-receipt.json"),JsonSerializer.Serialize(new{schema=1,passed,failureType,failureCode,nativeErrorCode,activeCase,elapsedMilliseconds=activeTimer?.ElapsedMilliseconds,lastObservation,cases,productExecuted=false,nativeFixtureExecuted=true,cleanupFailureIsInjected=true}));
         return passed?0:1;

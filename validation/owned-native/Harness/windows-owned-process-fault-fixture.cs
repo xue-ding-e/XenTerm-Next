@@ -102,17 +102,19 @@ public static class XenOwnedProcessFaultFixture {
     public sealed class Result {
         // Null means no verified final exit code, never a successful default zero.
         public uint? exitCode; public bool timedOut,outputExceeded,treeEmpty,captureFailed;
+        public string completionMode; public bool forcedOwnedCleanup;
         // Sequential owned-handle observations before cleanup, not an atomic OS snapshot.
         public bool? boundaryRootSignaled; public uint? boundaryActiveProcessCount,boundaryRootExitCode;
         public bool boundaryRootExitCodeKnown { get { return boundaryRootExitCode.HasValue; } }
         public bool Succeeded { get { return exitCode.HasValue && exitCode.Value==0 && treeEmpty && !timedOut && !outputExceeded && !captureFailed; } }
     }
-    public static Result Run(string executable,string[] args,string cwd,int seconds,string stdout,string stderr,Dictionary<string,string> environment) {
+    public static Result Run(string executable,string[] args,string cwd,int seconds,string stdout,string stderr,Dictionary<string,string> environment,string completionMode="natural-tree") {
         if(!Monitor.TryEnter(runGate)) throw new InvalidOperationException("owned run already active");
-        try { return RunExclusive(executable,args,cwd,seconds,stdout,stderr,environment); }
+        try { return RunExclusive(executable,args,cwd,seconds,stdout,stderr,environment,completionMode); }
         finally { Monitor.Exit(runGate); }
     }
-    private static Result RunExclusive(string executable,string[] args,string cwd,int seconds,string stdout,string stderr,Dictionary<string,string> environment) {
+    private static Result RunExclusive(string executable,string[] args,string cwd,int seconds,string stdout,string stderr,Dictionary<string,string> environment,string completionMode) {
+        if(completionMode!="natural-tree" && completionMode!="root-completed-then-owned-cleanup") throw new ArgumentException("invalid completion mode");
         if(!safeToStart) throw new Exception("previous cleanup uncertain");
         if(args==null || environment==null) throw new ArgumentException("missing explicit arguments or environment");
         foreach(var arg in args) if(arg==null || arg.IndexOf('\0')>=0) throw new ArgumentException("invalid argument");
@@ -133,7 +135,7 @@ public static class XenOwnedProcessFaultFixture {
         safeToStart=false;
         IntPtr env=Marshal.StringToHGlobalUni(String.Join("\0",envLines)+"\0\0");
         IntPtr job=IntPtr.Zero,input=IntPtr.Zero,output=IntPtr.Zero,error=IntPtr.Zero,outRead=IntPtr.Zero,errRead=IntPtr.Zero,attributes=IntPtr.Zero,handles=IntPtr.Zero;bool attributesReady=false;Capture capture=null;
-        PI p=new PI();bool created=false,assigned=false;var result=new Result();var timer=Stopwatch.StartNew();
+        PI p=new PI();bool created=false,assigned=false;var result=new Result {completionMode=completionMode};var timer=Stopwatch.StartNew();
         try {
             job=CreateJobObject(IntPtr.Zero,null);Check(job!=IntPtr.Zero,"create job");
             var limit=new EXTENDED();limit.basic.flags=0x2000;
@@ -161,7 +163,7 @@ public static class XenOwnedProcessFaultFixture {
                 uint wait=WaitForSingleObject(p.process,25);Check(wait!=0xffffffff,"wait root");
                 result.timedOut=timer.ElapsedMilliseconds>=seconds*1000L;
                 result.outputExceeded=capture.Exceeded;result.captureFailed=capture.Failed;
-                if(wait==0 && Active(job)==0 && !result.timedOut && !result.outputExceeded && !result.captureFailed) break;
+                if(wait==0 && !result.timedOut && !result.outputExceeded && !result.captureFailed && (completionMode=="root-completed-then-owned-cleanup" || Active(job)==0)) break;
                 if(result.timedOut || result.outputExceeded || result.captureFailed) break;
             }
             uint boundaryWait=WaitForSingleObject(p.process,0);Check(boundaryWait!=0xffffffff,"boundary root signal");
@@ -174,7 +176,7 @@ public static class XenOwnedProcessFaultFixture {
         } finally {
             var cleanupTimer=Stopwatch.StartNew();
             try {
-                if(assigned) { if(Active(job)!=0) Check(TerminateJobObject(job,124),"terminate owned tree");Empty(job,cleanupTimer); }
+                if(assigned) { if(Active(job)!=0) { result.forcedOwnedCleanup=true;Check(TerminateJobObject(job,124),"terminate owned tree"); }Empty(job,cleanupTimer); }
                 else if(created) { Check(TerminateProcess(p.process,125),"terminate suspended root");if(WaitForSingleObject(p.process,(uint)Remaining(cleanupTimer))!=0) throw new Exception("suspended cleanup uncertain"); }
                 if(created) {
                     uint remaining=(uint)Remaining(cleanupTimer);

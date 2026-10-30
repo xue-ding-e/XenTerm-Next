@@ -97,7 +97,7 @@ try {
     }
     if ($nativeExit -ne 0 -or $null -eq $receipt) { throw 'Native fixture failed or receipt missing' }
     $stage = 'receipt-validation'
-    if (-not $receipt.passed -or -not $receipt.nativeFixtureExecuted -or $receipt.productExecuted -or $receipt.cases.Count -ne 10) { throw 'Native acceptance incomplete' }
+    if (-not $receipt.passed -or -not $receipt.nativeFixtureExecuted -or $receipt.productExecuted -or $receipt.cases.Count -ne 15) { throw 'Native acceptance incomplete' }
     foreach ($case in $receipt.cases) {
         if (-not $case.passed) { throw 'Native case failed' }
         if ($case.actualExecutions -gt 0 -and (-not $case.treeEmpty -or $case.actualExecutions -ne 3)) { throw 'Missing executed tree evidence' }

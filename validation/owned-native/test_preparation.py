@@ -32,6 +32,16 @@ class Preparation(unittest.TestCase):
         source=(P/'Harness/windows-owned-process.cs').read_text()
         expected='// Test-only fault injection, not a product transport. Native cleanup and capture join run first.\n'+source.replace('public static class XenOwnedProcess {','public static class XenOwnedProcessFaultFixture {\n    public static bool CleanupObservedEmpty { get; private set; }\n    public static bool InjectCleanupUncertainty { get; set; }').replace('result.treeEmpty=true;safeToStart=true;','result.treeEmpty=true;CleanupObservedEmpty=true;if(InjectCleanupUncertainty) throw new InvalidOperationException("injected after verified empty and capture join");safeToStart=true;')
         self.assertEqual(expected,(P/'Harness/windows-owned-process-fault-fixture.cs').read_text())
+    def test_explicit_root_mode_keeps_default_and_failure_contract(self):
+        source=(P/'Harness/windows-owned-process.cs').read_text()
+        self.assertIn('string completionMode="natural-tree"',source)
+        self.assertIn('completionMode!="natural-tree" && completionMode!="root-completed-then-owned-cleanup"',source)
+        self.assertIn('result.forcedOwnedCleanup=true;Check(TerminateJobObject(job,124)',source)
+        self.assertIn('!result.timedOut && !result.outputExceeded && !result.captureFailed && (completionMode==',source)
+        harness=(P/'Harness/Program.cs').read_text()
+        for name in ['root-completed-cleanup','root-nonzero','root-mode-timeout','root-mode-output-budget','invalid-completion-mode','cases.Count==15']:
+            self.assertIn(name,harness)
+        self.assertIn('$receipt.cases.Count -ne 15',(P/'run-native.ps1').read_text())
     def test_boundary_diagnostics_do_not_change_success_or_cleanup(self):
         source=(P/'Harness/windows-owned-process.cs').read_text()
         snapshot=source.index('uint boundaryWait=');cleanup=source.index('var cleanupTimer=')
@@ -93,7 +103,7 @@ class Preparation(unittest.TestCase):
         s=(P/'Harness/Program.cs').read_text()
         for mode in ['normal','timeout','overflow','parent-exit','invalid-env','null-args','nul-arg','same-logs','concurrent','injected-cleanup-uncertainty']:
             self.assertIn('"'+mode+'"',s)
-        for required in ['CheckCounts(p)','pids.Distinct().Count()==3','r.treeEmpty && !r.captureFailed && r.exitCode.HasValue','retained<=1024*1024','Count(denied)==0','Count(after)==0','cases.Count==10','return passed?0:1']:
+        for required in ['CheckCounts(p)','pids.Distinct().Count()==3','r.treeEmpty && !r.captureFailed && r.exitCode.HasValue','retained<=1024*1024','Count(denied)==0','Count(after)==0','cases.Count==15','return passed?0:1']:
             self.assertIn(required,s)
     def test_manual_exact_ref_metadata_only_no_product(self):
         s=(P/'.github/workflows/ci.yml').read_text()
