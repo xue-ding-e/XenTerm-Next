@@ -47,14 +47,16 @@ class CompileOnlyHost {
         }
         string os=Environment.GetFolderPath(Environment.SpecialFolder.Windows);PlainPath(os,true);
         env.Add("SYSTEMROOT",os);env.Add("WINDIR",os);
-        env.Add("PATH",Path.Combine(root,"cargo-home","bin")+";"+Path.Combine(os,"System32"));
+        // Query real fixed toolchain files, never rustup's cargo/rustc reparse proxies.
+        string toolchainBin=Path.Combine(root,"rustup-home","toolchains","1.99.1-x86_64-pc-windows-msvc","bin");PlainPath(toolchainBin,true);
+        env.Add("PATH",toolchainBin+";"+Path.Combine(os,"System32"));
         string[] labels={"rustc-version","cargo-version","resolved-rustc"};
-        string[] tools={"rustc.exe","cargo.exe","rustup.exe"};
-        string[][] argv={new[]{"+1.99.1","-vV"},new[]{"+1.99.1","-V"},new[]{"which","--toolchain","1.99.1","rustc"}};
+        string[] tools={Path.Combine(toolchainBin,"rustc.exe"),Path.Combine(toolchainBin,"cargo.exe"),Path.Combine(root,"cargo-home","bin","rustup.exe")};
+        string[][] argv={new[]{"-vV"},new[]{"-V"},new[]{"which","--toolchain","1.99.1","rustc"}};
         var rows=new List<object>();bool all=false;
         try {
             for(int i=0;i<labels.Length;i++) {
-                string exe=Path.Combine(root,"cargo-home","bin",tools[i]);PlainPath(exe,true);
+                string exe=tools[i];PlainPath(exe,true);
                 string stdout=Path.Combine(root,labels[i]+".stdout.log"),stderr=Path.Combine(root,labels[i]+".stderr.log");
                 PlainPath(stdout,false);PlainPath(stderr,false);Require(!File.Exists(stdout)&&!File.Exists(stderr));
                 var v=XenOwnedProcess.Run(exe,argv[i],root,20,stdout,stderr,env,"natural-tree","smoke-v1");

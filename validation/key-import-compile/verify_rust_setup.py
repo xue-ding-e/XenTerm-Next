@@ -16,9 +16,11 @@ def check_child(receipt,text):
 def verify(root,run_owned):
     root=plain(root);cargo_home=plain(root/'cargo-home');rustup_home=plain(root/'rustup-home')
     sysroot=plain(rustup_home/'toolchains'/TOOLCHAIN)
-    paths=[cargo_home/'bin'/n for n in ('rustup.exe','cargo.exe','rustc.exe')]+[sysroot/'bin'/n for n in ('cargo.exe','rustc.exe')]
+    # rustup's cargo/rustc proxies may be reparse points; never execute or trust them.
+    # Only the fixed toolchain binaries and ordinary rustup executable are inputs.
+    paths=[cargo_home/'bin/rustup.exe']+[sysroot/'bin'/n for n in ('cargo.exe','rustc.exe')]
     before={p.relative_to(root).as_posix():digest(plain(p)) for p in paths}
-    commands=[('rustc-version',cargo_home/'bin/rustc.exe',['+1.99.1','-vV']),('cargo-version',cargo_home/'bin/cargo.exe',['+1.99.1','-V']),('resolved-rustc',cargo_home/'bin/rustup.exe',['which','--toolchain','1.99.1','rustc'])]
+    commands=[('rustc-version',sysroot/'bin/rustc.exe',['-vV']),('cargo-version',sysroot/'bin/cargo.exe',['-V']),('resolved-rustc',cargo_home/'bin/rustup.exe',['which','--toolchain','1.99.1','rustc'])]
     outputs={}
     for label,exe,args in commands:
         receipt,text=run_owned([str(exe),*args],label,20)

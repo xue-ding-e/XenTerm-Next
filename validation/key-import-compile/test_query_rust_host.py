@@ -6,7 +6,7 @@ class QueryContract(unittest.TestCase):
   self.assertIn('"natural-tree","smoke-v1"',q);self.assertIn('root,20,stdout,stderr',q)
   self.assertIn('Require(v.Succeeded && XenOwnedProcess.SafeToStart',q)
   self.assertNotIn('CompileArgs',q);self.assertNotIn('INCLUDE',q);self.assertNotIn('LIB',q)
-  self.assertIn('"+1.99.1","-vV"',q);self.assertIn('"which","--toolchain","1.99.1","rustc"',q)
+  self.assertIn('new[]{"-vV"}',q);self.assertNotIn('"+1.99.1"',q);self.assertIn('string exe=tools[i];PlainPath(exe,true);',q);self.assertIn('"which","--toolchain","1.99.1","rustc"',q)
   adapter=(root/'query_rust_host.py').read_text();self.assertIn('timeout=85',adapter);self.assertEqual(adapter.split('def main():')[0].count('subprocess.run('),1)
   self.assertIn('finally:',adapter);self.assertIn('host_build_files',adapter)
 
