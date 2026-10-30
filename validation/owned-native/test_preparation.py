@@ -32,6 +32,13 @@ class Preparation(unittest.TestCase):
         source=(P/'Harness/windows-owned-process.cs').read_text()
         expected='// Test-only fault injection, not a product transport. Native cleanup and capture join run first.\n'+source.replace('public static class XenOwnedProcess {','public static class XenOwnedProcessFaultFixture {\n    public static bool CleanupObservedEmpty { get; private set; }\n    public static bool InjectCleanupUncertainty { get; set; }').replace('result.treeEmpty=true;safeToStart=true;','result.treeEmpty=true;CleanupObservedEmpty=true;if(InjectCleanupUncertainty) throw new InvalidOperationException("injected after verified empty and capture join");safeToStart=true;')
         self.assertEqual(expected,(P/'Harness/windows-owned-process-fault-fixture.cs').read_text())
+    def test_failed_native_case_preserves_bounded_observation(self):
+        s=(P/'Harness/Program.cs').read_text()
+        self.assertIn('lastObservation=new {name,elapsedMilliseconds=activeTimer.ElapsedMilliseconds,actualExecutions=Count(p)',s)
+        self.assertLess(s.index('lastObservation=new {'),s.index('        CheckCounts(p);'))
+        self.assertIn('failureCode=(e as AssertionFailure)?.Code',s)
+        self.assertNotIn('failureCode=e.Message',s)
+        self.assertIn('nativeErrorCode,activeCase,elapsedMilliseconds=activeTimer?.ElapsedMilliseconds,lastObservation,cases',s)
     def test_compiler_metadata_excludes_raw_diagnostics(self):
         script=(P/'run-native.ps1').read_text()
         pattern=re.search(r"Matches\(\$line,'([^']+)'\)",script).group(1)
