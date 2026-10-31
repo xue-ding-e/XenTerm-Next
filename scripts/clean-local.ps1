@@ -50,6 +50,35 @@ try {
     $runtimeLock = Enter-LocalRuntimeLock $WorkspaceRoot
     $processes = @(Get-CimInstance Win32_Process)
 
+    # Remove only empty, historical test directories from the user's TEMP.
+    # Non-empty repro folders remain for inspection; profile and credential
+    # directories are outside these exact test-name patterns.
+    $tempRoot = [IO.Path]::GetFullPath($env:TEMP).TrimEnd('\')
+    $emptyTempPattern = '^(meatshell-chain-test-|meatshell-si-|xenterm-editor-test-|xenterm-next-disabled-repro-|xenterm-nfc-import$|xenterm-nfc-rename$|xenterm-policy-|xenterm-settings-)'
+    $emptyTempDirs = @(Get-ChildItem -LiteralPath $tempRoot -Directory -Force -ErrorAction Stop |
+        Where-Object { $_.Name -match $emptyTempPattern })
+    foreach ($item in $emptyTempDirs) {
+        $path = [IO.Path]::GetFullPath($item.FullName)
+        if (-not $path.StartsWith($tempRoot + '\', [StringComparison]::OrdinalIgnoreCase)) {
+            throw "TEMP test path escaped the approved root: $path"
+        }
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw "refusing a TEMP reparse-point directory: $path"
+        }
+        if (@(Get-ChildItem -LiteralPath $path -Force -ErrorAction Stop).Count -ne 0) {
+            continue
+        }
+        $busy = @($processes | Where-Object {
+            $exe = $_.ExecutablePath
+            $cmd = $_.CommandLine
+            ($exe -and $exe.StartsWith($path + '\', [StringComparison]::OrdinalIgnoreCase)) -or
+                ($cmd -and $cmd.Contains($path))
+        })
+        if ($busy.Count) { throw "TEMP test directory is in use: $path" }
+        Write-Host "REMOVE EMPTY TEMP TEST DIRECTORY: $path"
+        if ($Apply) { Remove-Item -LiteralPath $path -Force }
+    }
+
     # These are dated Cargo target roots directly under D:\_code, not source
     # checkouts. Their old debug profiles contain 21-session test fixtures and
     # are not the current 25-session data profile; remove only this exact list.
