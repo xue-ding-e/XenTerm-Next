@@ -1,0 +1,67 @@
+[
+  {
+    "name": "fixed-success",
+    "syntheticCargoExecutions": 1,
+    "expectedRejection": false
+  },
+  {
+    "name": "consumed-root",
+    "syntheticCargoExecutions": 0,
+    "expectedRejection": true
+  },
+  {
+    "name": "marker-only-consumed-root",
+    "syntheticCargoExecutions": 0,
+    "expectedRejection": true
+  },
+  {
+    "name": "compile-argv",
+    "syntheticCargoExecutions": 0,
+    "expectedRejection": true
+  },
+  {
+    "name": "wrong-policy",
+    "syntheticCargoExecutions": 0,
+    "expectedRejection": true
+  },
+  {
+    "name": "wrong-deadline",
+    "syntheticCargoExecutions": 0,
+    "expectedRejection": true
+  },
+  {
+    "name": "extra-environment",
+    "syntheticCargoExecutions": 0,
+    "expectedRejection": true
+  },
+  {
+    "name": "case-colliding-environment",
+    "syntheticCargoExecutions": 0,
+    "expectedRejection": true
+  },
+  {
+    "name": "wrong-tool-path",
+    "syntheticCargoExecutions": 0,
+    "expectedRejection": true
+  },
+  {
+    "name": "duplicate-json",
+    "syntheticCargoExecutions": 0,
+    "expectedRejection": true
+  },
+  {
+    "name": "reparse-executable",
+    "syntheticCargoExecutions": 0,
+    "expectedRejection": true
+  },
+  {
+    "name": "nonzero-child",
+    "syntheticCargoExecutions": 1,
+    "expectedRejection": false
+  },
+  {
+    "name": "nonzero-consumed-root",
+    "syntheticCargoExecutions": 0,
+    "expectedRejection": true
+  }
+]

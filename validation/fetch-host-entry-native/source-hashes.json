@@ -1,0 +1,17 @@
+{
+  ".github/workflows/ci.yml": "3820a92ac41a1a0f8c2fcd52f59f8ec72a4070cfc3671cc6181c2818a8d9334c",
+  "Fixture/Fixture.csproj": "f266a043c6377894aa71007bf87d3b69760880f248a158b8fb3ef7922cf061e3",
+  "Fixture/Program.cs": "c9384be5ee3ab38a8e2c823d24a15cd36073ad6ddc507a8ac6db98738fb5ae84",
+  "Harness/Harness.csproj": "d4c97e939c8cf206d23b68d2d97ad70ab1c9ac3d46c85a15bc07046aaa560ad0",
+  "Harness/Program.cs": "e3ebd623d58953f1c1e398aae72d9afe91a0bd4295b84cd132b4c145cc80c905",
+  "Host/FetchHost.csproj": "fdcf2d82f51d9986e855c388eeafb0a67b186ffbfc31a0bf47fab47ba52defa9",
+  "Host/NuGet.Config": "9508cae5f76364f56e80eb97cb16493977243cf38e5cca6284e3d74f83b20a2c",
+  "Host/Program.cs": "0f94cd746e8a04d7bb5e794683a30b7512d406319eccb3e3c4e6fb3d79e29ae3",
+  "Host/fetch-owned-process.cs": "d6d9d3b5c31a2f697eb435cdbf99f0fc968e2af912b069923bc6f8c7497331b3",
+  "Host/global.json": "0503dacfc3e664e4b7fc0ac7da920e5939da4ee62ab852ce7aec1a0bdbdf38a2",
+  "NuGet.Config": "9508cae5f76364f56e80eb97cb16493977243cf38e5cca6284e3d74f83b20a2c",
+  "expected-cases.json": "2a6a3012fe28c1fd179f879ac6131dd318151cb1906f7d166f296046f179549e",
+  "global.json": "0503dacfc3e664e4b7fc0ac7da920e5939da4ee62ab852ce7aec1a0bdbdf38a2",
+  "run-host-entry.ps1": "e7dd3a7df0f96467098faefb9852ee9d25054de6e782af8beb7848a3698e8ff0",
+  "test_host_entry_preparation.py": "90471f009fd36a1f877ef38571c440472ab5d65e51a9b41cb02c0f79ee891821"
+}

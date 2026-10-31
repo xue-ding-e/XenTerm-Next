@@ -1,4 +1,4 @@
-name: Fetch-policy synthetic Windows qualification (manual candidate)
+name: Fetch Host entry synthetic qualification (manual)
 on:
   workflow_dispatch:
     inputs:
@@ -12,10 +12,11 @@ concurrency:
   cancel-in-progress: false
 jobs:
   synthetic:
-    if: github.repository == 'xue-ding-e/XenTerm-Next' && github.ref == 'refs/heads/validation/xenterm-fetch-policy-v1-20261031' && github.event_name == 'workflow_dispatch' && inputs.expected_sha == github.sha
+    if: github.repository == 'xue-ding-e/XenTerm-Next' && github.ref == 'refs/heads/validation/xenterm-fetch-host-entry-20261031' && github.event_name == 'workflow_dispatch' && inputs.expected_sha == github.sha
     runs-on: windows-latest
-    timeout-minutes: 6
+    timeout-minutes: 8
     env:
+      EXPECTED_CONTROL_SHA: ${{ inputs.expected_sha }}
       GIT_CONFIG_COUNT: '2'
       GIT_CONFIG_KEY_0: core.autocrlf
       GIT_CONFIG_VALUE_0: 'false'
@@ -26,15 +27,15 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Qualify only synthetic fetch command policy
+      - name: Only synthetic Host entry cases
         shell: pwsh
-        timeout-minutes: 3
-        run: ./validation/fetch-native/run-fetch.ps1
-      - name: Upload only sanitized qualification metadata
+        timeout-minutes: 6
+        run: ./validation/fetch-host-entry-native/run-host-entry.ps1
+      - name: Upload sanitized metadata only
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: fetch-policy-native-metadata
-          path: ${{ runner.temp }}/xenterm-fetch-qualification-${{ github.sha }}/metadata.json
+          name: fetch-host-entry-native-metadata
+          path: ${{ runner.temp }}/xenterm-host-entry-${{ github.sha }}/metadata.json
           if-no-files-found: ignore
           retention-days: 7
