@@ -103,11 +103,58 @@ class HostEntryControl(unittest.TestCase):
         source = (ROOT / 'run-host-entry.ps1').read_text()
         for text in ('Check-Identity', 'Check-Copies', '$runtime.Count -ne 12',
                      "$runtimeEvidence[$label+'/'+$base+$suffix]", 'foreach($path in $runtime.Keys)',
-                     '$_.Exception.GetType().Name', '$entry=$null', '$allowedFailureCases',
+                     '$Record.Exception.GetType().Name', '$entry=$null', '$allowedFailureCases',
                      'outerJobObjectQualification=$false', 'fullTenMinuteElapsedValidation=$false'):
             self.assertIn(text, source)
         for forbidden in ('$_.Exception.Message', '$_.ScriptStackTrace', 'runtimeFiles=$runtime;'):
             self.assertNotIn(forbidden, source)
+
+    def test_primary_and_final_failures_cannot_overwrite_each_other(self):
+        source = (ROOT / 'run-host-entry.ps1').read_text()
+        self.assertIn('catch {$primaryFailure=Failure-Snapshot $_}', source)
+        self.assertIn('catch {$passed=$false;$finalFailure=Failure-Snapshot $_}', source)
+        final_block = source.split('$inFinal=$true')[1]
+        self.assertNotIn('$primaryFailure=', final_block)
+        self.assertIn('primaryFailure=$primaryFailure;finalFailure=$finalFailure', final_block)
+        self.assertNotIn('$failureType=', source)
+        snapshot = source.split('function Failure-Snapshot')[1].split('function Extra-Class')[0]
+        for unsafe in ('.Message', '.StackTrace', '.ToString()', '.InvocationInfo'):
+            self.assertNotIn(unsafe, snapshot)
+        self.assertIn("else{'OTHER'}", snapshot)
+        self.assertIn("$kind='OtherException'", snapshot)
+
+    def test_build_outcomes_keep_unknown_values_and_fixed_checkpoints(self):
+        source = (ROOT / 'run-host-entry.ps1').read_text()
+        for text in ('started=$false;exited=$null;exitCode=$null;streamsComplete=$null;timedOut=$null',
+                     '$outcome.started=$true', '$outcome.exited=$false;$outcome.timedOut=$true',
+                     '$outcome.exitCode=$process.ExitCode', '$outcome.streamsComplete=[Threading.Tasks.Task]::WaitAll',
+                     "Fail-Diagnostic 'BUILD_EXIT'", "Fail-Diagnostic 'BUILD_DRAIN'"):
+            self.assertIn(text, source)
+        self.assertIn('buildOutcomes=@($buildOutcomes.ToArray())', source)
+
+    def test_copy_diagnostics_export_indices_counts_and_only_fixed_classes(self):
+        source = (ROOT / 'run-host-entry.ps1').read_text()
+        body = source.split('function Extra-Class')[1].split('function Plain')[0]
+        classes = set(re.findall(r"return '([^']+)'", body))
+        self.assertEqual(classes, {'json', 'props', 'targets', 'cs', 'dll', 'exe', 'pdb', 'cache', 'txt', 'other'})
+        self.assertNotIn('return $Relative', body)
+        check = source.split('function Check-Copies')[1].split('function Set-ChildEnvironment')[0]
+        self.assertIn('$check.missingIndices+= $i', check)
+        self.assertIn('$check.changedIndices+= $i', check)
+        self.assertIn('$class=Extra-Class $relative', check)
+        self.assertNotIn('$check.extraClasses[$relative]', check)
+        for field in ('missingIndices', 'changedIndices', 'extraCount', 'extraClasses', 'scanComplete'):
+            self.assertIn(field, check)
+        self.assertIn("Fail-Diagnostic 'COPY_EXTRA'", check)
+        self.assertIn('Compare-Object ($compileInputs|Sort-Object)', check)
+        # Reference classification negatives: secret-bearing filenames or unknown
+        # extensions have only a fixed class output, never their original text.
+        known = {'.' + item: item for item in classes - {'other'}}
+        for name, want in [('private-token.bin', 'other'), ('secret.json', 'json'),
+                           ('private.USER_VALUE', 'other'), ('build.PROPS', 'props')]:
+            value = known.get(Path(name).suffix.lower(), 'other')
+            self.assertEqual(value, want)
+            self.assertNotIn(name, value)
 
 
 if __name__ == '__main__':

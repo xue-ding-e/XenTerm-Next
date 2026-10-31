@@ -2,7 +2,9 @@
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
 $passed=$false;$initial=$false;$final=$false;$created=$false;$copied=$false
-$stage='scope';$failureType=$null;$failureCase=$null;$manifestHash=$null
+$stage='scope';$failureCase=$null;$manifestHash=$null
+$primaryFailure=$null;$finalFailure=$null;$checkpoint='SCOPE';$inFinal=$false
+$buildOutcomes=[Collections.Generic.List[object]]::new();$copyChecks=[Collections.Generic.List[object]]::new()
 $runtime=@{};$runtimeEvidence=@{};$dotnetHash=$null;$cases=@();$result=$null;$harnessStarted=$false
 $OutputRoot=$null;$work=$null
 $required=@('Host/Program.cs','Host/fetch-owned-process.cs','Host/FetchHost.csproj','Host/NuGet.Config','Host/global.json','Fixture/Program.cs','Fixture/Fixture.csproj','Harness/Program.cs','Harness/Harness.csproj','NuGet.Config','global.json','run-host-entry.ps1','.github/workflows/ci.yml','expected-cases.json','test_host_entry_preparation.py')
@@ -16,28 +18,68 @@ $fixed=@{
 }
 $dotnet='C:\Program Files\dotnet\dotnet.exe'
 $sourceMap=@{}
+$diagnosticCodes=@('SCOPE','SOURCE_MANIFEST','SOURCE_INVENTORY','SOURCE_HASH','WORKFLOW_HASH','COPY_READ','COPY_SCAN','COPY_MISSING','COPY_HASH','COPY_EXTRA','COPY_INVENTORY','DOTNET_HASH','RUNTIME_HASH','BUILD_ENV','BUILD_START','BUILD_STREAM_INIT','BUILD_WAIT','BUILD_TIMEOUT','BUILD_DRAIN','BUILD_EXIT','HARNESS_START','HARNESS_WAIT','HARNESS_DRAIN','RESULT_VALIDATE','OTHER')
+$diagnosticStages=@('scope','source-identity','dotnet-identity','build-host','build-fixture','build-harness','runtime-identity','synthetic-host-entry13')
+function Fail-Diagnostic([string]$Code) {
+ if($Code -notin $diagnosticCodes){$Code='OTHER'}
+ $script:checkpoint=$Code
+ throw [InvalidOperationException]::new('fixed diagnostic failure')
+}
+function Failure-Snapshot($Record) {
+ $code=if($script:checkpoint -in $diagnosticCodes){$script:checkpoint}else{'OTHER'}
+ $where=if($script:stage -in $diagnosticStages){$script:stage}else{'scope'}
+ $kind=$Record.Exception.GetType().Name
+ if($kind -notin @('InvalidOperationException','RuntimeException','MethodInvocationException','IOException','UnauthorizedAccessException','ArgumentException','DirectoryNotFoundException','FileNotFoundException')){$kind='OtherException'}
+ return @{stage=$where;code=$code;type=$kind}
+}
+function Extra-Class([string]$Relative) {
+ switch([IO.Path]::GetExtension($Relative).ToLowerInvariant()) {
+  '.json' {return 'json'} '.props' {return 'props'} '.targets' {return 'targets'}
+  '.cs' {return 'cs'} '.dll' {return 'dll'} '.exe' {return 'exe'}
+  '.pdb' {return 'pdb'} '.cache' {return 'cache'} '.txt' {return 'txt'}
+  default {return 'other'}
+ }
+}
 function Plain([string]$Path) {
  if(-not [IO.Path]::IsPathFullyQualified($Path) -or [IO.Path]::GetFullPath($Path) -ne $Path){throw 'canonical path required'}
  $p=$Path
  while($p){if(Test-Path -LiteralPath $p){if(((Get-Item -LiteralPath $p -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw 'reparse input'}};$p=[IO.Path]::GetDirectoryName($p)}
 }
 function Check-Identity {
+ $script:checkpoint='SOURCE_MANIFEST'
  $manifest=Join-Path $PSScriptRoot 'source-hashes.json';Plain $manifest
  if((Get-FileHash -LiteralPath $manifest -Algorithm SHA256).Hash -ne $script:manifestHash){throw 'manifest changed'}
  $map=Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json -AsHashtable
  if(@(Compare-Object ($required|Sort-Object) (@($map.Keys)|Sort-Object)).Count -ne 0){throw 'fixed inventory mismatch'}
+ $script:checkpoint='SOURCE_INVENTORY'
  $actual=@(Get-ChildItem -LiteralPath $PSScriptRoot -Recurse -Force -File | ForEach-Object {[IO.Path]::GetRelativePath($PSScriptRoot,$_.FullName).Replace('\','/')} | Where-Object {$_ -ne 'source-hashes.json'})
  if(@(Compare-Object ($required|Sort-Object) ($actual|Sort-Object)).Count -ne 0){throw 'unexpected source input'}
+ $script:checkpoint='SOURCE_HASH'
  foreach($name in $required){$path=Join-Path $PSScriptRoot $name;Plain $path;if((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -ne $map[$name]){throw 'source changed'}}
  foreach($name in $fixed.Keys){if($map['Host/'+$name] -ne $fixed[$name]){throw 'production Host changed'}}
+ $script:checkpoint='WORKFLOW_HASH'
  $workflow=Join-Path $env:GITHUB_WORKSPACE '.github/workflows/ci.yml';Plain $workflow
  if((Get-FileHash -LiteralPath $workflow -Algorithm SHA256).Hash.ToLowerInvariant() -ne $map['.github/workflows/ci.yml']){throw 'workflow source mismatch'}
  $script:sourceMap=$map
 }
 function Check-Copies {
- foreach($name in $compileInputs){$path=Join-Path $work $name;Plain $path;if((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -ne $sourceMap[$name]){throw 'build input copy changed'}}
+ $script:checkpoint='COPY_READ'
+ $phase=if($script:inFinal){'final'}else{'primary'}
+ $check=@{ordinal=$copyChecks.Count;phase=$phase;missingIndices=@();changedIndices=@();extraCount=0;extraClasses=@{};scanComplete=$false}
+ $copyChecks.Add($check)
+ for($i=0;$i -lt $compileInputs.Count;$i++){
+  $name=$compileInputs[$i];$path=Join-Path $work $name;Plain $path
+  if(-not(Test-Path -LiteralPath $path -PathType Leaf)){$check.missingIndices+= $i;continue}
+  if((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -ne $sourceMap[$name]){$check.changedIndices+= $i}
+ }
+ $script:checkpoint='COPY_SCAN'
  $actual=@(Get-ChildItem -LiteralPath $work -Recurse -Force -File | ForEach-Object {[IO.Path]::GetRelativePath($work,$_.FullName).Replace('\','/')})
- if(@(Compare-Object ($compileInputs|Sort-Object) ($actual|Sort-Object)).Count -ne 0){throw 'unexpected compiled input'}
+ foreach($relative in $actual){if($relative -notin $compileInputs){$check.extraCount++;$class=Extra-Class $relative;if(-not $check.extraClasses.ContainsKey($class)){$check.extraClasses[$class]=0};$check.extraClasses[$class]++}}
+ $check.scanComplete=$true
+ if($check.missingIndices.Count -gt 0){Fail-Diagnostic 'COPY_MISSING'}
+ if($check.changedIndices.Count -gt 0){Fail-Diagnostic 'COPY_HASH'}
+ if($check.extraCount -gt 0){Fail-Diagnostic 'COPY_EXTRA'}
+ if(@(Compare-Object ($compileInputs|Sort-Object) ($actual|Sort-Object)).Count -ne 0){Fail-Diagnostic 'COPY_INVENTORY'}
 }
 function Set-ChildEnvironment([Diagnostics.ProcessStartInfo]$Info) {
  $Info.Environment.Clear()
@@ -51,6 +93,8 @@ function Set-ChildEnvironment([Diagnostics.ProcessStartInfo]$Info) {
 }
 function Build([string]$Project,[string]$Name,[string]$Exe) {
     $script:stage='build-'+$Name
+    $outcome=@{stage=$script:stage;started=$false;exited=$null;exitCode=$null;streamsComplete=$null;timedOut=$null}
+    $buildOutcomes.Add($outcome);$script:checkpoint='BUILD_ENV'
     $bin=Join-Path $OutputRoot ($Name+'/bin/');$obj=Join-Path $OutputRoot ($Name+'/obj/')
     $info=[Diagnostics.ProcessStartInfo]::new($dotnet)
     Set-ChildEnvironment $info
@@ -59,13 +103,20 @@ function Build([string]$Project,[string]$Name,[string]$Exe) {
     foreach($arg in @('build',$Project,'--disable-build-servers','-c','Release',"-p:RestoreConfigFile=$work/NuGet.Config",'-p:NuGetAudit=false','-p:ImportDirectoryBuildProps=false','-p:ImportDirectoryBuildTargets=false',"-p:BaseOutputPath=$bin","-p:BaseIntermediateOutputPath=$obj",'-v:q')){$info.ArgumentList.Add($arg)}
     $process=$null
     try {
-        $process=[Diagnostics.Process]::Start($info)
+        $script:checkpoint='BUILD_START'
+        $process=[Diagnostics.Process]::Start($info);$outcome.started=$true
+        $script:checkpoint='BUILD_STREAM_INIT'
         $copies=[Threading.Tasks.Task[]]@($process.StandardOutput.BaseStream.CopyToAsync([IO.Stream]::Null),$process.StandardError.BaseStream.CopyToAsync([IO.Stream]::Null))
+        $script:checkpoint='BUILD_WAIT'
         if(-not $process.WaitForExit(60000)){
+            $outcome.exited=$false;$outcome.timedOut=$true;$script:checkpoint='BUILD_TIMEOUT'
             try{$process.Kill($true);$null=$process.WaitForExit(5000)}finally{throw 'synthetic build timeout; lifecycle unknown'}
         }
-        if(-not [Threading.Tasks.Task]::WaitAll($copies,5000)){throw 'synthetic build log completion unknown'}
-        if($process.ExitCode -ne 0){throw 'test-only build failed'}
+        $outcome.exited=$true;$outcome.timedOut=$false;$outcome.exitCode=$process.ExitCode
+        $script:checkpoint='BUILD_DRAIN'
+        $outcome.streamsComplete=[Threading.Tasks.Task]::WaitAll($copies,5000)
+        if(-not $outcome.streamsComplete){Fail-Diagnostic 'BUILD_DRAIN'}
+        if($outcome.exitCode -ne 0){Fail-Diagnostic 'BUILD_EXIT'}
     } finally {if($process){$process.Dispose()}}
     return (Join-Path $bin ('Release/net8.0/'+$Exe))
 }
@@ -82,7 +133,7 @@ try {
  Check-Identity;$initial=$true
  $expected=@(Get-Content -LiteralPath (Join-Path $PSScriptRoot 'expected-cases.json') -Raw | ConvertFrom-Json)
  if($expected.Count -ne 13){throw 'expected cases inventory'}
- $stage='dotnet-identity';Plain $dotnet
+ $stage='dotnet-identity';$checkpoint='DOTNET_HASH';Plain $dotnet
  $dotnetHash=(Get-FileHash -LiteralPath $dotnet -Algorithm SHA256).Hash
  $work=Join-Path $OutputRoot 'build';[IO.Directory]::CreateDirectory($work)|Out-Null
  foreach($name in $compileInputs){$destination=Join-Path $work $name;[IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($destination))|Out-Null;Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $destination}
@@ -91,7 +142,7 @@ try {
  $fixture=Build 'Fixture/Fixture.csproj' 'fixture' 'cargo.exe'
  $harness=Build 'Harness/Harness.csproj' 'harness' 'FetchHostEntryHarness.exe'
  Check-Copies
- $stage='runtime-identity'
+ $stage='runtime-identity';$checkpoint='RUNTIME_HASH'
  $executables=@{Host=$fetchHost;Fixture=$fixture;Harness=$harness}
  foreach($label in $executables.Keys) {
   $exe=$executables[$label];$base=[IO.Path]::GetFileNameWithoutExtension($exe);$dir=[IO.Path]::GetDirectoryName($exe)
@@ -105,13 +156,17 @@ try {
  $info=[Diagnostics.ProcessStartInfo]::new($harness);$info.UseShellExecute=$false;$info.RedirectStandardOutput=$true;$info.RedirectStandardError=$true;$info.WorkingDirectory=$work
  Set-ChildEnvironment $info
  foreach($arg in @($fetchHost,$fixture,(Join-Path $OutputRoot 'cases'))){$info.ArgumentList.Add($arg)}
+ $checkpoint='HARNESS_START'
  $process=[Diagnostics.Process]::Start($info);$harnessStarted=$true
  try {
   $drain=[Threading.Tasks.Task[]]@($process.StandardOutput.BaseStream.CopyToAsync([IO.Stream]::Null),$process.StandardError.BaseStream.CopyToAsync([IO.Stream]::Null))
+  $checkpoint='HARNESS_WAIT'
   if(-not $process.WaitForExit(90000)){try{$process.Kill($true);$null=$process.WaitForExit(5000)}finally{throw 'synthetic harness timeout; lifecycle unknown'}}
+  $checkpoint='HARNESS_DRAIN'
   if(-not [Threading.Tasks.Task]::WaitAll($drain,5000)){throw 'harness stream completion unknown'}
   $code=$process.ExitCode
  } finally {$process.Dispose()}
+ $checkpoint='RESULT_VALIDATE'
  $receipt=Join-Path $OutputRoot 'cases/host-entry-result.json';Plain $receipt
  if(-not(Test-Path -LiteralPath $receipt -PathType Leaf) -or (Get-Item -LiteralPath $receipt).Length -gt 65536){throw 'Host entry receipt bound'}
  $result=Get-Content -LiteralPath $receipt -Raw | ConvertFrom-Json
@@ -142,15 +197,24 @@ try {
   $cases+=$retained
  }
  $passed=$true
-} catch {$failureType=$_.Exception.GetType().Name} finally {
+} catch {$primaryFailure=Failure-Snapshot $_} finally {
+ $inFinal=$true
  try {
-  if($initial){Check-Identity;if($copied){Check-Copies};Plain $dotnet;if((Get-FileHash -LiteralPath $dotnet -Algorithm SHA256).Hash -ne $dotnetHash){throw 'dotnet host changed'};foreach($path in $runtime.Keys){Plain $path;if((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -ne $runtime[$path]){throw 'runtime changed'}};$final=$true}
- } catch {$passed=$false;$failureType=$_.Exception.GetType().Name}
+  if($initial){
+   Check-Identity
+   if($copied){Check-Copies}
+   $checkpoint='DOTNET_HASH';Plain $dotnet
+   if((Get-FileHash -LiteralPath $dotnet -Algorithm SHA256).Hash -ne $dotnetHash){Fail-Diagnostic 'DOTNET_HASH'}
+   $checkpoint='RUNTIME_HASH'
+   foreach($path in $runtime.Keys){Plain $path;if((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -ne $runtime[$path]){Fail-Diagnostic 'RUNTIME_HASH'}}
+   $final=$true
+  }
+ } catch {$passed=$false;$finalFailure=Failure-Snapshot $_}
  if(-not($initial -and $final)){$passed=$false;$cases=@()}
  if($created){
   $entry=$false;if($harnessStarted){$entry=$null};$invocations=$null;$outerTimeout=$null
   if($passed){$entry=$true;$invocations=13;$outerTimeout=$false}
-  @{passed=$passed;stage=$stage;failureType=$failureType;failureCase=$failureCase;initialIdentity=$initial;finalIdentity=$final;controlSha=$env:GITHUB_SHA;runId=$env:GITHUB_RUN_ID;sourceManifestSha256=$manifestHash;case_count=$cases.Count;cases=$cases;runtimeFiles=$runtimeEvidence;dotnetHostSha256=$dotnetHash;hostEntryExecuted=$entry;hostOsProcessInvocations=$invocations;outerTimeoutObserved=$outerTimeout;outerJobObjectQualification=$false;realCargoExecuted=$false;dependencyFetchAttempted=$false;fixtureNetworkAttempted=$false;productCompileAttempted=$false;productRuntimeAttempted=$false;fullTenMinuteElapsedValidation=$false} | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $OutputRoot 'metadata.json') -Encoding utf8NoBOM
+  @{passed=$passed;stage=$stage;primaryFailure=$primaryFailure;finalFailure=$finalFailure;buildOutcomes=@($buildOutcomes.ToArray());copyChecks=@($copyChecks.ToArray());failureCase=$failureCase;initialIdentity=$initial;finalIdentity=$final;controlSha=$env:GITHUB_SHA;runId=$env:GITHUB_RUN_ID;sourceManifestSha256=$manifestHash;case_count=$cases.Count;cases=$cases;runtimeFiles=$runtimeEvidence;dotnetHostSha256=$dotnetHash;hostEntryExecuted=$entry;hostOsProcessInvocations=$invocations;outerTimeoutObserved=$outerTimeout;outerJobObjectQualification=$false;realCargoExecuted=$false;dependencyFetchAttempted=$false;fixtureNetworkAttempted=$false;productCompileAttempted=$false;productRuntimeAttempted=$false;fullTenMinuteElapsedValidation=$false} | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $OutputRoot 'metadata.json') -Encoding utf8NoBOM
  }
 }
 if(-not $passed){exit 1}
