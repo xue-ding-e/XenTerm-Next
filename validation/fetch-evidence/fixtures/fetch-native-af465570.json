@@ -1,0 +1,125 @@
+{
+  "finalIdentity": true,
+  "stage": "native-fetch8",
+  "suites": {
+    "fetch8": {
+      "runId": "41185823982",
+      "exit": 0,
+      "fixtureFiles": {
+        "cargo.deps.json": "076f987b03ed3ab5a267274d214ea83d0b5a009a0100f807a46d7ee3f6ff740a",
+        "cargo.exe": "55f628233d338e8616481e3f67ba73a04dfc6ceac5ab76a67e681dced8ed6252",
+        "cargo.runtimeconfig.json": "28329cf08f6505e73806b17558b187c02f0c1c516fe47ebfb7a013d082aaa306",
+        "cargo.dll": "936b70322850b526ca8b859e34a3c5e887fef68baa055c19c5e95da191e97b55"
+      },
+      "receipt": {
+        "passed": true,
+        "case_count": 8,
+        "cases": [
+          {
+            "name": "fetch-policy-natural-tree-cleanup",
+            "passed": true,
+            "actualExecutions": 3,
+            "injectedClock": false,
+            "productionRequestedSeconds": 600,
+            "retainedBytes": 0,
+            "stdoutBytes": 0,
+            "stderrBytes": 0,
+            "cleanupMilliseconds": 0,
+            "safeToStart": true,
+            "treeEmpty": true,
+            "outputExceeded": false,
+            "forcedOwnedCleanup": false
+          },
+          {
+            "name": "fetch-policy-output-hard-cap",
+            "passed": true,
+            "actualExecutions": 3,
+            "injectedClock": false,
+            "productionRequestedSeconds": 600,
+            "retainedBytes": 1048576,
+            "stdoutBytes": 528384,
+            "stderrBytes": 520192,
+            "cleanupMilliseconds": 0,
+            "safeToStart": true,
+            "treeEmpty": true,
+            "outputExceeded": true,
+            "forcedOwnedCleanup": false
+          },
+          {
+            "name": "fetch-policy-timeout-cleanup",
+            "passed": true,
+            "actualExecutions": 3,
+            "injectedClock": true,
+            "injectedMilliseconds": 8000,
+            "productionRequestedSeconds": 600,
+            "treeEmpty": true,
+            "timedOut": true,
+            "cleanupMilliseconds": 6,
+            "safeToStart": true
+          },
+          {
+            "name": "fetch-policy-argv-rejection",
+            "passed": true,
+            "actualExecutions": 0,
+            "expectedRejection": true
+          },
+          {
+            "name": "fetch-policy-root-mode-rejection",
+            "passed": true,
+            "actualExecutions": 0,
+            "expectedRejection": true
+          },
+          {
+            "name": "fetch-policy-deadline-rejection",
+            "passed": true,
+            "actualExecutions": 0,
+            "expectedRejection": true
+          },
+          {
+            "name": "fetch-policy-rustup-selector-rejection",
+            "passed": true,
+            "actualExecutions": 0,
+            "expectedRejection": true
+          },
+          {
+            "name": "unknown-policy-rejection",
+            "passed": true,
+            "actualExecutions": 0,
+            "expectedRejection": true
+          }
+        ],
+        "failureCase": null,
+        "productCompileAttempted": false,
+        "productRuntimeAttempted": false,
+        "fullTenMinuteElapsedValidation": false,
+        "networkAttempted": false
+      },
+      "controlSha": "af4655706b2c61a380a18e69a6fecc8372a7d076",
+      "harnessFiles": {
+        "FetchPolicyHarness.exe": "2485a3bf01577c5238b9882591218608b6c42f2d6530d0d2db99a642c5bab7b6",
+        "FetchPolicyHarness.runtimeconfig.json": "28329cf08f6505e73806b17558b187c02f0c1c516fe47ebfb7a013d082aaa306",
+        "FetchPolicyHarness.deps.json": "97a98eac7e19d07998cff33c3659e5526f96835c68e1def369631af04437f0e6",
+        "FetchPolicyHarness.dll": "156f55aa8b0bfb402734f439080020db168c6a631eb6676f9628b87227feacba"
+      }
+    }
+  },
+  "productCompileAttempted": false,
+  "fullTenMinuteElapsedValidation": false,
+  "productRuntimeAttempted": false,
+  "fixtureNetworkAttempted": false,
+  "passed": true,
+  "sourceManifestSha256": "891C87632693C5B68A67752698DC2D4C0AD7D6668B034E941A58C398AD757564",
+  "hostExecuted": false,
+  "controlSha": "af4655706b2c61a380a18e69a6fecc8372a7d076",
+  "compilerCodes": [],
+  "dependencyFetchAttempted": false,
+  "initialIdentity": true,
+  "failureType": null,
+  "runId": "41185823982",
+  "compiledHostFiles": {
+    "FetchHost.runtimeconfig.json": "28329cf08f6505e73806b17558b187c02f0c1c516fe47ebfb7a013d082aaa306",
+    "FetchHost.dll": "978156c7aa4c48f9565dc7fa3a5b0d298c68e02695ec32c599016c1cacadd839",
+    "FetchHost.exe": "59aafe3980cbbe8f62cee000f8778f20b66bc45148b2c7067e88792db8ef260e",
+    "FetchHost.deps.json": "d419c9156bad40a757c4485fa2fe122903ab92f43662d5667828d69f56b612b3"
+  }
+}
