@@ -96,7 +96,7 @@ class HostEntryControl(unittest.TestCase):
                      'lifecycle unknown', '[IO.Stream]::Null', '--disable-build-servers'):
             self.assertIn(text, source)
         self.assertNotIn('build.stdout.log', source)
-        self.assertNotIn('[IO.File]::Open', source)
+        self.assertEqual(source.count('[IO.File]::Open'), 1)  # Only owned scratch write probe; never raw logs.
         self.assertEqual(source.count('CopyToAsync([IO.Stream]::Null)'), 2)
         self.assertIn("Fail-Diagnostic 'BUILD_OUTPUT_LIMIT'", source)
 
@@ -216,6 +216,60 @@ class HostEntryControl(unittest.TestCase):
         self.assertIn('$check.extraEntries.Count -lt 16', source)
         self.assertIn("Fail-Diagnostic 'COPY_EXTRA'", source)
 
+
+    def test_nuget_machine_root_missing_negative_and_isolated_values(self):
+        import ntpath
+        # NuGet CoreCLR's documented fallback, not a Windows process execution.
+        def root(values):
+            value = values.get('PROGRAMFILES(X86)') or values.get('PROGRAMFILES')
+            if not value: raise ValueError('missing machine-wide path1')
+            return ntpath.join(value, 'NuGet')
+        for values in ({}, {'PROGRAMFILES': ''}, {'PROGRAMFILES(X86)': ''}):
+            with self.assertRaises(ValueError): root(values)
+        expected = r'D:\scratch\isolated\programfiles-x86\NuGet'
+        self.assertEqual(root({'PROGRAMFILES(X86)': r'D:\scratch\isolated\programfiles-x86',
+                               'PROGRAMFILES': r'D:\scratch\isolated\programfiles'}), expected)
+        self.assertEqual(root({'PROGRAMFILES': r'D:\scratch\isolated\programfiles'}),
+                         r'D:\scratch\isolated\programfiles\NuGet')
+        source = (ROOT / 'run-host-entry.ps1').read_text()
+        for text in ("$values['PROGRAMFILES']=Join-Path $OutputRoot 'isolated/programfiles'",
+                     "$values['PROGRAMFILES(X86)']=Join-Path $OutputRoot 'isolated/programfiles-x86'",
+                     "'isolated/home/AppData/Roaming'", "'isolated/home/AppData/Local'"):
+            self.assertIn(text, source)
+        env = source.split('function Set-ChildEnvironment')[1].split('function Build')[0]
+        self.assertNotIn('$env:', env)
+        self.assertIn('$Info.Environment.Clear()', env)
+
+    def test_scratch_directories_have_root_and_write_guards(self):
+        source = (ROOT / 'run-host-entry.ps1').read_text()
+        body = source.split('function Verify-IsolatedDirectory')[1].split('function Check-NuGetMigration')[0]
+        for text in ('StartsWith($isolated,[StringComparison]::OrdinalIgnoreCase)', 'Plain $full',
+                     'CreateDirectory($full)', '-PathType Container', '[IO.FileMode]::CreateNew',
+                     '$stream.WriteByte(1)', '$owned=$true', 'if($owned){[IO.File]::Delete($probe)}'):
+            self.assertIn(text, body)
+        for forbidden in ('Set-Acl', 'icacls', 'GetEnvironmentVariable', 'ReadAllText'):
+            self.assertNotIn(forbidden, body)
+        import ntpath
+        base = r'D:\scratch\isolated'
+        for value in (r'D:\scratch\build', r'C:\Users\actual', r'D:\scratch\isolated-other'):
+            try:
+                accepted = ntpath.commonpath([base, value]) == base
+            except ValueError:  # Cross-drive paths are also outside the owned root.
+                accepted = False
+            self.assertFalse(accepted)
+        self.assertEqual(ntpath.commonpath([base, base + r'\home\AppData\Local']), base)
+
+    def test_migration_requires_real_marker_outside_sources(self):
+        source = (ROOT / 'run-host-entry.ps1').read_text()
+        body = source.split('function Check-NuGetMigration')[1].split('function Set-ChildEnvironment')[0]
+        for text in ("'isolated/home/AppData/Local/NuGet/Migrations/1'", '-PathType Leaf',
+                     'markerBytes -ne 0', "Fail-Diagnostic 'NUGET_MIGRATION'"):
+            self.assertIn(text, body)
+        for forbidden in ('WriteAllText', 'WriteAllBytes', 'CreateDirectory', '$work'):
+            self.assertNotIn(forbidden, body)
+        self.assertIn("'FetchHost.exe'\n Check-NuGetMigration\n $fixture=Build", source)
+        self.assertIn('nugetIsolation=$nugetIsolation;directoryProbeChecks=$directoryProbeChecks', source)
+        self.assertIn("Fail-Diagnostic 'COPY_EXTRA'", source)
 
 
 if __name__ == '__main__':

@@ -4,6 +4,7 @@ Set-StrictMode -Version Latest
 $passed=$false;$initial=$false;$final=$false;$created=$false;$copied=$false
 $stage='scope';$failureCase=$null;$manifestHash=$null
 $primaryFailure=$null;$finalFailure=$null;$checkpoint='SCOPE';$inFinal=$false
+$directoryProbeChecks=0;$nugetIsolation=@{migrationMarkerAtExpectedRoot=$null;markerBytes=$null}
 $buildOutcomes=[Collections.Generic.List[object]]::new();$copyChecks=[Collections.Generic.List[object]]::new()
 $runtime=@{};$runtimeEvidence=@{};$dotnetHash=$null;$cases=@();$result=$null;$harnessStarted=$false
 $OutputRoot=$null;$work=$null
@@ -18,7 +19,7 @@ $fixed=@{
 }
 $dotnet='C:\Program Files\dotnet\dotnet.exe'
 $sourceMap=@{}
-$diagnosticCodes=@('SCOPE','SOURCE_MANIFEST','SOURCE_INVENTORY','SOURCE_HASH','WORKFLOW_HASH','COPY_READ','COPY_SCAN','COPY_MISSING','COPY_HASH','COPY_EXTRA','COPY_INVENTORY','DOTNET_HASH','RUNTIME_HASH','BUILD_ENV','BUILD_START','BUILD_STREAM_INIT','BUILD_WAIT','BUILD_TIMEOUT','BUILD_DRAIN','BUILD_EXIT','BUILD_OUTPUT_LIMIT','CAPTURE_HELPER','COPY_PATH','HARNESS_START','HARNESS_WAIT','HARNESS_DRAIN','RESULT_VALIDATE','OTHER')
+$diagnosticCodes=@('SCOPE','SOURCE_MANIFEST','SOURCE_INVENTORY','SOURCE_HASH','WORKFLOW_HASH','COPY_READ','COPY_SCAN','COPY_MISSING','COPY_HASH','COPY_EXTRA','COPY_INVENTORY','DOTNET_HASH','RUNTIME_HASH','BUILD_ENV','BUILD_START','BUILD_STREAM_INIT','BUILD_WAIT','BUILD_TIMEOUT','BUILD_DRAIN','BUILD_EXIT','BUILD_OUTPUT_LIMIT','CAPTURE_HELPER','COPY_PATH','NUGET_DIRECTORY','NUGET_MIGRATION','HARNESS_START','HARNESS_WAIT','HARNESS_DRAIN','RESULT_VALIDATE','OTHER')
 $diagnosticStages=@('scope','source-identity','dotnet-identity','build-host','build-fixture','build-harness','runtime-identity','synthetic-host-entry13')
 function Fail-Diagnostic([string]$Code) {
  if($Code -notin $diagnosticCodes){$Code='OTHER'}
@@ -146,14 +147,54 @@ function Check-Copies {
  if($check.extraCount -gt 0){Fail-Diagnostic 'COPY_EXTRA'}
  if(@(Compare-Object ($compileInputs|Sort-Object) ($actual|Sort-Object)).Count -ne 0){Fail-Diagnostic 'COPY_INVENTORY'}
 }
+function Verify-IsolatedDirectory([string]$Path) {
+ $script:checkpoint='NUGET_DIRECTORY'
+ $isolated=[IO.Path]::GetFullPath((Join-Path $OutputRoot 'isolated'))+[IO.Path]::DirectorySeparatorChar
+ $full=[IO.Path]::GetFullPath($Path)
+ if(-not $full.StartsWith($isolated,[StringComparison]::OrdinalIgnoreCase)){Fail-Diagnostic 'NUGET_DIRECTORY'}
+ Plain $full
+ [IO.Directory]::CreateDirectory($full)|Out-Null
+ Plain $full
+ if(-not(Test-Path -LiteralPath $full -PathType Container)){Fail-Diagnostic 'NUGET_DIRECTORY'}
+ # Test only this freshly owned scratch directory, never change ACLs or inspect
+ # machine/user config. CreateNew prevents deleting a pre-existing probe.
+ $probe=Join-Path $full '.xenterm-write-probe';Plain $probe;$owned=$false;$stream=$null
+ try {
+  $stream=[IO.File]::Open($probe,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None);$owned=$true
+  $stream.WriteByte(1);$stream.Flush()
+ } finally {if($stream){$stream.Dispose()};if($owned){[IO.File]::Delete($probe)}}
+ if(Test-Path -LiteralPath $probe){Fail-Diagnostic 'NUGET_DIRECTORY'}
+ $script:directoryProbeChecks++
+}
+function Check-NuGetMigration {
+ $script:checkpoint='NUGET_MIGRATION'
+ $marker=Join-Path $OutputRoot 'isolated/home/AppData/Local/NuGet/Migrations/1';Plain $marker
+ $script:nugetIsolation.migrationMarkerAtExpectedRoot=Test-Path -LiteralPath $marker -PathType Leaf
+ if(-not $script:nugetIsolation.migrationMarkerAtExpectedRoot){Fail-Diagnostic 'NUGET_MIGRATION'}
+ $script:nugetIsolation.markerBytes=(Get-Item -LiteralPath $marker).Length
+ if($script:nugetIsolation.markerBytes -ne 0){Fail-Diagnostic 'NUGET_MIGRATION'}
+}
 function Set-ChildEnvironment([Diagnostics.ProcessStartInfo]$Info) {
  $Info.Environment.Clear()
  $windows=[Environment]::GetFolderPath([Environment+SpecialFolder]::Windows);Plain $windows
  $values=@{SYSTEMROOT=$windows;WINDIR=$windows;PATH=([IO.Path]::GetDirectoryName($dotnet)+';'+(Join-Path $windows 'System32'));DOTNET_CLI_TELEMETRY_OPTOUT='1';DOTNET_SKIP_FIRST_TIME_EXPERIENCE='1';DOTNET_NOLOGO='1';DOTNET_MULTILEVEL_LOOKUP='0'}
  foreach($key in @('HOME','USERPROFILE','DOTNET_CLI_HOME')){$values[$key]=Join-Path $OutputRoot 'isolated/home'}
  foreach($key in @('TEMP','TMP')){$values[$key]=Join-Path $OutputRoot 'isolated/tmp'}
- $values['APPDATA']=Join-Path $OutputRoot 'isolated/appdata';$values['LOCALAPPDATA']=Join-Path $OutputRoot 'isolated/localappdata';$values['NUGET_PACKAGES']=Join-Path $OutputRoot 'isolated/nuget'
- foreach($key in @('HOME','TEMP','APPDATA','LOCALAPPDATA','NUGET_PACKAGES')){$path=$values[$key];Plain $path;[IO.Directory]::CreateDirectory($path)|Out-Null}
+ # NuGet CoreCLR uses PROGRAMFILES(X86), then PROGRAMFILES, for its machine-wide
+ # defaults path. Both must be explicit empty scratch roots after Environment.Clear.
+ # Source: NuGet.Client release-6.11.x, NuGet.Common/PathUtil/NuGetEnvironment.cs.
+ $values['PROGRAMFILES']=Join-Path $OutputRoot 'isolated/programfiles'
+ $values['PROGRAMFILES(X86)']=Join-Path $OutputRoot 'isolated/programfiles-x86'
+ # MigrationRunner uses .NET's Windows KnownFolder API, not only LOCALAPPDATA.
+ # Materialize the standard profile layout and verify the actual migration marker
+ # after restore; these assignments alone are not claimed to prove resolution.
+ $values['APPDATA']=Join-Path $OutputRoot 'isolated/home/AppData/Roaming'
+ $values['LOCALAPPDATA']=Join-Path $OutputRoot 'isolated/home/AppData/Local'
+ $values['NUGET_PACKAGES']=Join-Path $OutputRoot 'isolated/nuget'
+ foreach($key in @('HOME','TEMP','APPDATA','LOCALAPPDATA','NUGET_PACKAGES','PROGRAMFILES','PROGRAMFILES(X86)')){
+  if(-not $values.ContainsKey($key) -or [string]::IsNullOrEmpty($values[$key])){Fail-Diagnostic 'NUGET_DIRECTORY'}
+  Verify-IsolatedDirectory $values[$key]
+ }
  foreach($key in $values.Keys){$Info.Environment.Add($key,$values[$key])}
 }
 function Build([string]$Project,[string]$Name,[string]$Exe) {
@@ -214,6 +255,7 @@ try {
  $copied=$true;Check-Copies
  $checkpoint='CAPTURE_HELPER';Initialize-BoundedCapture
  $fetchHost=Build 'Host/FetchHost.csproj' 'host' 'FetchHost.exe'
+ Check-NuGetMigration
  $fixture=Build 'Fixture/Fixture.csproj' 'fixture' 'cargo.exe'
  $harness=Build 'Harness/Harness.csproj' 'harness' 'FetchHostEntryHarness.exe'
  Check-Copies
@@ -289,7 +331,7 @@ try {
  if($created){
   $entry=$false;if($harnessStarted){$entry=$null};$invocations=$null;$outerTimeout=$null
   if($passed){$entry=$true;$invocations=13;$outerTimeout=$false}
-  @{passed=$passed;stage=$stage;primaryFailure=$primaryFailure;finalFailure=$finalFailure;buildOutcomes=@($buildOutcomes.ToArray());copyChecks=@($copyChecks.ToArray());failureCase=$failureCase;initialIdentity=$initial;finalIdentity=$final;controlSha=$env:GITHUB_SHA;runId=$env:GITHUB_RUN_ID;sourceManifestSha256=$manifestHash;case_count=$cases.Count;cases=$cases;runtimeFiles=$runtimeEvidence;dotnetHostSha256=$dotnetHash;hostEntryExecuted=$entry;hostOsProcessInvocations=$invocations;outerTimeoutObserved=$outerTimeout;outerJobObjectQualification=$false;realCargoExecuted=$false;dependencyFetchAttempted=$false;fixtureNetworkAttempted=$false;productCompileAttempted=$false;productRuntimeAttempted=$false;fullTenMinuteElapsedValidation=$false} | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $OutputRoot 'metadata.json') -Encoding utf8NoBOM
+  @{passed=$passed;stage=$stage;primaryFailure=$primaryFailure;finalFailure=$finalFailure;buildOutcomes=@($buildOutcomes.ToArray());nugetIsolation=$nugetIsolation;directoryProbeChecks=$directoryProbeChecks;copyChecks=@($copyChecks.ToArray());failureCase=$failureCase;initialIdentity=$initial;finalIdentity=$final;controlSha=$env:GITHUB_SHA;runId=$env:GITHUB_RUN_ID;sourceManifestSha256=$manifestHash;case_count=$cases.Count;cases=$cases;runtimeFiles=$runtimeEvidence;dotnetHostSha256=$dotnetHash;hostEntryExecuted=$entry;hostOsProcessInvocations=$invocations;outerTimeoutObserved=$outerTimeout;outerJobObjectQualification=$false;realCargoExecuted=$false;dependencyFetchAttempted=$false;fixtureNetworkAttempted=$false;productCompileAttempted=$false;productRuntimeAttempted=$false;fullTenMinuteElapsedValidation=$false} | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $OutputRoot 'metadata.json') -Encoding utf8NoBOM
  }
 }
 if(-not $passed){exit 1}
