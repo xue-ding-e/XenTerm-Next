@@ -49,6 +49,46 @@ function Get-DisposableCacheItems {
 try {
     $runtimeLock = Enter-LocalRuntimeLock $WorkspaceRoot
     $processes = @(Get-CimInstance Win32_Process)
+
+    # These are dated Cargo target roots directly under D:\_code, not source
+    # checkouts. Their old debug profiles contain 21-session test fixtures and
+    # are not the current 25-session data profile; remove only this exact list.
+    $codeRoot = [IO.Path]::GetFullPath((Join-Path $WorkspaceRoot '..\..')).TrimEnd('\')
+    $topLevelCaches = @(
+        'XenTerm-vt-migration-target',
+        'XenTerm-desktop-msvc-target',
+        'XenTerm-desktop-msvc-20261012',
+        'XenTerm-headless-build-20261012',
+        'XenTerm-desktop-build-20261012',
+        'XenTerm-rio-vt-eval-target'
+    )
+    foreach ($name in $topLevelCaches) {
+        $path = [IO.Path]::GetFullPath((Join-Path $codeRoot $name))
+        if (-not $path.StartsWith($codeRoot + '\', [StringComparison]::OrdinalIgnoreCase)) {
+            throw "top-level cache escaped the approved code root: $path"
+        }
+        if (-not (Test-Path -LiteralPath $path -PathType Container)) { continue }
+        $item = Get-Item -LiteralPath $path -Force
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw "refusing a reparse-point cache: $path"
+        }
+        if ((Test-Path -LiteralPath (Join-Path $path '.git') -PathType Container) -or
+            (Test-Path -LiteralPath (Join-Path $path 'Cargo.toml') -PathType Leaf)) {
+            throw "refusing a source checkout: $path"
+        }
+        $busy = @($processes | Where-Object {
+            $exe = $_.ExecutablePath
+            $exe -and $exe.StartsWith($path + '\', [StringComparison]::OrdinalIgnoreCase)
+        })
+        if ($busy.Count) { throw "cache is in use: $path" }
+        $measure = Get-ChildItem -LiteralPath $path -File -Recurse -Force -ErrorAction Stop |
+            Measure-Object -Property Length -Sum
+        $bytes = [long]$measure.Sum
+        Write-Host ('REMOVE TOP-LEVEL CACHE: {0} ({1:N2} GiB)' -f $path, ($bytes / 1GB))
+        $removedBytes += $bytes
+        if ($Apply) { Remove-Item -LiteralPath $path -Recurse -Force }
+    }
+
     $legacy = @('access-modes-20261012', 'access-modes-60s-20261012',
         'approval-fixed-20261012', 'approval-ui-20261012', 'execution-history-20261012',
         'next-beta-1f97dd843446', 'next-beta-bfa7b42dfd5c')
