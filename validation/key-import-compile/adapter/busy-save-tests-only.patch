@@ -1,0 +1,104 @@
+diff --git a/src/ui/impls/session_editor_key_import.rs b/src/ui/impls/session_editor_key_import.rs
+index ea36604..ace7639 100644
+--- a/src/ui/impls/session_editor_key_import.rs
++++ b/src/ui/impls/session_editor_key_import.rs
+@@ -245,6 +245,99 @@ mod tests {
+     use gpui_kit::gpui::{TestAppContext, VisualTestContext};
+     use gpui_kit::Axis;
+ 
++    // Serial exact-test execution is required: two immediate permits hold the
++    // actual production admission pool without blocking a GPUI executor thread.
++    #[gpui_kit::gpui::test]
++    fn busy_save_enter_preserves_dialog_draft_and_pending_import(cx: &mut TestAppContext) {
++        use futures::FutureExt as _;
++        use gpui_kit::test::TestWindowExt as _;
++        use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
++        let first = crate::ssh::key_import::work_permit()
++            .now_or_never().expect("run this regression serially").unwrap();
++        let second = crate::ssh::key_import::work_permit()
++            .now_or_never().expect("run this regression serially").unwrap();
++        let fixture = super::super::tests::StoreFixture::new();
++        let cx = buttons::editor_window(cx);
++        let editor = buttons::open_editor(cx, &fixture);
++        let synthetic = include_str!("../../../tests/fixtures/ppk-v3-ed25519.ppk");
++        editor.update(cx, |editor, _| {
++            editor.accept_key_import(crate::ssh::key_import::import_key(
++                Zeroizing::new(synthetic.into())));
++        });
++        buttons::focus_action(cx, "editor-save");
++        let ran = Arc::new(AtomicBool::new(false));
++        let operation_ran = ran.clone();
++        editor.update(cx, |editor, cx| {
++            editor.start_key_import(move || {
++                operation_ran.store(true, Ordering::SeqCst);
++                crate::ssh::key_import::import_key(Zeroizing::new(synthetic.into()))
++            }, cx);
++        });
++        buttons::draw(cx);
++        let focus_after_disable = cx.update(|window, _| window.try_find("editor-save")
++            .and_then(|button| button.focused()));
++        eprintln!("busy-save-focus-after-disable={focus_after_disable:?}");
++        assert!(editor.read_with(cx, |editor, _| editor.key_import.busy()));
++        assert!(!ran.load(Ordering::SeqCst));
++        buttons::key_down(cx, "enter");
++        buttons::key_up(cx, "enter");
++        buttons::assert_open_unsaved(cx, &editor, &fixture);
++        editor.read_with(cx, |editor, _| {
++            assert!(editor.key_import.busy());
++            assert!(editor.draft.borrow().private_key_inline == synthetic, "synthetic draft key changed");
++            assert!(editor.draft.borrow().private_key_inline_mode);
++        });
++        assert!(!ran.load(Ordering::SeqCst));
++        // Cancel before releasing admission, so no queued operation outlives
++        // the synthetic editor. Permits are RAII-cleaned if an assertion fails.
++        editor.update(cx, |editor, _| editor.key_import.cancel());
++        drop((first, second));
++        buttons::close_editor(cx, &editor);
++    }
++
++    #[gpui_kit::gpui::test]
++    fn ordinary_save_click_persists_synthetic_import(cx: &mut TestAppContext) {
++        let fixture = super::super::tests::StoreFixture::new();
++        let cx = buttons::editor_window(cx);
++        let editor = buttons::open_editor(cx, &fixture);
++        let synthetic = include_str!("../../../tests/fixtures/ppk-v3-ed25519.ppk");
++        editor.update(cx, |editor, cx| {
++            editor.accept_key_import(crate::ssh::key_import::import_key(
++                Zeroizing::new(synthetic.into())));
++            cx.notify();
++        });
++        buttons::click_action(cx, "editor-save");
++        assert_eq!(editor.read_with(cx, |editor, _| editor.outcome), Some(EditorOutcome::Saved));
++        let sessions = fixture.disk_sessions();
++        assert_eq!(sessions.len(), 1);
++        assert!(sessions[0].private_key_inline.is_local_ciphertext());
++        buttons::close_editor(cx, &editor);
++    }
++
++    #[gpui_kit::gpui::test]
++    fn ordinary_cancel_click_discards_synthetic_import_without_writes(cx: &mut TestAppContext) {
++        let fixture = super::super::tests::StoreFixture::new();
++        let cx = buttons::editor_window(cx);
++        let editor = buttons::open_editor(cx, &fixture);
++        editor.update(cx, |editor, cx| {
++            editor.accept_key_import(crate::ssh::key_import::import_key(Zeroizing::new(
++                include_str!("../../../tests/fixtures/ppk-v3-ed25519.ppk").into())));
++            cx.notify();
++        });
++        buttons::click_action(cx, "editor-cancel");
++        assert_eq!(editor.read_with(cx, |editor, _| editor.outcome), Some(EditorOutcome::Cancelled));
++        assert!(editor.read_with(cx, |editor, _| editor.draft.borrow().private_key_inline.is_empty()));
++        assert!(!fixture.store.borrow().path.exists());
++        let store = fixture.store.borrow();
++        let saved = store.saved_state.lock().unwrap();
++        assert_eq!(saved.submitted, 0);
++        assert_eq!(saved.attempted, 0);
++        assert!(saved.sessions.is_empty());
++        drop(saved);
++        drop(store);
++        buttons::close_editor(cx, &editor);
++    }
++
+     #[gpui_kit::gpui::test]
+     fn import_buttons_enter_activate_once_without_dismissing_or_saving(cx: &mut TestAppContext) {
+         let fixture = super::super::tests::StoreFixture::new();

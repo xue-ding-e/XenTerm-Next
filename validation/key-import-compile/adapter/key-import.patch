@@ -1,0 +1,2029 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 314d59e..45a3943 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -10630,6 +10630,8 @@ dependencies = [
+  "libc",
+  "md5 0.7.0",
+  "mimalloc",
++ "pkcs1",
++ "pkcs8",
+  "portable-pty",
+  "rand 0.8.6",
+  "regex",
+diff --git a/Cargo.toml b/Cargo.toml
+index d0dcf75..e17706f 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -64,6 +64,11 @@ keyring = { version = "3", default-features = false }
+ # Zeroes password buffers on drop so plaintext credentials don't linger in
+ # freed heap memory (core dumps / debuggers / /proc/pid/mem).
+ zeroize = "1"
++# Inspect encrypted PKCS#8 containers without decrypting them during import.
++# This exact parser version is already used by russh in Cargo.lock.
++pkcs8 = { version = "=0.11.0", features = ["std", "pem", "encryption"] }
++# Borrow RSA integer fields before any big-integer key conversion.
++pkcs1 = "=0.8.0-rc.4"
+ # SOCKS5 proxy tunnelling for SSH/SFTP in network-restricted environments.
+ # (HTTP CONNECT proxies are handled in src/proxy.rs without an extra crate.)
+ tokio-socks = "0.5"
+@@ -115,7 +120,8 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
+ jemallocator = "0.5"
+ 
+ [target.'cfg(unix)'.dependencies]
+-# Drop uploads open regular files without following a swapped symlink/FIFO.
++# Drop uploads and imported keys open regular files without following a
++# swapped symlink/FIFO. Already in the locked graph.
+ libc = "0.2"
+ 
+ # Embeds assets/xenterm.ico into the .exe so Explorer / taskbar / shortcuts
+diff --git a/src/ssh/impls/key_import.rs b/src/ssh/impls/key_import.rs
+new file mode 100644
+index 0000000..0e5c964
+--- /dev/null
++++ b/src/ssh/impls/key_import.rs
+@@ -0,0 +1,691 @@
++//! Bounded, in-memory private-key imports for the session editor.
++//! Validation never writes a key, derives an encrypted key, or exposes parser errors.
++
++use std::io::Read;
++use std::path::Path;
++
++use russh::keys::{decode_secret_key, ssh_key::Kdf, PrivateKey};
++use zeroize::Zeroizing;
++
++#[path = "key_import_bounds.rs"]
++mod bounds;
++pub(crate) use bounds::{check_key_parameters, check_rsa_public};
++
++pub(crate) const MAX_IMPORT_BYTES: usize = 1024 * 1024;
++
++/// One admission pool for import inspection and key decryption. A cancelled synchronous operation keeps its permit until it
++/// actually returns; repeated clicks cannot accumulate abandoned workers.
++pub(crate) async fn work_permit() -> Result<tokio::sync::OwnedSemaphorePermit, ImportError> {
++    use std::sync::{Arc, OnceLock};
++    static WORKERS: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
++    WORKERS
++        .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(2)))
++        .clone()
++        .acquire_owned()
++        .await
++        .map_err(|_| ImportError::File)
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) enum ImportError {
++    File,
++    TooLarge,
++    Invalid,
++    UnsupportedEncryption,
++    UnsupportedAlgorithm,
++    Parameters,
++}
++
++pub(crate) struct ImportedKey {
++    pub(crate) content: Zeroizing<String>,
++    /// The container is valid; its passphrase is checked only when connecting.
++    pub(crate) encrypted: bool,
++}
++
++pub(crate) fn read_key_file(path: &Path) -> Result<ImportedKey, ImportError> {
++    #[cfg(windows)]
++    check_local_windows_path(path)?;
++    let metadata = std::fs::symlink_metadata(path).map_err(|_| ImportError::File)?;
++    // Do not follow dropped symlinks or read directories/devices/FIFOs.
++    if !metadata.file_type().is_file() {
++        return Err(ImportError::File);
++    }
++    if metadata.len() > MAX_IMPORT_BYTES as u64 {
++        return Err(ImportError::TooLarge);
++    }
++    let file = open_key_file(path, &metadata)?;
++    let opened = file.metadata().map_err(|_| ImportError::File)?;
++    if !opened.is_file() {
++        return Err(ImportError::File);
++    }
++    // The extra byte detects a file which grew after the metadata check.
++    let mut bytes = Zeroizing::new(Vec::with_capacity(MAX_IMPORT_BYTES + 1));
++    file.take(MAX_IMPORT_BYTES as u64 + 1)
++        .read_to_end(&mut bytes)
++        .map_err(|_| ImportError::File)?;
++    if bytes.len() > MAX_IMPORT_BYTES {
++        return Err(ImportError::TooLarge);
++    }
++    let text = std::str::from_utf8(&bytes).map_err(|_| ImportError::Invalid)?;
++    import_key(Zeroizing::new(text.to_owned()))
++}
++
++#[cfg(unix)]
++fn open_key_file(path: &Path, expected: &std::fs::Metadata) -> Result<std::fs::File, ImportError> {
++    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
++    let file = std::fs::OpenOptions::new()
++        .read(true)
++        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
++        .open(path)
++        .map_err(|_| ImportError::File)?;
++    let opened = file.metadata().map_err(|_| ImportError::File)?;
++    if !opened.is_file() || opened.dev() != expected.dev() || opened.ino() != expected.ino() {
++        return Err(ImportError::File);
++    }
++    Ok(file)
++}
++
++#[cfg(windows)]
++fn check_local_windows_path(path: &Path) -> Result<(), ImportError> {
++    use std::path::{Component, Prefix};
++    // Check before even asking for metadata: UNC/device namespaces can cause
++    // network access or pipe operations, rather than a local regular-file read.
++    if matches!(path.components().next(), Some(Component::Prefix(prefix))
++        if matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_)))
++    {
++        Ok(())
++    } else {
++        Err(ImportError::File)
++    }
++}
++
++#[cfg(windows)]
++fn open_key_file(path: &Path, _: &std::fs::Metadata) -> Result<std::fs::File, ImportError> {
++    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
++    use std::os::windows::io::AsRawHandle;
++    use windows::Win32::Foundation::HANDLE;
++    use windows::Win32::Storage::FileSystem::{
++        GetFileInformationByHandle, GetFileType, BY_HANDLE_FILE_INFORMATION,
++        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
++        FILE_TYPE_DISK,
++    };
++    check_local_windows_path(path)?;
++    let open = || {
++        std::fs::OpenOptions::new()
++            .read(true)
++            .share_mode(FILE_SHARE_READ.0)
++            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0)
++            .open(path)
++            .map_err(|_| ImportError::File)
++    };
++    let file = open()?;
++    let held = file.metadata().map_err(|_| ImportError::File)?;
++    if !held.is_file()
++        || held.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
++        || unsafe { GetFileType(HANDLE(file.as_raw_handle())) } != FILE_TYPE_DISK
++    {
++        return Err(ImportError::File);
++    }
++    let identity = |file: &std::fs::File| {
++        let mut info = BY_HANDLE_FILE_INFORMATION::default();
++        unsafe { GetFileInformationByHandle(HANDLE(file.as_raw_handle()), &mut info) }
++            .map_err(|_| ImportError::File)?;
++        Ok::<_, ImportError>((
++            info.dwVolumeSerialNumber,
++            info.nFileIndexHigh,
++            info.nFileIndexLow,
++        ))
++    };
++    // A read-only sharing mode denies replacement while this handle is held.
++    // Reopen without following a reparse point and verify the pathname still
++    // names the held file; all reads below use only that original handle.
++    if identity(&file)? != identity(&open()?)? {
++        return Err(ImportError::File);
++    }
++    Ok(file)
++}
++
++#[cfg(not(any(unix, windows)))]
++fn open_key_file(_: &Path, _: &std::fs::Metadata) -> Result<std::fs::File, ImportError> {
++    Err(ImportError::File)
++}
++
++pub(crate) fn import_key(content: Zeroizing<String>) -> Result<ImportedKey, ImportError> {
++    if content.len() > MAX_IMPORT_BYTES {
++        return Err(ImportError::TooLarge);
++    }
++    let text = content.trim();
++    if text.is_empty() || text.contains('\0') {
++        return Err(ImportError::Invalid);
++    }
++    let encrypted = if text.starts_with("-----BEGIN OPENSSH PRIVATE KEY-----") {
++        let key = PrivateKey::from_openssh(text).map_err(|_| ImportError::Invalid)?;
++        check_key_parameters(&key)?;
++        if !bounds::supported_openssh_cipher(key.cipher()) {
++            return Err(ImportError::UnsupportedAlgorithm);
++        }
++        // Refuse excessive KDF work before import can enable a later job.
++        // The normal OpenSSH default is 16 rounds.
++        match key.kdf() {
++            Kdf::None => {}
++            Kdf::Bcrypt { rounds, .. } if (1..=128).contains(rounds) => {}
++            _ => return Err(ImportError::UnsupportedEncryption),
++        }
++        key.is_encrypted()
++    } else if super::ppk::is_ppk(text.as_bytes()) {
++        super::ppk::validate_import(text.as_bytes()).map_err(|_| ImportError::Invalid)?
++    } else if text.starts_with("-----BEGIN ENCRYPTED PRIVATE KEY-----") {
++        let (label, document) =
++            pkcs8::SecretDocument::from_pem(text).map_err(|_| ImportError::Invalid)?;
++        if label != "ENCRYPTED PRIVATE KEY" {
++            return Err(ImportError::Invalid);
++        }
++        let container = document
++            .decode_msg::<pkcs8::EncryptedPrivateKeyInfoRef<'_>>()
++            .map_err(|_| ImportError::Invalid)?;
++        if container.encrypted_data.as_bytes().is_empty() {
++            return Err(ImportError::Invalid);
++        }
++        if !bounded_pkcs8_kdf(&container.encryption_algorithm) {
++            return Err(ImportError::UnsupportedEncryption);
++        }
++        true
++    } else {
++        if ![
++            "-----BEGIN PRIVATE KEY-----",
++            "-----BEGIN RSA PRIVATE KEY-----",
++            "-----BEGIN EC PRIVATE KEY-----",
++        ]
++        .iter()
++        .any(|header| text.starts_with(header))
++        {
++            return Err(ImportError::Invalid);
++        }
++        if text.contains("Proc-Type: 4,ENCRYPTED") {
++            return Err(ImportError::UnsupportedEncryption);
++        } else {
++            bounds::check_pem_parameters(text)?;
++        }
++        match decode_secret_key(text, None) {
++            Ok(_) => false,
++            Err(russh::keys::Error::KeyIsEncrypted) => {
++                return Err(ImportError::UnsupportedEncryption)
++            }
++            Err(_) => return Err(ImportError::Invalid),
++        }
++    };
++    Ok(ImportedKey { content, encrypted })
++}
++
++/// Shared decryption entry for imported inline keys. All KDF parameters are admitted by
++/// import_key, and RSA integers are checked before conversion/signing. No
++/// cryptography is implemented here; all decoding/decryption is delegated to
++/// the same locked RustCrypto/russh parsers used by ordinary connections.
++pub(crate) fn decode_imported_key(text: &str, passphrase: &str) -> Result<PrivateKey, ImportError> {
++    let _admitted = import_key(Zeroizing::new(text.to_owned()))?;
++    let text = text.trim();
++    let key = if text.starts_with("-----BEGIN OPENSSH PRIVATE KEY-----") {
++        let key = PrivateKey::from_openssh(text).map_err(|_| ImportError::Invalid)?;
++        if key.is_encrypted() {
++            key.decrypt(passphrase).map_err(|_| ImportError::Invalid)?
++        } else {
++            key
++        }
++    } else if super::ppk::is_ppk(text.as_bytes()) {
++        super::ppk::decode_ppk(text.as_bytes(), passphrase).map_err(|_| ImportError::Invalid)?
++    } else if text.starts_with("-----BEGIN ENCRYPTED PRIVATE KEY-----") {
++        let (_, encrypted) =
++            pkcs8::SecretDocument::from_pem(text).map_err(|_| ImportError::Invalid)?;
++        let container = encrypted
++            .decode_msg::<pkcs8::EncryptedPrivateKeyInfoRef<'_>>()
++            .map_err(|_| ImportError::Invalid)?;
++        let plain = container
++            .decrypt(passphrase)
++            .map_err(|_| ImportError::Invalid)?;
++        bounds::check_pkcs8_parameters(plain.as_bytes())?;
++        russh::keys::pkcs8::decode_pkcs8(plain.as_bytes(), None)
++            .map_err(|_| ImportError::Invalid)?
++    } else {
++        // Unencrypted PEM was bounded by import_key, before its first conversion.
++        decode_secret_key(text, None).map_err(|_| ImportError::Invalid)?
++    };
++    check_key_parameters(&key)?;
++    Ok(key)
++}
++
++fn bounded_pkcs8_kdf(scheme: &pkcs8::pkcs5::EncryptionScheme) -> bool {
++    use pkcs8::pkcs5::{pbes2::Kdf, EncryptionScheme};
++    let EncryptionScheme::Pbes2(parameters) = scheme else {
++        return false;
++    };
++    // Accept only ciphers enabled by the already locked decoder, and require
++    // an explicit derived-key length to match that cipher. SHA-1 PBKDF2 is
++    // parsed by pkcs5 but is not enabled by its current feature set.
++    let key_size = match parameters.encryption {
++        pkcs8::pkcs5::pbes2::EncryptionScheme::Aes128Cbc { .. }
++        | pkcs8::pkcs5::pbes2::EncryptionScheme::Aes128Gcm { .. } => 16,
++        pkcs8::pkcs5::pbes2::EncryptionScheme::Aes192Cbc { .. } => 24,
++        pkcs8::pkcs5::pbes2::EncryptionScheme::Aes256Cbc { .. }
++        | pkcs8::pkcs5::pbes2::EncryptionScheme::Aes256Gcm { .. } => 32,
++        _ => return false,
++    };
++    match &parameters.kdf {
++        Kdf::Pbkdf2(params) => {
++            (1..=1_000_000).contains(&params.iteration_count)
++                && !matches!(params.prf, pkcs8::pkcs5::pbes2::Pbkdf2Prf::HmacWithSha1)
++                && params.key_length.is_none_or(|length| length == key_size)
++        }
++        Kdf::Scrypt(params) => {
++            let n = params.cost_parameter;
++            let r = u64::from(params.block_size);
++            let p = u64::from(params.parallelization);
++            n > 1
++                && n.is_power_of_two()
++                && n <= (1 << 18)
++                && (1..=8).contains(&r)
++                && (1..=4).contains(&p)
++                && n.saturating_mul(r).saturating_mul(128) <= 256 * 1024 * 1024
++                && n.saturating_mul(r).saturating_mul(p) <= (1 << 22)
++                && params.key_length.is_none_or(|length| length == key_size)
++        }
++        _ => false,
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    const PPK: &str = include_str!("../../../tests/fixtures/ppk-v3-ed25519.ppk");
++    const ENCRYPTED: &str = include_str!("../../../tests/fixtures/ppk-v3-ecdsa-encrypted.ppk");
++
++    #[test]
++    fn validates_plain_and_encrypted_synthetic_containers_without_decryption() {
++        let plain = import_key(Zeroizing::new(PPK.into())).unwrap();
++        assert!(!plain.encrypted);
++        assert_eq!(plain.content.as_str(), PPK);
++        assert!(
++            import_key(Zeroizing::new(ENCRYPTED.into()))
++                .unwrap()
++                .encrypted
++        );
++    }
++
++    #[test]
++    fn rejects_public_keys_certificates_malformed_text_and_oversized_content() {
++        for text in [
++            "",
++            "ssh-ed25519 synthetic-public-key",
++            "-----BEGIN CERTIFICATE-----\nAA==\n-----END CERTIFICATE-----",
++            "-----BEGIN OPENSSH PRIVATE KEY-----\ninvalid",
++            "secret\0value",
++        ] {
++            assert_eq!(
++                import_key(Zeroizing::new(text.into())).err(),
++                Some(ImportError::Invalid)
++            );
++        }
++        assert_eq!(
++            import_key(Zeroizing::new("x".repeat(MAX_IMPORT_BYTES + 1))).err(),
++            Some(ImportError::TooLarge)
++        );
++        assert_eq!(
++            import_key(Zeroizing::new(
++                "-----BEGIN ENCRYPTED PRIVATE KEY-----\n".into()
++            ))
++            .err(),
++            Some(ImportError::Invalid)
++        );
++    }
++
++    #[test]
++    fn file_import_checks_regular_file_size_and_utf8() {
++        let dir = tempfile::tempdir().unwrap();
++        assert_eq!(read_key_file(dir.path()).err(), Some(ImportError::File));
++        let path = dir.path().join("synthetic.ppk");
++        std::fs::write(&path, PPK).unwrap();
++        assert_eq!(read_key_file(&path).unwrap().content.as_str(), PPK);
++        std::fs::write(&path, [0xff, 0xfe]).unwrap();
++        assert_eq!(read_key_file(&path).err(), Some(ImportError::Invalid));
++        std::fs::File::create(&path)
++            .unwrap()
++            .set_len(MAX_IMPORT_BYTES as u64 + 1)
++            .unwrap();
++        assert_eq!(read_key_file(&path).err(), Some(ImportError::TooLarge));
++    }
++
++    #[cfg(unix)]
++    #[test]
++    fn rejects_symlinks_without_reading_the_target() {
++        let dir = tempfile::tempdir().unwrap();
++        let link = dir.path().join("synthetic-link");
++        std::os::unix::fs::symlink(dir.path().join("missing"), &link).unwrap();
++        assert_eq!(read_key_file(&link).err(), Some(ImportError::File));
++    }
++
++    #[cfg(unix)]
++    #[test]
++    fn refuses_replacement_file_symlink_and_fifo_after_metadata_check() {
++        let dir = tempfile::tempdir().unwrap();
++        let path = dir.path().join("synthetic.ppk");
++        std::fs::write(&path, PPK).unwrap();
++        let expected = std::fs::symlink_metadata(&path).unwrap();
++        let old = dir.path().join("old.ppk");
++        std::fs::rename(&path, &old).unwrap();
++        std::fs::write(&path, PPK).unwrap();
++        assert!(matches!(
++            open_key_file(&path, &expected),
++            Err(ImportError::File)
++        ));
++        std::fs::remove_file(&path).unwrap();
++        std::os::unix::fs::symlink(&old, &path).unwrap();
++        assert!(matches!(
++            open_key_file(&path, &expected),
++            Err(ImportError::File)
++        ));
++        std::fs::remove_file(&path).unwrap();
++        use std::os::unix::ffi::OsStrExt;
++        let name = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
++        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
++        // O_NONBLOCK ensures this cannot wait for a writer before metadata rejects it.
++        assert!(matches!(
++            open_key_file(&path, &expected),
++            Err(ImportError::File)
++        ));
++    }
++
++    #[test]
++    fn accepts_synthetic_openssh_and_pkcs8_pem() {
++        let key = super::super::ppk::decode_ppk(PPK.as_bytes(), "").unwrap();
++        let openssh = key
++            .to_openssh(russh::keys::ssh_key::LineEnding::LF)
++            .unwrap();
++        assert!(
++            !import_key(Zeroizing::new(openssh.to_string()))
++                .unwrap()
++                .encrypted
++        );
++        // Deterministic Ed25519 seed [7; 32], encoded as a PKCS#8 document.
++        use base64::Engine as _;
++        let mut der = vec![
++            0x30, 0x2e, 2, 1, 0, 0x30, 5, 6, 3, 0x2b, 0x65, 0x70, 4, 0x22, 4, 0x20,
++        ];
++        der.extend([7; 32]);
++        let pem = format!(
++            "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----\n",
++            base64::engine::general_purpose::STANDARD.encode(der)
++        );
++        assert!(!import_key(Zeroizing::new(pem)).unwrap().encrypted);
++    }
++
++    #[test]
++    fn imports_encrypted_pkcs8_without_a_passphrase_then_checks_it_at_use() {
++        use pkcs8::der::Decode as _;
++        let mut der = vec![
++            0x30, 0x2e, 2, 1, 0, 0x30, 5, 6, 3, 0x2b, 0x65, 0x70, 4, 0x22, 4, 0x20,
++        ];
++        der.extend([7; 32]);
++        let key = pkcs8::PrivateKeyInfoRef::from_der(&der).unwrap();
++        let params = pkcs8::pkcs5::pbes2::Parameters::generate_pbkdf2_sha256_aes256cbc(
++            16, &[9; 16], [11; 16],
++        )
++        .unwrap();
++        let encrypted = key
++            .encrypt_with_params(params, "synthetic-passphrase")
++            .unwrap();
++        let pem = encrypted
++            .to_pem("ENCRYPTED PRIVATE KEY", pkcs8::LineEnding::LF)
++            .unwrap();
++        assert!(
++            import_key(Zeroizing::new(pem.to_string()))
++                .unwrap()
++                .encrypted
++        );
++        assert!(decode_imported_key(&pem, "wrong-synthetic-passphrase").is_err());
++        assert!(decode_imported_key(&pem, "synthetic-passphrase").is_ok());
++    }
++
++    #[test]
++    fn every_admitted_pkcs8_cipher_and_kdf_family_decrypts_with_locked_features() {
++        use pkcs8::{
++            der::Decode as _,
++            pkcs5::pbes2::{
++                EncryptionScheme, Kdf, Parameters, Pbkdf2Params, Pbkdf2Prf, ScryptParams,
++            },
++        };
++        let der = russh::keys::pkcs8::encode_pkcs8(
++            &super::super::ppk::decode_ppk(PPK.as_bytes(), "").unwrap(),
++        )
++        .unwrap();
++        let key = pkcs8::PrivateKeyInfoRef::from_der(&der).unwrap();
++        let mut kdfs = Vec::new();
++        for prf in [
++            Pbkdf2Prf::HmacWithSha224,
++            Pbkdf2Prf::HmacWithSha256,
++            Pbkdf2Prf::HmacWithSha384,
++            Pbkdf2Prf::HmacWithSha512,
++        ] {
++            let mut params = Pbkdf2Params::hmac_sha256(2, &[9; 16]).unwrap();
++            params.prf = prf;
++            kdfs.push(Kdf::Pbkdf2(params));
++        }
++        kdfs.push(Kdf::Scrypt(ScryptParams {
++            salt: (&[9u8; 16][..]).try_into().unwrap(),
++            cost_parameter: 16,
++            block_size: 1,
++            parallelization: 1,
++            key_length: None,
++        }));
++        // Tiny deterministic public fixtures only: no production-work-factor KDF.
++        for kdf in kdfs {
++            for encryption in [
++                EncryptionScheme::Aes128Cbc { iv: [11; 16] },
++                EncryptionScheme::Aes192Cbc { iv: [11; 16] },
++                EncryptionScheme::Aes256Cbc { iv: [11; 16] },
++                EncryptionScheme::Aes128Gcm { nonce: [11; 12] },
++                EncryptionScheme::Aes256Gcm { nonce: [11; 12] },
++            ] {
++                let parameters = Parameters {
++                    kdf: kdf.clone(),
++                    encryption,
++                };
++                let encrypted = key
++                    .encrypt_with_params(parameters, "synthetic-family-passphrase")
++                    .unwrap();
++                let pem = encrypted
++                    .to_pem("ENCRYPTED PRIVATE KEY", pkcs8::LineEnding::LF)
++                    .unwrap();
++                assert!(
++                    import_key(Zeroizing::new(pem.to_string()))
++                        .unwrap()
++                        .encrypted
++                );
++                assert!(decode_imported_key(&pem, "synthetic-family-passphrase").is_ok());
++            }
++        }
++    }
++
++    #[test]
++    fn accepts_generated_synthetic_sec1_ec_fixture() {
++        // Generated for this test with `openssl ecparam -name <named-curve> -genkey -noout`.
++        // Never an account credential; this public fixture must not be used for authentication.
++        for pem in [
++            include_str!("../../../tests/fixtures/import-synthetic-ec-sec1.pem"),
++            include_str!("../../../tests/fixtures/import-synthetic-ec-p384-sec1.pem"),
++            include_str!("../../../tests/fixtures/import-synthetic-ec-p521-sec1.pem"),
++        ] {
++            assert!(!import_key(Zeroizing::new(pem.into())).unwrap().encrypted);
++            assert!(decode_imported_key(pem, "").is_ok());
++        }
++    }
++
++    #[test]
++    fn rejects_parseable_hardware_key_without_a_signing_backend() {
++        use russh::keys::ssh_key::{private, public, LineEnding};
++        let plain = super::super::ppk::decode_ppk(PPK.as_bytes(), "").unwrap();
++        let public = public::SkEd25519::new(
++            *plain.public_key().key_data().ed25519().unwrap(),
++            "ssh:synthetic-fixture",
++        );
++        let hardware = private::SkEd25519::new(public, 0, vec![7]).unwrap();
++        let key = PrivateKey::new(hardware.into(), "synthetic unsupported hardware key").unwrap();
++        let pem = key.to_openssh(LineEnding::LF).unwrap();
++        assert!(
++            PrivateKey::from_openssh(&pem).is_ok(),
++            "fixture must remain parseable"
++        );
++        assert_eq!(
++            import_key(Zeroizing::new(pem.to_string())).err(),
++            Some(ImportError::UnsupportedAlgorithm)
++        );
++    }
++
++    #[test]
++    fn every_enabled_openssh_cipher_family_round_trips() {
++        use russh::keys::ssh_key::{Cipher, LineEnding};
++        let plain = super::super::ppk::decode_ppk(PPK.as_bytes(), "").unwrap();
++        for cipher in [
++            Cipher::Aes128Cbc,
++            Cipher::Aes192Cbc,
++            Cipher::Aes256Cbc,
++            Cipher::Aes128Ctr,
++            Cipher::Aes192Ctr,
++            Cipher::Aes256Ctr,
++            Cipher::Aes128Gcm,
++            Cipher::Aes256Gcm,
++            Cipher::ChaCha20Poly1305,
++        ] {
++            let encrypted = plain
++                .encrypt_with(
++                    cipher,
++                    Kdf::Bcrypt {
++                        salt: vec![9; 16],
++                        rounds: 1,
++                    },
++                    7,
++                    "synthetic-cipher-passphrase",
++                )
++                .unwrap();
++            let pem = encrypted.to_openssh(LineEnding::LF).unwrap();
++            assert!(
++                import_key(Zeroizing::new(pem.to_string()))
++                    .unwrap()
++                    .encrypted
++            );
++            assert!(decode_imported_key(&pem, "synthetic-cipher-passphrase").is_ok());
++        }
++    }
++
++    #[test]
++    fn synthetic_rsa_pkcs1_pkcs8_and_openssh_use_the_same_bounds() {
++        use pkcs8::der::Decode as _;
++        let ppk = include_str!("../../../tests/fixtures/ppk-v2-rsa.ppk");
++        let key = super::super::ppk::decode_ppk(ppk.as_bytes(), "").unwrap();
++        let der = russh::keys::pkcs8::encode_pkcs8(&key).unwrap();
++        let info = pkcs8::PrivateKeyInfoRef::from_der(&der).unwrap();
++        for (label, bytes) in [
++            ("PRIVATE KEY", der.as_slice()),
++            ("RSA PRIVATE KEY", info.private_key.as_bytes()),
++        ] {
++            let pem = pkcs8::SecretDocument::try_from(bytes)
++                .unwrap()
++                .to_pem(label, pkcs8::LineEnding::LF)
++                .unwrap();
++            assert!(
++                !import_key(Zeroizing::new(pem.to_string()))
++                    .unwrap()
++                    .encrypted
++            );
++            assert!(decode_imported_key(&pem, "").is_ok());
++        }
++        let openssh = key
++            .to_openssh(russh::keys::ssh_key::LineEnding::LF)
++            .unwrap();
++        assert!(decode_imported_key(&openssh, "").is_ok());
++    }
++
++    #[test]
++    fn supported_encrypted_openssh_and_ppk_fixtures_decrypt_only_at_use() {
++        let key = super::super::ppk::decode_ppk(PPK.as_bytes(), "").unwrap();
++        let encrypted = key
++            .encrypt_with(
++                russh::keys::ssh_key::Cipher::Aes256Ctr,
++                Kdf::Bcrypt {
++                    salt: vec![9; 16],
++                    rounds: 1,
++                },
++                7,
++                "synthetic-passphrase",
++            )
++            .unwrap();
++        let pem = encrypted
++            .to_openssh(russh::keys::ssh_key::LineEnding::LF)
++            .unwrap();
++        assert!(
++            import_key(Zeroizing::new(pem.to_string()))
++                .unwrap()
++                .encrypted
++        );
++        assert!(decode_imported_key(&pem, "synthetic-passphrase").is_ok());
++        for (text, passphrase) in [
++            (
++                include_str!("../../../tests/fixtures/ppk-v2-rsa-encrypted.ppk"),
++                "v2-passphrase",
++            ),
++            (ENCRYPTED, "test-passphrase"),
++        ] {
++            assert!(import_key(Zeroizing::new(text.into())).unwrap().encrypted);
++            assert!(decode_imported_key(text, passphrase).is_ok());
++        }
++    }
++
++    #[test]
++    fn rejects_kdf_boundary_excess_without_running_the_kdf() {
++        let mut params = pkcs8::pkcs5::pbes2::Parameters::generate_pbkdf2_sha256_aes256cbc(
++            1_000_000, &[9; 16], [11; 16],
++        )
++        .unwrap();
++        assert!(bounded_pkcs8_kdf(&params.clone().into()));
++        if let pkcs8::pkcs5::pbes2::Kdf::Pbkdf2(parameters) = &mut params.kdf {
++            parameters.iteration_count += 1;
++        }
++        assert!(!bounded_pkcs8_kdf(&params.into()));
++    }
++
++    #[test]
++    fn legacy_encrypted_pem_is_rejected_without_decrypting_or_replacing_a_key() {
++        let pem = "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,00000000000000000000000000000000\n\nAA==\n-----END RSA PRIVATE KEY-----\n";
++        assert_eq!(
++            import_key(Zeroizing::new(pem.into())).err(),
++            Some(ImportError::UnsupportedEncryption)
++        );
++    }
++
++    #[tokio::test]
++    async fn cancelled_blocking_work_keeps_admission_until_it_actually_finishes() {
++        let first = work_permit().await.unwrap();
++        let second = work_permit().await.unwrap();
++        let (started, ready) = tokio::sync::oneshot::channel();
++        let (release, wait) = std::sync::mpsc::channel();
++        let work = tokio::task::spawn_blocking(move || {
++            let _permit = first;
++            let _ = started.send(());
++            wait.recv_timeout(std::time::Duration::from_secs(2))
++                .unwrap();
++        });
++        ready.await.unwrap();
++        work.abort();
++        assert!(
++            tokio::time::timeout(std::time::Duration::from_millis(10), work_permit())
++                .await
++                .is_err()
++        );
++        release.send(()).unwrap();
++        work.await.unwrap();
++        let admitted = tokio::time::timeout(std::time::Duration::from_secs(1), work_permit())
++            .await
++            .unwrap()
++            .unwrap();
++        drop((admitted, second));
++    }
++}
+diff --git a/src/ssh/impls/key_import_bounds.rs b/src/ssh/impls/key_import_bounds.rs
+new file mode 100644
+index 0000000..db92174
+--- /dev/null
++++ b/src/ssh/impls/key_import_bounds.rs
+@@ -0,0 +1,234 @@
++//! Parameter admission only, not cryptography. Borrow DER integers or SSH
++//! mpints before any RSA Montgomery/precomputation or signing work begins.
++
++use super::ImportError;
++use pkcs8::der::Decode as _;
++use russh::keys::{
++    ssh_key::{Algorithm, Cipher, EcdsaCurve},
++    PrivateKey,
++};
++
++const MAX_RSA_BYTES: usize = 1024; // 8192 bits, matching rsa's default public-key maximum.
++
++fn positive(bytes: &[u8]) -> &[u8] {
++    let first = bytes
++        .iter()
++        .position(|byte| *byte != 0)
++        .unwrap_or(bytes.len());
++    &bytes[first..]
++}
++
++pub(crate) fn check_rsa_public(n: &[u8], e: &[u8]) -> Result<(), ImportError> {
++    let n = positive(n);
++    let e = positive(e);
++    if n.is_empty()
++        || n.len() > MAX_RSA_BYTES
++        || e.is_empty()
++        || e.len() > 5
++        || (e.len() == 5 && e[0] > 1)
++    {
++        return Err(ImportError::Parameters);
++    }
++    Ok(())
++}
++
++fn supported_algorithm(algorithm: Algorithm) -> bool {
++    // Match the product's locked ssh-key signing features, not just what its
++    // container parser can represent. In particular DSA/FIDO/Other can parse
++    // without a signing implementation; each ECDSA curve is enabled explicitly.
++    matches!(
++        algorithm,
++        Algorithm::Ed25519
++            | Algorithm::Rsa { .. }
++            | Algorithm::Ecdsa {
++                curve: EcdsaCurve::NistP256
++            }
++            | Algorithm::Ecdsa {
++                curve: EcdsaCurve::NistP384
++            }
++            | Algorithm::Ecdsa {
++                curve: EcdsaCurve::NistP521
++            }
++    )
++}
++
++pub(super) fn supported_openssh_cipher(cipher: Cipher) -> bool {
++    // ssh-cipher parses TripleDES too, but its tdes feature is not enabled.
++    matches!(
++        cipher,
++        Cipher::None
++            | Cipher::Aes128Cbc
++            | Cipher::Aes192Cbc
++            | Cipher::Aes256Cbc
++            | Cipher::Aes128Ctr
++            | Cipher::Aes192Ctr
++            | Cipher::Aes256Ctr
++            | Cipher::Aes128Gcm
++            | Cipher::Aes256Gcm
++            | Cipher::ChaCha20Poly1305
++    )
++}
++
++pub(crate) fn check_key_parameters(key: &PrivateKey) -> Result<(), ImportError> {
++    if !supported_algorithm(key.algorithm()) {
++        return Err(ImportError::UnsupportedAlgorithm);
++    }
++    if let Some(public) = key.public_key().key_data().rsa() {
++        check_rsa_public(
++            public
++                .n()
++                .as_positive_bytes()
++                .ok_or(ImportError::Parameters)?,
++            public
++                .e()
++                .as_positive_bytes()
++                .ok_or(ImportError::Parameters)?,
++        )?;
++    }
++    if let Some(pair) = key.key_data().rsa() {
++        let private = pair.private();
++        for field in [private.d(), private.p(), private.q(), private.iqmp()] {
++            let bytes = field.as_positive_bytes().ok_or(ImportError::Parameters)?;
++            if bytes.is_empty() || bytes.len() > MAX_RSA_BYTES {
++                return Err(ImportError::Parameters);
++            }
++        }
++    }
++    Ok(())
++}
++
++fn check_pkcs1_parameters(bytes: &[u8]) -> Result<(), ImportError> {
++    let key = pkcs1::RsaPrivateKey::from_der(bytes).map_err(|_| ImportError::Invalid)?;
++    check_rsa_public(key.modulus.as_bytes(), key.public_exponent.as_bytes())?;
++    for field in [
++        key.private_exponent,
++        key.prime1,
++        key.prime2,
++        key.exponent1,
++        key.exponent2,
++        key.coefficient,
++    ] {
++        if field.as_bytes().is_empty() || field.as_bytes().len() > MAX_RSA_BYTES {
++            return Err(ImportError::Parameters);
++        }
++    }
++    // The production decoder only uses the two-prime form. Do not silently
++    // discard extra prime factors from an imported key.
++    if key.other_prime_infos.is_some() {
++        return Err(ImportError::Parameters);
++    }
++    Ok(())
++}
++
++pub(super) fn check_pkcs8_parameters(bytes: &[u8]) -> Result<(), ImportError> {
++    let key = pkcs8::PrivateKeyInfoRef::from_der(bytes).map_err(|_| ImportError::Invalid)?;
++    if key.algorithm.oid == pkcs1::ALGORITHM_OID {
++        check_pkcs1_parameters(key.private_key.as_bytes())?;
++    }
++    Ok(())
++}
++
++pub(super) fn check_pem_parameters(text: &str) -> Result<(), ImportError> {
++    let (_, document) = pkcs8::SecretDocument::from_pem(text).map_err(|_| ImportError::Invalid)?;
++    // PEM labels are not algorithm evidence. russh's ASN.1 decoder tries
++    // multiple containers, so check every RSA structure it can consume before
++    // giving it any accepted label (including a relabelled EC PRIVATE KEY).
++    let bytes = document.as_bytes();
++    if pkcs8::PrivateKeyInfoRef::from_der(bytes).is_ok() {
++        check_pkcs8_parameters(bytes)?;
++    } else if pkcs1::RsaPrivateKey::from_der(bytes).is_ok() {
++        check_pkcs1_parameters(bytes)?;
++    }
++    // A non-RSA container still has to pass the official full decoder; this
++    // function only admits parameters and never calls a key cryptographically valid.
++    Ok(())
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    #[test]
++    fn rejects_small_synthetic_boundary_crossings_before_big_integer_work() {
++        assert_eq!(
++            check_rsa_public(&vec![1; MAX_RSA_BYTES], &[1, 0, 1]),
++            Ok(())
++        );
++        assert_eq!(
++            check_rsa_public(&vec![1; MAX_RSA_BYTES + 1], &[1, 0, 1]),
++            Err(ImportError::Parameters)
++        );
++        assert_eq!(
++            check_rsa_public(&[7], &[2, 0, 0, 0, 0]),
++            Err(ImportError::Parameters)
++        );
++        assert_eq!(check_rsa_public(&[7], &[1, 0, 0, 0, 0]), Ok(()));
++        assert_eq!(check_rsa_public(&[], &[3]), Err(ImportError::Parameters));
++    }
++    #[test]
++    fn rsa_parameter_admission_uses_der_not_the_pem_label() {
++        use pkcs8::der::{
++            asn1::{OctetStringRef, UintRef},
++            Encode as _,
++        };
++        // Just 1025 bytes: this fixture is never converted to a big integer,
++        // and intentionally is not a cryptographically valid RSA key.
++        let oversized = [1; MAX_RSA_BYTES + 1];
++        let one = UintRef::new(&[1]).unwrap();
++        let rsa = pkcs1::RsaPrivateKey {
++            modulus: UintRef::new(&oversized).unwrap(),
++            public_exponent: UintRef::new(&[1, 0, 1]).unwrap(),
++            private_exponent: one,
++            prime1: one,
++            prime2: one,
++            exponent1: one,
++            exponent2: one,
++            coefficient: one,
++            other_prime_infos: None,
++        }
++        .to_der()
++        .unwrap();
++        let info =
++            pkcs8::PrivateKeyInfoRef::new(pkcs1::ALGORITHM_ID, OctetStringRef::new(&rsa).unwrap());
++        let pkcs8 = info.to_der().unwrap();
++        for bytes in [&rsa, &pkcs8] {
++            for label in ["RSA PRIVATE KEY", "PRIVATE KEY", "EC PRIVATE KEY"] {
++                let pem = pkcs8::SecretDocument::try_from(bytes.as_slice())
++                    .unwrap()
++                    .to_pem(label, pkcs8::LineEnding::LF)
++                    .unwrap();
++                assert_eq!(check_pem_parameters(&pem), Err(ImportError::Parameters));
++                assert_eq!(
++                    super::super::import_key(zeroize::Zeroizing::new(pem.to_string())).err(),
++                    Some(ImportError::Parameters)
++                );
++            }
++        }
++    }
++    #[test]
++    fn backend_support_is_narrower_than_parseable_algorithm_names() {
++        for algorithm in [
++            Algorithm::Ed25519,
++            Algorithm::Rsa { hash: None },
++            Algorithm::Ecdsa {
++                curve: EcdsaCurve::NistP256,
++            },
++            Algorithm::Ecdsa {
++                curve: EcdsaCurve::NistP384,
++            },
++            Algorithm::Ecdsa {
++                curve: EcdsaCurve::NistP521,
++            },
++        ] {
++            assert!(supported_algorithm(algorithm));
++        }
++        for algorithm in [
++            Algorithm::Dsa,
++            Algorithm::SkEd25519,
++            Algorithm::SkEcdsaSha2NistP256,
++            Algorithm::new("synthetic-unsupported@example.invalid").unwrap(),
++        ] {
++            assert!(!supported_algorithm(algorithm));
++        }
++        assert!(!supported_openssh_cipher(Cipher::TDesCbc));
++    }
++}
+diff --git a/src/ssh/impls/ppk.rs b/src/ssh/impls/ppk.rs
+index f5860eb..205cc34 100644
+--- a/src/ssh/impls/ppk.rs
++++ b/src/ssh/impls/ppk.rs
+@@ -82,6 +82,23 @@ pub(crate) fn decode_ppk(input: &[u8], passphrase: &str) -> Result<PrivateKey> {
+     ppk_to_openssh(&ppk)
+ }
+ 
++/// Inspect an imported container without deriving an encrypted key. The same
++/// parser applies all size and Argon2 work limits used at connection time.
++pub(crate) fn validate_import(input: &[u8]) -> Result<bool> {
++    let ppk = parse_ppk(input)?;
++    if let PublicParts::Rsa { e, n } = PublicParts::parse(&ppk.public, &ppk.algorithm)? {
++        crate::ssh::key_import::check_rsa_public(string_value(n)?, string_value(e)?)
++            .map_err(|_| anyhow!("RSA parameters exceed import limits"))?;
++    }
++    let encrypted = ppk.encryption != "none";
++    if !encrypted {
++        let key = decode_ppk(input, "")?;
++        crate::ssh::key_import::check_key_parameters(&key)
++            .map_err(|_| anyhow!("RSA parameters exceed import limits"))?;
++    }
++    Ok(encrypted)
++}
++
+ fn parse_ppk(input: &[u8]) -> Result<Ppk> {
+     if input.len() > MAX_PPK_SIZE {
+         bail!("PPK file is too large");
+@@ -198,7 +215,7 @@ fn decode_base64_lines<'a>(
+     if count > MAX_PPK_SIZE / 4 {
+         bail!("PPK {section} section contains too many lines");
+     }
+-    let mut encoded = String::new();
++    let mut encoded = Zeroizing::new(String::new());
+     for _ in 0..count {
+         encoded.push_str(
+             lines
+@@ -208,7 +225,7 @@ fn decode_base64_lines<'a>(
+         );
+     }
+     base64::engine::general_purpose::STANDARD
+-        .decode(encoded)
++        .decode(encoded.as_bytes())
+         .with_context(|| format!("invalid base64 in PPK {section} section"))
+ }
+ 
+diff --git a/src/ssh/impls/ssh.rs b/src/ssh/impls/ssh.rs
+index 4678e92..f3b22c5 100644
+--- a/src/ssh/impls/ssh.rs
++++ b/src/ssh/impls/ssh.rs
+@@ -141,11 +141,21 @@ pub(crate) fn load_session_private_key(session: &Session, pass: &str) -> Result<
+     let pass = if pass.is_empty() { None } else { Some(pass) };
+     let inline = session.private_key_inline.as_str().trim();
+     if !inline.is_empty() {
+-        if crate::ssh::ppk::is_ppk(inline.as_bytes()) {
+-            return crate::ssh::ppk::decode_ppk(inline.as_bytes(), pass.unwrap_or_default())
+-                .context("failed to parse pasted PuTTY private key");
++        // Preserve the pre-existing legacy encrypted PEM path. The new editor
++        // importer explicitly rejects this format, since its decoder does not
++        // expose plaintext DER before RSA conversion for parameter admission.
++        if (inline.starts_with("-----BEGIN RSA PRIVATE KEY-----")
++            || inline.starts_with("-----BEGIN EC PRIVATE KEY-----"))
++            && inline.lines().take(4).any(|line| line == "Proc-Type: 4,ENCRYPTED")
++        {
++            return decode_secret_key(inline, pass)
++                .context("failed to parse saved legacy private key");
+         }
+-        return decode_secret_key(inline, pass).context("failed to parse pasted private key");
++        // Every format accepted by the new importer is guarded at actual use,
++        // including after decrypting opaque RSA parameters. This also applies
++        // to ordinary terminal/SFTP login, not only the editor's Test button.
++        return crate::ssh::key_import::decode_imported_key(inline, pass.unwrap_or_default())
++            .map_err(|_| anyhow!("private key format, parameters or passphrase are invalid or unsupported"));
+     }
+ 
+     let raw = session.private_key_path.trim();
+@@ -183,11 +193,17 @@ pub(crate) async fn load_session_private_key_offthread(
+     session: &Session,
+     pass: &str,
+ ) -> Result<PrivateKey> {
++    let permit = crate::ssh::key_import::work_permit()
++        .await
++        .map_err(|_| anyhow!("private-key worker unavailable"))?;
+     let session = session.clone();
+     let pass = Zeroizing::new(pass.to_string());
+-    tokio::task::spawn_blocking(move || load_session_private_key(&session, &pass))
+-        .await
+-        .context("private-key loader task failed")?
++    tokio::task::spawn_blocking(move || {
++        let _permit = permit;
++        load_session_private_key(&session, &pass)
++    })
++    .await
++    .context("private-key loader task failed")?
+ }
+ 
+ /// Format a byte count as a human-readable string.
+diff --git a/src/ssh/mod.rs b/src/ssh/mod.rs
+index 1f2fc13..212a80f 100644
+--- a/src/ssh/mod.rs
++++ b/src/ssh/mod.rs
+@@ -5,6 +5,8 @@ pub(crate) use connection::{network_stage, disconnect_ssh};
+ pub(crate) mod known_hosts;
+ #[path = "impls/ppk.rs"]
+ pub(crate) mod ppk;
++#[path = "impls/key_import.rs"]
++pub(crate) mod key_import;
+ #[path = "impls/proxy.rs"]
+ pub(crate) mod proxy;
+ #[path = "impls/storage.rs"]
+diff --git a/src/ui/impls/session_editor.rs b/src/ui/impls/session_editor.rs
+index 3bb7fc3..dcede24 100644
+--- a/src/ui/impls/session_editor.rs
++++ b/src/ui/impls/session_editor.rs
+@@ -40,6 +40,45 @@ use gpui_kit::assets::IconName;
+ use crate::config::{ConfigStore, Session};
+ use crate::core::{SessionDraft, SessionDraftError};
+ 
++#[cfg(test)]
++#[path = "session_editor_button_tests.rs"]
++mod button_tests;
++#[path = "session_editor_key_import.rs"]
++mod key_import;
++
++/// An editor-only action must activate its focused button, not the surrounding
++/// Dialog's default Confirm (which closes the editor and clears its secrets).
++/// In locked gpui-pre 0.3.8, bound actions run before raw KeyDown. Consuming
++/// Confirm therefore leaves the native KeyUp click unarmed: one press, one action.
++fn editor_action_button(
++    id: &'static str,
++    enabled: bool,
++    activate: impl Fn(&gpui_kit::ClickEvent, &mut Window, &mut gpui_kit::App) + 'static,
++) -> Button {
++    let activate = Rc::new(activate);
++    Button::new(id)
++        .debug_selector(move || id.into())
++        .disabled(!enabled)
++        .on_click({
++            let activate = activate.clone();
++            move |event, window, cx| {
++                if enabled {
++                    activate(event, window, cx);
++                }
++            }
++        })
++        .on_action(
++            move |_: &gpui_kit::component::dialog::Confirm, window, cx| {
++                cx.stop_propagation();
++                // Custom action listeners are separate from the toolkit's disabled
++                // click path. Never let keyboard activation bypass that state.
++                if enabled {
++                    activate(&gpui_kit::ClickEvent::default(), window, cx);
++                }
++            },
++        )
++}
++
+ /// What the editor asks the shell to do when it closes.
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ pub(crate) enum EditorOutcome {
+@@ -80,6 +119,7 @@ pub(crate) struct SessionEditor {
+     /// Read-only, disposable previews. They never feed a replacement input or its undo history.
+     secret_previews: [Option<Entity<TextareaState>>; 2],
+     reset_previews: bool,
++    key_import: key_import::KeyImportState,
+     /// Weak handles only: hidden/replaced keyed fields retain no extra input state.
+     text_fields:
+         Rc<RefCell<std::collections::HashMap<&'static str, gpui_kit::WeakEntity<TextFieldState>>>>,
+@@ -260,6 +300,7 @@ impl SessionEditor {
+             password: None,
+             secret_previews: [None, None],
+             reset_previews: false,
++            key_import: Default::default(),
+             text_fields: Rc::new(RefCell::new(std::collections::HashMap::new())),
+         }
+     }
+@@ -279,6 +320,7 @@ impl SessionEditor {
+             password: None,
+             secret_previews: [None, None],
+             reset_previews: false,
++            key_import: Default::default(),
+             text_fields: Rc::new(RefCell::new(std::collections::HashMap::new())),
+         }
+     }
+@@ -420,6 +462,7 @@ impl SessionEditor {
+     /// text storage is not zeroizable, so do not claim that this erases every heap copy.
+     /// No clipboard write occurs: copying a revealed selection is a separate user action.
+     pub(crate) fn clear_sensitive_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
++        self.key_import.cancel();
+         self.clear_secret_previews(window, cx);
+         if let Some(input) = self.password.take() {
+             input.update(cx, |input, cx| {
+@@ -710,6 +753,9 @@ impl SessionEditor {
+                     editor.update(cx, |editor, cx| {
+                         // Changing transport/auth must not restore a previously visible secret.
+                         editor.reset_previews = true;
++                        if editor.key_import.busy() {
++                            editor.key_import.cancel();
++                        }
+                         cx.notify();
+                     });
+                 }
+@@ -1195,6 +1241,9 @@ impl Render for SessionEditor {
+         let kind_value = draft.borrow().kind.clone();
+         let is_serial = kind_value == "serial";
+         let is_ssh = kind_value == "ssh";
++        if !is_ssh && self.key_import.busy() {
++            self.key_import.cancel();
++        }
+ 
+         let store_for_name = self.store.clone();
+         let name = self.text("name", |d| d.name.clone(), |d, v| d.name = v);
+@@ -1300,6 +1349,7 @@ impl Render for SessionEditor {
+         };
+         let saved_password = self.saved_secret_field(0, cx);
+         let saved_key = self.saved_secret_field(1, cx);
++        let key_import = self.key_import_field(cx);
+         let key_path = self.text(
+             "private_key_path",
+             |d| d.private_key_path.clone(),
+@@ -1442,7 +1492,8 @@ impl Render for SessionEditor {
+                             "使用私钥认证时填写。",
+                             "Used when authenticating with a key.",
+                         )),
+-                );
++                )
++                .item(SettingItem::new(crate::i18n::t("私钥内容", "Private-key contents"), key_import));
+         } else {
+             // Telnet: a password can be needed, a key cannot.
+             credentials = credentials.item(
+@@ -1584,6 +1635,7 @@ impl Render for SessionEditor {
+             .debug_selector(|| "editor-save".to_string())
+             .icon(IconName::Check)
+             .label(crate::i18n::t("保存", "Save"))
++            .disabled(self.key_import.busy())
+             .primary()
+             .on_click(cx.listener(|this, _, window, cx| {
+                 // Buttons deliberately keep the input focused, so Blur is not a
+@@ -1693,13 +1745,13 @@ mod tests {
+     use std::{fs, path::PathBuf};
+ 
+     /// A disposable database with no user-config lookup, backups, or keyring access.
+-    struct StoreFixture {
++    pub(super) struct StoreFixture {
+         directory: PathBuf,
+-        store: Rc<RefCell<ConfigStore>>,
++        pub(super) store: Rc<RefCell<ConfigStore>>,
+     }
+ 
+     impl StoreFixture {
+-        fn new() -> Self {
++        pub(super) fn new() -> Self {
+             let directory =
+                 std::env::temp_dir().join(format!("xenterm-editor-test-{}", uuid::Uuid::new_v4()));
+             fs::create_dir_all(&directory).unwrap();
+@@ -1736,7 +1788,7 @@ mod tests {
+             }
+         }
+ 
+-        fn disk_sessions(&self) -> Vec<Session> {
++        pub(super) fn disk_sessions(&self) -> Vec<Session> {
+             let connection = rusqlite::Connection::open(&self.store.borrow().path).unwrap();
+             let mut statement = connection
+                 .prepare("SELECT data FROM sessions ORDER BY ordinal")
+diff --git a/src/ui/impls/session_editor_button_tests.rs b/src/ui/impls/session_editor_button_tests.rs
+new file mode 100644
+index 0000000..f99422c
+--- /dev/null
++++ b/src/ui/impls/session_editor_button_tests.rs
+@@ -0,0 +1,189 @@
++//! Real editor dialog focus and activation helpers. All state and clipboard
++//! content belong to GPUI's test platform, never the user's desktop.
++
++use super::*;
++use gpui_kit::component::{Root, WindowExt as _};
++use gpui_kit::gpui::{
++    KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, TestAppContext, VisualTestContext,
++};
++use gpui_kit::test::TestWindowExt as _;
++use std::time::{Duration, Instant};
++
++struct EditorHarness;
++
++impl Render for EditorHarness {
++    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
++        div().size_full()
++    }
++}
++
++pub(super) fn editor_window(cx: &mut TestAppContext) -> &mut VisualTestContext {
++    cx.update(gpui_kit::init);
++    let (_, cx) = cx.add_window_view(|window, cx| {
++        let view = cx.new(|_| EditorHarness);
++        Root::new(view, window, cx)
++    });
++    cx.simulate_resize(gpui_kit::size(px(1100.), px(900.)));
++    cx
++}
++
++pub(super) fn open_editor(
++    cx: &mut VisualTestContext,
++    fixture: &super::tests::StoreFixture,
++) -> Entity<SessionEditor> {
++    cx.update(|window, cx| {
++        let editor = cx.new(|_| SessionEditor::new_session(fixture.store.clone(), String::new()));
++        editor.update(cx, |editor, _| {
++            let mut draft = editor.draft.borrow_mut();
++            draft.host = "keyboard-fixture.invalid".into();
++            draft.user = "synthetic-user".into();
++            draft.name = "synthetic-unsaved-name".into();
++            draft.auth = "key".into();
++        });
++        super::super::shell::Shell::editor_dialog(editor.clone(), window, cx);
++        window.draw(cx).clear(cx);
++        editor
++    })
++}
++
++pub(super) fn draw(cx: &mut VisualTestContext) {
++    cx.update(|window, cx| {
++        window.simulate_next_frame(cx);
++        window.draw(cx).clear(cx);
++    });
++    cx.run_until_parked();
++}
++
++pub(super) fn focus_action(cx: &mut VisualTestContext, id: &'static str) {
++    draw(cx);
++    cx.update(|window, cx| window.blur(cx));
++    for _ in 0..100 {
++        let focused = cx.update(|window, cx| {
++            window.focus_next(cx);
++            window.draw(cx).clear(cx);
++            window.try_find(id).and_then(|button| button.focused()) == Some(true)
++        });
++        if focused {
++            return;
++        }
++    }
++    panic!("actual editor button was not keyboard-focusable: {id}");
++}
++
++pub(super) fn show_import_controls(cx: &mut VisualTestContext) {
++    // Settings virtualizes whole groups. Filter through its real search input
++    // so the import controls are rendered, rather than depending on overscan.
++    draw(cx);
++    cx.update(|window, cx| window.blur(cx));
++    for _ in 0..100 {
++        let in_search = cx.update(|window, cx| {
++            window.focus_next(cx);
++            window.draw(cx).clear(cx);
++            window.focused_input(cx).is_some_and(|input| {
++                input.as_input().is_some_and(|input| {
++                    window
++                        .try_find(("input", input.entity_id()))
++                        .is_some_and(|field| field.path().contains(&"settings-sidebar".into()))
++                })
++            })
++        });
++        if in_search {
++            cx.simulate_input(crate::i18n::t("私钥内容", "Private-key contents"));
++            draw(cx);
++            assert!(cx.debug_bounds("private-key-paste").is_some());
++            return;
++        }
++    }
++    panic!("the real Settings search input was not keyboard-focusable");
++}
++
++pub(super) fn close_editor(cx: &mut VisualTestContext, editor: &Entity<SessionEditor>) {
++    cx.update(|window, cx| {
++        editor.update(cx, |editor, cx| editor.clear_sensitive_inputs(window, cx));
++        window.close_dialog(cx);
++        window.draw(cx).clear(cx);
++        assert!(!window.has_active_dialog(cx));
++    });
++}
++
++pub(super) fn key_down(cx: &mut VisualTestContext, key: &str) {
++    cx.simulate_event(KeyDownEvent {
++        keystroke: Keystroke::parse(key).unwrap(),
++        is_held: false,
++        prefer_character_input: false,
++    });
++    draw(cx);
++}
++
++pub(super) fn key_up(cx: &mut VisualTestContext, key: &str) {
++    cx.simulate_event(KeyUpEvent {
++        keystroke: Keystroke::parse(key).unwrap(),
++    });
++    draw(cx);
++}
++
++pub(super) fn click_action(cx: &mut VisualTestContext, id: &'static str) {
++    // The dialog's entrance animation uses real time. Observe stable geometry,
++    // as the ordinary host-key dialog tests do, rather than guess a coordinate.
++    let deadline = Instant::now() + Duration::from_secs(5);
++    let mut previous = None;
++    let mut stable = 0;
++    loop {
++        draw(cx);
++        let bounds = cx.debug_bounds(id);
++        if bounds.is_some() && bounds == previous {
++            stable += 1;
++            if stable == 3 {
++                cx.simulate_click(bounds.unwrap().center(), Modifiers::default());
++                draw(cx);
++                return;
++            }
++        } else {
++            stable = 0;
++        }
++        assert!(
++            Instant::now() < deadline,
++            "editor button did not settle: {id}"
++        );
++        previous = bounds;
++        std::thread::sleep(Duration::from_millis(20));
++    }
++}
++
++pub(super) fn assert_open_unsaved(
++    cx: &mut VisualTestContext,
++    editor: &Entity<SessionEditor>,
++    fixture: &super::tests::StoreFixture,
++) {
++    cx.update(|window, cx| {
++        assert!(window.has_active_dialog(cx));
++        assert!(editor.read(cx).outcome.is_none());
++        assert_eq!(
++            editor.read(cx).draft.borrow().name,
++            "synthetic-unsaved-name"
++        );
++    });
++    assert_unsaved(fixture);
++}
++
++fn assert_unsaved(fixture: &super::tests::StoreFixture) {
++    let store = fixture.store.borrow();
++    assert!(!store.path.exists());
++    let saved = store.saved_state.lock().unwrap();
++    assert_eq!(saved.submitted, 0);
++    assert_eq!(saved.attempted, 0);
++    assert!(saved.sessions.is_empty());
++}
++
++#[gpui_kit::gpui::test]
++fn enter_outside_editor_action_controls_keeps_the_dialog_default(cx: &mut TestAppContext) {
++    let fixture = super::tests::StoreFixture::new();
++    let cx = editor_window(cx);
++    let editor = open_editor(cx, &fixture);
++    // Opening the real dialog focuses its container, not one of our buttons.
++    key_down(cx, "enter");
++    key_up(cx, "enter");
++    assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
++    assert!(editor.read_with(cx, |editor, _| editor.outcome.is_none()));
++    assert_unsaved(&fixture);
++}
+diff --git a/src/ui/impls/session_editor_key_import.rs b/src/ui/impls/session_editor_key_import.rs
+new file mode 100644
+index 0000000..ea36604
+--- /dev/null
++++ b/src/ui/impls/session_editor_key_import.rs
+@@ -0,0 +1,552 @@
++//! Explicit private-key import actions. No background clipboard reads and no
++//! editable plaintext preview or undo history for imported key material.
++
++use super::*;
++use crate::ssh::key_import::{ImportError, ImportedKey};
++use zeroize::Zeroizing;
++
++#[derive(Default)]
++pub(super) struct KeyImportState {
++    generation: u64,
++    task: Option<gpui_kit::Task<()>>,
++    message: Option<&'static str>,
++}
++
++impl KeyImportState {
++    pub(super) fn busy(&self) -> bool {
++        self.task.is_some()
++    }
++
++    pub(super) fn cancel(&mut self) {
++        self.generation = self.generation.wrapping_add(1);
++        self.task = None;
++        self.message = None;
++    }
++}
++
++impl SessionEditor {
++    fn accept_key_import(&mut self, result: Result<ImportedKey, ImportError>) {
++        self.key_import.task = None;
++        match result {
++            Ok(mut key) => {
++                let mut draft = self.draft.borrow_mut();
++                draft.private_key_inline.zeroize();
++                draft.private_key_inline = std::mem::take(&mut *key.content);
++                draft.private_key_inline_mode = true;
++                draft.auth = "key".into();
++                self.key_import.message = Some(if key.encrypted {
++                    crate::i18n::t("已读取加密私钥容器，尚未验证口令及私钥内容；请填写上方口令，保存后在连接时验证。仅在点击保存后加密保存。", "Encrypted key container loaded; its passphrase and private contents are not yet verified. Enter the passphrase above; verification occurs when connecting after Save. Stored encrypted only after Save.")
++                } else {
++                    crate::i18n::t(
++                        "私钥已导入草稿；点击保存后加密保存。",
++                        "Private key imported into the draft; stored encrypted only after Save.",
++                    )
++                });
++            }
++            Err(error) => {
++                // Never format the selected path, clipboard text, or parser error.
++                self.key_import.message = Some(match error {
++                    ImportError::File => crate::i18n::t("请选择一个可读取的本地普通私钥文件，不支持目录、设备或符号链接。", "Choose one readable local regular private-key file, not a directory, device or symlink."),
++                    ImportError::TooLarge => crate::i18n::t("私钥内容不能超过 1 MiB。", "Private-key content must not exceed 1 MiB."),
++                    ImportError::Invalid => crate::i18n::t("无法识别 SSH 私钥，请勿粘贴公钥、证书或文件路径。", "Not a supported SSH private key. Do not paste a public key, certificate, or file path."),
++                    ImportError::Parameters => crate::i18n::t("RSA 参数超过安全上限（最大 8192 位），请使用受支持的密钥。", "RSA parameters exceed supported limits (maximum 8192 bits). Use a supported key."),
++                    ImportError::UnsupportedAlgorithm => crate::i18n::t("当前 SSH 后端不能使用此签名算法或 OpenSSH 加密算法。支持 RSA、Ed25519 和 NIST P-256/P-384/P-521 ECDSA；不支持 DSA、FIDO 硬件私钥及 TripleDES。", "The SSH backend cannot use this signing algorithm or OpenSSH cipher. Supported keys: RSA, Ed25519 and NIST P-256/P-384/P-521 ECDSA; DSA, FIDO hardware keys and TripleDES are unsupported."),
++                    ImportError::UnsupportedEncryption => crate::i18n::t("该加密格式或参数不能安全导入：支持 OpenSSH（bcrypt ≤128 轮）、PPK、受限 PBKDF2/scrypt PKCS#8；旧式加密 PEM 请转换格式或使用原私钥路径。", "Cannot safely import this encryption format or work factor. Supported: OpenSSH (bcrypt ≤128 rounds), PPK, bounded PBKDF2/scrypt PKCS#8. Convert legacy encrypted PEM or use the existing key path."),
++                });
++            }
++        }
++    }
++
++    fn start_key_import(
++        &mut self,
++        operation: impl FnOnce() -> Result<ImportedKey, ImportError> + Send + 'static,
++        cx: &mut Context<Self>,
++    ) {
++        self.key_import.cancel();
++        self.draft.borrow_mut().auth = "key".into();
++        let generation = self.key_import.generation;
++        self.key_import.message = Some(crate::i18n::t(
++            "正在读取并检查私钥…",
++            "Reading and checking private key…",
++        ));
++        self.key_import.task = Some(cx.spawn(async move |this, cx| {
++            let result = cx
++                .background_executor()
++                .spawn(async move {
++                    let _permit = crate::ssh::key_import::work_permit().await?;
++                    operation()
++                })
++                .await;
++            let _ = this.update(cx, |editor, cx| {
++                editor.finish_key_import(generation, result, cx);
++            });
++        }));
++        cx.notify();
++    }
++
++    fn finish_key_import(
++        &mut self,
++        generation: u64,
++        result: Result<ImportedKey, ImportError>,
++        cx: &mut Context<Self>,
++    ) {
++        if self.key_import.generation != generation {
++            return;
++        }
++        if self.outcome.is_none()
++            && self.draft.borrow().kind == "ssh"
++            && self.draft.borrow().auth == "key"
++        {
++            self.accept_key_import(result);
++        } else {
++            // Retire this generation without replacing a newer choice. The
++            // unaccepted result drops its Zeroizing content here as well.
++            self.key_import.cancel();
++        }
++        cx.notify();
++    }
++
++    fn use_key_path(&mut self, cx: &mut Context<Self>) {
++        self.key_import.cancel();
++        let mut draft = self.draft.borrow_mut();
++        draft.private_key_inline.zeroize();
++        draft.private_key_inline_mode = false;
++        cx.notify();
++    }
++
++    pub(super) fn key_import_field(&self, cx: &Context<Self>) -> SettingField<SharedString> {
++        let editor = cx.entity().downgrade();
++        let busy = self.key_import.busy();
++        let inline = self.draft.borrow().private_key_inline_mode;
++        let message = self.key_import.message;
++        SettingField::element(
++            move |options: &gpui_kit::component::setting::RenderOptions,
++                  _: &mut Window,
++                  cx: &mut gpui_kit::App| {
++                let clipboard_editor = editor.clone();
++                let path_editor = editor.clone();
++                let drop_editor = editor.clone();
++                let field = v_flex()
++                    .id("private-key-import")
++                    .debug_selector(|| "private-key-import".into())
++                    // A horizontal custom SettingField is measured inside an
++                    // intrinsically sized wrapper. Match ordinary text fields;
++                    // a percentage alone would collapse to the child buttons.
++                    .map(|field| {
++                        if options.layout().is_horizontal() {
++                            field.w_64()
++                        } else {
++                            field.w_full()
++                        }
++                    })
++                    .gap_2()
++                    .p_2()
++                    .rounded_md()
++                    .border_1()
++                    .border_color(cx.theme().border)
++                    .on_drop(move |paths: &gpui_kit::ExternalPaths, _, cx| {
++                        if let Some(editor) = drop_editor.upgrade() {
++                            editor.update(cx, |editor, cx| {
++                                if let [path] = paths.paths() {
++                                    let path = path.clone();
++                                    editor.start_key_import(
++                                        move || crate::ssh::key_import::read_key_file(&path),
++                                        cx,
++                                    );
++                                } else {
++                                    editor.key_import.cancel();
++                                    editor.key_import.message = Some(crate::i18n::t(
++                                        "请每次拖入一个私钥文件。",
++                                        "Drop one private-key file at a time.",
++                                    ));
++                                    cx.notify();
++                                }
++                            });
++                        }
++                    })
++                    .child(div().text_sm().child(if inline {
++                        crate::i18n::t(
++                            "当前使用内联私钥，可拖入文件或粘贴内容替换。",
++                            "Using inline private-key content. Drop a file or paste to replace it.",
++                        )
++                    } else {
++                        crate::i18n::t(
++                            "将 SSH 私钥文件拖到这里，或粘贴私钥内容。",
++                            "Drop an SSH private-key file here, or paste its contents.",
++                        )
++                    }))
++                    .child(
++                        h_flex()
++                            .w_full()
++                            .flex_wrap()
++                            .gap_2()
++                            .child(
++                                editor_action_button(
++                                    "private-key-paste",
++                                    !busy,
++                                    move |_, _, cx| {
++                                        // Read once, and only in this explicit user action. The
++                                        // platform's clipboard remains owned by the user.
++                                        let text =
++                                            cx.read_from_clipboard().and_then(|item| item.text());
++                                        if let Some(editor) = clipboard_editor.upgrade() {
++                                            editor.update(cx, |editor, cx| {
++                                                let text = Zeroizing::new(text.unwrap_or_default());
++                                                editor.start_key_import(
++                                                    move || {
++                                                        crate::ssh::key_import::import_key(text)
++                                                    },
++                                                    cx,
++                                                );
++                                            });
++                                        }
++                                    },
++                                )
++                                .label(crate::i18n::t(
++                                    "粘贴私钥内容",
++                                    "Paste private-key contents",
++                                )),
++                            )
++                            .child(
++                                editor_action_button(
++                                    "private-key-use-path",
++                                    inline || busy,
++                                    move |_, _, cx| {
++                                        if let Some(editor) = path_editor.upgrade() {
++                                            editor.update(cx, |editor, cx| editor.use_key_path(cx));
++                                        }
++                                    },
++                                )
++                                .label(crate::i18n::t(
++                                    "改用路径 / 丢弃导入",
++                                    "Use path / discard import",
++                                )),
++                            ),
++                    )
++                    .when_some(message, |field, message| {
++                        field.child(div().text_sm().child(message))
++                    });
++                // Observe the actual Settings mode without adding a wrapper
++                // which would change the intrinsic-sizing behavior under test.
++                #[cfg(test)]
++                let field = field.debug_selector(move || {
++                    tests::import_layout_selector(options.layout().is_horizontal()).into()
++                });
++                field.into_any_element()
++            },
++        )
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::super::button_tests as buttons;
++    use super::*;
++    use gpui_kit::gpui::{TestAppContext, VisualTestContext};
++    use gpui_kit::Axis;
++
++    #[gpui_kit::gpui::test]
++    fn import_buttons_enter_activate_once_without_dismissing_or_saving(cx: &mut TestAppContext) {
++        let fixture = super::super::tests::StoreFixture::new();
++        // The process-wide import admission pool is shared with Tokio tests.
++        // Releasing their permit may wake this scheduler from another thread.
++        cx.background_executor.allow_parking();
++        let cx = buttons::editor_window(cx);
++        let editor = buttons::open_editor(cx, &fixture);
++        buttons::show_import_controls(cx);
++        cx.update(|_, cx| {
++            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
++                include_str!("../../../tests/fixtures/ppk-v3-ed25519.ppk").into(),
++            ));
++        });
++        for (id, inline_after) in [("private-key-paste", true), ("private-key-use-path", false)] {
++            buttons::focus_action(cx, id);
++            let generation = editor.read_with(cx, |editor, _| editor.key_import.generation);
++            buttons::key_down(cx, "enter");
++            assert_eq!(
++                editor.read_with(cx, |editor, _| editor.key_import.generation),
++                generation.wrapping_add(1)
++            );
++            // A drained GPUI queue does not imply that a contended process-wide
++            // permit has arrived. Wait on import state, not a guessed duration.
++            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
++            while editor.read_with(cx, |editor, _| editor.key_import.busy()) {
++                assert!(
++                    std::time::Instant::now() < deadline,
++                    "synthetic import did not finish"
++                );
++                buttons::draw(cx);
++                if editor.read_with(cx, |editor, _| editor.key_import.busy()) {
++                    std::thread::sleep(std::time::Duration::from_millis(1));
++                }
++            }
++            editor.read_with(cx, |editor, _| {
++                assert_eq!(editor.key_import.generation, generation.wrapping_add(1));
++                assert_eq!(editor.draft.borrow().private_key_inline_mode, inline_after);
++                assert_eq!(
++                    editor.draft.borrow().private_key_inline.is_empty(),
++                    !inline_after
++                );
++            });
++            buttons::assert_open_unsaved(cx, &editor, &fixture);
++            // The same physical press must not start a second import on release.
++            buttons::key_up(cx, "enter");
++            assert_eq!(
++                editor.read_with(cx, |editor, _| editor.key_import.generation),
++                generation.wrapping_add(1)
++            );
++            buttons::assert_open_unsaved(cx, &editor, &fixture);
++        }
++    }
++
++    #[gpui_kit::gpui::test]
++    fn disabled_import_buttons_consume_enter_without_activating(cx: &mut TestAppContext) {
++        let fixture = super::super::tests::StoreFixture::new();
++        let cx = buttons::editor_window(cx);
++        let editor = buttons::open_editor(cx, &fixture);
++        buttons::show_import_controls(cx);
++        // Retain the real focus when an enabled control becomes disabled.
++        editor.update(cx, |editor, cx| {
++            editor.draft.borrow_mut().private_key_inline_mode = true;
++            cx.notify();
++        });
++        buttons::focus_action(cx, "private-key-use-path");
++        editor.update(cx, |editor, cx| {
++            editor.draft.borrow_mut().private_key_inline_mode = false;
++            cx.notify();
++        });
++        let generation = editor.read_with(cx, |editor, _| editor.key_import.generation);
++        buttons::key_down(cx, "enter");
++        buttons::key_up(cx, "enter");
++        assert_eq!(
++            editor.read_with(cx, |editor, _| editor.key_import.generation),
++            generation
++        );
++        buttons::assert_open_unsaved(cx, &editor, &fixture);
++
++        buttons::focus_action(cx, "private-key-paste");
++        editor.update(cx, |editor, cx| {
++            editor.key_import.task = Some(cx.spawn(async move |_, _| {
++                std::future::pending::<()>().await;
++            }));
++            cx.notify();
++        });
++        buttons::key_down(cx, "enter");
++        buttons::key_up(cx, "enter");
++        editor.read_with(cx, |editor, _| {
++            assert_eq!(editor.key_import.generation, generation);
++            assert!(editor.key_import.busy());
++            assert!(editor.draft.borrow().private_key_inline.is_empty());
++        });
++        buttons::assert_open_unsaved(cx, &editor, &fixture);
++        editor.update(cx, |editor, _| editor.key_import.cancel());
++    }
++
++    #[gpui_kit::gpui::test]
++    fn key_import_stays_in_draft_until_save_and_uses_encrypted_store(cx: &mut TestAppContext) {
++        let fixture = super::super::tests::StoreFixture::new();
++        let ppk = include_str!("../../../tests/fixtures/ppk-v3-ed25519.ppk");
++        cx.update(|cx| {
++            let editor =
++                cx.new(|_| SessionEditor::new_session(fixture.store.clone(), String::new()));
++            editor.update(cx, |editor, cx| {
++                editor.draft.borrow_mut().host = "synthetic.invalid".into();
++                editor.accept_key_import(crate::ssh::key_import::import_key(Zeroizing::new(
++                    ppk.into(),
++                )));
++                assert!(editor.draft.borrow().private_key_inline_mode);
++                assert!(!fixture.store.borrow().path.exists());
++                editor.save(cx);
++                assert_eq!(editor.outcome, Some(EditorOutcome::Saved));
++            });
++            assert!(fixture.disk_sessions()[0]
++                .private_key_inline
++                .is_local_ciphertext());
++            assert!(!std::fs::read(&fixture.store.borrow().path)
++                .unwrap()
++                .windows(ppk.len())
++                .any(|part| part == ppk.as_bytes()));
++        });
++    }
++
++    #[gpui_kit::gpui::test]
++    fn discard_or_invalid_import_does_not_replace_the_saved_key(cx: &mut TestAppContext) {
++        let fixture = super::super::tests::StoreFixture::new();
++        cx.update(|cx| {
++            let editor =
++                cx.new(|_| SessionEditor::new_session(fixture.store.clone(), String::new()));
++            editor.update(cx, |editor, cx| {
++                let key = include_str!("../../../tests/fixtures/ppk-v3-ed25519.ppk");
++                editor.accept_key_import(crate::ssh::key_import::import_key(Zeroizing::new(
++                    key.into(),
++                )));
++                editor.accept_key_import(Err(ImportError::Invalid));
++                assert_eq!(editor.draft.borrow().private_key_inline, key);
++                editor.use_key_path(cx);
++                assert!(editor.draft.borrow().private_key_inline.is_empty());
++                assert!(!editor.draft.borrow().private_key_inline_mode);
++                assert!(!fixture.store.borrow().path.exists());
++            });
++        });
++    }
++    #[gpui_kit::gpui::test]
++    fn late_import_cannot_replace_a_new_auth_choice_or_cancelled_generation(
++        cx: &mut TestAppContext,
++    ) {
++        let fixture = super::super::tests::StoreFixture::new();
++        cx.update(|cx| {
++            let entity =
++                cx.new(|_| SessionEditor::new_session(fixture.store.clone(), String::new()));
++            entity.update(cx, |editor, cx| {
++                let ppk = include_str!("../../../tests/fixtures/ppk-v3-ed25519.ppk");
++                let imported = || crate::ssh::key_import::import_key(Zeroizing::new(ppk.into()));
++                let generation = editor.key_import.generation;
++                editor.draft.borrow_mut().auth = "password".into();
++                editor.finish_key_import(generation, imported(), cx);
++                assert_eq!(editor.draft.borrow().auth, "password");
++                assert!(editor.draft.borrow().private_key_inline.is_empty());
++                assert!(!editor.key_import.busy());
++                editor.draft.borrow_mut().auth = "key".into();
++                editor.key_import.cancel();
++                editor.finish_key_import(generation, imported(), cx);
++                assert!(editor.draft.borrow().private_key_inline.is_empty());
++                assert!(!fixture.store.borrow().path.exists());
++            });
++        });
++    }
++
++    pub(super) fn import_layout_selector(horizontal: bool) -> &'static str {
++        if horizontal {
++            "private-key-import-layout-horizontal"
++        } else {
++            "private-key-import-layout-vertical"
++        }
++    }
++
++    struct ImportLayoutHarness {
++        editor: Entity<SessionEditor>,
++        layout: Axis,
++    }
++
++    impl Render for ImportLayoutHarness {
++        fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
++            let field = self
++                .editor
++                .update(cx, |editor, cx| editor.key_import_field(cx));
++            div().size_full().child(
++                Settings::new("synthetic-import-layout").page(
++                    SettingPage::new("Synthetic import").group(
++                        SettingGroup::new()
++                            .item(SettingItem::new("SSH private key", field).layout(self.layout)),
++                    ),
++                ),
++            )
++        }
++    }
++
++    fn settle_import_layout(cx: &mut VisualTestContext, horizontal: bool) {
++        let mut previous = None;
++        let mut stable = 0;
++        // No dialog animation is present in this focused field harness. Drive
++        // real Settings/container-query frames and observe its actual mode.
++        for _ in 0..12 {
++            cx.run_until_parked();
++            cx.update(|window, cx| {
++                window.refresh();
++                window.simulate_next_frame(cx);
++                window.draw(cx).clear(cx);
++            });
++            cx.run_until_parked();
++            let bounds = cx.debug_bounds(import_layout_selector(horizontal));
++            if bounds.is_some()
++                && cx
++                    .debug_bounds(import_layout_selector(!horizontal))
++                    .is_none()
++                && bounds == previous
++            {
++                stable += 1;
++                if stable == 3 {
++                    return;
++                }
++            } else {
++                stable = 0;
++            }
++            previous = bounds;
++        }
++        panic!("private-key import did not settle in the actual requested Settings mode");
++    }
++
++    #[gpui_kit::gpui::test]
++    fn import_control_uses_actual_setting_layout_and_keeps_actions_inside(cx: &mut TestAppContext) {
++        let fixture = super::super::tests::StoreFixture::new();
++        cx.update(|cx| {
++            gpui_kit::init(cx);
++            // w_64 uses rems; pin the same baseline as toolkit Settings tests.
++            gpui_kit::component::Theme::global_mut(cx).font_size = px(16.);
++        });
++        let mut harness = None;
++        let (_, cx) = cx.add_window_view(|window, cx| {
++            let editor =
++                cx.new(|_| SessionEditor::new_session(fixture.store.clone(), String::new()));
++            editor.update(cx, |editor, _| {
++                // Include a real long rejection message, without any key data.
++                editor.accept_key_import(Err(ImportError::UnsupportedAlgorithm));
++            });
++            let view = cx.new(|_| ImportLayoutHarness {
++                editor,
++                layout: Axis::Horizontal,
++            });
++            harness = Some(view.clone());
++            gpui_kit::component::Root::new(view, window, cx)
++        });
++        let harness = harness.unwrap();
++        cx.simulate_resize(gpui_kit::size(px(1200.), px(900.)));
++        let mut horizontal_width = None;
++        for layout in [Axis::Horizontal, Axis::Vertical, Axis::Horizontal] {
++            harness.update(cx, |harness, cx| {
++                harness.layout = layout;
++                cx.notify();
++            });
++            let horizontal = layout.is_horizontal();
++            settle_import_layout(cx, horizontal);
++            let field = cx.debug_bounds(import_layout_selector(horizontal)).unwrap();
++            assert!(cx
++                .debug_bounds(import_layout_selector(!horizontal))
++                .is_none());
++            if horizontal {
++                assert!(
++                    field.size.width >= px(240.) && field.size.width <= px(256.),
++                    "horizontal import must use the normal field width: {field:?}"
++                );
++                if let Some(width) = horizontal_width {
++                    assert_eq!(field.size.width, width);
++                }
++                horizontal_width = Some(field.size.width);
++            } else {
++                assert!(
++                    field.size.width > horizontal_width.unwrap() + px(40.),
++                    "vertical import must fill the wider content column: {field:?}"
++                );
++            }
++            let paste = cx.debug_bounds("private-key-paste").unwrap();
++            let discard = cx.debug_bounds("private-key-use-path").unwrap();
++            for action in [paste, discard] {
++                assert!(
++                    action.left() >= field.left()
++                        && action.right() <= field.right()
++                        && action.top() >= field.top()
++                        && action.bottom() <= field.bottom(),
++                    "import action must stay inside the field: {action:?} in {field:?}"
++                );
++            }
++            assert!(
++                paste.right() <= discard.left()
++                    || discard.right() <= paste.left()
++                    || paste.bottom() <= discard.top()
++                    || discard.bottom() <= paste.top(),
++                "wrapped import actions must not overlap"
++            );
++        }
++        assert!(!fixture.store.borrow().path.exists());
++    }
++}
+diff --git a/tests/fixtures/import-synthetic-ec-p384-sec1.pem b/tests/fixtures/import-synthetic-ec-p384-sec1.pem
+new file mode 100644
+index 0000000..361a3f2
+--- /dev/null
++++ b/tests/fixtures/import-synthetic-ec-p384-sec1.pem
+@@ -0,0 +1,6 @@
++-----BEGIN EC PRIVATE KEY-----
++MIGkAgEBBDBgHr/FI4yGLmkYMUNuIdzgWqN5RMuDtCAF0NxXrYKPcaTRlJz3OeoS
++WyhmaB4frXOgBwYFK4EEACKhZANiAATDzsizklAMxRkS6gPTduQHfCFMkCCuMJGd
++SP2TAKlD1z/L51PDEhSRazA4sbkxGS+189SnmUKIOu5kEuMsq3aoQ1i+tLtPbckd
++Al70SbOofPiuAzfIzYdgOYV3jmlOYac=
++-----END EC PRIVATE KEY-----
+diff --git a/tests/fixtures/import-synthetic-ec-p521-sec1.pem b/tests/fixtures/import-synthetic-ec-p521-sec1.pem
+new file mode 100644
+index 0000000..c66d7ee
+--- /dev/null
++++ b/tests/fixtures/import-synthetic-ec-p521-sec1.pem
+@@ -0,0 +1,7 @@
++-----BEGIN EC PRIVATE KEY-----
++MIHcAgEBBEIBZ9JTdHVNTyteJXHTtuISo6Kh/Wl6WJxQPSIa9nduNYlrL3i0tdoz
++WXn2XlmVPVSMW4wimXdeEFBedBnKTkBcvregBwYFK4EEACOhgYkDgYYABAA51ASg
++QGZXJiqYYr18STUzEU38OTUsiCNwI9N3hmOy0a+5KpmZeE61R/cR43EdoE4cgdJQ
++fBHXDPLqHgw9d8OVlQBHzQl/D7kWMioz1L4mDh335fTr8evpwCzMxlI561CTAkMR
++UU9a3ntmL7B/QEd/Qa5A60WPuBOkGttuiK7/3G0YcQ==
++-----END EC PRIVATE KEY-----
+diff --git a/tests/fixtures/import-synthetic-ec-sec1.pem b/tests/fixtures/import-synthetic-ec-sec1.pem
+new file mode 100644
+index 0000000..1b8cdb3
+--- /dev/null
++++ b/tests/fixtures/import-synthetic-ec-sec1.pem
+@@ -0,0 +1,5 @@
++-----BEGIN EC PRIVATE KEY-----
++MHcCAQEEIHMZhw5+xn3ZwqKZbH7KpwKO3s9GfiGe7c4Svk6oqb2noAoGCCqGSM49
++AwEHoUQDQgAEa2w8nsp07hE2i35f+zeEGLTjy8d9PehsBcAkAwZb+vopGaPEeM7D
++w3ccyrkn/zk3hn3SFtAEwTwRYKuTwMsk+Q==
++-----END EC PRIVATE KEY-----

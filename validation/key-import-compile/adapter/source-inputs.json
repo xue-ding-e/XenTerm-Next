@@ -1,0 +1,23 @@
+{
+  "SHA": "459b593c830b8be643df29f9d9c0c46915d54696",
+  "PRODUCT_TREE": "fb7fdd0881444bf790635876bc4088f095b75e43",
+  "TEST_TREE": "3b660a20b67381b3522b6a43f37aaaa433201958",
+  "PATCHES": {
+    "key-import.patch": "1740f70f99d2c715a2f652d526d81896dd5f17db59e513cc50b2916f0e435305",
+    "busy-save-tests-only.patch": "cfc6051f6374a1bb3f72ea74a1b47795047e3c68778ba1ad5ebd9492fa31ed7a"
+  },
+  "FEATURES": [
+    "default",
+    "desktop",
+    "remote-mcp"
+  ],
+  "FIXTURES": {
+    "tests/fixtures/ppk-v3-ed25519.ppk": "5dbddcb49f25a3771daba968f6ae450dc6fdd58df40330b29298150c59e93d63",
+    "tests/fixtures/ppk-v3-ecdsa-encrypted.ppk": "75967a3649661c34eab410e463b92a0b1f9a9e16ceeb82198ecec3184968824f",
+    "tests/fixtures/import-synthetic-ec-sec1.pem": "4233f389ef2e23585992c325419490421722668b91276201a70b2444dc027c9a",
+    "tests/fixtures/import-synthetic-ec-p384-sec1.pem": "f2600b0024e7d282325f012caffc9aa7906dc3c5368635ce21c242603fb9e872",
+    "tests/fixtures/import-synthetic-ec-p521-sec1.pem": "eacb1873d938c5060eb6fde0d47378d48d2405084d92832261ae37f9b0c5526d",
+    "tests/fixtures/ppk-v2-rsa.ppk": "74bae94a5022904bc6a196fbf72d8dbec66a7dcd39f5d7a8652855a4e3c60d4f",
+    "tests/fixtures/ppk-v2-rsa-encrypted.ppk": "d5dfe920a32a95da795b5cec9a934564a2ff7b5b9110d74c32b00157037dada5"
+  }
+}

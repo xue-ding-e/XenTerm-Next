@@ -1,0 +1,328 @@
+{
+  "suites": {
+    "default15": {
+      "harnessFiles": {
+        "Harness.deps.json": "6c759684b5a3dd104888f9405252fb2180076a7544536723ceb360ab4d1aafec",
+        "Harness.dll": "f668e5e4b401effc73b855780bab800e15c30f34c9219cedf1f54320d751a214",
+        "Harness.runtimeconfig.json": "28329cf08f6505e73806b17558b187c02f0c1c516fe47ebfb7a013d082aaa306",
+        "Harness.exe": "8e7ac2d61bfdd354562dc3fdf6fb23453984d7493cc3bf6fb072cd2ae8cf226c"
+      },
+      "receipt": {
+        "schema": 1,
+        "passed": true,
+        "failureType": null,
+        "failureCode": null,
+        "nativeErrorCode": null,
+        "activeCase": "injected-cleanup-uncertainty",
+        "elapsedMilliseconds": 242,
+        "lastObservation": null,
+        "cases": [
+          {
+            "name": "normal",
+            "actualExecutions": 3,
+            "treeEmpty": true,
+            "timedOut": false,
+            "outputExceeded": false,
+            "captureFailed": false,
+            "exitCode": 0,
+            "completionMode": "natural-tree",
+            "forcedOwnedCleanup": false,
+            "boundaryRootSignaled": true,
+            "boundaryActiveProcessCount": 0,
+            "boundaryRootExitCodeKnown": true,
+            "boundaryRootExitCode": 0,
+            "retainedBytes": 0,
+            "passed": true
+          },
+          {
+            "name": "timeout",
+            "actualExecutions": 3,
+            "treeEmpty": true,
+            "timedOut": true,
+            "outputExceeded": false,
+            "captureFailed": false,
+            "exitCode": 124,
+            "completionMode": "natural-tree",
+            "forcedOwnedCleanup": true,
+            "boundaryRootSignaled": false,
+            "boundaryActiveProcessCount": 4,
+            "boundaryRootExitCodeKnown": false,
+            "boundaryRootExitCode": null,
+            "retainedBytes": 0,
+            "passed": true
+          },
+          {
+            "name": "output-budget",
+            "actualExecutions": 3,
+            "treeEmpty": true,
+            "timedOut": false,
+            "outputExceeded": true,
+            "captureFailed": false,
+            "exitCode": 124,
+            "completionMode": "natural-tree",
+            "forcedOwnedCleanup": false,
+            "boundaryRootSignaled": true,
+            "boundaryActiveProcessCount": 0,
+            "boundaryRootExitCodeKnown": true,
+            "boundaryRootExitCode": 124,
+            "retainedBytes": 1048576,
+            "passed": true
+          },
+          {
+            "name": "parent-exit",
+            "actualExecutions": 3,
+            "treeEmpty": true,
+            "timedOut": true,
+            "outputExceeded": false,
+            "captureFailed": false,
+            "exitCode": 0,
+            "completionMode": "natural-tree",
+            "forcedOwnedCleanup": true,
+            "boundaryRootSignaled": true,
+            "boundaryActiveProcessCount": 3,
+            "boundaryRootExitCodeKnown": true,
+            "boundaryRootExitCode": 0,
+            "retainedBytes": 0,
+            "passed": true
+          },
+          {
+            "name": "root-completed-cleanup",
+            "actualExecutions": 3,
+            "treeEmpty": true,
+            "timedOut": false,
+            "outputExceeded": false,
+            "captureFailed": false,
+            "exitCode": 0,
+            "completionMode": "root-completed-then-owned-cleanup",
+            "forcedOwnedCleanup": true,
+            "boundaryRootSignaled": true,
+            "boundaryActiveProcessCount": 3,
+            "boundaryRootExitCodeKnown": true,
+            "boundaryRootExitCode": 0,
+            "retainedBytes": 0,
+            "passed": true
+          },
+          {
+            "name": "root-nonzero",
+            "actualExecutions": 3,
+            "treeEmpty": true,
+            "timedOut": false,
+            "outputExceeded": false,
+            "captureFailed": false,
+            "exitCode": 7,
+            "completionMode": "root-completed-then-owned-cleanup",
+            "forcedOwnedCleanup": true,
+            "boundaryRootSignaled": true,
+            "boundaryActiveProcessCount": 3,
+            "boundaryRootExitCodeKnown": true,
+            "boundaryRootExitCode": 7,
+            "retainedBytes": 0,
+            "passed": true
+          },
+          {
+            "name": "root-mode-timeout",
+            "actualExecutions": 3,
+            "treeEmpty": true,
+            "timedOut": true,
+            "outputExceeded": false,
+            "captureFailed": false,
+            "exitCode": 124,
+            "completionMode": "root-completed-then-owned-cleanup",
+            "forcedOwnedCleanup": true,
+            "boundaryRootSignaled": false,
+            "boundaryActiveProcessCount": 4,
+            "boundaryRootExitCodeKnown": false,
+            "boundaryRootExitCode": null,
+            "retainedBytes": 0,
+            "passed": true
+          },
+          {
+            "name": "root-mode-output-budget",
+            "actualExecutions": 3,
+            "treeEmpty": true,
+            "timedOut": false,
+            "outputExceeded": true,
+            "captureFailed": false,
+            "exitCode": 124,
+            "completionMode": "root-completed-then-owned-cleanup",
+            "forcedOwnedCleanup": false,
+            "boundaryRootSignaled": true,
+            "boundaryActiveProcessCount": 0,
+            "boundaryRootExitCodeKnown": true,
+            "boundaryRootExitCode": 124,
+            "retainedBytes": 1048576,
+            "passed": true
+          },
+          {
+            "name": "invalid-completion-mode",
+            "actualExecutions": 0,
+            "expectedRejection": true,
+            "passed": true
+          },
+          {
+            "name": "invalid-env",
+            "actualExecutions": 0,
+            "expectedRejection": true,
+            "passed": true
+          },
+          {
+            "name": "null-args",
+            "actualExecutions": 0,
+            "expectedRejection": true,
+            "passed": true
+          },
+          {
+            "name": "nul-arg",
+            "actualExecutions": 0,
+            "expectedRejection": true,
+            "passed": true
+          },
+          {
+            "name": "same-logs",
+            "actualExecutions": 0,
+            "expectedRejection": true,
+            "passed": true
+          },
+          {
+            "name": "concurrent",
+            "actualExecutions": 3,
+            "deniedExecutions": 0,
+            "treeEmpty": true,
+            "passed": true
+          },
+          {
+            "name": "injected-cleanup-uncertainty",
+            "actualExecutions": 3,
+            "deniedExecutions": 0,
+            "treeEmpty": true,
+            "injectedAfterRealEmpty": true,
+            "passed": true
+          }
+        ],
+        "productExecuted": false,
+        "nativeFixtureExecuted": true,
+        "cleanupFailureIsInjected": true
+      },
+      "fixtureFiles": {
+        "Fixture.runtimeconfig.json": "28329cf08f6505e73806b17558b187c02f0c1c516fe47ebfb7a013d082aaa306",
+        "Fixture.deps.json": "b1c5139d88fd24e56bf7e152d2931320b92e9ce8a27ac6b8d483caeb0a1c6032",
+        "Fixture.exe": "4613c9d46a76b9adf66af6b6af5a63c073ccc9e7578d45e40376b9ea60f65149",
+        "Fixture.dll": "632d73a83e08fc7ddffb9d231171964e4339a3883bd5445b1041226560d1e771"
+      },
+      "controlSha": "fbfcc1c4d0defbe05d893fc19a3cfa7c6d38cf2d",
+      "runId": "41175440054",
+      "exit": 0
+    },
+    "compile8": {
+      "harnessFiles": {
+        "CompilePolicyHarness.deps.json": "7505354913aaf7754c4771395eaf01fc405f8602e138f86cc3b348c4eeae369c",
+        "CompilePolicyHarness.exe": "970e28d6fee5efca5a36a8143d90672e609432c836ee251d79f5e13875c6cfdb",
+        "CompilePolicyHarness.dll": "1f9028b657f71072f0e9c672d10ff50edc0f814875e27d95ab6508225751e5f1",
+        "CompilePolicyHarness.runtimeconfig.json": "28329cf08f6505e73806b17558b187c02f0c1c516fe47ebfb7a013d082aaa306"
+      },
+      "receipt": {
+        "passed": true,
+        "case_count": 8,
+        "cases": [
+          {
+            "name": "compile-policy-natural-tree-cleanup",
+            "passed": true,
+            "actualExecutions": 3,
+            "injectedClock": false,
+            "productionRequestedSeconds": 2700,
+            "retainedBytes": 0,
+            "stdoutBytes": 0,
+            "stderrBytes": 0,
+            "cleanupMilliseconds": 0,
+            "safeToStart": true,
+            "treeEmpty": true,
+            "outputExceeded": false,
+            "forcedOwnedCleanup": false
+          },
+          {
+            "name": "compile-policy-output-hard-cap",
+            "passed": true,
+            "actualExecutions": 3,
+            "injectedClock": false,
+            "productionRequestedSeconds": 2700,
+            "retainedBytes": 16777216,
+            "stdoutBytes": 8355840,
+            "stderrBytes": 8421376,
+            "cleanupMilliseconds": 4,
+            "safeToStart": true,
+            "treeEmpty": true,
+            "outputExceeded": true,
+            "forcedOwnedCleanup": false
+          },
+          {
+            "name": "compile-policy-timeout-cleanup",
+            "passed": true,
+            "actualExecutions": 3,
+            "injectedClock": true,
+            "injectedMilliseconds": 8000,
+            "productionRequestedSeconds": 2700,
+            "treeEmpty": true,
+            "timedOut": true,
+            "cleanupMilliseconds": 5,
+            "safeToStart": true
+          },
+          {
+            "name": "compile-policy-argv-rejection",
+            "passed": true,
+            "actualExecutions": 0,
+            "expectedRejection": true
+          },
+          {
+            "name": "compile-policy-root-mode-rejection",
+            "passed": true,
+            "actualExecutions": 0,
+            "expectedRejection": true
+          },
+          {
+            "name": "compile-policy-deadline-rejection",
+            "passed": true,
+            "actualExecutions": 0,
+            "expectedRejection": true
+          },
+          {
+            "name": "compile-policy-rustup-selector-rejection",
+            "passed": true,
+            "actualExecutions": 0,
+            "expectedRejection": true
+          },
+          {
+            "name": "unknown-policy-rejection",
+            "passed": true,
+            "actualExecutions": 0,
+            "expectedRejection": true
+          }
+        ],
+        "failureCase": null,
+        "productCompileAttempted": false,
+        "productRuntimeAttempted": false,
+        "full45MinuteElapsedValidation": false
+      },
+      "fixtureFiles": {
+        "cargo.dll": "b3da82808bed26663dec22839d124e2be0eeaf0fba23da24a08049eeb6e7a117",
+        "cargo.exe": "30518f2230131a936e6d55f90a6ab8c6a17e6053e7e7d11116dd92387e7e25b2",
+        "cargo.runtimeconfig.json": "28329cf08f6505e73806b17558b187c02f0c1c516fe47ebfb7a013d082aaa306",
+        "cargo.deps.json": "076f987b03ed3ab5a267274d214ea83d0b5a009a0100f807a46d7ee3f6ff740a"
+      },
+      "controlSha": "fbfcc1c4d0defbe05d893fc19a3cfa7c6d38cf2d",
+      "runId": "41175440054",
+      "exit": 0
+    }
+  },
+  "runId": "41175440054",
+  "finalIdentity": true,
+  "compilerCodes": [],
+  "failureType": null,
+  "controlSha": "fbfcc1c4d0defbe05d893fc19a3cfa7c6d38cf2d",
+  "sourceManifestSha256": "1BCAF49069747F5459A0DDACF769923E48B624268449B4DA8B29C48EA6C093EA",
+  "full45MinuteElapsedValidation": false,
+  "stage": "native-compile8",
+  "productCompileAttempted": false,
+  "productRuntimeAttempted": false,
+  "passed": true,
+  "initialIdentity": true
+}
