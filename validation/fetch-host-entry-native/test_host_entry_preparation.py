@@ -90,14 +90,15 @@ class HostEntryControl(unittest.TestCase):
         for text in ('DOTNET_CLI_TELEMETRY_OPTOUT', 'DOTNET_SKIP_FIRST_TIME_EXPERIENCE', 'isolated/nuget', 'isolated/home'):
             self.assertIn(text, env)
 
-    def test_timeouts_fail_and_streams_have_zero_retention(self):
+    def test_timeouts_fail_and_harness_streams_have_zero_retention(self):
         source = (ROOT / 'run-host-entry.ps1').read_text()
         for text in ('WaitForExit(60000)', 'WaitForExit(90000)', '$info.WorkingDirectory=$work',
                      'lifecycle unknown', '[IO.Stream]::Null', '--disable-build-servers'):
             self.assertIn(text, source)
         self.assertNotIn('build.stdout.log', source)
         self.assertNotIn('[IO.File]::Open', source)
-        self.assertEqual(source.count('CopyToAsync([IO.Stream]::Null)'), 4)
+        self.assertEqual(source.count('CopyToAsync([IO.Stream]::Null)'), 2)
+        self.assertIn("Fail-Diagnostic 'BUILD_OUTPUT_LIMIT'", source)
 
     def test_snapshot_runtime_and_sanitized_failure_contract(self):
         source = (ROOT / 'run-host-entry.ps1').read_text()
@@ -143,7 +144,7 @@ class HostEntryControl(unittest.TestCase):
         self.assertIn('$check.changedIndices+= $i', check)
         self.assertIn('$class=Extra-Class $relative', check)
         self.assertNotIn('$check.extraClasses[$relative]', check)
-        for field in ('missingIndices', 'changedIndices', 'extraCount', 'extraClasses', 'scanComplete'):
+        for field in ('missingIndices', 'changedIndices', 'extraCount', 'extraClasses', 'extraEntries', 'scanComplete'):
             self.assertIn(field, check)
         self.assertIn("Fail-Diagnostic 'COPY_EXTRA'", check)
         self.assertIn('Compare-Object ($compileInputs|Sort-Object)', check)
@@ -155,6 +156,66 @@ class HostEntryControl(unittest.TestCase):
             value = known.get(Path(name).suffix.lower(), 'other')
             self.assertEqual(value, want)
             self.assertNotIn(name, value)
+
+    def test_bounded_capture_model_and_fixed_storage(self):
+        source = (ROOT / 'run-host-entry.ps1').read_text()
+        for text in ('public const int Limit=65536', 'readonly byte[] retained=new byte[Limit]',
+                     'copy=Math.Min(size,Limit-old)', 'if(copy<size) exceeded=true',
+                     '$stdoutCapture.Drain', '$stderrCapture.Drain'):
+            self.assertIn(text, source)
+        self.assertNotIn('ReadToEnd', source)
+        for total in (0, 65535, 65536, 65537, 2 * 1024 * 1024):
+            retained = bytearray(); overflow = False
+            for start in range(0, total, 4096):
+                chunk = b'x' * min(4096, total - start)
+                copied = min(len(chunk), 65536 - len(retained))
+                retained.extend(chunk[:copied]); overflow |= copied < len(chunk)
+                self.assertLessEqual(len(retained), 65536)
+            self.assertEqual(len(retained), min(total, 65536))
+            self.assertEqual(overflow, total > 65536)
+
+    def test_diagnostic_redaction_reference_negatives(self):
+        # Reference probes for fixed redaction categories, not a PowerShell run.
+        def sanitize(line):
+            if re.search(r'[A-Za-z0-9_]*(?:token|password|secret|authorization|credential|api[_-]?key)[A-Za-z0-9_]*|\b(?:Bearer|Basic)\s+\S+|\b(?:gh[pousr]_|github_pat_|sk-)[A-Za-z0-9_-]+|\bAKIA[A-Z0-9]{16}\b', line, re.I): return None
+            if re.search(r'\b[A-Z_][A-Z0-9_]{2,}\s*=', line): return None
+            line = re.sub(re.escape(r'C:\Program Files\dotnet') + r'(?=[\\/]|$)', '<dotnet>', line, flags=re.I)
+            line = re.sub(r'https?://\S+', '<url>', line, flags=re.I)
+            line = re.sub(r'(?:[A-Z]:[\\/]|\\\\)[^\r\n\]"\)]*', '<absolute-path>', line, flags=re.I)
+            line = re.sub(r'(?<![A-Za-z0-9_>])/(?:[^\r\n\]"\)]+)', '<absolute-path>', line)
+            line = re.sub(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', '<email>', line)
+            return line
+        for value in ('error SDK C:\\Users\\private person\\config.txt',
+                      'error MSB1009 \\\\private-server\\private-share\\file',
+                      'error SDK /home/private/file', 'error https://user:pass@example.invalid/private',
+                      'error user@example.invalid', r'error C:\Program Files\dotnet-private\x.cs'):
+            out = sanitize(value)
+            for secret in ('private person', 'private-server', 'private-share', '/home/private', 'user:pass', 'user@example', 'dotnet-private'):
+                self.assertNotIn(secret, out)
+        for value in ('error token=synthetic-private', 'error access_token=synthetic-private',
+                      'warning GITHUB_TOKEN=synthetic-private', 'error Bearer synthetic-private',
+                      'warning HOME=private-home', 'error Basic synthetic-private',
+                      'error github_pat_synthetic-private'):
+            self.assertIsNone(sanitize(value))
+        self.assertEqual(sanitize(r'error C:\Program Files\dotnet\sdk\file.cs'), r'error <dotnet>\sdk\file.cs')
+        self.assertEqual(sanitize('error CS1002 <source>/Host/Program.cs'), 'error CS1002 <source>/Host/Program.cs')
+        source = (ROOT / 'run-host-entry.ps1').read_text()
+        for text in ('$lines.Count -lt 32', '$safe.Length -gt 512', '$codes.Count -lt 32',
+                     "diagnosticFailure='SANITIZE_FAILED'", 'retainedBytes=$Capture.RetainedBytes'):
+            self.assertIn(text, source)
+
+    def test_extra_paths_are_root_bound_and_not_read_for_content(self):
+        source = (ROOT / 'run-host-entry.ps1').read_text()
+        body = source.split('function Safe-ExtraEntry')[1].split('function Plain')[0]
+        for text in ('IsPathRooted', '$Relative.Length -gt 256', 'GetFullPath',
+                     'StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)',
+                     'Plain $full', "kind='regular-file'", 'bytes=$file.Length'):
+            self.assertIn(text, body)
+        for text in ('ReadAllText', 'ReadAllBytes', 'Get-Content', '.OpenRead'):
+            self.assertNotIn(text, body)
+        self.assertIn('$check.extraEntries.Count -lt 16', source)
+        self.assertIn("Fail-Diagnostic 'COPY_EXTRA'", source)
+
 
 
 if __name__ == '__main__':

@@ -12,6 +12,6 @@
   "NuGet.Config": "9508cae5f76364f56e80eb97cb16493977243cf38e5cca6284e3d74f83b20a2c",
   "expected-cases.json": "2a6a3012fe28c1fd179f879ac6131dd318151cb1906f7d166f296046f179549e",
   "global.json": "0503dacfc3e664e4b7fc0ac7da920e5939da4ee62ab852ce7aec1a0bdbdf38a2",
-  "run-host-entry.ps1": "725f962fb735b17f15627617d498cd9170dd0e61dfc543269703f785520788e0",
-  "test_host_entry_preparation.py": "2cf3da4ee3d348cada49e83bf466d35c15a84edf89e6c1a584eda53708214b08"
+  "run-host-entry.ps1": "94002a7d7be07ab24dbbb47ba1c466d121f7f0fc005766b3eedaf9b16c2ae4aa",
+  "test_host_entry_preparation.py": "0affd6473812d428d2c54c39186c989089e39ac761af1d9e9e4f5593efa13bde"
 }

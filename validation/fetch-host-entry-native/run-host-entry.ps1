@@ -18,7 +18,7 @@ $fixed=@{
 }
 $dotnet='C:\Program Files\dotnet\dotnet.exe'
 $sourceMap=@{}
-$diagnosticCodes=@('SCOPE','SOURCE_MANIFEST','SOURCE_INVENTORY','SOURCE_HASH','WORKFLOW_HASH','COPY_READ','COPY_SCAN','COPY_MISSING','COPY_HASH','COPY_EXTRA','COPY_INVENTORY','DOTNET_HASH','RUNTIME_HASH','BUILD_ENV','BUILD_START','BUILD_STREAM_INIT','BUILD_WAIT','BUILD_TIMEOUT','BUILD_DRAIN','BUILD_EXIT','HARNESS_START','HARNESS_WAIT','HARNESS_DRAIN','RESULT_VALIDATE','OTHER')
+$diagnosticCodes=@('SCOPE','SOURCE_MANIFEST','SOURCE_INVENTORY','SOURCE_HASH','WORKFLOW_HASH','COPY_READ','COPY_SCAN','COPY_MISSING','COPY_HASH','COPY_EXTRA','COPY_INVENTORY','DOTNET_HASH','RUNTIME_HASH','BUILD_ENV','BUILD_START','BUILD_STREAM_INIT','BUILD_WAIT','BUILD_TIMEOUT','BUILD_DRAIN','BUILD_EXIT','BUILD_OUTPUT_LIMIT','CAPTURE_HELPER','COPY_PATH','HARNESS_START','HARNESS_WAIT','HARNESS_DRAIN','RESULT_VALIDATE','OTHER')
 $diagnosticStages=@('scope','source-identity','dotnet-identity','build-host','build-fixture','build-harness','runtime-identity','synthetic-host-entry13')
 function Fail-Diagnostic([string]$Code) {
  if($Code -notin $diagnosticCodes){$Code='OTHER'}
@@ -39,6 +39,71 @@ function Extra-Class([string]$Relative) {
   '.pdb' {return 'pdb'} '.cache' {return 'cache'} '.txt' {return 'txt'}
   default {return 'other'}
  }
+}
+function Initialize-BoundedCapture {
+ Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+public sealed class XenBuildCaptureV1 {
+    public const int Limit=65536;
+    readonly byte[] retained=new byte[Limit];
+    int count=0;
+    long seen=0;
+    volatile bool exceeded=false;
+    public int RetainedBytes { get { return Volatile.Read(ref count); } }
+    public long ObservedBytes { get { return Interlocked.Read(ref seen); } }
+    public bool Exceeded { get { return exceeded; } }
+    public string Text { get { return Encoding.UTF8.GetString(retained,0,RetainedBytes); } }
+    public async Task Drain(Stream input) {
+        var buffer=new byte[4096];
+        int size;
+        while((size=await input.ReadAsync(buffer,0,buffer.Length).ConfigureAwait(false))>0) {
+            Interlocked.Add(ref seen,size);
+            int old=RetainedBytes,copy=Math.Min(size,Limit-old);
+            if(copy>0) {Buffer.BlockCopy(buffer,0,retained,old,copy);Volatile.Write(ref count,old+copy);}
+            if(copy<size) exceeded=true;
+            // Drain excess without retaining it. The parent keeps its original
+            // 60-second process bound, and any excess makes the build fail.
+        }
+    }
+}
+'@
+}
+function Safe-BuildDiagnostic($Capture) {
+ $lines=[Collections.Generic.List[string]]::new();$codes=@{};$omitted=0
+ foreach($line in ($Capture.Text -split "`r?`n")){
+  foreach($match in [regex]::Matches($line,'\b(?:CS|MSB|NU|NETSDK)[0-9]{3,5}\b')){
+   if($codes.ContainsKey($match.Value)){$codes[$match.Value]=[Math]::Min(1000,$codes[$match.Value]+1)}elseif($codes.Count -lt 32){$codes[$match.Value]=1}
+  }
+  if($line -notmatch '(?i)error|warning|sdk|msbuild|global\.json|could not|failed|exception|targetframework|^\s*[0-9]+\.[0-9]+\.[0-9]+'){continue}
+  if($line -match '(?i)[A-Za-z0-9_]*(?:token|password|secret|authorization|credential|api[_-]?key)[A-Za-z0-9_]*|\b(?:Bearer|Basic)\s+\S+|\b(?:gh[pousr]_|github_pat_|sk-)[A-Za-z0-9_-]+|\bAKIA[A-Z0-9]{16}\b' -or $line -cmatch '\b[A-Z_][A-Z0-9_]{2,}\s*='){$omitted++;continue}
+  $safe=$line
+  # Replace only known runtime roots by logical names before the generic path
+  # redactor; no environment dump, raw exception, or arbitrary filename content.
+  foreach($pair in @(@($work,'<source>'),@($PSScriptRoot,'<control>'),@($env:GITHUB_WORKSPACE,'<checkout>'),@($OutputRoot,'<output>'),@([IO.Path]::GetDirectoryName($dotnet),'<dotnet>'))){
+   if($pair[0]){$safe=[regex]::Replace($safe,([regex]::Escape($pair[0])+'(?=[\\/]|$)'),$pair[1],[Text.RegularExpressions.RegexOptions]::IgnoreCase)}
+  }
+  $safe=[regex]::Replace($safe,'(?i)https?://\S+','<url>')
+  $safe=[regex]::Replace($safe,'(?i)(?:[A-Z]:[\\/]|\\\\)[^\r\n\]"\)]*','<absolute-path>')
+  $safe=[regex]::Replace($safe,'(?<![A-Za-z0-9_>])/(?:[^\r\n\]"\)]+)','<absolute-path>')
+  $safe=[regex]::Replace($safe,'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}','<email>')
+  $safe=[regex]::Replace($safe,'[\x00-\x08\x0b\x0c\x0e-\x1f]','?')
+  if($safe.Length -gt 512){$safe=$safe.Substring(0,512)+'<truncated>'}
+  if($lines.Count -lt 32){$lines.Add($safe)}else{$omitted++}
+ }
+ return @{retainedBytes=$Capture.RetainedBytes;observedBytes=$Capture.ObservedBytes;limitBytes=65536;overflow=$Capture.Exceeded;lines=@($lines.ToArray());codes=$codes;omittedLines=$omitted}
+}
+function Safe-ExtraEntry([string]$Relative) {
+ if([IO.Path]::IsPathRooted($Relative) -or $Relative.Length -gt 256 -or $Relative -match '(^|/)\.\.(/|$)' -or $Relative -match '[:\x00-\x1f]' -or $Relative -notmatch '^[A-Za-z0-9._/+,=@ ()-]+$'){Fail-Diagnostic 'COPY_PATH'}
+ $full=[IO.Path]::GetFullPath((Join-Path $work $Relative));$prefix=[IO.Path]::GetFullPath($work)+[IO.Path]::DirectorySeparatorChar
+ if(-not $full.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)){Fail-Diagnostic 'COPY_PATH'}
+ Plain $full
+ $file=Get-Item -LiteralPath $full -Force
+ if($file.PSIsContainer){Fail-Diagnostic 'COPY_PATH'}
+ return @{relative=$Relative;kind='regular-file';extensionClass=(Extra-Class $Relative);bytes=$file.Length}
 }
 function Plain([string]$Path) {
  if(-not [IO.Path]::IsPathFullyQualified($Path) -or [IO.Path]::GetFullPath($Path) -ne $Path){throw 'canonical path required'}
@@ -65,7 +130,7 @@ function Check-Identity {
 function Check-Copies {
  $script:checkpoint='COPY_READ'
  $phase=if($script:inFinal){'final'}else{'primary'}
- $check=@{ordinal=$copyChecks.Count;phase=$phase;missingIndices=@();changedIndices=@();extraCount=0;extraClasses=@{};scanComplete=$false}
+ $check=@{ordinal=$copyChecks.Count;phase=$phase;missingIndices=@();changedIndices=@();extraCount=0;extraClasses=@{};extraEntries=@();extraEntriesTruncated=$false;scanComplete=$false}
  $copyChecks.Add($check)
  for($i=0;$i -lt $compileInputs.Count;$i++){
   $name=$compileInputs[$i];$path=Join-Path $work $name;Plain $path
@@ -74,7 +139,7 @@ function Check-Copies {
  }
  $script:checkpoint='COPY_SCAN'
  $actual=@(Get-ChildItem -LiteralPath $work -Recurse -Force -File | ForEach-Object {[IO.Path]::GetRelativePath($work,$_.FullName).Replace('\','/')})
- foreach($relative in $actual){if($relative -notin $compileInputs){$check.extraCount++;$class=Extra-Class $relative;if(-not $check.extraClasses.ContainsKey($class)){$check.extraClasses[$class]=0};$check.extraClasses[$class]++}}
+ foreach($relative in $actual){if($relative -notin $compileInputs){$check.extraCount++;$class=Extra-Class $relative;if(-not $check.extraClasses.ContainsKey($class)){$check.extraClasses[$class]=0};$check.extraClasses[$class]++;$entry=Safe-ExtraEntry $relative;if($check.extraEntries.Count -lt 16){$check.extraEntries+=$entry}else{$check.extraEntriesTruncated=$true}}}
  $check.scanComplete=$true
  if($check.missingIndices.Count -gt 0){Fail-Diagnostic 'COPY_MISSING'}
  if($check.changedIndices.Count -gt 0){Fail-Diagnostic 'COPY_HASH'}
@@ -93,7 +158,7 @@ function Set-ChildEnvironment([Diagnostics.ProcessStartInfo]$Info) {
 }
 function Build([string]$Project,[string]$Name,[string]$Exe) {
     $script:stage='build-'+$Name
-    $outcome=@{stage=$script:stage;started=$false;exited=$null;exitCode=$null;streamsComplete=$null;timedOut=$null}
+    $outcome=@{stage=$script:stage;started=$false;exited=$null;exitCode=$null;streamsComplete=$null;timedOut=$null;outputExceeded=$null;stdout=$null;stderr=$null;diagnosticFailure=$null}
     $buildOutcomes.Add($outcome);$script:checkpoint='BUILD_ENV'
     $bin=Join-Path $OutputRoot ($Name+'/bin/');$obj=Join-Path $OutputRoot ($Name+'/obj/')
     $info=[Diagnostics.ProcessStartInfo]::new($dotnet)
@@ -101,12 +166,13 @@ function Build([string]$Project,[string]$Name,[string]$Exe) {
     $info.WorkingDirectory=$work
     $info.UseShellExecute=$false;$info.RedirectStandardOutput=$true;$info.RedirectStandardError=$true
     foreach($arg in @('build',$Project,'--disable-build-servers','-c','Release',"-p:RestoreConfigFile=$work/NuGet.Config",'-p:NuGetAudit=false','-p:ImportDirectoryBuildProps=false','-p:ImportDirectoryBuildTargets=false',"-p:BaseOutputPath=$bin","-p:BaseIntermediateOutputPath=$obj",'-v:q')){$info.ArgumentList.Add($arg)}
-    $process=$null
+    $process=$null;$stdoutCapture=$null;$stderrCapture=$null
     try {
         $script:checkpoint='BUILD_START'
         $process=[Diagnostics.Process]::Start($info);$outcome.started=$true
         $script:checkpoint='BUILD_STREAM_INIT'
-        $copies=[Threading.Tasks.Task[]]@($process.StandardOutput.BaseStream.CopyToAsync([IO.Stream]::Null),$process.StandardError.BaseStream.CopyToAsync([IO.Stream]::Null))
+        $stdoutCapture=[XenBuildCaptureV1]::new();$stderrCapture=[XenBuildCaptureV1]::new()
+        $copies=[Threading.Tasks.Task[]]@($stdoutCapture.Drain($process.StandardOutput.BaseStream),$stderrCapture.Drain($process.StandardError.BaseStream))
         $script:checkpoint='BUILD_WAIT'
         if(-not $process.WaitForExit(60000)){
             $outcome.exited=$false;$outcome.timedOut=$true;$script:checkpoint='BUILD_TIMEOUT'
@@ -116,8 +182,16 @@ function Build([string]$Project,[string]$Name,[string]$Exe) {
         $script:checkpoint='BUILD_DRAIN'
         $outcome.streamsComplete=[Threading.Tasks.Task]::WaitAll($copies,5000)
         if(-not $outcome.streamsComplete){Fail-Diagnostic 'BUILD_DRAIN'}
+        $outcome.outputExceeded=$stdoutCapture.Exceeded -or $stderrCapture.Exceeded
+        if($outcome.outputExceeded){Fail-Diagnostic 'BUILD_OUTPUT_LIMIT'}
         if($outcome.exitCode -ne 0){Fail-Diagnostic 'BUILD_EXIT'}
-    } finally {if($process){$process.Dispose()}}
+    } finally {
+        try {
+            if($stdoutCapture){$outcome.stdout=Safe-BuildDiagnostic $stdoutCapture}
+            if($stderrCapture){$outcome.stderr=Safe-BuildDiagnostic $stderrCapture}
+        } catch {$outcome.diagnosticFailure='SANITIZE_FAILED';$outcome.stdout=$null;$outcome.stderr=$null}
+        if($process){$process.Dispose()}
+    }
     return (Join-Path $bin ('Release/net8.0/'+$Exe))
 }
 
@@ -138,6 +212,7 @@ try {
  $work=Join-Path $OutputRoot 'build';[IO.Directory]::CreateDirectory($work)|Out-Null
  foreach($name in $compileInputs){$destination=Join-Path $work $name;[IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($destination))|Out-Null;Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $destination}
  $copied=$true;Check-Copies
+ $checkpoint='CAPTURE_HELPER';Initialize-BoundedCapture
  $fetchHost=Build 'Host/FetchHost.csproj' 'host' 'FetchHost.exe'
  $fixture=Build 'Fixture/Fixture.csproj' 'fixture' 'cargo.exe'
  $harness=Build 'Harness/Harness.csproj' 'harness' 'FetchHostEntryHarness.exe'
