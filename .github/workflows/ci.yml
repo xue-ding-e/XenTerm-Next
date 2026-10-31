@@ -1,4 +1,4 @@
-name: Compile-policy synthetic Windows qualification (manual proposal)
+name: Fetch-policy synthetic Windows qualification (manual candidate)
 on:
   workflow_dispatch:
     inputs:
@@ -12,7 +12,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   synthetic:
-    if: github.repository == 'xue-ding-e/XenTerm-Next' && github.ref == 'refs/heads/validation/xenterm-compile-policy-v2-20261030' && github.event_name == 'workflow_dispatch' && inputs.expected_sha == github.sha
+    if: github.repository == 'xue-ding-e/XenTerm-Next' && github.ref == 'refs/heads/validation/xenterm-fetch-policy-v1-20261031' && github.event_name == 'workflow_dispatch' && inputs.expected_sha == github.sha
     runs-on: windows-latest
     timeout-minutes: 6
     env:
@@ -26,15 +26,15 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Qualify only synthetic default and compile command policies
+      - name: Qualify only synthetic fetch command policy
         shell: pwsh
         timeout-minutes: 3
-        run: ./validation/compile-native/run-combined.ps1
-      - name: Upload only available sanitized metadata
+        run: ./validation/fetch-native/run-fetch.ps1
+      - name: Upload only sanitized qualification metadata
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: compile-policy-native-metadata
-          path: ${{ runner.temp }}/xenterm-compile-qualification-${{ github.sha }}/metadata.json
+          name: fetch-policy-native-metadata
+          path: ${{ runner.temp }}/xenterm-fetch-qualification-${{ github.sha }}/metadata.json
           if-no-files-found: ignore
           retention-days: 7

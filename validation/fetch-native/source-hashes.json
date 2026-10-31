@@ -1,0 +1,17 @@
+{
+  ".github/workflows/ci.yml": "95bc2259d298c8f38815704c1fdd10e4b7494774fb822b69a2268634f5253a44",
+  "NuGet.Config": "9508cae5f76364f56e80eb97cb16493977243cf38e5cca6284e3d74f83b20a2c",
+  "global.json": "0503dacfc3e664e4b7fc0ac7da920e5939da4ee62ab852ce7aec1a0bdbdf38a2",
+  "run-fetch.ps1": "b349368dc2faab18e5505623f7556ee9dd8378a0a248a00d106acc5e4004bb62",
+  "Fixture/Program.cs": "b49c273b8a8b71bba1dd013daa2e4fab28c835301b549452a7b09da54c952e13",
+  "Fixture/Fixture.csproj": "f266a043c6377894aa71007bf87d3b69760880f248a158b8fb3ef7922cf061e3",
+  "Harness/Program.cs": "ff9c4fa572352f84192339cd6ae95499256199bfe7c440e9d83af133f290e156",
+  "Harness/Harness.csproj": "d9936388dc7263cc54b1340dbda85c86925a0f95cb4015ab795e2340bafaf086",
+  "Harness/fetch-owned-process.cs": "d6d9d3b5c31a2f697eb435cdbf99f0fc968e2af912b069923bc6f8c7497331b3",
+  "Harness/short-clock-owned-process.cs": "9a1b36395200e15b83ee6b55c26957b2c5b7d239e5c95bc09c6b3b0c395987e1",
+  "Host/FetchHost.csproj": "fdcf2d82f51d9986e855c388eeafb0a67b186ffbfc31a0bf47fab47ba52defa9",
+  "Host/Program.cs": "0f94cd746e8a04d7bb5e794683a30b7512d406319eccb3e3c4e6fb3d79e29ae3",
+  "Host/fetch-owned-process.cs": "d6d9d3b5c31a2f697eb435cdbf99f0fc968e2af912b069923bc6f8c7497331b3",
+  "Host/NuGet.Config": "9508cae5f76364f56e80eb97cb16493977243cf38e5cca6284e3d74f83b20a2c",
+  "Host/global.json": "0503dacfc3e664e4b7fc0ac7da920e5939da4ee62ab852ce7aec1a0bdbdf38a2"
+}
