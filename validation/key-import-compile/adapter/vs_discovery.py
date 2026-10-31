@@ -83,12 +83,26 @@ def parse_selector(raw):
  return version
 
 
+def discovery_environment(root):
+ # Same-run differential 41203671031: minimal env returns 0 instances; these
+ # fixed machine directories restore the installed SetupConfiguration query.
+ # No ambient credentials/profile are copied. Only vswhere receives this env;
+ # compiler/fetch child environments retain their independent isolation.
+ base={'SYSTEMROOT':'C:\\Windows','WINDIR':'C:\\Windows','PATH':'C:\\Windows\\System32',
+      'HOME':str(root/'home'),'USERPROFILE':str(root/'home'),'TEMP':str(root/'tmp'),'TMP':str(root/'tmp')}
+ base.update(PROGRAMDATA=r'C:\ProgramData',ALLUSERSPROFILE=r'C:\ProgramData',
+             PROGRAMFILES=r'C:\Program Files',PROGRAMW6432=r'C:\Program Files',SYSTEMDRIVE='C:')
+ base['ProgramFiles(x86)']=r'C:\Program Files (x86)'
+ base['CommonProgramFiles']=r'C:\Program Files\Common Files'
+ base['CommonProgramFiles(x86)']=r'C:\Program Files (x86)\Common Files'
+ return base
+
+
 def select_installed(root):
  require(os.name=='nt','VS_DISCOVERY_WINDOWS_ONLY');root=plain(root)
  executable=plain(Path(str(VSWHERE)));require(executable.is_file(),'VS_DISCOVERY_TOOL')
  before=digest(executable)
- env={'SYSTEMROOT':'C:\\Windows','WINDIR':'C:\\Windows','PATH':'C:\\Windows\\System32',
-      'HOME':str(root/'home'),'USERPROFILE':str(root/'home'),'TEMP':str(root/'tmp'),'TMP':str(root/'tmp')}
+ env=discovery_environment(root)
  selected=parse_discovery(run_installed_query(executable,env))
  require(digest(plain(executable))==before,'VS_DISCOVERY_TOOL_CHANGED')
  installation=plain(Path(selected['installation_root']));require(installation.is_dir(),'VS_DISCOVERY_ROOT')

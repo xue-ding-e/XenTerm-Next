@@ -1,12 +1,24 @@
 """Pure discovery/parser and fake-process tests; never executes installed VS tools."""
 import io,json,subprocess,unittest
 from unittest.mock import Mock,patch
-from pathlib import PureWindowsPath
+from pathlib import PureWindowsPath, Path
 import vs_discovery as v
 
 class Discovery(unittest.TestCase):
  def row(self):return dict(installationPath=str(v.ROOTS['vs2026-enterprise'][0]),installationVersion='18.11.12315.225',isComplete=True,isLaunchable=True,isPrerelease=False)
  def parse(self,row):return v.parse_discovery(json.dumps([row]).encode())
+ def test_discovery_env_matches_qualified_machine_directories_without_ambient(self):
+  with patch.dict(v.os.environ,{'SECRET':'do-not-copy','PROGRAMDATA':'private'},clear=True):
+   env=v.discovery_environment(Path('/owned'))
+  self.assertNotIn('SECRET',env)
+  expected={'PROGRAMDATA':r'C:\ProgramData','ALLUSERSPROFILE':r'C:\ProgramData',
+   'PROGRAMFILES':r'C:\Program Files','PROGRAMW6432':r'C:\Program Files','SYSTEMDRIVE':'C:',
+   'ProgramFiles(x86)':r'C:\Program Files (x86)','CommonProgramFiles':r'C:\Program Files\Common Files',
+   'CommonProgramFiles(x86)':r'C:\Program Files (x86)\Common Files'}
+  self.assertEqual({key:env[key] for key in expected},expected)
+  self.assertEqual(set(env),set(expected)|{'SYSTEMROOT','WINDIR','PATH','HOME','USERPROFILE','TEMP','TMP'})
+  self.assertEqual(env['HOME'],'/owned/home');self.assertEqual(env['TEMP'],'/owned/tmp')
+  self.assertEqual(env['PATH'],r'C:\Windows\System32')
  def test_actual_image_2026_root_is_selected(self):
   got=self.parse(self.row());self.assertEqual(got['root_id'],'vs2026-enterprise')
   self.assertEqual(got['installation_root'],str(v.ROOTS['vs2026-enterprise'][0]))
