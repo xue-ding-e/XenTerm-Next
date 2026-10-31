@@ -1,0 +1,88 @@
+name: GPUI locked product compile only (manual)
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: xenterm-product-validation
+  cancel-in-progress: false
+jobs:
+  compile:
+    if: github.repository == 'xue-ding-e/XenTerm-Next' && github.ref == 'refs/heads/validation/key-import-compile-only-20261030' && github.event_name == 'workflow_dispatch' && inputs.expected_sha == github.sha
+    runs-on: windows-2025
+    timeout-minutes: 80
+    env:
+      EXPECTED_CONTROL_SHA: ${{ inputs.expected_sha }}
+      PYTHONDONTWRITEBYTECODE: '1'
+      GIT_CONFIG_COUNT: '2'
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: 'false'
+      GIT_CONFIG_KEY_1: core.eol
+      GIT_CONFIG_VALUE_1: lf
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 459b593c830b8be643df29f9d9c0c46915d54696
+          path: _product_checkout
+          persist-credentials: false
+      - name: Own fresh output and isolate fixed product checkout
+        shell: pwsh
+        timeout-minutes: 1
+        run: ./validation/key-import-compile/prepare-product-scope.ps1
+      - name: Prepare isolated Rust setup scope
+        id: rust_scope
+        shell: pwsh
+        timeout-minutes: 1
+        run: ./validation/key-import-compile/adapter/prepare-rust-scope.ps1
+      - id: rust_setup
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        timeout-minutes: 10
+        env:
+          PATH: ${{ steps.rust_scope.outputs.setup_path }}
+          CARGO_HOME: ${{ runner.temp }}/key-import-compile-evidence/cargo-home
+          RUSTUP_HOME: ${{ runner.temp }}/key-import-compile-evidence/rustup-home
+          HOME: ${{ runner.temp }}/key-import-compile-evidence/home
+          USERPROFILE: ${{ runner.temp }}/key-import-compile-evidence/home
+          APPDATA: ${{ runner.temp }}/key-import-compile-evidence/appdata
+          LOCALAPPDATA: ${{ runner.temp }}/key-import-compile-evidence/localappdata
+          TEMP: ${{ runner.temp }}/key-import-compile-evidence/tmp
+          TMP: ${{ runner.temp }}/key-import-compile-evidence/tmp
+          RUSTUP_DIST_SERVER: https://static.rust-lang.org
+          RUSTUP_UPDATE_ROOT: https://static.rust-lang.org/rustup
+        with:
+          toolchain: '1.99.1'
+          targets: x86_64-pc-windows-msvc
+      - name: Build two fixed control Hosts with isolated NuGet directories
+        id: host_build
+        shell: pwsh
+        timeout-minutes: 4
+        run: ./validation/key-import-compile/build-control-hosts.ps1
+      - name: Fetch locked public dependencies then frozen GPUI test compilation only
+        shell: pwsh
+        timeout-minutes: 60
+        env:
+          SETUP_OUTCOME: ${{ steps.rust_setup.outcome }}
+          HOST_OUTCOME: ${{ steps.host_build.outcome }}
+        run: python ./validation/key-import-compile/run-product-compile.py
+      - name: Upload only bounded sanitized outcome metadata
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: gpui-product-compile-metadata
+          path: |
+            ${{ runner.temp }}/key-import-compile-evidence/control-host-build.json
+            ${{ runner.temp }}/key-import-compile-evidence/rust-query-state.json
+            ${{ runner.temp }}/key-import-compile-evidence/fetch.receipt.json
+            ${{ runner.temp }}/key-import-compile-evidence/fetch-validated.json
+            ${{ runner.temp }}/key-import-compile-evidence/compile-adapter-state.json
+            ${{ runner.temp }}/key-import-compile-evidence/product-compile-result.json
+            ${{ runner.temp }}/key-import-compile-evidence/cargo-diagnostics.json
+          if-no-files-found: ignore
