@@ -1,0 +1,283 @@
+{
+  "buildOutcomes": [
+    {
+      "exited": true,
+      "outputExceeded": false,
+      "timedOut": false,
+      "stage": "build-host",
+      "exitCode": 0,
+      "started": true,
+      "diagnosticFailure": null,
+      "streamsComplete": true,
+      "stdout": {
+        "omittedLines": 0,
+        "retainedBytes": 82,
+        "overflow": false,
+        "observedBytes": 82,
+        "codes": {},
+        "lines": [
+          "    0 Warning(s)",
+          "    0 Error(s)"
+        ],
+        "limitBytes": 65536
+      },
+      "stderr": {
+        "omittedLines": 0,
+        "retainedBytes": 0,
+        "overflow": false,
+        "observedBytes": 0,
+        "codes": {},
+        "lines": [],
+        "limitBytes": 65536
+      }
+    },
+    {
+      "exited": true,
+      "outputExceeded": false,
+      "timedOut": false,
+      "stage": "build-fixture",
+      "exitCode": 0,
+      "started": true,
+      "diagnosticFailure": null,
+      "streamsComplete": true,
+      "stdout": {
+        "omittedLines": 0,
+        "retainedBytes": 82,
+        "overflow": false,
+        "observedBytes": 82,
+        "codes": {},
+        "lines": [
+          "    0 Warning(s)",
+          "    0 Error(s)"
+        ],
+        "limitBytes": 65536
+      },
+      "stderr": {
+        "omittedLines": 0,
+        "retainedBytes": 0,
+        "overflow": false,
+        "observedBytes": 0,
+        "codes": {},
+        "lines": [],
+        "limitBytes": 65536
+      }
+    },
+    {
+      "exited": true,
+      "outputExceeded": false,
+      "timedOut": false,
+      "stage": "build-harness",
+      "exitCode": 0,
+      "started": true,
+      "diagnosticFailure": null,
+      "streamsComplete": true,
+      "stdout": {
+        "omittedLines": 0,
+        "retainedBytes": 82,
+        "overflow": false,
+        "observedBytes": 82,
+        "codes": {},
+        "lines": [
+          "    0 Warning(s)",
+          "    0 Error(s)"
+        ],
+        "limitBytes": 65536
+      },
+      "stderr": {
+        "omittedLines": 0,
+        "retainedBytes": 0,
+        "overflow": false,
+        "observedBytes": 0,
+        "codes": {},
+        "lines": [],
+        "limitBytes": 65536
+      }
+    }
+  ],
+  "runId": "41189403380",
+  "fixtureNetworkAttempted": false,
+  "hostOsProcessInvocations": 13,
+  "stage": "synthetic-host-entry13",
+  "case_count": 13,
+  "initialIdentity": true,
+  "primaryFailure": null,
+  "realCargoExecuted": false,
+  "dependencyFetchAttempted": false,
+  "fullTenMinuteElapsedValidation": false,
+  "controlSha": "0ac5255e11c889c2095a20deb2e06e56c1eeee58",
+  "productCompileAttempted": false,
+  "finalIdentity": true,
+  "outerTimeoutObserved": false,
+  "finalFailure": null,
+  "hostEntryExecuted": true,
+  "failureCase": null,
+  "outerJobObjectQualification": false,
+  "sourceManifestSha256": "A0FA8CCA0B44D80A296480789EE9AF9458C5D0183F3BE4C1D3B9392FF05DFFA0",
+  "nugetIsolation": {
+    "migrationMarkerAtExpectedRoot": true,
+    "markerBytes": 0
+  },
+  "runtimeFiles": {
+    "Fixture/cargo.deps.json": "076f987b03ed3ab5a267274d214ea83d0b5a009a0100f807a46d7ee3f6ff740a",
+    "Harness/FetchHostEntryHarness.runtimeconfig.json": "28329cf08f6505e73806b17558b187c02f0c1c516fe47ebfb7a013d082aaa306",
+    "Host/FetchHost.exe": "dea55368235c932f6c26032677b3c8c741fec1c45dacbea846641ffe37783ffc",
+    "Fixture/cargo.exe": "cc34580d92d36c9c2bc5645d790aacf70d4558389401f3d35458c87a8b17e0b5",
+    "Harness/FetchHostEntryHarness.exe": "4ef7ef726791dcbf77b4ac6f3b008f9a7e3f1338f29810e513298af1c7551e8b",
+    "Harness/FetchHostEntryHarness.dll": "021419a293a079d757a9176bbfd6525fdf0a34cc441d19cba3ab4cc3fafab906",
+    "Host/FetchHost.runtimeconfig.json": "28329cf08f6505e73806b17558b187c02f0c1c516fe47ebfb7a013d082aaa306",
+    "Host/FetchHost.deps.json": "d419c9156bad40a757c4485fa2fe122903ab92f43662d5667828d69f56b612b3",
+    "Fixture/cargo.runtimeconfig.json": "28329cf08f6505e73806b17558b187c02f0c1c516fe47ebfb7a013d082aaa306",
+    "Harness/FetchHostEntryHarness.deps.json": "810f1d32a206199f711740361aad684efc84fe47c7bf97fe93d548c63bfaccdf",
+    "Host/FetchHost.dll": "caa023b80609286caa1c505c56a8d4bc38178c8bc8c9c205141d93fd7db293cf",
+    "Fixture/cargo.dll": "b93307ec7acde42566af30d54518c4095c17acb43f8570e2d8d08de2ab0866b1"
+  },
+  "productRuntimeAttempted": false,
+  "directoryProbeChecks": 28,
+  "dotnetHostSha256": "AB1B71FD3DD71062E074C9FAB8312081A81B7F2B3E0327C48C4D249C8D1A3135",
+  "cases": [
+    {
+      "expectedRejection": false,
+      "syntheticCargoExecutions": 1,
+      "passed": true,
+      "hostReceipt": {
+        "cleanupMilliseconds": 0,
+        "outputBytes": 34,
+        "boundaryRootExitCode": 0,
+        "captureFailed": false,
+        "treeEmpty": true,
+        "forcedOwnedCleanup": false,
+        "succeeded": true,
+        "exitCode": 0,
+        "outputBudget": 1048576,
+        "safeToStart": true,
+        "timedOut": false,
+        "outputExceeded": false,
+        "boundaryActiveProcessCount": 0
+      },
+      "name": "fixed-success"
+    },
+    {
+      "expectedRejection": true,
+      "syntheticCargoExecutions": 0,
+      "passed": true,
+      "name": "consumed-root"
+    },
+    {
+      "expectedRejection": true,
+      "syntheticCargoExecutions": 0,
+      "passed": true,
+      "name": "marker-only-consumed-root"
+    },
+    {
+      "expectedRejection": true,
+      "syntheticCargoExecutions": 0,
+      "passed": true,
+      "name": "compile-argv"
+    },
+    {
+      "expectedRejection": true,
+      "syntheticCargoExecutions": 0,
+      "passed": true,
+      "name": "wrong-policy"
+    },
+    {
+      "expectedRejection": true,
+      "syntheticCargoExecutions": 0,
+      "passed": true,
+      "name": "wrong-deadline"
+    },
+    {
+      "expectedRejection": true,
+      "syntheticCargoExecutions": 0,
+      "passed": true,
+      "name": "extra-environment"
+    },
+    {
+      "expectedRejection": true,
+      "syntheticCargoExecutions": 0,
+      "passed": true,
+      "name": "case-colliding-environment"
+    },
+    {
+      "expectedRejection": true,
+      "syntheticCargoExecutions": 0,
+      "passed": true,
+      "name": "wrong-tool-path"
+    },
+    {
+      "expectedRejection": true,
+      "syntheticCargoExecutions": 0,
+      "passed": true,
+      "name": "duplicate-json"
+    },
+    {
+      "expectedRejection": true,
+      "syntheticCargoExecutions": 0,
+      "passed": true,
+      "name": "reparse-executable"
+    },
+    {
+      "expectedRejection": false,
+      "syntheticCargoExecutions": 1,
+      "passed": true,
+      "hostReceipt": {
+        "cleanupMilliseconds": 0,
+        "outputBytes": 34,
+        "boundaryRootExitCode": 7,
+        "captureFailed": false,
+        "treeEmpty": true,
+        "forcedOwnedCleanup": false,
+        "succeeded": false,
+        "exitCode": 7,
+        "outputBudget": 1048576,
+        "safeToStart": true,
+        "timedOut": false,
+        "outputExceeded": false,
+        "boundaryActiveProcessCount": 0
+      },
+      "name": "nonzero-child"
+    },
+    {
+      "expectedRejection": true,
+      "syntheticCargoExecutions": 0,
+      "passed": true,
+      "name": "nonzero-consumed-root"
+    }
+  ],
+  "copyChecks": [
+    {
+      "extraEntriesTruncated": false,
+      "missingIndices": [],
+      "scanComplete": true,
+      "changedIndices": [],
+      "phase": "primary",
+      "extraEntries": [],
+      "ordinal": 0,
+      "extraClasses": {},
+      "extraCount": 0
+    },
+    {
+      "extraEntriesTruncated": false,
+      "missingIndices": [],
+      "scanComplete": true,
+      "changedIndices": [],
+      "phase": "primary",
+      "extraEntries": [],
+      "ordinal": 1,
+      "extraClasses": {},
+      "extraCount": 0
+    },
+    {
+      "extraEntriesTruncated": false,
+      "missingIndices": [],
+      "scanComplete": true,
+      "changedIndices": [],
+      "phase": "final",
+      "extraEntries": [],
+      "ordinal": 2,
+      "extraClasses": {},
+      "extraCount": 0
+    }
+  ],
+  "passed": true
+}
