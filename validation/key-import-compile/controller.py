@@ -23,7 +23,7 @@ OUTER_HOST_SECONDS=2715
 # Future workflow must give the compile stage 46min; 18min preflight is not reused.
 COMPILE_STEP_MINUTES=46
 
-def execute(root,control,control_sha,run_id,git_executable,git_environment,vc_version,native_metadata):
+def execute(root,control,control_sha,run_id,git_executable,git_environment,vs_selection,native_metadata):
     run_id=str(run_id)
     require(os.name=='nt' and os.environ.get('RUNNER_ENVIRONMENT')=='github-hosted' and os.environ.get('RUNNER_ARCH')=='X64','hosted Windows x64 required')
     require(os.environ.get('GITHUB_REPOSITORY')=='xue-ding-e/XenTerm-Next' and os.environ.get('GITHUB_REF')=='refs/heads/'+BRANCH,'fixed control scope')
@@ -41,7 +41,10 @@ def execute(root,control,control_sha,run_id,git_executable,git_environment,vc_ve
     host=root/'host-build/bin/Release/net8.0'
     hashes=host_build_files(root/'host-build.json',host,control_sha,run_id,host_sources)
     toolchain=query(root,host,control_sha,run_id,host_sources,identity.check)
-    materials=capture(vc_version,control_sha,run_id)
+    from vs_discovery import unchanged as verify_vs_selection
+    verify_vs_selection(vs_selection)
+    vc_version=vs_selection['vc_version'];vs_root=vs_selection['installation_root']
+    materials=capture(vc_version,control_sha,run_id,vs_root)
     reject_unreviewed_config(root)
     inspect_cache_budget(root,shutil.disk_usage(root).free)
     plan=public_locked_fetch_plan(root,identity.check)
@@ -66,9 +69,10 @@ def execute(root,control,control_sha,run_id,git_executable,git_environment,vc_ve
     def current_identity():
         identity.check()
         for name,h in toolchain['files'].items():require(digest(plain(root/name))==h,'real toolchain changed')
-        unchanged(materials,capture(vc_version,control_sha,run_id))
+        verify_vs_selection(vs_selection)
+        unchanged(materials,capture(vc_version,control_sha,run_id,vs_root))
     current_identity()
-    env=compile_policy.compile_environment(fixed_environment(vc_version,root),root)
+    env=compile_policy.compile_environment(fixed_environment(vc_version,root,vs_root),root)
     request=compile_policy.command(root/'rustup-home/toolchains/1.99.1-x86_64-pc-windows-msvc/bin/cargo.exe',root/'source')
     request['environment']=env
     transport=OwnedCompileAdapter(root,host/'CompileOnlyHost.exe',hashes,native_metadata,current_identity)
