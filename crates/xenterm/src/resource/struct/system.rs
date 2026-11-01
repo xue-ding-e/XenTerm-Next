@@ -1,0 +1,159 @@
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+use crate::session::protocol::{GpuUsage, ProcInfo, SystemDetails};
+
+use sysinfo::{Disks, Networks, System};
+
+/// Snapshot passed to the UI each tick.
+#[derive(Debug, Clone, Default)]
+pub struct SystemSnapshot {
+    pub cpu_percent: f32,
+    pub mem_percent: f32,
+    pub swap_percent: f32,
+    pub mem_used_mib: u64,
+    pub mem_total_mib: u64,
+    pub swap_used_mib: u64,
+    pub swap_total_mib: u64,
+    pub net_bytes_per_sec: u64,
+    pub net_rx_per_sec: u64,
+    pub net_tx_per_sec: u64,
+    /// Per-filesystem (mount, available_bytes, total_bytes).
+    pub disks: Vec<(String, u64, u64)>,
+    /// Per-GPU utilisation samples (#87). Empty with `gpu_unsupported` false
+    /// means probed and no GPU reported rows — a different fact from "cannot
+    /// tell", and the panel shows both rather than folding them together.
+    pub gpus: Vec<GpuUsage>,
+    /// The probe cannot answer on this machine (no `nvidia-smi`, or it
+    /// refused). The panel says so instead of hiding the section (#87).
+    pub gpu_unsupported: bool,
+}
+
+/// Stateful sampler. Construct once per process and poll via [`Self::sample`].
+pub struct SystemSampler {
+    pub(super) sys: System,
+    pub(super) nets: Networks,
+    pub(super) disks: Disks,
+    pub(super) last_rx_total: u64,
+    pub(super) last_tx_total: u64,
+    pub(super) last_instant: std::time::Instant,
+    /// The GPU probe's verdict, sticky once decided: `None` = not probed yet,
+    /// `Some(false)` = unsupported (no `nvidia-smi`), so an unsupported
+    /// machine stops paying for a process spawn every tick.
+    pub(super) gpu_supported: Option<bool>,
+}
+
+/// One filesystem row for the resource panel: where it is mounted, how full it is,
+/// and the free/total figure already formatted for a narrow column.
+///
+/// Framework-neutral on purpose. The rows are derived here rather than inside a
+/// panel's own projection, so every caller gets the same answer and no second
+/// caller can disagree about how full a disk is; only the projection into a
+/// toolkit's model stays on the toolkit's side.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DiskUsage {
+    pub path: String,
+    /// "available/total", e.g. `12.3G/256G`.
+    pub detail: String,
+    /// Used fraction, 0.0..=1.0.
+    pub percent: f32,
+}
+
+/// One process row, as the process window's table draws it.
+///
+/// Framework-neutral for the same reason [`DiskUsage`] is: the numbers and the
+/// privilege question are the same whichever toolkit renders the table, and a second
+/// derivation would be a second answer to "may this user signal this process".
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProcRow {
+    /// The tab the sample came from. Carried on the row because terminating it needs
+    /// the session that reported it, and the user may have switched tabs since.
+    pub tab_id: String,
+    pub pid: String,
+    pub user: String,
+    /// CPU percent, one decimal.
+    pub cpu: String,
+    /// Memory percent, one decimal.
+    pub mem: String,
+    pub command: String,
+    /// 0.0..=1.0, drives the row's load bar.
+    pub cpu_frac: f32,
+    /// May be terminated without administrator authentication.
+    pub own_process: bool,
+}
+
+/// One row of a system-information table: five cells, most of which a given table
+/// leaves empty.
+///
+/// Framework-neutral for the same reason [`DiskUsage`] and [`ProcRow`] are: which pair
+/// goes in which cell, and what an absent value reads as, is a decision about the data
+/// and not about the toolkit.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct InfoRow {
+    pub c1: String,
+    pub c2: String,
+    pub c3: String,
+    pub c4: String,
+    pub c5: String,
+}
+
+impl InfoRow {
+    /// The cells in order, for a table that draws them by index.
+    pub fn cells(&self) -> [&str; 5] {
+        [&self.c1, &self.c2, &self.c3, &self.c4, &self.c5]
+    }
+
+    /// Whether every cell is empty, which is what a chunk of missing data looks like.
+    pub fn is_blank(&self) -> bool {
+        self.cells()
+            .iter()
+            .all(|cell| cell.trim().is_empty() || cell.trim() == "-")
+    }
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct TabStatus {
+    pub(crate) host: String,
+    pub(crate) user: String,
+    pub(crate) session_id: String,
+    pub(crate) state: u8,
+    /// True for built-in local shell tabs (system:*). Those should show the
+    /// local machine's resource panel, not the (empty) remote stats fields.
+    pub(crate) is_local: bool,
+    pub(crate) monitor_generation: u64,
+    pub(crate) monitor_state: crate::session::protocol::ResourceMonitorState,
+    pub(crate) monitor_started_at: Option<std::time::Instant>,
+    pub(crate) sampled_at: Option<std::time::Instant>,
+    pub(crate) cpu_sampled: bool,
+    pub(crate) cpu: f32,
+    pub(crate) mem_used_kib: u64,
+    pub(crate) mem_total_kib: u64,
+    pub(crate) swap_used_kib: u64,
+    pub(crate) swap_total_kib: u64,
+    pub(crate) net: Vec<(String, u64, u64)>,
+    pub(crate) selected_iface: String,
+    pub(crate) net_hist: Vec<f32>,
+    pub(crate) disks: Vec<(String, u64, u64)>,
+    pub(crate) gpus: Vec<GpuUsage>,
+    pub(crate) gpu_unsupported: bool,
+    pub(crate) procs: Vec<ProcInfo>,
+    pub(crate) sys: SystemDetails,
+}
+
+impl TabStatus {
+    /// Poll-based expiry also handles a silent probe that never produces its first sample.
+    /// The normal sampling period is two seconds; ten seconds allows startup and jitter.
+    pub(crate) fn resource_state_at(&self, now: std::time::Instant) -> crate::session::protocol::ResourceMonitorState {
+        use crate::session::protocol::ResourceMonitorState as State;
+        let expired = |at: Option<std::time::Instant>| at.is_some_and(|at| now.saturating_duration_since(at) >= std::time::Duration::from_secs(10));
+        match self.monitor_state {
+            State::Waiting if expired(self.monitor_started_at) => State::Unavailable,
+            State::Available if self.sampled_at.is_none() || expired(self.sampled_at) => State::Stale,
+            state => state,
+        }
+    }
+}
+
+pub(crate) type TabStatuses = Arc<Mutex<HashMap<String, TabStatus>>>;
+pub(crate) type LocalSnap = Arc<Mutex<SystemSnapshot>>;
+pub(crate) type NetHist = Arc<Mutex<Vec<f32>>>;
