@@ -1159,6 +1159,7 @@ impl Shell {
                 }
                 TerminalAction::ActiveTabChanged(tab) => self.on_tab_change(tab, cx),
                 TerminalAction::OpenQuickManager => {
+                    if !self.prepare_file_replacement(window, cx) { continue; }
                     // A form being filled in: a fresh dialog each time, so a
                     // cancelled one leaves no half-filled draft behind.
                     let store = self.state.store.clone();
@@ -1175,6 +1176,7 @@ impl Shell {
                     cx.notify();
                 }
                 TerminalAction::OpenTunnels => {
+                    if !self.prepare_file_replacement(window, cx) { continue; }
                     // Built on demand against the active tab: the panel names the
                     // session it describes with the tab's own title.
                     let tab = self.pages.terminal.read(cx).active_tab_id();
@@ -1242,6 +1244,7 @@ impl Shell {
     }
 
     pub(crate) fn open_quick_connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.prepare_file_replacement(window, cx) { return; }
         let store = self.state.store.clone();
         let active = self.pages.terminal.read(cx).active_tab_id();
         // Compact: rows only. The header chrome this view normally draws is
@@ -1407,6 +1410,7 @@ impl Shell {
                 SessionsAction::ImportConfig => self.import_connections(cx),
                 SessionsAction::ExportConfig => self.export_sessions(cx),
                 SessionsAction::ManageGroups => {
+                    if !self.prepare_file_replacement(window, cx) { continue; }
                     // The dialog rather than a name prompt: it can create, rename and
                     // delete, and a group is easier to manage where all of it is visible
                     // at once. It is also the only surface for them, because a group's
@@ -1521,6 +1525,7 @@ impl Shell {
                     cx.notify();
                 }
                 SettingsAction::NewHighlightRule => {
+                    if !self.prepare_file_replacement(window, cx) { continue; }
                     let store = self.state.store.clone();
                     let editor = cx.new(|cx| RuleEditorView::new(store, window, cx));
                     self.overlay = Overlay::RuleEditor(editor.clone());
@@ -1864,6 +1869,7 @@ impl Shell {
                 // already has. A handler that refuses empty input returns `false`, which
                 // keeps the dialog open rather than closing it on nothing.
                 PanelAction::MkDir => {
+                    if !self.prepare_file_replacement(window, cx) { continue; }
                     let dir = panel.read(cx).path().to_string();
                     let Some(commands) = handle.clone() else {
                         return;
@@ -1886,6 +1892,7 @@ impl Shell {
                     );
                 }
                 PanelAction::TouchFile => {
+                    if !self.prepare_file_replacement(window, cx) { continue; }
                     let dir = panel.read(cx).path().to_string();
                     let Some(commands) = handle.clone() else {
                         return;
@@ -1909,6 +1916,7 @@ impl Shell {
                     );
                 }
                 PanelAction::Rename(paths) => {
+                    if !self.prepare_file_replacement(window, cx) { continue; }
                     let Some(from) = paths.first().cloned() else {
                         return;
                     };
@@ -1940,6 +1948,7 @@ impl Shell {
                     );
                 }
                 PanelAction::Chmod(paths) => {
+                    if !self.prepare_file_replacement(window, cx) { continue; }
                     let Some(commands) = handle.clone() else {
                         return;
                     };
@@ -2111,6 +2120,7 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.prepare_file_replacement(window, cx) { return; }
         use gpui_kit::component::dialog::DialogButtonProps;
         use gpui_kit::TestSupportExt as _;
 
@@ -2350,6 +2360,13 @@ impl Shell {
             });
             match action {
                 Some(super::file_viewer::FileViewerAction::Close) => {
+                    if !viewer.read(cx).owns_dialog_focus(window, cx) {
+                        viewer.update(cx, |viewer, cx| viewer.defer_covered_close(cx));
+                        return;
+                    }
+                    if !viewer.update(cx, |viewer, cx| viewer.can_complete_close(cx)) {
+                        return;
+                    }
                     let viewer_id = viewer.entity_id();
                     let owns_dialog = matches!(
                         &self.overlay,
@@ -2420,6 +2437,9 @@ impl Shell {
         {
             return;
         }
+        if !self.prepare_file_replacement(window, cx) {
+            return;
+        }
         let save_target = self.state.sftp_handles.lock().ok().and_then(|handles| {
             handles.get(&opened.tab_id).map(|handle| super::file_viewer::FileSaveTarget {
                 tab_id: opened.tab_id.clone(),
@@ -2442,13 +2462,19 @@ impl Shell {
         self.overlay = Overlay::File(viewer.clone());
         let viewer_id = viewer.entity_id();
         let shell = cx.entity().downgrade();
-        Self::overlay_dialog_with_close(
-            viewer,
+        let close_viewer = viewer.downgrade();
+        Self::overlay_dialog_with_guard(
+            viewer.clone(),
             crate::i18n::t("文件", "File").into(),
             760.,
             560.,
             window,
             cx,
+            move |_, cx| {
+                close_viewer.upgrade().is_none_or(|viewer| {
+                    viewer.update(cx, |viewer, cx| viewer.request_close(cx))
+                })
+            },
             move |_, cx| {
                 let shell = shell.clone();
                 // A dialog may also close while Shell is replacing its view.
@@ -2460,8 +2486,32 @@ impl Shell {
                     });
                 });
             },
+            true,
         );
+        let dialog_focus = window.focused(cx);
+        viewer.update(cx, |viewer, _| viewer.set_dialog_focus(dialog_focus));
         cx.notify();
+    }
+
+    /// Programmatic close_dialog bypasses toolkit callbacks. Every Shell
+    /// entry that replaces a file dialog must pass this gate before changing
+    /// overlay identity or dropping its original input entity.
+    pub(crate) fn prepare_file_replacement(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(viewer) = self.open_file.clone() else { return true; };
+        if !viewer.read(cx).owns_dialog_focus(window, cx) {
+            viewer.update(cx, |viewer, cx| viewer.defer_covered_close(cx));
+            return false;
+        }
+        if !viewer.update(cx, |viewer, cx| viewer.request_replacement(cx)) {
+            return false;
+        }
+        let viewer_id = viewer.entity_id();
+        let owns_dialog = matches!(&self.overlay, Overlay::File(current) if current.entity_id() == viewer_id);
+        self.release_file_viewer(viewer_id, cx);
+        if owns_dialog {
+            window.close_dialog(cx);
+        }
+        true
     }
 
     /// Retire only the viewer that requested dismissal, never a newer overlay.
@@ -2679,6 +2729,7 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.prepare_file_replacement(window, cx) { return; }
         let store = self.state.store.clone();
         // A new session joins whichever group the user is looking at, which is the one
         // they have expanded rather than an arbitrary default.
@@ -2746,6 +2797,23 @@ impl Shell {
         cx: &mut gpui_kit::App,
         on_close: impl Fn(&mut Window, &mut gpui_kit::App) + 'static,
     ) {
+        Self::overlay_dialog_with_guard(view, title, width, height, window, cx, |_, _| true, on_close, false);
+    }
+
+    /// File dialogs veto dismissal before the toolkit pops its layer. Other
+    /// dialogs retain their existing callbacks and Confirm behavior.
+    fn overlay_dialog_with_guard<T: Render + 'static>(
+        view: Entity<T>,
+        title: SharedString,
+        width: f32,
+        height: f32,
+        window: &mut Window,
+        cx: &mut gpui_kit::App,
+        can_close: impl Fn(&mut Window, &mut gpui_kit::App) -> bool + 'static,
+        on_close: impl Fn(&mut Window, &mut gpui_kit::App) + 'static,
+        block_confirm: bool,
+    ) {
+        let can_close = Rc::new(can_close);
         let on_close = Rc::new(on_close);
         // One card at a time. `open_dialog` pushes onto the layer's queue rather than
         // replacing what is there, so opening a second one leaves the first underneath it —
@@ -2775,7 +2843,10 @@ impl Shell {
             let height = height.min((window_height - MARGIN * 2.0 - CHROME).max(0.0));
             let margin_top = ((window_height - (height + CHROME)) / 2.0).max(24.0);
             let on_close = on_close.clone();
+            let can_close = can_close.clone();
             dialog
+                .on_cancel(move |_, window, cx| can_close(window, cx))
+                .when(block_confirm, |dialog| dialog.on_ok(|_, _, _| false))
                 .on_close(move |_, window, cx| on_close(window, cx))
                 .title(title.clone())
                 .width(px(width))

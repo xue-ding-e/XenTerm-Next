@@ -52,6 +52,7 @@ impl Shell {
     /// Open the command palette: the same light dialog the quick-connect
     /// palette opens as, over whatever is on screen.
     pub(crate) fn open_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.prepare_file_replacement(window, cx) { return; }
         // The action listener already holds Shell's update lease. Snapshot the
         // commands through `self`; the child must not read that same entity.
         let commands = self.commands();

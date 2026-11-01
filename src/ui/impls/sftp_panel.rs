@@ -289,6 +289,13 @@ impl SftpPanelView {
         }
     }
 
+    /// Inject an already queued intent to test Shell's race with a newer modal.
+    /// Production intents still come only from the panel's real controls.
+    #[cfg(test)]
+    pub(crate) fn queue_action_for_test(&mut self, action: PanelAction) {
+        self.pending = Some(action);
+    }
+
     /// Take the next action the user asked for, if any.
     ///
     /// Polled by the shell rather than pushed, because the shell owns the session

@@ -308,6 +308,32 @@ fn actual_save_receipt_releases_busy_and_remote_failure_remains_in_editor(cx: &m
 }
 
 #[gpui_kit::gpui::test]
+fn queued_directory_prompt_cannot_cover_a_dirty_file(cx: &mut TestAppContext) {
+    let (mut fixture, cx) = fixture(cx);
+    request_file(&mut fixture, true, cx);
+    reply_from_source(&fixture, true, cx);
+    edit_and_save(&fixture, cx);
+    match fixture.source_commands.try_recv().unwrap() {
+        crate::sftp::SftpCommand::WriteTextWithReply { completion, .. } => {
+            completion.send(Err("fixture remote save rejected".into())).unwrap();
+        }
+        command => panic!("expected save, got {command:?}"),
+    }
+    settle(cx);
+    let viewer_id = fixture.shell.read_with(cx, |shell, _| shell.open_file.as_ref().unwrap().entity_id());
+    // This is an already queued panel intent racing the modal, not a claim
+    // that users can click through the file dialog's occluding backdrop.
+    let panel = fixture.shell.read_with(cx, |shell, cx| shell.pages.terminal.read(cx).dock_panel().clone());
+    panel.update(cx, |panel, _| panel.queue_action_for_test(PanelAction::MkDir));
+    fixture.shell.update(cx, |_, cx| cx.notify());
+    settle(cx);
+    assert!(cx.debug_bounds("file-close-keep-editing").is_some(), "queued directory prompt must ask before replacing a draft");
+    assert_eq!(fixture.shell.read_with(cx, |shell, _| shell.open_file.as_ref().unwrap().entity_id()), viewer_id);
+    assert!(fixture.source_commands.try_recv().is_err());
+    assert!(fixture.other_commands.try_recv().is_err());
+}
+
+#[gpui_kit::gpui::test]
 fn late_receipt_for_destroyed_viewer_cannot_change_reopened_file(cx: &mut TestAppContext) {
     let (mut fixture, cx) = fixture(cx);
     request_file(&mut fixture, true, cx);
@@ -320,6 +346,10 @@ fn late_receipt_for_destroyed_viewer_cannot_change_reopened_file(cx: &mut TestAp
     let retired = fixture.shell.read_with(cx, |shell, _| shell.open_file.as_ref().unwrap().downgrade());
     let close = cx.update(|window, _| window.find("file-viewer-close").bounds());
     cx.simulate_click(close.center(), Default::default());
+    settle(cx);
+    assert!(retired.upgrade().is_some(), "pending writes must ask before close");
+    let discard = cx.debug_bounds("file-close-discard").expect("explicit pending-write close confirmation");
+    cx.simulate_click(discard.center(), Default::default());
     settle(cx);
     assert!(retired.upgrade().is_none(), "a waiting receipt must not keep a closed viewer alive");
     // Reopen the same remote path as a fresh editor. Request ownership, not
