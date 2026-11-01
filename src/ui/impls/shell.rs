@@ -2374,12 +2374,18 @@ impl Shell {
                             handles.get(&target.tab_id).map(|handle| &handle.commands),
                         )
                     });
+                    let (completion, receipt) = tokio::sync::oneshot::channel();
+                    let snapshot = content.clone();
                     let saved = sender.is_some_and(|sender| {
-                        sender.send(crate::sftp::SftpCommand::WriteText {
+                        sender.send(crate::sftp::SftpCommand::WriteTextWithReply {
                             remote: path,
                             content,
+                            completion,
                         }).is_ok()
                     });
+                    if saved {
+                        viewer.update(cx, |viewer, cx| viewer.await_save(snapshot, receipt, cx));
+                    }
                     if !saved {
                         viewer.update(cx, |viewer, cx| {
                             viewer.save_failed(

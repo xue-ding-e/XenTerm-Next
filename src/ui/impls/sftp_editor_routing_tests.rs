@@ -240,13 +240,14 @@ fn assert_saved_only_to_source(fixture: &mut Fixture) {
     // mean an inert Save button rather than the cross-session routing defect.
     let mut foreign_writes = Vec::new();
     while let Ok(command) = fixture.other_commands.try_recv() {
-        if let crate::sftp::SftpCommand::WriteText { remote, content } = command {
+        if let crate::sftp::SftpCommand::WriteTextWithReply { remote, content, .. }
+            | crate::sftp::SftpCommand::WriteText { remote, content } = command {
             foreign_writes.push((remote, content));
         }
     }
     assert!(foreign_writes.is_empty(), "source editor sent WriteText to unrelated active tab: {foreign_writes:?}");
     match fixture.source_commands.try_recv() {
-        Ok(crate::sftp::SftpCommand::WriteText { remote, content }) => {
+        Ok(crate::sftp::SftpCommand::WriteTextWithReply { remote, content, .. }) => {
             assert_eq!(remote, REMOTE, "Save used the wrong synthetic remote path");
             assert_eq!(content, EDITED, "Save used the wrong synthetic editor contents");
         }
@@ -265,6 +266,71 @@ fn same_tab_edit_reply_typing_and_save_keep_the_source_destination(cx: &mut Test
     let (mut fixture, cx) = fixture(cx);
     request_file(&mut fixture, true, cx);
     reply_from_source(&fixture, true, cx);
+    edit_and_save(&fixture, cx);
+    assert_saved_only_to_source(&mut fixture);
+}
+
+#[gpui_kit::gpui::test]
+fn actual_save_receipt_releases_busy_and_remote_failure_remains_in_editor(cx: &mut TestAppContext) {
+    let (mut fixture, cx) = fixture(cx);
+    request_file(&mut fixture, true, cx);
+    reply_from_source(&fixture, true, cx);
+    edit_and_save(&fixture, cx);
+    let completion = match fixture.source_commands.try_recv().unwrap() {
+        crate::sftp::SftpCommand::WriteTextWithReply { remote, content, completion } => {
+            assert_eq!(remote, REMOTE);
+            assert_eq!(content, EDITED);
+            completion
+        }
+        command => panic!("expected editor receipt command, got {command:?}"),
+    };
+    let save = cx.debug_bounds("file-viewer-save").unwrap();
+    cx.simulate_click(save.center(), Default::default());
+    settle(cx);
+    assert!(fixture.source_commands.try_recv().is_err(), "no second write before receipt");
+    completion.send(Err("fixture remote permission denied".into())).unwrap();
+    settle(cx);
+    assert!(cx.debug_bounds("file-viewer-save-error").is_some());
+    let save = cx.debug_bounds("file-viewer-save").unwrap();
+    cx.simulate_click(save.center(), Default::default());
+    settle(cx);
+    match fixture.source_commands.try_recv().unwrap() {
+        crate::sftp::SftpCommand::WriteTextWithReply { remote, content, completion } => {
+            assert_eq!(remote, REMOTE);
+            assert_eq!(content, EDITED, "failed remote save must retain the draft for retry");
+            completion.send(Ok(())).unwrap();
+        }
+        command => panic!("expected retry with its own receipt, got {command:?}"),
+    }
+    settle(cx);
+    assert!(cx.debug_bounds("file-viewer-save-error").is_none());
+    assert!(fixture.other_commands.try_recv().is_err());
+}
+
+#[gpui_kit::gpui::test]
+fn late_receipt_for_destroyed_viewer_cannot_change_reopened_file(cx: &mut TestAppContext) {
+    let (mut fixture, cx) = fixture(cx);
+    request_file(&mut fixture, true, cx);
+    reply_from_source(&fixture, true, cx);
+    edit_and_save(&fixture, cx);
+    let completion = match fixture.source_commands.try_recv().unwrap() {
+        crate::sftp::SftpCommand::WriteTextWithReply { completion, .. } => completion,
+        command => panic!("expected editor receipt command, got {command:?}"),
+    };
+    let retired = fixture.shell.read_with(cx, |shell, _| shell.open_file.as_ref().unwrap().downgrade());
+    let close = cx.update(|window, _| window.find("file-viewer-close").bounds());
+    cx.simulate_click(close.center(), Default::default());
+    settle(cx);
+    assert!(retired.upgrade().is_none(), "a waiting receipt must not keep a closed viewer alive");
+    // Reopen the same remote path as a fresh editor. Request ownership, not
+    // path equality, decides where the old completion can go.
+    request_file(&mut fixture, true, cx);
+    reply_from_source(&fixture, true, cx);
+    // The old receiver was destroyed with its viewer. The worker must tolerate
+    // this without a delivery to whichever file is now active.
+    assert!(completion.send(Err("old file save failed".into())).is_err());
+    settle(cx);
+    assert!(cx.debug_bounds("file-viewer-save-error").is_none());
     edit_and_save(&fixture, cx);
     assert_saved_only_to_source(&mut fixture);
 }
@@ -402,7 +468,8 @@ fn failed_read_reply_must_never_write_empty_content_back_to_the_remote_file(cx: 
         (OTHER, &mut fixture.other_commands),
     ] {
         while let Ok(command) = commands.try_recv() {
-            if let crate::sftp::SftpCommand::WriteText { remote, content } = command {
+            if let crate::sftp::SftpCommand::WriteTextWithReply { remote, content, .. }
+            | crate::sftp::SftpCommand::WriteText { remote, content } = command {
                 writes.push((tab, remote, content));
             }
         }

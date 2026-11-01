@@ -77,6 +77,13 @@ pub enum SftpCommand {
     ReadText { remote: String, edit: bool },
     /// Overwrite a remote file with text from the built-in editor (#70).
     WriteText { remote: String, content: String },
+    /// Built-in editor write with a request-owned completion channel. A queued
+    /// command is not a saved file; acknowledge only after WRITE/flush/CLOSE.
+    WriteTextWithReply {
+        remote: String,
+        content: String,
+        completion: tokio::sync::oneshot::Sender<Result<(), String>>,
+    },
     /// Gracefully shut down the SFTP worker.
     Close,
 }
