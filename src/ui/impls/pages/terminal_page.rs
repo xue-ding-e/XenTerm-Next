@@ -2787,10 +2787,32 @@ mod close_focus_tests {
         data
     }
 
+    fn activate_history_window(cx: &mut VisualTestContext) {
+        // TestWindow starts inactive. FocusHandle alone accepts text, but the
+        // toolkit emits InputEvent::Focus only for an active window's focus path.
+        cx.update(|window, _| window.activate_window());
+        // Activation reaches Window through the test platform's queued callback.
+        cx.run_until_parked();
+        draw(cx);
+        cx.update(|window, _| assert!(window.is_window_active()));
+    }
+
+    fn assert_history_input(fixture: &Fixture, expected: &str, cx: &mut VisualTestContext) {
+        cx.update(|window, cx| {
+            let page = fixture.page.read(cx);
+            let input = page.command.read(cx);
+            assert!(window.is_window_active());
+            assert!(input.focus_handle(cx).is_focused(window));
+            assert!(page.command_focused, "the real InputEvent::Focus must reach the page");
+            assert_eq!(input.value().to_string(), expected);
+        });
+    }
+
     #[gpui_kit::gpui::test]
     fn history_suggestion_click_only_recalls_and_separate_enter_sends_once(cx: &mut TestAppContext) {
         use gpui_kit::test::TestWindowExt as _;
         let (fixture, cx) = fixture(cx, 1, true);
+        activate_history_window(cx);
         cx.update(|window, cx| {
             fixture.page.update(cx, |page, cx| {
                 page.state.store.borrow_mut().push_command_history("echo suggested".into());
@@ -2800,6 +2822,7 @@ mod close_focus_tests {
         draw(cx);
         cx.simulate_input("echo");
         draw(cx);
+        assert_history_input(&fixture, "echo", cx);
         assert!(received(&fixture, "tab-0").is_empty(), "typing must not reach the shell");
         cx.update(|window, cx| window.click(SharedString::from("command-suggestion-0"), cx));
         draw(cx);
@@ -2819,6 +2842,7 @@ mod close_focus_tests {
     fn history_suggestions_explicit_close_preserves_text_until_query_changes(cx: &mut TestAppContext) {
         use gpui_kit::test::TestWindowExt as _;
         let (fixture, cx) = fixture(cx, 1, true);
+        activate_history_window(cx);
         cx.update(|window, cx| {
             fixture.page.update(cx, |page, cx| {
                 page.state.store.borrow_mut().push_command_history("echo suggested".into());
@@ -2828,6 +2852,7 @@ mod close_focus_tests {
         draw(cx);
         cx.simulate_input("echo");
         draw(cx);
+        assert_history_input(&fixture, "echo", cx);
         cx.update(|window, cx| window.click("dismiss-command-suggestions", cx));
         draw(cx);
         fixture.page.update(cx, |page, cx| {
@@ -2843,6 +2868,7 @@ mod close_focus_tests {
     #[gpui_kit::gpui::test]
     fn history_suggestions_hide_after_blur_and_session_switch(cx: &mut TestAppContext) {
         let (fixture, cx) = fixture(cx, 2, true);
+        activate_history_window(cx);
         cx.update(|window, cx| {
             fixture.page.update(cx, |page, cx| {
                 page.state.store.borrow_mut().push_command_history("echo suggested".into());
@@ -2852,6 +2878,7 @@ mod close_focus_tests {
         draw(cx);
         cx.simulate_input("echo");
         draw(cx);
+        assert_history_input(&fixture, "echo", cx);
         fixture.page.update(cx, |page, cx| assert_eq!(page.command_suggestions(cx).len(), 1));
         cx.update(|window, cx| {
             fixture.foreign_input.update(cx, |input, cx| input.focus(window, cx));
