@@ -51,6 +51,7 @@ fn fixture(cx: &mut TestAppContext) -> (Entity<Shell>, &mut VisualTestContext) {
             }
         });
         shell = Some(view.clone());
+        install_main_window_close_guard(&view, window, cx);
         Root::new(view, window, cx)
     });
     draw(cx);
@@ -456,4 +457,30 @@ fn gui_export_new_file_succeeds_through_private_publisher(cx: &mut TestAppContex
             0
         );
     }
+}
+
+#[gpui_kit::gpui::test]
+fn native_window_close_allows_clean_state_but_requires_explicit_dirty_discard(cx: &mut TestAppContext) {
+    let (shell, cx) = fixture(cx);
+    // simulate_close invokes the real registered decision callback; it does
+    // not destroy a platform window or exercise explicit application Quit.
+    assert!(cx.simulate_close());
+    let viewer = open_file(&shell, cx, "native-close.txt", true);
+    assert!(cx.simulate_close());
+    type_file_draft(cx);
+    assert!(!cx.simulate_close());
+    settle(cx);
+    assert_eq!(shell.read_with(cx, |shell, _| shell.open_file.as_ref().unwrap().entity_id()), viewer.entity_id());
+    let keep = cx.debug_bounds("file-close-keep-editing").unwrap();
+    cx.simulate_click(keep.center(), Default::default());
+    settle(cx);
+    assert!(!cx.simulate_close(), "keeping a draft cannot authorize a later native close");
+    settle(cx);
+    let discard = cx.debug_bounds("file-close-discard").unwrap();
+    cx.simulate_click(discard.center(), Default::default());
+    assert_closed(&shell, cx);
+    assert!(cx.simulate_close(), "only an explicit discard removes the draft veto");
+    open_file(&shell, cx, "replacement.txt", true);
+    type_file_draft(cx);
+    assert!(!cx.simulate_close(), "the previous discard cannot authorize closing a new editor");
 }
