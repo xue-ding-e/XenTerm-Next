@@ -288,7 +288,7 @@ fn dirty_file_vetoes_inner_outer_and_escape_close_until_explicit_discard(cx: &mu
     cx.simulate_keystrokes("escape");
     settle(cx);
     // Enter at the dialog level must not silently accept its default Confirm.
-    cx.update(|window, cx| window.dispatch_action(Box::new(gpui_kit::component::dialog::Confirm), cx));
+    cx.update(|window, cx| window.dispatch_action(Box::new(gpui_kit::component::dialog::Confirm { secondary: false }), cx));
     settle(cx);
     assert!(shell.read_with(cx, |shell, _| shell.open_file.is_some()));
     let discard = cx.debug_bounds("file-close-discard").unwrap();
