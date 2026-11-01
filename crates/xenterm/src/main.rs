@@ -47,8 +47,25 @@ fn print_help() {
 use xenterm::config;
 use xenterm::{cli, logging, mcp, version};
 
+fn pin_preview_default(args: &mut Vec<String>, exe: &std::path::Path, has_env: bool) -> anyhow::Result<()> {
+    let explicit = args.get(1).is_some_and(|arg| arg == "--data-dir" || arg.starts_with("--data-dir="));
+    if explicit || has_env {
+        return Ok(());
+    }
+    let parent = exe.parent().filter(|p| p.is_absolute())
+        .ok_or_else(|| anyhow::anyhow!("Cannot locate Flutter CLI executable directory"))?;
+    let path = parent.join("config-flutter-next");
+    let path = path.to_str().ok_or_else(|| anyhow::anyhow!("Flutter profile path is not valid Unicode"))?;
+    args.splice(1..1, ["--data-dir".into(), path.into()]);
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     let mut args: Vec<String> = std::env::args().collect();
+    // Every entry point, including help/version/config-info, stays out of GPUI.
+    // Explicit CLI/env selection remains intentional; legacy env is not a default.
+    pin_preview_default(&mut args, &std::env::current_exe()?,
+                        std::env::var_os("XENTERM_DATA_DIR").is_some())?;
     let migration_preview = config::configure_profile(&mut args)?;
     let mode = StartMode::detect(&args);
     if matches!(mode, StartMode::Version) {
@@ -155,6 +172,29 @@ fn init_tracing(file_logging: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn all_default_entries_pin_the_preview_profile() {
+        let exe = std::env::temp_dir().join("xenterm-cli.exe");
+        for tail in [vec![], vec!["--config-info"], vec!["--version"], vec!["cli", "sessions"], vec!["mcp", "serve"]] {
+            let mut args = vec!["xenterm-cli".to_string()];
+            args.extend(tail.into_iter().map(str::to_string));
+            pin_preview_default(&mut args, &exe, false).unwrap();
+            assert_eq!(args[1], "--data-dir");
+            assert_eq!(std::path::Path::new(&args[2]), exe.parent().unwrap().join("config-flutter-next"));
+        }
+        for tail in [vec!["--data-dir", "custom", "--config-info"], vec!["--data-dir=custom", "cli"]] {
+            let mut args = vec!["xenterm-cli".to_string()];
+            args.extend(tail.into_iter().map(str::to_string));
+            let before = args.clone();
+            pin_preview_default(&mut args, &exe, false).unwrap();
+            assert_eq!(args, before);
+        }
+        let mut env_args = vec!["xenterm-cli".to_string(), "--config-info".to_string()];
+        let before = env_args.clone();
+        pin_preview_default(&mut env_args, &exe, true).unwrap();
+        assert_eq!(env_args, before);
+    }
 
     #[test]
     fn detects_start_mode() {

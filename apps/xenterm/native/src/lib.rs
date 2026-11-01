@@ -23,22 +23,50 @@ use xenterm::frontend::TerminalSession;
 /// mutex guards the store's save path (`upsert_and_save`/`remove`).
 static STORE: OnceLock<Result<Mutex<xenterm::config::ConfigStore>, String>> = OnceLock::new();
 
-/// The explicit profile (`XENTERM_DATA_DIR` / `--data-dir`), resolved exactly
-/// once before the first store load or known-hosts access — the same startup
-/// order as the CLI (crates/xenterm/src/main.rs). Without the env var this is
-/// a no-op and the portable-first default keeps applying, so a normal desktop
-/// install is unchanged; the pin only matters when the caller deliberately
-/// points the process at an isolated profile (tests, automation, seeded runs).
+/// This preview always pins a profile before any store or known-hosts access.
+/// An explicit XENTERM_DATA_DIR remains an intentional caller override (including
+/// test fixtures); otherwise use a distinct directory next to the executable.
+/// A read-only install fails closed instead of falling back to GPUI's AppData,
+/// and pinned profiles never run the core's legacy migration/backup recovery.
 static PROFILE: OnceLock<Result<(), String>> = OnceLock::new();
 
 fn profile() -> Result<(), String> {
     match PROFILE.get_or_init(|| {
-        xenterm::config::configure_profile_from_env()
+        xenterm::config::configure_profile_from_env().map_err(|e| e.to_string())?;
+        if xenterm::config::has_explicit_data_dir() {
+            return Ok(());
+        }
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let path = preview_profile_path(&exe)?;
+        let path = path.to_str().ok_or("Flutter profile path is not valid Unicode")?;
+        let mut args = vec!["xenterm-bridge".into(), "--data-dir".into(), path.into()];
+        xenterm::config::configure_profile(&mut args)
             .map(|_| ())
             .map_err(|e| e.to_string())
     }) {
         Ok(()) => Ok(()),
         Err(error) => Err(error.clone()),
+    }
+}
+
+fn preview_profile_path(exe: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let parent = exe.parent().ok_or("Cannot locate Flutter executable directory")?;
+    if !parent.is_absolute() {
+        return Err("Flutter executable directory must be absolute".into());
+    }
+    Ok(parent.join("config-flutter-next"))
+}
+
+#[cfg(test)]
+mod preview_profile_tests {
+    use super::preview_profile_path;
+    #[test]
+    fn default_profile_is_distinct_and_has_no_fallback() {
+        let root = std::env::temp_dir();
+        assert_eq!(preview_profile_path(&root.join("xenterm.exe")).unwrap(),
+                   root.join("config-flutter-next"));
+        assert_ne!(preview_profile_path(&root.join("xenterm.exe")).unwrap(), root.join("config"));
+        assert!(preview_profile_path(std::path::Path::new("relative.exe")).is_err());
     }
 }
 

@@ -22,12 +22,22 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   std::vector<std::string> command_line_arguments =
       GetCommandLineArguments();
 
+  // Fail before starting Dart/plugins/profile access, never silently ignore flags.
+  if (!command_line_arguments.empty()) {
+    ::MessageBoxW(nullptr,
+        L"This Flutter preview GUI accepts no command-line arguments. "
+        L"Use XENTERM_DATA_DIR for an explicit isolated profile, or "
+        L"xenterm-cli.exe --data-dir <path> for command-line operations.",
+        L"XenTerm Next Flutter Preview", MB_OK | MB_ICONERROR);
+    ::CoUninitialize();
+    return EXIT_FAILURE;
+  }
   project.set_dart_entrypoint_arguments(std::move(command_line_arguments));
 
   FlutterWindow window(project);
   Win32Window::Point origin(10, 10);
   Win32Window::Size size(1280, 720);
-  if (!window.Create(L"XenTerm", origin, size)) {
+  if (!window.Create(L"XenTerm Next Flutter Preview", origin, size)) {
     return EXIT_FAILURE;
   }
   window.SetQuitOnClose(true);
