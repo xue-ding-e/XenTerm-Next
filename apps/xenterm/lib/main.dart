@@ -90,7 +90,7 @@ Future<void> main() async {
   // frame is hidden; dragging is re-provided by the shell's drag region and
   // the platform's resize borders stay active.
   final options = WindowOptions(
-    title: 'XenTerm',
+    title: 'XenTerm Next Flutter Preview',
     titleBarStyle: TitleBarStyle.hidden,
     minimumSize: const Size(940, 600),
     backgroundColor: windowBackground,
@@ -210,7 +210,7 @@ class _XenTermAppState extends State<XenTermApp> {
   @override
   Widget build(BuildContext context) {
     return ShadcnApp(
-      title: 'XenTerm',
+      title: 'XenTerm Next Flutter Preview',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: _lightTheme ? xtLightScheme() : xtDarkScheme(),

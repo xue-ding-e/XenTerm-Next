@@ -66,7 +66,9 @@ IDI_APP_ICON            ICON                    "resources\\app_icon.ico"
 #define VERSION_AS_NUMBER 1,0,0,0
 #endif
 
-#if defined(FLUTTER_VERSION)
+#if defined(NEXT_CORE_VERSION)
+#define VERSION_AS_STRING NEXT_CORE_VERSION
+#elif defined(FLUTTER_VERSION)
 #define VERSION_AS_STRING FLUTTER_VERSION
 #else
 #define VERSION_AS_STRING "1.0.0"
@@ -95,7 +97,7 @@ BEGIN
             VALUE "InternalName", "xenterm" "\0"
             VALUE "LegalCopyright", "Copyright (C) 2026 dev.xenterm. All rights reserved." "\0"
             VALUE "OriginalFilename", "xenterm.exe" "\0"
-            VALUE "ProductName", "XenTerm" "\0"
+            VALUE "ProductName", "XenTerm Next Flutter Preview" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

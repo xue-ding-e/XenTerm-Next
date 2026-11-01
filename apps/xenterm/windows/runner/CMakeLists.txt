@@ -27,6 +27,11 @@ target_compile_definitions(${BINARY_NAME} PRIVATE "FLUTTER_VERSION_MINOR=${FLUTT
 target_compile_definitions(${BINARY_NAME} PRIVATE "FLUTTER_VERSION_PATCH=${FLUTTER_VERSION_PATCH}")
 target_compile_definitions(${BINARY_NAME} PRIVATE "FLUTTER_VERSION_BUILD=${FLUTTER_VERSION_BUILD}")
 
+# Match the canonical Rust/bridge version in Explorer's string properties.
+if(DEFINED ENV{XT_VERSION})
+  target_compile_definitions(${BINARY_NAME} PRIVATE "NEXT_CORE_VERSION=\"$ENV{XT_VERSION}\"")
+endif()
+
 # Disable Windows macros that collide with C++ standard library functions.
 target_compile_definitions(${BINARY_NAME} PRIVATE "NOMINMAX")
 

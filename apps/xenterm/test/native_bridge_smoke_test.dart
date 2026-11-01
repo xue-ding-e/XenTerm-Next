@@ -17,7 +17,10 @@ void main() {
     () {
       final bridge = NativeBridge.tryLoad();
       expect(bridge, isNotNull, reason: NativeBridge.loadError);
-      expect(bridge!.version(), isNotEmpty);
+      final expected = Platform.environment['XT_VERSION'];
+      expect(expected, isNotNull, reason: 'Packaged smoke test requires XT_VERSION');
+      expect(expected, isNotEmpty);
+      expect(bridge!.version(), expected);
     },
     skip: path != null && path.isNotEmpty
         ? false

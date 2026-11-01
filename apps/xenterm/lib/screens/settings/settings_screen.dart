@@ -290,7 +290,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   List<Widget> _aboutTab() {
     final theme = Theme.of(context);
     final version = coreVersionSync();
-    const repo = 'https://github.com/ixbaicn/XenTerm';
+    const repo = 'https://github.com/xue-ding-e/XenTerm-Next';
     final links = <(String, String, IconData)>[
       ('Source code', repo, LucideIcons.github),
       ('Issue tracker', '$repo/issues', LucideIcons.bug),
@@ -335,7 +335,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Text(
-                      'XenTerm',
+                      'XenTerm Next Flutter Preview',
                       style: theme.typography.bold.copyWith(
                         fontSize: 20,
                         height: 1.2,
