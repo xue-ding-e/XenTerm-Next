@@ -61,6 +61,32 @@ pub(super) fn definitions() -> Value {
             }
         },
         {
+            "name": "start_dynamic_tunnel",
+            "description": "Start a saved dynamic SOCKS5 forward without a GUI or shell. Requires saved-credential and command permissions. Returns loopback proxy address, handle and state. Owned by this MCP session only; other processes are not adopted. Released on owner exit, session expiry or explicit release.",
+            "inputSchema": { "type": "object", "properties": {
+                "session_id": { "type": "string" },
+                "forward_index": { "type": "integer", "minimum": 0, "description": "Index from get_session.dynamic_forwards. May be omitted only with one dynamic rule." }
+            }, "required": ["session_id"], "additionalProperties": false }
+        },
+        {
+            "name": "ensure_dynamic_tunnel",
+            "description": "Start or reuse the same saved dynamic rule within this MCP owner. Changed configuration or a disconnected handle is an error: release then restart. Never adopts another process's listening port.",
+            "inputSchema": { "type": "object", "properties": {
+                "session_id": { "type": "string" }, "forward_index": { "type": "integer", "minimum": 0 }
+            }, "required": ["session_id"], "additionalProperties": false }
+        },
+        {
+            "name": "dynamic_tunnel_status",
+            "description": "Get the lifecycle state for a dynamic tunnel handle owned by this MCP session.",
+            "annotations": { "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false },
+            "inputSchema": { "type": "object", "properties": { "handle": { "type": "string" } }, "required": ["handle"], "additionalProperties": false }
+        },
+        {
+            "name": "release_dynamic_tunnel",
+            "description": "Release this owner's dynamic tunnel, closing its listener, active SOCKS clients and SSH route. Unknown or other-owner handles are rejected.",
+            "inputSchema": { "type": "object", "properties": { "handle": { "type": "string" } }, "required": ["handle"], "additionalProperties": false }
+        },
+        {
             "name": "run_command",
             "description": "Execute one non-interactive command on a saved SSH session. Requires the MCP saved-credentials and arbitrary-command permissions. Use get_access_policy to inspect the configured capabilities and optional execution history. SSH account and server permissions apply. XenTerm does not request per-operation risk approval.",
             "inputSchema": {

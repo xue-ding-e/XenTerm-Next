@@ -28,6 +28,10 @@ async fn call_inner(name: &str, arguments: &Value, frontend: Frontend) -> Result
         "get_session" => get_session(arguments, frontend),
         "import_sessions" => import_sessions(arguments, frontend),
         "run_command" => run_command(arguments, frontend).await,
+        "start_dynamic_tunnel" => dynamic_tunnel(name, arguments, frontend).await,
+        "ensure_dynamic_tunnel" => dynamic_tunnel(name, arguments, frontend).await,
+        "dynamic_tunnel_status" => dynamic_tunnel(name, arguments, frontend).await,
+        "release_dynamic_tunnel" => dynamic_tunnel(name, arguments, frontend).await,
         "list_remote_files" => list_remote_files(arguments, frontend).await,
         "read_remote_text_file" => read_remote_text_file(arguments, frontend).await,
         "upload_file" => upload_file(arguments, frontend).await,
@@ -385,6 +389,42 @@ async fn run_command(arguments: &Value, frontend: Frontend) -> Result<Value> {
     serde_json::to_value(result).context("serialize command result")
 }
 
+async fn dynamic_tunnel(name: &str, arguments: &Value, frontend: Frontend) -> Result<Value> {
+    let object = arguments.as_object().ok_or_else(|| anyhow!("tunnel arguments must be an object"))?;
+    let (owner, expires) = crate::tunnel::forward_owner()?;
+    if matches!(name, "dynamic_tunnel_status" | "release_dynamic_tunnel") {
+        if object.keys().any(|key| key != "handle") { return Err(anyhow!("unknown tunnel argument")); }
+        let handle = required_string(arguments, "handle")?;
+        // A handle is scoped to its authenticated MCP session / local owner.
+        // Cleanup remains available after saved-credential permission revocation.
+        return serde_json::to_value(if name == "release_dynamic_tunnel" {
+            owner.release(handle).await?
+        } else { owner.status(handle)? }).context("serialize tunnel status");
+    }
+    if object.keys().any(|key| !matches!(key.as_str(), "session_id" | "forward_index")) {
+        return Err(anyhow!("unknown tunnel argument"));
+    }
+    let store = load_store(frontend)?;
+    if frontend.is_unattended() && (!store.mcp_use_saved_credentials() || !store.mcp_allow_commands()) {
+        return Err(anyhow!("dynamic tunnels require saved-credential and arbitrary-command permissions"));
+    }
+    let id = required_string(arguments, "session_id")?;
+    let session = store.get(id).cloned().ok_or_else(|| anyhow!("session not found"))?;
+    if session.kind.as_str() != "ssh" { return Err(anyhow!("dynamic tunnels require an SSH session")); }
+    let index = match optional_u64(arguments, "forward_index")? {
+        Some(value) => usize::try_from(value).map_err(|_| anyhow!("forward_index is too large"))?,
+        None => {
+            let dynamic: Vec<_> = session.forwards.iter().enumerate().filter(|(_, rule)| rule.kind == "dynamic").collect();
+            if dynamic.len() != 1 { return Err(anyhow!("select forward_index from the saved dynamic_forwards; expected exactly one rule when omitted")); }
+            dynamic[0].0
+        }
+    };
+    let jumps = store.resolve_jump_chain(&session)?;
+    drop(store);
+    let status = owner.start(session, jumps, index, name == "ensure_dynamic_tunnel", expires).await?;
+    serde_json::to_value(status).context("serialize tunnel status")
+}
+
 fn safe_session(session: &Session) -> Value {
     json!({
         "id": session.id,
@@ -401,6 +441,10 @@ fn safe_session(session: &Session) -> Value {
         "jump_session_id": session.jump_session_id,
         "jump_session_ids": session.jump_session_ids,
         "has_proxy": !session.proxy.trim().is_empty(),
+        "dynamic_forwards": session.forwards.iter().enumerate()
+            .filter(|(_, rule)| rule.kind == "dynamic")
+            .map(|(index, rule)| json!({ "forward_index": index, "name": rule.name,
+                "bind_addr": rule.bind_addr, "bind_port": rule.bind_port })).collect::<Vec<_>>(),
     })
 }
 

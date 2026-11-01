@@ -16,7 +16,11 @@ pub(crate) fn run(args: &[String]) -> Result<()> {
     let command_name = args.get(2).map(String::as_str).unwrap_or("help");
     let command = CliCommand::parse(Some(command_name))
         .ok_or_else(|| anyhow!("unknown CLI command: {command_name}"))?;
+    if command == CliCommand::Tunnel {
+        return runtime.block_on(run_tunnel(args));
+    }
     let value = match command {
+        CliCommand::Tunnel => unreachable!("foreground tunnel handled above"),
         CliCommand::Export => {
             let path = args
                 .get(3)
@@ -237,6 +241,47 @@ pub(crate) fn run(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// A CLI tunnel is a foreground owner, not a fire-and-forget child. Readiness
+/// is one JSON line; keep stdin open. Enter/EOF/Ctrl-C closes all owned resources.
+async fn run_tunnel(args: &[String]) -> Result<()> {
+    use std::io::Write as _;
+    let id = args.get(3).filter(|value| !value.starts_with('-'))
+        .ok_or_else(|| anyhow!("usage: xenterm cli tunnel <session-id> [--forward-index <n>] [--json]"))?;
+    let mut index = None;
+    let mut options = args[4..].iter();
+    while let Some(option) = options.next() {
+        match option.as_str() {
+            "--json" => {},
+            "--forward-index" if index.is_none() => {
+                index = Some(options.next().ok_or_else(|| anyhow!("missing forward index"))?
+                    .parse::<u64>().context("forward index must be a nonnegative integer")?);
+            },
+            _ => return Err(anyhow!("unknown or duplicate tunnel option")),
+        }
+    }
+    let owner = std::sync::Arc::new(crate::tunnel::ForwardOwner::default());
+    let value = crate::tunnel::with_forward_owner(owner.clone(), None,
+        call_cli("ensure_dynamic_tunnel", &json!({"session_id": id, "forward_index": index}))).await?;
+    println!("{}", serde_json::to_string(&value)?);
+    std::io::stdout().flush().context("flush tunnel readiness")?;
+    eprintln!("Dynamic tunnel ready; keep this process and stdin open. Enter, EOF or Ctrl-C releases it.");
+    let handle = value["handle"].as_str().ok_or_else(|| anyhow!("missing tunnel handle"))?;
+    let (closed_tx, closed_rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let _ = std::io::stdin().read_line(&mut line);
+        let _ = closed_tx.send(());
+    });
+    let result = tokio::select! {
+        _ = closed_rx => Ok(()),
+        signal = tokio::signal::ctrl_c() => signal.context("wait for tunnel interrupt"),
+        result = owner.wait_stopped(handle) => result,
+    };
+    let released = owner.release(handle).await?;
+    println!("{}", serde_json::to_string(&released)?);
+    result
+}
+
 fn permissions_mode(args: &[String]) -> Result<Option<crate::config::McpAccessMode>> {
     let positional: Vec<&str> = args
         .iter()
@@ -353,7 +398,7 @@ fn print_human(command: CliCommand, value: &Value) {
                 }
             }
         }
-        CliCommand::Permissions | CliCommand::Session => println!(
+        CliCommand::Permissions | CliCommand::Session | CliCommand::Tunnel => println!(
             "{}",
             serde_json::to_string_pretty(value).unwrap_or_default()
         ),
@@ -404,6 +449,7 @@ fn print_help() {
     println!(
         "XenTerm CLI\n\n\
          Usage:\n\
+           xenterm cli tunnel <session-id> [--forward-index <n>] [--json] (foreground; Enter/EOF/Ctrl-C releases)\n\
            xenterm cli export <new-file.json> --include-credentials [--json]\n\
            xenterm cli import <export.json> [--dry-run] [--preserve-ids] [--json]\n\
            xenterm cli sync-native <sessions.json> [--dry-run] [--json]\n\

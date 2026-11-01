@@ -76,14 +76,16 @@ struct SessionOwner {
     subject: String,
     expires_at: u64,
     cancellation: CancellationToken,
+    forwards: Arc<crate::tunnel::ForwardOwner>,
 }
 impl Drop for SessionOwner {
     fn drop(&mut self) {
         self.cancellation.cancel();
+        self.forwards.shutdown();
     }
 }
 #[derive(Clone)]
-struct SessionCancellation(CancellationToken);
+struct SessionCancellation(CancellationToken, Arc<crate::tunnel::ForwardOwner>);
 
 const EXPIRY_ERROR: &str = "request deadline or access token expiry reached";
 
@@ -396,7 +398,9 @@ impl ServerHandler for HttpTools {
             _ = session_cancel.0.cancelled() => return Err(ErrorData::internal_error("session closed", None)),
             _ = deadline.cancel.cancelled() => return Err(ErrorData::internal_error(EXPIRY_ERROR, None)),
             _ = tokio::time::sleep_until(deadline.at) => return Err(ErrorData::internal_error(EXPIRY_ERROR, None)),
-            result = super::tools::call_mcp(&request.name, &args, self.allow_config_import) => result,
+            result = crate::tunnel::with_forward_owner(session_cancel.1.clone(),
+                Some(tokio::time::Instant::now() + remaining),
+                super::tools::call_mcp(&request.name, &args, self.allow_config_import)) => result,
         };
         if tokio::time::Instant::now() >= deadline.at {
             return Err(ErrorData::internal_error(EXPIRY_ERROR, None));
@@ -603,7 +607,7 @@ async fn authenticated_guard(state: Arc<Boundary>, request: Request, next: Next)
             );
         };
         principal.expires_at = principal.expires_at.min(owner.expires_at);
-        Some(SessionCancellation(owner.cancellation.clone()))
+        Some(SessionCancellation(owner.cancellation.clone(), owner.forwards.clone()))
     } else {
         None
     };
@@ -745,6 +749,7 @@ async fn authenticated_guard(state: Arc<Boundary>, request: Request, next: Next)
                     subject: principal.subject,
                     expires_at: oauth::now() + SESSION_TTL,
                     cancellation: CancellationToken::new(),
+                    forwards: Arc::new(crate::tunnel::ForwardOwner::unattended()),
                 },
             );
         }
