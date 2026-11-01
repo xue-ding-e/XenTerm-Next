@@ -1,430 +1,311 @@
-> **XenTerm Next (XenTerm-Next)** is an independent SSH, SFTP and terminal project created and maintained by [xue-ding-e](https://github.com/xue-ding-e), building on [ixbaicn/XenTerm](https://github.com/ixbaicn/XenTerm). We develop our own next-generation terminal experience, including Next-specific enhancements and reviewed community fixes that may not yet be in upstream. It is not an official XenTerm release or a promise of upstream’s next version; upstream authorship, copyright and the MIT license are preserved.
->
-> Our development line is `main`. `upstream-main` preserves official history; a daily read-only workflow checks drift, and verified mirror fast-forwards are handled separately. Upstream updates never automatically replace Next features. See the [branch policy](CONTRIBUTING.md#independent-repository-branch-policy-xue-ding-exenterm-next).
->
-> XenTerm Next independently maintains its Rust + GPUI desktop architecture and does not follow upstream’s Rust-core + Flutter migration. Any migration requires an explicit decision from repository owner **xue-ding-e**; until then, only independently reviewed and tested upstream fixes applicable to the current GPUI architecture are candidates for integration. The `upstream-main` mirror and drift reports do not authorize a migration of Next’s `main`.
-
 <p align="center">
   <b>English</b> · <a href="README.zh.md">简体中文</a>
 </p>
 
-**[Download / Install](#install)**
-
-<h1 align="center">XenTerm Next</h1>
+<h1 align="center">XenTerm</h1>
 
 <p align="center">
-  <em>A lightweight SSH / SFTP / terminal client for Windows, macOS and Linux — written in Rust, no runtime, no JVM.</em>
+  <em>A cross-platform SSH / SFTP / Telnet / serial terminal for Windows, macOS and Linux —<br>a Rust core with a Flutter desktop UI.</em>
 </p>
 
 <p align="center">
-  <a href="https://github.com/xue-ding-e/XenTerm-Next/stargazers"><img src="https://img.shields.io/github/stars/xue-ding-e/XenTerm-Next?style=flat-square&label=Stars&color=2ea043" alt="Stars"></a>
-  <a href="https://github.com/xue-ding-e/XenTerm-Next/releases"><img src="https://img.shields.io/github/v/release/xue-ding-e/XenTerm-Next?style=flat-square&label=Release&color=00b8d4" alt="Release"></a>
-  <a href="https://github.com/xue-ding-e/XenTerm-Next/commits/main"><img src="https://img.shields.io/github/last-commit/xue-ding-e/XenTerm-Next?style=flat-square&label=Last%20commit" alt="Last commit"></a>
-  <a href="#license"><img src="https://img.shields.io/badge/License-MIT-blue?style=flat-square" alt="License: MIT"></a>
+  <a href="https://github.com/ixbaicn/XenTerm/stargazers"><img src="https://img.shields.io/github/stars/ixbaicn/XenTerm?style=flat-square&label=Stars&color=2ea043" alt="Stars"></a>
+  <a href="https://github.com/ixbaicn/XenTerm/network/members"><img src="https://img.shields.io/github/forks/ixbaicn/XenTerm?style=flat-square&label=Forks" alt="Forks"></a>
+  <a href="https://github.com/ixbaicn/XenTerm/releases"><img src="https://img.shields.io/github/v/release/ixbaicn/XenTerm?style=flat-square&label=Release&color=00b8d4" alt="Release"></a>
+  <a href="https://github.com/ixbaicn/XenTerm/releases"><img src="https://img.shields.io/github/downloads/ixbaicn/XenTerm/total?style=flat-square&label=Downloads&color=blueviolet" alt="Downloads"></a>
+  <a href="#license"><img src="https://img.shields.io/github/license/ixbaicn/XenTerm?style=flat-square&label=License&color=blue" alt="License: MIT"></a>
+  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=flat-square" alt="Platforms: Windows, macOS, Linux">
+  <a href="https://github.com/ixbaicn/XenTerm/actions/workflows/ci.yml"><img src="https://github.com/ixbaicn/XenTerm/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
 </p>
 
 <p align="center">
-  <img src="assets/xt.jpg" alt="XenTerm — SSH Terminal · SFTP · System Monitor" width="820">
+  <img src="assets/xt.jpg" alt="XenTerm — SSH terminal, SFTP and system monitor" width="860">
 </p>
 
 ---
 
-## What is XenTerm Next
+## Overview
 
-**XenTerm Next** is the independent terminal project by **xue-ding-e**, for people who want a native Rust desktop client and scriptable CLI / MCP workflows in one codebase. “Next” describes our own development direction: a next-generation experience built on XenTerm, with independently developed enhancements and carefully integrated community contributions. It does not designate the official upstream’s next release.
+XenTerm is a desktop terminal client for people who manage servers: SSH, Telnet and
+serial sessions, a full VT terminal, SFTP file management and live resource
+monitoring in one window.
 
-### Why choose Next?
+The application is split into two layers:
 
-Next ships its own development and release line. Examples already implemented here, beyond [upstream `f25f6af`](https://github.com/ixbaicn/XenTerm/tree/f25f6afcd82429d2286526c33c9ea257cb34809f) as checked on **2026-10-16**:
+- **`crates/xenterm`** — a Rust service core that owns the protocols (SSH, SFTP,
+  Telnet, serial, terminal emulation, local PTYs), the session store, resource
+  sampling, the CLI and the MCP server.
+- **`apps/xenterm`** — a Flutter desktop UI connected to the core through
+  **`xenterm-bridge`**, an in-process FFI bridge.
 
-- **Private, no-overwrite GUI session exports**: the GUI keeps the hardened export policy and reports an existing destination instead of falling back to a plain overwrite. See the [implementation](src/ui/impls/shell.rs) and [regression tests](src/ui/impls/file_dialog_tests.rs).
-- **Traceable Next desktop previews**: our [beta release pipeline](.github/workflows/next-beta.yml) publishes cross-platform packages tied to a successful main CI run, with source SHA, build metadata and SHA256 checksums. [Download the current preview](https://github.com/xue-ding-e/XenTerm-Next/releases/tag/beta).
-- **Dedicated headless server packaging**: our [headless build and release entry point](docs/headless-server.md) reuses the existing shared core, checks the Ubuntu 22.04 ABI/runtime dependencies and can produce fixed-source releases. The shared CLI/MCP core builds on upstream work; the Next packaging is an additional workflow, not a separate implementation.
-- **Installer build tooling and lifecycle tests**: [Windows MSI](wix/main.wxs) and [macOS packaging](packaging/macos) include optional integrations with [Windows](tests/windows_installer_test.py) and [macOS](tests/macos_installer_test.py) regression coverage. These are installer build capabilities; the current rolling beta downloads are portable archives.
+The core has no UI-toolkit dependency, so the same session store and the same SSH
+implementation serve the desktop app, the command line and AI clients — there is
+only one server list to maintain.
 
-Upstream may adopt or independently add similar changes later. Other improvements here include reviewed contributions from the XenTerm community; their authors retain credit. “Available in Next” does not mean every feature was originally authored by us, nor that every Next change is awaiting an upstream PR.
-
-If these workflows help you, **[star XenTerm Next](https://github.com/xue-ding-e/XenTerm-Next)** to support the project and help other developers find it. Try the preview, report reproducible issues and follow our independent development here.
-
-XenTerm is a native desktop terminal client that keeps the workflow people like about
-FinalShell — a resource-monitor sidebar, session management, tabbed terminals, an SFTP
-panel that follows your shell — while dropping the part they do not: several hundred
-megabytes of JVM. It is a single Rust binary with the interface built directly on
-[GPUI](https://gpui.rs), so there is no interpreter, no web runtime and no garbage
-collector in the process.
-
-It is a client, not a re-implementation of a shell: SSH, Telnet and serial sessions talk
-to whatever runs on the other end, and local shells run in a real PTY / ConPTY.
+> **Independent implementation.** XenTerm is an independent project. Its interface
+> follows a modern, dark terminal design language and is implemented from scratch.
+> It contains no application code, fonts or artwork taken from any other terminal
+> product, and the project has no affiliation with, endorsement by, or derivation
+> from any other terminal product. Third-party components that are bundled (emoji
+> artwork and fonts) are attributed in
+> [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 | | |
 | --- | --- |
-| **Sessions** | SSH, local shell (PowerShell / cmd / WSL / `$SHELL`), Telnet, serial |
-| **Transfers** | SFTP file panel, batch download, ZMODEM in the terminal, WebDAV sync |
-| **Terminals** | Full VT/ANSI, mouse tracking, DEC line drawing, colour emoji, split panes |
-| **Monitoring** | Local + remote CPU / memory / swap / disk / network, remote process list |
-| **Automation** | A `cli` for scripts and CI, and an MCP server for AI clients |
-| **Interface** | GPUI-rendered, English / Simplified Chinese, collapsible docked panels |
+| **Sessions** | SSH, local shell, Telnet and serial |
+| **Jump hosts** | Ordered SSH bastion chains, with independent credentials per hop |
+| **Terminal** | Full VT/ANSI emulation, DEC line drawing and per-session encoding; mouse tracking and colour emoji live in the core |
+| **Files** | SFTP panel with upload/download and a transfer strip; ZMODEM lives in the core |
+| **Monitoring** | Live local and remote CPU, memory, swap, disk, network and GPU readings |
+| **Automation** | `xenterm cli` for scripts and CI, an MCP server for AI clients |
+| **Interface** | Flutter desktop UI on shadcn-style components, neutral monochrome theme, light and dark |
 
-## The interface
+## Table of contents
 
-The window is a navigation rail and one page at a time — three pages, each owning its own
-state and reporting only what crosses its border to the shell:
-
-- **Terminal** — the working surface. A tab strip, nestable horizontal split panes, a
-  floating command line with the quick-command and command-history popovers, the resource
-  sidebar, and the file panel docked to the bottom or the right.
-- **Sessions** — the saved connections and the built-in local shells, with groups,
-  import/export and the session editor.
-- **Settings** — everything in the table further down.
-
-Two monitors are separate windows rather than panels, because they are tables you keep
-open beside the terminal while you work in it: the **process monitor** and the
-**system information** window. The transfer list, the tunnel list and the file panel are
-panels, so they stay attached to the window whose sessions they belong to.
-
-## Features
-
-### Sessions and connection
-
-- **Four session types** — SSH, local shell, Telnet and serial, in the same tabbed UI.
-- **Local shells out of the box** — PowerShell, `cmd.exe` and every configured WSL
-  distribution on Windows; `$SHELL` elsewhere. Windows shells start in UTF-8.
-- **Ordered SSH bastions** — add saved SSH sessions on the session editor’s SSH bastions page, move any hop earlier/later, or remove it. The displayed order is outermost first; each hop uses its own credentials. Existing `jump_session_id` configurations still work, including nested legacy routes.
-- **SSH authentication** — password, private key, passphrase-protected key, and
-  keyboard-interactive for 2FA / OTP prompts.
-- **PuTTY `.ppk` keys** — PPK v2/v3 is decrypted and verified in memory; no `puttygen`
-  round-trip.
-- **Outbound proxies** — SOCKS5 (`socks5://`, `socks5h://`) and HTTP/HTTPS CONNECT, set
-  per session or picked up from `ALL_PROXY`. Telnet uses the same plumbing.
-- **Serial** — configurable baud rate, data/stop bits, parity and flow control.
-- **Telnet** with an RFC 854/855 option state machine (SGA + NAWS window resizing).
-- **Triggers** — expect/send rules for interactive logins, each with its own response.
-- **Session groups** — create, rename and delete folders, plus per-session notes.
-- **Host key verification** — trust on first use with a SHA-256 fingerprint prompt, and a
-  hard warning if a key later changes.
-
-> Session passwords and keys can also be entered without the GUI, and the config supports
-> per-session encodings. Ordered jump routes can be edited in the GUI. Imported
-> `jump_session_ids` are ordered from the outermost bastion toward the target;
-> when present, they override legacy `jump_session_id` links. Invalid, repeated,
-> missing, non-SSH or more-than-16-hop routes fail before network activity.
-
-### Terminal
-
-- **Full VT/ANSI emulation** — `htop`, `btop`, `vim`, `tmux` and friends render correctly
-  full-screen, over a 100,000-line scrollback.
-- **Mouse tracking** — SGR and X10 mouse reports are forwarded to TUI applications that
-  ask for them, so `htop` and `mc` respond to clicks.
-- **DEC line drawing** — the VT100 special-graphics charset, so `dialog` and `mc` frames
-  draw properly even in UTF-8 mode.
-- **Colour emoji** — skin tones, flags and ZWJ sequences render in colour, from Twemoji
-  images embedded in the binary.
-- **Character encodings** — the terminal decodes per-session charsets (UTF-8 by default,
-  GBK and others) with a streaming decoder, so a multi-byte character split across packets
-  still decodes.
-- **Output highlighting** — colour log levels (with a DevOps preset) and your own rules,
-  without disturbing output that already carries its own colours.
-- **Split panes** — nestable horizontal splits, from the tab's context menu; drag the
-  splitter to resize. Tabs reorder by dragging within the strip or from the same menu.
-- **Find in the scrollback**, paging keys that scroll the scrollback on the normal screen
-  and reach the program on the alternate screen as they should.
-- **Paste protection** — multi-line pastes can require confirmation, and the extra paste
-  shortcuts (`Ctrl+Alt+V`, `Shift+Insert`) can be turned off.
-- **Font and cursor** — any installed monospace family plus a bundled one, size, line
-  spacing, bold, and block / bar / underline cursors with a custom colour.
-
-### Static terminal wallpaper (opt-in)
-
-Open **Settings → Wallpaper**, import a PNG, JPEG, WebP or BMP, and enable the
-preview. **Apply** saves the complete draft; **Cancel changes** restores the saved
-settings, and **Reset draft to defaults** does not save. Profiles upgrading from
-before this feature start disabled, even with choices from the retired interface.
-
-- Cover, Contain, Stretch, Original and Tile; nine anchor presets, offsets and zoom.
-- Non-destructive crop, arbitrary rotation, quarter-turn shortcuts and both flips;
-  EXIF orientation is applied before editing.
-- Separate image opacity and dark readability overlay, brightness, saturation and
-  blur. These effects do not change text, explicit cell backgrounds, selections or
-  cursor rendering.
-- **Each terminal pane** repeats the layout independently. **Continuous terminal
-  canvas** aligns terminal images in window coordinates across split panes; it does
-  not make toolbars, sidebars, settings or dialogs transparent. The editor previews
-  one canvas. There is no automatic theme recolouring.
-
-Imports are local, immutable content-hash copies in the profile's `wallpapers/`
-folder. Original bytes, including metadata, are preserved; cancelling a draft may
-leave its imported original there. When moving a complete profile, carry this
-folder alongside `sessions.db`; session exports and WebDAV do not bundle images.
-Missing or invalid assets fall back to the terminal colour and report an error in
-the editor. No remote image URLs, animated backgrounds, SVG or video are supported.
-
-Limits: 32 MiB per imported file, 33,554,432 decoded pixels and 16,384 pixels per
-source edge. Processed textures are limited to 4,194,304 pixels and a 4,096-pixel
-edge; Original layout retains the logical source dimensions after downsampling.
-Decode/transform work is debounced, serialized off the UI thread and cached;
-these per-image limits are not a total application-memory cap.
-
-The control vocabulary draws on the official documentation for
-[Windows Terminal](https://learn.microsoft.com/en-us/windows/terminal/customize-settings/profile-appearance#background-images-and-icons),
-[IntelliJ IDEA](https://www.jetbrains.com/help/idea/setting-background-image.html)
-and [WezTerm](https://wezterm.org/config/lua/config/background.html).
-No wallpaper artwork or implementation code is copied from these projects.
-
-Verification commands: `cargo check --locked`, `cargo test --locked wallpaper`,
-`cargo test --locked`, and
-`cargo test --locked --no-default-features --features headless`.
-The implementation has Linux native GUI coverage; Windows and macOS native GUI
-behaviour still require platform testing.
-
-### Files
-
-- **SFTP panel** that follows the terminal's `cd`, with a lazy-loading directory tree.
-- **Upload and download** single files or whole directory trees, from the toolbar or the
-  file panel's context menu.
-- **Batch download** — the selection is tarred on the remote side, pulled down as one
-  file, and the remote temp file is cleaned up.
-- **Built-in viewer / editor** — a plain text editor for small files, read-only when the
-  file is; opening a file in your own editor re-uploads it when you save.
-- **File operations** — rename, delete, create file or directory, and `chmod` that keeps
-  the setuid / setgid / sticky bits.
-- **Copy between sessions** — move remote files from one SFTP session into another.
-- **Conflict handling** — replace or keep both, per download.
-- **ZMODEM** in the terminal: `sz` on the remote downloads to your Downloads folder; `rz`
-  opens a local file picker and uploads over the existing PTY.
-- **WebDAV sync** — upload and download the connection list by hand, with an option to
-  accept self-signed certificates.
-
-### Monitoring
-
-- **Local system panel** — CPU, memory, swap, network throughput and per-filesystem usage,
-  with sparklines.
-- **Remote monitoring over SSH** — the same metrics read from `/proc` and `df` on the
-  server, refreshed every two seconds.
-- **Remote process list** — CPU-sorted, with copyable PIDs and the ability to terminate a
-  process you own (signalling another user's process asks first).
-- **System information window** — OS, kernel, architecture, hostname, CPU, memory,
-  filesystems and GPU.
-
-### Automation
-
-- **CLI** — one-shot SSH commands, file listing / reading / transfer, and session
-  inspection, with human-readable output or `--json`.
-- **MCP server** — exposes the same saved sessions to an MCP-capable AI client over local
-  stdio: session lookup, remote commands, directory listing, bounded text reads, uploads
-  and downloads. Each capability is behind its own permission switch, and credentials are
-  never returned to the client.
+- [Overview](#overview)
+- [Screenshots](#screenshots)
+- [Installation](#installation)
+- [Getting started](#getting-started)
+- [Features](#features)
+- [CLI and MCP](#cli-and-mcp)
+- [Configuration and data](#configuration-and-data)
+- [Security](#security)
+- [Technology stack](#technology-stack)
+- [Project structure](#project-structure)
+- [Building from source](#building-from-source)
+- [Development](#development)
+- [Release](#release)
+- [A note on the rewritten commit history](#a-note-on-the-rewritten-commit-history)
+- [Community](#community)
+- [Contributing](#contributing)
+- [Acknowledgements](#acknowledgements)
+- [License](#license)
 
 ## Screenshots
 
 <p align="center">
-  <img src="docs/screenshots/01-welcome.png" alt="XenTerm on the Terminal page with nothing connected" width="820"><br>
-  <em>The landing view: the navigation rail, the status panel on the left, and Connect / New session / Import</em>
+  <img src="docs/screenshots/01-hosts.png" alt="XenTerm home screen with the navigation rail and saved hosts" width="860"><br>
+  <em>Home — saved hosts and groups, with the navigation rail on the left</em>
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/02-terminal-htop.png" alt="A local PowerShell session with the file panel docked below" width="820"><br>
-  <em>A local PowerShell session in a tab, with the file panel docked underneath</em>
+  <img src="docs/screenshots/02-terminal.png" alt="A terminal session with the tools panel and live system readings" width="860"><br>
+  <em>A terminal session, with search, snippets and live system readings in the side panel</em>
 </p>
 
-## Install
+<p align="center">
+  <img src="docs/screenshots/03-settings.png" alt="XenTerm settings screen" width="860"><br>
+  <em>Settings — terminal, SFTP, logging and shortcut preferences</em>
+</p>
 
-### Download the verified GPUI preview
+## Installation
 
-No Rust toolchain is needed for these portable downloads. These links select source
-[`8819e2ec1327`](https://github.com/xue-ding-e/XenTerm-Next/commit/8819e2ec132760047209e9dcff7341c5f8a15f94)
-from the [rolling beta](https://github.com/xue-ding-e/XenTerm-Next/releases/tag/beta),
-verified on 2026-10-30. The beta page may also contain older source versions;
-download the archive and manifests with the **same full SHA**.
+Every `v*` tag builds the desktop application for each supported platform and
+publishes it on the [Releases](https://github.com/ixbaicn/XenTerm/releases) page.
+The archive contains the Flutter UI together with the whole Rust core; nothing has
+to be installed separately.
 
-| Platform | Direct download |
-| --- | --- |
-| Windows x86_64 | [ZIP](https://github.com/xue-ding-e/XenTerm-Next/releases/download/beta/XenTerm-Next-beta-8819e2ec132760047209e9dcff7341c5f8a15f94-windows-x86_64.zip) |
-| Linux x86_64 | [tar.gz](https://github.com/xue-ding-e/XenTerm-Next/releases/download/beta/XenTerm-Next-beta-8819e2ec132760047209e9dcff7341c5f8a15f94-linux-x86_64.tar.gz) |
-| macOS Apple Silicon | [ZIP](https://github.com/xue-ding-e/XenTerm-Next/releases/download/beta/XenTerm-Next-beta-8819e2ec132760047209e9dcff7341c5f8a15f94-macos-aarch64.zip) |
+### Windows
 
-[SHA256 checksums](https://github.com/xue-ding-e/XenTerm-Next/releases/download/beta/XenTerm-Next-beta-8819e2ec132760047209e9dcff7341c5f8a15f94-SHA256SUMS) ·
-[Build provenance](https://github.com/xue-ding-e/XenTerm-Next/releases/download/beta/XenTerm-Next-beta-8819e2ec132760047209e9dcff7341c5f8a15f94-BUILD.json)
+- **MSI installer** (recommended) — `xenterm-<version>-windows-x86_64.msi`. It is a
+  per-machine install under `Program Files`, with Start-menu and desktop shortcuts,
+  an entry in *Apps & features*, an in-place upgrade path, and silent-install support
+  (`msiexec /i <msi> /qn`). Because the program files are read-only, the profile
+  lives in `%APPDATA%`.
+- **Portable zip** — `xenterm-<version>-windows-x86_64-desktop.zip`. Unzip it
+  anywhere and run `xenterm.exe`. When the folder is writable, the app keeps its
+  configuration in a `config/` folder next to the executable, which makes the zip
+  suitable for a USB stick.
 
-Before opening a download, compare its SHA256 with its exact filename in the
-checksum file: Windows PowerShell `Get-FileHash -Algorithm SHA256 <archive>`,
-macOS `shasum -a 256 <archive>`, or Linux `sha256sum <archive>`.
-A matching checksum detects corruption; it is not a publisher signature.
-These are beta previews, not a stable-release or full native-UI validation claim.
+> **Windows code signing:** XenTerm has applied to the SignPath Foundation
+> open-source program. Until the application is approved and the signing pipeline
+> is enabled, Windows release artifacts are unsigned and SmartScreen may warn
+> about the MSI or zip. Once active, covered Windows releases will use free code
+> signing provided by [SignPath.io](https://signpath.io), with a certificate by
+> the [SignPath Foundation](https://signpath.org).
 
-### Windows: extract and open
+### macOS
 
-1. Download the Windows ZIP above and verify its checksum.
-2. Use **Extract All**; open the extracted
-   `XenTerm-Next-beta-8819e2ec132760047209e9dcff7341c5f8a15f94-windows-x86_64` folder.
-3. Double-click `xenterm.exe`. Keep the accompanying license and attribution files.
-   Optionally create a shortcut to this executable.
-
-This preview is **unsigned**. If Windows blocks it or reports a security warning,
-stop and review the source and release provenance; do not disable security protections.
-The current beta does not publish an MSI installer.
-
-### macOS: Apple Silicon only
-
-1. Download the macOS ZIP above and verify its checksum.
-2. Double-click it in Finder to extract **XenTerm Next.app**.
-3. Optionally move that app to Applications without overwriting an existing copy,
-   then open it.
-
-This preview is ad-hoc signed, **not Developer ID signed or notarized**. If macOS
-blocks it, stop and review the release provenance; do not remove quarantine or
-disable Gatekeeper as a routine installation step. No Intel Mac or PKG download
-is provided by this beta.
-
-### Linux: extract and open
-
-Built on Ubuntu 22.04; requires glibc ≥ 2.35 and system GUI libraries.
-After downloading the Linux archive and verifying its checksum, run from the
-download directory:
+The download is a `.zip` containing `XenTerm.app`:
 
 ```bash
-tar -xzf XenTerm-Next-beta-8819e2ec132760047209e9dcff7341c5f8a15f94-linux-x86_64.tar.gz
-cd XenTerm-Next-beta-8819e2ec132760047209e9dcff7341c5f8a15f94-linux-x86_64
+# aarch64 = Apple Silicon, x86_64 = Intel
+unzip xenterm-*-macos-*-desktop.zip
+
+# Optional: move it into Applications (running it in place also works)
+mv XenTerm.app /Applications/
+
+# Clear the quarantine flag, or macOS reports "XenTerm is damaged and can't be opened"
+xattr -dr com.apple.quarantine /Applications/XenTerm.app
+
+open /Applications/XenTerm.app
+```
+
+If you did not move it, point both paths above at wherever the `.app` actually is.
+macOS 11 Big Sur or later is required.
+
+### Linux
+
+The tarball is a self-contained bundle; GTK 3 is the only system dependency:
+
+```bash
+tar -xzf xenterm-*-linux-x86_64-desktop.tar.gz
+cd xenterm-*-linux-x86_64-desktop
 ./xenterm
 ```
 
-Keep the extracted directory intact. Its `RUNTIME.txt` lists the build's runtime
-library dependencies; missing libraries must be installed with your distribution's
-package manager. This archive does **not** contain `install-linux.sh`; it is not a
-deb, Flatpak, AppImage, AUR package or a glibc 2.28 build.
-
-### Other packaging and source builds
-
-Only assets listed in [Next Releases](https://github.com/xue-ding-e/XenTerm-Next/releases)
-are published Next downloads. Installer source capabilities are separate:
-[Windows MSI](wix/main.wxs), [macOS PKG notes](packaging/macos/README.zh-CN.md),
-and the [Linux installation script](assets/install-linux.sh). Their existence or
-CI checks do not mean an installer has been published for this preview.
-For developer builds, see [Quick start](#quick-start).
-[Official upstream releases](https://github.com/ixbaicn/XenTerm/releases) are a
-different distribution and do not include all Next enhancements.
-
-Before upgrading, close XenTerm and back up your complete profile, including
-external key and wallpaper files. Extract a new version separately rather than
-overwriting a running installation; see [Configuration and data](#configuration-and-data).
-
-## Quick start
-
-### Rust toolchain support
-Evidence: [Rust 1.99.1 Linux desktop CI](https://github.com/xue-ding-e/XenTerm-Next/actions/runs/39570649230/job/119123663957), [1.88 failure](https://github.com/xue-ding-e/XenTerm-Next/actions/runs/39698435848), [1.92 failure](https://github.com/xue-ding-e/XenTerm-Next/actions/runs/39709879675), [1.93 failure](https://github.com/xue-ding-e/XenTerm-Next/actions/runs/39711092025).
-
-
-The package's Rust 1.88 declaration is a feature-specific baseline, not a promise
-that every feature and platform supports Rust 1.88:
-
-- Linux headless: Rust 1.88 is verified with `--locked --no-default-features --features headless`.
-- Default Linux desktop: the current locked GUI dependencies declare a minimum of
-  at least Rust 1.92. Actual checks reject Rust 1.88 and fail on Rust 1.92 because
-  `gpui-pre-util` uses `slice::as_array`, stabilized in Rust 1.93. Rust 1.93 is
-  not sufficient either: its check fails on `std::hint::cold_path` in `gpui-pre`,
-  an API stabilized in Rust 1.95. Existing same-source Linux desktop CI passed
-  on Rust 1.99.1; this is a verified toolchain, not proof of the minimum version.
-- Windows and macOS desktop: existing CI verifies stable Rust, not a fixed minimum
-  Rust version. Compilation does not replace native interaction testing.
-
-Keep `Cargo.lock` and use `--locked`. Do not ignore Rust-version checks or downgrade
-GPUI dependencies merely to force the headless minimum onto desktop builds.
-Tracking and exact evidence: [issue #11](https://github.com/xue-ding-e/XenTerm-Next/issues/11).
+Or use the bundled installer for a managed per-user installation (wrapper in
+`~/.local/bin`, PATH managed for new shells, Start-menu and desktop entry):
 
 ```bash
-git clone --branch main https://github.com/xue-ding-e/XenTerm-Next.git
-cd XenTerm-Next
-cargo run --release
+./install-linux.sh --user              # never invokes sudo
+./install-linux.sh --user --uninstall  # removes only unchanged installed files
 ```
 
-On first launch XenTerm creates an empty session store. Add your first server with **New
-Session**, or import one — `~/.ssh/config`, a FinalShell connection export, a previous
-XenTerm export, or a pasted `host|port|user|password|name` list are all supported.
+A system-wide install is `sudo ./install-linux.sh --prefix /opt/xenterm`; it
+never guesses the logged-in desktop user, so PATH/desktop integration stays
+opt-in via `--user`. See [docs/release.md](docs/release.md) for the layout,
+options and uninstall guarantees.
 
-### Headless CLI / authenticated remote MCP
-
-Build without the GPUI desktop libraries:
-
-```sh
-cargo build --locked --release --no-default-features --features headless
-```
-
-The default build still includes the complete GUI, CLI and stdio MCP. The opt-in
-HTTP service uses external OAuth access tokens, a deliberately selected private
-profile, and an existing HTTPS reverse proxy. See [remote MCP deployment and
-verification](docs/REMOTE_MCP.md), including OpenResty routing for multiple MCP
-services on one domain. No public listener, account or deployment is created by
-the build.
-
-### Building on Linux
-
-`cargo run` needs the system development packages the GUI stack links against:
-
-```bash
-sudo apt update
-sudo apt install -y --no-install-recommends \
-  build-essential pkg-config cmake \
-  libfontconfig1-dev libfreetype6-dev \
-  libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
-  libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
-  libgl1-mesa-dev libegl1-mesa-dev libgtk-3-dev \
-  libudev-dev
-```
-
-## Keyboard shortcuts
-
-`⌘` denotes Command on macOS, where other platforms use `Ctrl`. The clipboard set is
-deliberate: plain `Ctrl+C` stays `SIGINT`, which is the one shortcut a terminal must not
-take away.
-
-| Keys | Action |
+| Distribution | Command |
 | --- | --- |
-| `Ctrl+Tab` / `Ctrl+Shift+Tab` | Next / previous tab |
-| `Ctrl+K` | Quick-connect palette |
-| `Enter` on a dead session | Reconnect it |
-| `Ctrl+Shift+C` | Copy selection |
-| `Ctrl+V` / `Ctrl+Shift+V` | Paste |
-| `Ctrl+Alt+V` / `Shift+Insert` | Extra paste shortcuts (switchable) |
-| `Ctrl+F` | Find in the terminal; `Esc` closes the bar |
-| `Ctrl+=` / `Ctrl+-` / `Ctrl+0` | Zoom this session's font |
-| `PageUp` / `Home` / `PageDown` / `End` | Scroll the scrollback (normal screen only) |
+| Arch (AUR) | `yay -S xenterm-bin` (installs the same bundle to `/opt/xenterm`) |
 
-A second window is opened from the operating system's own entry point — the Windows
-taskbar jump list, the macOS dock menu, or the desktop action on Linux.
+The tarball also ships `install-linux.sh`, the `xenterm.desktop` entry and the
+icon for distributions that want to register the application.
 
-## Settings
+### Platform support
 
-**Interface** — theme (system / dark / light), panel font size, and the interface
-language.
-**Terminal**
+| Platform | Architecture | Package |
+| --- | --- | --- |
+| Windows 10 / 11 | x86_64 | MSI, portable zip |
+| macOS 11+ | Apple Silicon (aarch64), Intel (x86_64) | `.zip` with `XenTerm.app` |
+| Linux | x86_64 | `.tar.gz`, AUR `xenterm-bin` |
 
-| Page | Settings |
-| --- | --- |
-| Font | Family (any installed monospace family, plus the bundled one), size, bold, line spacing |
-| Cursor | Shape (block / bar / underline) and colour |
-| Input | Confirm multi-line paste; the extra paste shortcuts; panel strip height |
-| Highlight | Enable output highlighting, the preset (log levels / DevOps), and your own rules with add / enable / delete |
+iOS and Android are scaffolded in the Flutter project but are not part of the
+desktop release build.
 
-**Connections** — import `~/.ssh/config`, export every saved connection to a file.
-**Pasting** (under Connections) — paste a `host|port|user|password|name` list and import it
-in bulk.
-**Files** — a default download directory and whether to always ask where to save.
-**Sync** — WebDAV: enable, address, username, password, remote path, accept invalid
-certificates, and the upload / download buttons.
-**Automation** — the four switches, split by what they actually govern: **Unattended
-access** (use saved credentials, allow arbitrary SSH commands, allow file transfers) and
-the MCP server's own **MCP server** switch.
+## Getting started
+
+On first launch XenTerm creates an empty session store. Add your first server with
+**New host**. The Home toolbar's **Import hosts** reads `~/.ssh/config`, and
+**Settings → Profile data** imports a previous XenTerm portable export. The CLI
+can additionally import FinalShell connection exports.
+
+The first connection to a server shows its SHA-256 host-key fingerprint for
+confirmation. XenTerm remembers trusted keys in its own `known_hosts` file and warns
+if a key later changes.
+
+## Features
+
+> **UI status.** The Rust core is feature-complete; the Flutter desktop UI is being
+> brought to parity. Items marked **(core)** are available today through the core, the
+> CLI and MCP, but are not exposed in the desktop UI yet.
+
+### Sessions and connections
+
+- **Four session types** — SSH, local shell, Telnet and serial, in the same window.
+- **Local shell** — the Home toolbar's **Terminal** action opens a temporary
+  terminal on the local machine (the system shell), without adding it to the
+  session store.
+- **Ordered SSH bastions** — route a session through saved SSH jump hosts. The chain
+  is resolved outermost first and each hop uses its own credentials; legacy
+  single-jump configurations keep working, including nested routes. Cycles,
+  duplicates, missing hops and chains longer than 16 hops fail before any network
+  activity.
+- **SSH authentication** — password, private key, passphrase-protected key, and
+  keyboard-interactive prompts for 2FA / OTP.
+- **PuTTY `.ppk` keys** — PPK v2/v3 is decrypted and verified in memory; no
+  `puttygen` round-trip.
+- **Serial** — configurable baud rate, data / stop bits, parity and flow control,
+  with an optional console login reply for serial servers that ask for a user name
+  and password.
+- **Telnet** with an RFC 854/855 option state machine (SGA + NAWS window resizing).
+- **Triggers** — expect/send rules for interactive logins, each with its own
+  response; saved with the session.
+- **Host groups** — create, rename and delete folders, and move sessions between
+  them.
+- **Temporary sessions** — open a local shell or a serial console without adding it
+  to the session store.
+
+### Terminal
+
+- **Full VT/ANSI emulation** — `htop`, `btop`, `vim`, `tmux` and friends render
+  correctly full-screen, over a 100,000-line scrollback.
+- **Mouse tracking (core)** — SGR and X10 mouse reports are forwarded to TUI
+  applications that ask for them, so `htop` and `mc` respond to clicks; the desktop
+  UI does not forward pointer events yet.
+- **DEC line drawing** — the VT100 special-graphics charset, so `dialog` and `mc`
+  frames draw correctly even in UTF-8 mode.
+- **Colour emoji (core)** — skin tones, flags and ZWJ sequences render in colour from
+  Twemoji images embedded in the core; the desktop UI currently draws system text.
+- **Character encodings** — the terminal decodes per-session charsets (UTF-8 by
+  default, GBK and others) with a streaming decoder, so a multi-byte character split
+  across packets still decodes.
+- **Find in the terminal** — search the visible buffer with match highlighting and a
+  match count.
+- **Fonts and cursor** — any installed monospace family, plus fonts you import, with
+  configurable size, line spacing, bold text and padding.
+- **Session logs** — optionally record a session transcript and review or delete it
+  from the Logs screen.
+
+### Files
+
+- **SFTP panel** that can follow the terminal's working directory, with a
+  lazy-loading directory tree.
+- **Upload and download** single files or whole directory trees, with progress
+  reported in a transfer strip.
+- **Directory management** — create and delete remote directories and files.
+- **ZMODEM (core)** — `sz` on the remote downloads to your download folder and `rz`
+  uploads over the existing PTY; the core handles the transfer, the desktop UI does
+  not offer the dialogs yet.
+- **Download folder** — configurable in Settings, or ask every time.
+
+### Monitoring
+
+- **Live resource panel** beside the terminal — CPU, memory, swap, per-filesystem
+  usage, network throughput and GPU, with state labels instead of hidden failures
+  (`waiting`, `stale`, `unavailable`, `unsupported`).
+- **Readings from the session's own host** — an SSH session opens an auxiliary SSH
+  channel and refreshes the metrics every two seconds without a second login, while
+  a local shell samples the local machine.
+
+### Interface and theme
+
+- **One window, one working set** — a navigation rail with Home, Keychain, Tunnels,
+  Snippets, Known Hosts and Logs, a settings page, and title-bar tabs for every open
+  session.
+- **Home** — saved hosts as cards with search, groups, hover actions, and a host
+  details drawer for every connection field.
+- **Terminal workspace** — the terminal (or its SFTP view) on the left, a tools panel
+  on the right with search, copy, clear, font size, snippets, session status and live
+  system readings. The rail collapses to give the terminal the full width.
+- **Monochrome theme** — a neutral grey scale on black with a white accent, plus a
+  light theme; icons and widgets come from a single component set so every screen
+  looks like it belongs to the same product.
+- **Keyboard shortcuts** are listed on Settings → Shortcuts.
 
 ## CLI and MCP
 
-The CLI and the MCP server share the sessions saved in the GUI and the same SSH / SFTP
-implementation, so there is only one server list to maintain. The CLI suits scripts, CI
+The CLI and the MCP server live in the Rust core and share the sessions saved by the
+desktop app, so there is only one server list to maintain. The CLI suits scripts, CI
 and explicit commands; MCP lets an AI client do inspection, log analysis and file
 transfers from a natural-language request.
 
-> Connect to the target session in the GUI at least once first, so the host key is
-> confirmed. Normal CLI/MCP responses do not expose passwords or private keys. Explicit
-> CLI exports write recoverable credentials to a private file; do not put
-> plaintext passwords into prompts or MCP configuration files.
+Build the core binary from the repository root (the desktop archive ships the core
+as a bridge library, not as a standalone executable):
+
+```bash
+# Desktop-side automation, including OS keychain access
+cargo build --locked --release -p xenterm
+
+# Headless / server deployments without OS keychain backends
+cargo build --locked --release -p xenterm --no-default-features --features headless
+```
+
+> Connect to the target session in the desktop app at least once first, so the host
+> key is confirmed. Passwords and private keys never appear in CLI or MCP output —
+> and do not put plaintext passwords into prompts or MCP configuration files.
 
 ### CLI
 
@@ -450,40 +331,28 @@ xenterm cli read <session-id> /var/log/example.log
 xenterm cli upload <session-id> ./local.txt /tmp
 xenterm cli download <session-id> /tmp/result.txt ./downloads
 
-# Inspect the effective access policy without changing it
-xenterm cli permissions --json
+# Export / import the saved-session store as a portable private file
+xenterm cli export new-export.json --include-credentials
+xenterm cli import finalshell-export.json --dry-run
+xenterm cli sync-native snapshot.json --dry-run
 
-# Explicit private export: choose a new file outside the profile directory
-xenterm cli export ./private-sessions.json --include-credentials
-
-# Preview an append-only import before applying it
-xenterm cli import ./private-sessions.json --dry-run --json
-
-# Preview stable-ID migration in an independent profile with local credential storage
-xenterm --data-dir ./migration-profile cli import ./private-sessions.json --preserve-ids --dry-run --json
-xenterm --data-dir ./migration-profile cli sync-native ./sessions.json --dry-run --json
+# Read or set the unattended-access mode (restricted | full)
+xenterm cli permissions
+xenterm cli permissions restricted
 ```
 
-Downloads require an existing local destination directory and will not overwrite a file of
-the same name.
-
-Portable exports contain recoverable credentials and must be kept private. They include
-saved sessions, not global settings, trusted host keys or external key files. Export refuses
-an existing destination. Import and `sync-native` examples above are previews; removing
-`--dry-run` writes configuration. For migration from another profile, start with a portable
-import. Native encrypted snapshots still require the matching local encryption key;
-importing portable sessions does not make another profile's ciphertext readable, and OS
-keyring markers cannot be imported. Headless CLI/MCP also requires an
-explicit independent `--data-dir` (before the subcommand) or `XENTERM_DATA_DIR`; do not
-point it at the desktop profile. See [profile migration](docs/REMOTE_MCP.md).
+Downloads require an existing local destination directory and will not overwrite a
+file of the same name.
 
 ### MCP
 
-Open **Settings → Automation → MCP server** in XenTerm and turn on what you need: enable
-MCP, then allow saved credentials, arbitrary SSH commands and file transfers as your use
-case requires. The three unattended-access switches default to on while MCP is in preview.
+The MCP server exposes the same sessions over local stdio. MCP is disabled by
+default, and each capability — using saved credentials, running arbitrary SSH
+commands, transferring files — is gated separately; enable only what a given client
+needs. The unattended-access mode can be read or changed with
+`xenterm cli permissions`, and credentials are never returned to the client.
 
-Then register the stdio server in your MCP client:
+Register the stdio server in your MCP client:
 
 ```json
 {
@@ -496,60 +365,28 @@ Then register the stdio server in your MCP client:
 }
 ```
 
-On Windows, `command` can be `C:\\path\\to\\xenterm.exe`. Restart or refresh the client and
-you should see an `xenterm` server exposing the tools registered in
-[`src/mcp/impls/tools.rs`](src/mcp/impls/tools.rs): `get_access_policy`, `export_sessions`,
-`import_sessions`, `list_sessions`, `get_session`, `run_command`, `list_remote_files`,
-`read_remote_text_file`, `upload_file`, and `download_file`. MCP configuration files live in
-different places per client, so check that client's documentation.
+On Windows, `command` can be `C:\\path\\to\\xenterm.exe`. After restarting or
+refreshing the client you should see an `xenterm` server exposing nine tools:
+`list_sessions`, `get_session`, `run_command`, `list_remote_files`,
+`read_remote_text_file`, `upload_file`, `download_file`, `get_access_policy` and
+`import_sessions`. MCP configuration files live in different places per client, so
+check that client's documentation.
 
-`get_access_policy` is read-only. `import_sessions` previews by default; applying an import
-requires starting MCP with `--allow-config-import`, and file-transfer permission is required
-for both preview and apply. `export_sessions` and `xenterm cli export` use the same shared
-implementation. It requires the saved-credentials permission and an explicit
-`include_credentials: true` acknowledgement. MCP callers need both saved-credentials and
-file-transfer permissions. The export is reversible obfuscation, not confidential encryption;
-treat the output as a password file. The destination must be new and outside the source profile
-directory.
+For a read-only OOM diagnosis, a client can list sessions, run `free -h` and inspect
+kernel OOM records, then browse a heap-dump directory — all within the permissions
+you granted. If several sessions share a host, name the session in the prompt.
 
-#### Debugging the stdio connection
-
-An AI client generates these requests for you. When debugging by hand, send each one as a
-single line of JSON, in this order:
-
-```jsonl
-{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"example-client","version":"1.0.0"}}}
-{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}
-{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}
-```
-
-List sessions, then run a read-only OOM diagnosis and browse the heap-dump directory:
-
-```jsonl
-{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_sessions","arguments":{}}}
-{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"run_command","arguments":{"session_id":"<session-id>","command":"free -h; dmesg 2>/dev/null | grep -iE 'oom|killed process' | tail -50 || true; ps -ef | grep '[j]ava'","timeout_seconds":30,"max_output_bytes":1048576}}}
-{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"list_remote_files","arguments":{"session_id":"<session-id>","path":"/home/jeff/test/heapdumps"}}}
-```
-
-`read_remote_text_file` accepts only bounded UTF-8 text; for binaries such as HPROF use
-`download_file`, which requires an existing local directory and will not overwrite a file
-of the same name.
-
-A prompt you could give an MCP-capable client:
-
-> Use the `xenterm` MCP to investigate an OOM on my `192.168.100.41` server. Heap dumps are
-> in `/home/jeff/test/heapdumps`. Check system memory, kernel OOM records, Java processes,
-> application logs and the HPROF files, then identify the root cause. Read-only diagnostics
-> first — do not restart services or delete files.
-
-The server finds the session with `list_sessions` and then acts within the permissions you
-granted. If several sessions share a host, name the GUI session in the prompt.
+Remote (HTTP) MCP is an opt-in mode that verifies OAuth access tokens from an
+external identity provider behind your own HTTPS reverse proxy. It creates no public
+listener, account or deployment by itself. See
+[remote MCP deployment and verification](docs/REMOTE_MCP.md), including OpenResty
+routing for multiple MCP services on one domain.
 
 ## Configuration and data
 
-XenTerm is **portable-first**: if a writable `config/` folder sits next to the executable
-(a USB stick, an extracted tarball), everything lives there. Otherwise it falls back to the
-per-user OS config directory:
+XenTerm is **portable-first**: if a writable `config/` folder sits next to the
+executable (a USB stick, an extracted tarball), everything lives there. Otherwise it
+falls back to the per-user OS config directory:
 
 | Platform | Location |
 | --- | --- |
@@ -557,128 +394,222 @@ per-user OS config directory:
 | Linux | `~/.config/xenterm` |
 | macOS | `~/Library/Application Support/dev.xenterm.XenTerm` |
 
-Upgrading from the pre-rename build (`meatshell`) migrates `sessions.json`, `secret.key`
-and `known_hosts` automatically — copies are left in place, and existing files are never
-overwritten. Diagnostics go to a separate `log/` directory beside the config, with
-`error.log` capped at 50 MiB.
+All user data lives in that one directory:
 
-## Security notes
+- `sessions.db` — the session store (SQLite, WAL mode)
+- `secret.key` — the per-install key used when no OS keychain is available
+- `known_hosts` — host keys trusted by XenTerm (its own format, not OpenSSH's)
+- `log/` — diagnostics, beside the configuration directory
 
-- **Passwords at rest** go to the OS keychain (Windows Credential Manager, macOS Keychain,
-  Linux Secret Service) whenever it is available. When it is not, they are encrypted with
-  **ChaCha20-Poly1305** under a per-install key in `secret.key`, so `sessions.json` never
-  contains a plaintext password.
-- **Exported connection lists are portable, not secret.** The export format uses a fixed
-  key compiled into the binary so a file opens on any machine — that is obfuscation, the
-  same level as a FinalShell export, not encryption to rely on.
-- **Host keys** are remembered by XenTerm itself in its own `known_hosts` file (a
-  `host:port <key-type> <base64>` format), which is not OpenSSH's file.
-- **Secrets are zeroed on drop**, so plaintext credentials do not linger in freed memory.
+An older `sessions.json` is imported once, kept beside the database as
+`sessions.json.migrated`; existing files are never overwritten. For services and
+automation, `--data-dir <path>` or `XENTERM_DATA_DIR` pins an explicit, isolated
+profile before the store is opened. Concurrent writers detect stale snapshots
+instead of overwriting newer saves; see
+[profile consistency](docs/profile-consistency.md) and
+[configuration import](docs/config-import.md).
 
-## Tech stack
+## Security
+
+- **Passwords at rest** go to the OS keychain (Windows Credential Manager, macOS
+  Keychain, Linux Secret Service) whenever it is available. When it is not, they are
+  encrypted with **ChaCha20-Poly1305** under a per-install key in `secret.key`, so
+  `sessions.db` never contains a plaintext password.
+- **Exported connection lists are portable, not secret.** The export format uses a
+  fixed key compiled into the binary so a file opens on any machine — that is
+  obfuscation, not encryption to rely on. Keep exports private.
+- **Host keys** are remembered by XenTerm itself in its own `known_hosts` file
+  (`host:port <key-type> <base64>`), which is not OpenSSH's file. Unknown keys ask for
+  confirmation; a changed key produces a hard warning.
+- **Secrets are zeroed on drop**, so plaintext credentials do not linger in freed
+  memory.
+- **MCP is opt-in and gated** — the server and each capability are off by default,
+  credentials are never returned to clients, and command/file access requires an
+  explicit permission grant.
+
+## Technology stack
 
 | Layer | Choice |
 | --- | --- |
-| UI | [GPUI](https://gpui.rs) via `gpui-kit` — GPU-rendered Rust UI, compiled in |
+| UI | Flutter + [shadcn_flutter](https://pub.dev/packages/shadcn_flutter) widgets |
+| Bridge | hand-written C ABI over [`dart:ffi`](https://dart.dev/interop/c-interop) (`xenterm-bridge`) |
 | Async runtime | [`tokio`](https://tokio.rs) |
 | SSH / SFTP | [`russh`](https://crates.io/crates/russh) + [`russh-sftp`](https://crates.io/crates/russh-sftp) — pure Rust, no libssh |
 | Terminal emulation | [`rio-vt`](https://crates.io/crates/rio-vt) native grid, scrollback and reflow |
 | Local PTY | [`portable-pty`](https://crates.io/crates/portable-pty) |
 | Serial ports | [`serialport`](https://crates.io/crates/serialport) |
 | System metrics | [`sysinfo`](https://crates.io/crates/sysinfo) |
-| Encryption | [`chacha20poly1305`](https://crates.io/crates/chacha20poly1305); PPK via [`aes`](https://crates.io/crates/aes) + [`argon2`](https://crates.io/crates/argon2) |
-| Serialization | `serde` + `serde_json` |
-| Logging | `tracing` + `tracing-subscriber` |
+| Storage | [`rusqlite`](https://crates.io/crates/rusqlite) (bundled SQLite), [`keyring`](https://crates.io/crates/keyring), [`chacha20poly1305`](https://crates.io/crates/chacha20poly1305) |
+| MCP | [`rmcp`](https://crates.io/crates/rmcp) + [`axum`](https://crates.io/crates/axum) |
+| Serialization / logging | `serde`, `serde_json`, `tracing` |
 
-## Project layout
+## Project structure
 
 ```
-xenterm/
-├── Cargo.toml
-├── build.rs                    # embeds assets/xenterm.ico on Windows
-├── ui/fonts/                   # bundled terminal font (regular + bold) and the icon font
-├── assets/                     # icons, banner, desktop entry, Linux installer
-├── packaging/                  # AUR PKGBUILD and the Flatpak manifest
-└── src/
-    ├── main.rs                 # entry point: UI, `cli`, `mcp serve`
-    ├── ui/                     # the shell — pages, panels, dialogs, detached windows
-    │   ├── impls/pages/        # the three pages: terminal, sessions, settings
-    │   └── impls/              # panels, dialogs, the terminal view and the shell
-    ├── app/                    # session models, the PTY pump, window/jump-list plumbing
-    ├── core/                   # toolkit-free state: tabs, panes, maps, histories
-    ├── cli/  mcp/  automation/ # script and AI entry points over one dispatcher
-    ├── config/                 # sessions.json, encryption, keychain, import/export
-    ├── ssh/  sftp/  tunnel/    # protocols and plumbing
-    ├── terminal/               # VT parsing, rendering, ZMODEM, serial, Telnet
-    ├── resource/               # local sampling and remote metric parsing
-    ├── webdav/  i18n/  layout/  logging/
-    └── allocator/              # jemalloc on Unix, mimalloc on Windows
+XenTerm/
+├── crates/
+│   └── xenterm/                 # Rust service core
+│       ├── src/
+│       │   ├── app/             # session runtime and the PTY pump
+│       │   ├── automation/      # unattended-access policy
+│       │   ├── cli/             # `xenterm cli`
+│       │   ├── config/          # sessions.db, credentials, import/export, profile locks
+│       │   ├── core/            # toolkit-free state shared by every entry point
+│       │   ├── mcp/             # MCP server (stdio and optional authenticated HTTP)
+│       │   ├── resource/        # local sampling and remote metric parsing
+│       │   ├── session/         # connection lifecycles for SSH / local / Telnet / serial
+│       │   ├── ssh/  sftp/  tunnel/
+│       │   ├── terminal/        # VT engine, charsets, render model, ZMODEM
+│       │   ├── webdav/          # manual session sync
+│       │   └── frontend.rs      # public session facade used by the bridge
+│       ├── tests/               # Rust and Python end-to-end suites
+│       └── build.rs             # version injection and Windows icon embedding
+├── apps/
+│   └── xenterm/                 # Flutter desktop UI
+│       ├── lib/                 # screens, shell, terminal view, theme, widgets
+│       ├── native/              # xenterm-bridge: C ABI over the core
+│       ├── tool/                # build, stage, package and installer scripts
+│       └── windows/ linux/ macos/ ios/ android/   # Flutter platform runners
+├── assets/                      # icons, bundled fonts and the desktop entry
+├── packaging/                   # AUR recipe, Windows MSI definition, remote-MCP examples
+├── scripts/                     # version.sh, release.ps1, make_icons.py, install-wix.ps1
+├── docs/                        # design notes and operational documentation
+└── .github/workflows/           # CI, release and AUR publishing
 ```
+
+## Building from source
+
+Requirements:
+
+- **Rust** 1.88 or newer (the workspace pins its members in `Cargo.toml`)
+- **Flutter** 3.47 or newer, stable channel (CI builds with 3.47.7)
+- Platform toolchains: Visual Studio C++ build tools on Windows, Xcode on macOS,
+  and the GTK development packages on Linux
+
+On Debian/Ubuntu, the Linux build needs:
+
+```bash
+sudo apt update
+sudo apt install -y --no-install-recommends \
+  build-essential pkg-config cmake ninja-build clang \
+  libgtk-3-dev liblzma-dev libstdc++-12-dev \
+  libudev-dev libdbus-1-dev
+```
+
+Build the bridge library first, then the Flutter application:
+
+```bash
+cargo build --release --locked -p xenterm-bridge
+
+cd apps/xenterm
+flutter pub get
+flutter build windows --release     # or linux / macos
+```
+
+`apps/xenterm/tool/bundle_native.sh` copies the bridge next to the built app
+(`build/windows/x64/runner/Release` on Windows). Run it once after building — and
+before the first `flutter run` during development:
+
+```bash
+bash apps/xenterm/tool/bundle_native.sh
+```
+
+`apps/xenterm/tool/package_desktop.sh <version>` produces the release archive used by
+the workflows.
 
 ## Development
 
-### Windows local update and build
+Before contributing, read the [contribution guide](CONTRIBUTING.md) (also available
+in [简体中文](CONTRIBUTING.zh-CN.md)) for PR scope, conflict handling, review
+readiness and API compatibility checks.
 
-For XenTerm Next, install Git for Windows, Rust with the MSVC target, and Visual Studio C++ Build Tools, then run `Update-Local.cmd` from a checkout directly below your workspace directory. It pulls `xue-ding-e/XenTerm-Next` `main` into a separate `source-next` checkout, builds the desktop with `--release --locked`, and installs desktop shortcuts. Existing development changes are left in their checkout. An unchanged, verified commit reuses its build.
+- **The UI is Flutter only.** The core must stay free of UI-toolkit dependencies: it
+  is linked as a library into the desktop app and built as a standalone CLI on
+  servers.
+- **The bridge is a thin translator.** `apps/xenterm/native/` maps core types to the
+  JSON and handles the Dart side uses; behaviour belongs in `crates/xenterm`.
+- **Core modules are feature packages.** Each module keeps data structures under
+  `struct/`, implementations under `impls/`, and exposes a small facade through its
+  `mod.rs`.
+- Useful commands from the repository root:
 
-The executable stays at `<workspace>\runtime\current\xenterm.exe` and uses the existing `<workspace>\data` profile. One `previous` package is retained. If current GUI/MCP processes are running, the update waits in `pending`; close those processes and open the desktop shortcut to apply it. Preview with `powershell -NoProfile -File scripts\update-local.ps1 -WorkspaceRoot <workspace> -DryRun`.
+  ```bash
+  cargo check --locked
+  cargo test --locked
+  cargo test --locked --no-default-features --features headless
+  cd apps/xenterm && flutter pub get && flutter analyze && flutter test
+  ```
 
-`scripts\clean-local.ps1 -WorkspaceRoot <workspace>` previews obsolete local artifacts; add `-Apply` to remove them. It retains the reusable release cache, profile directories, directory links and registered WSL disks. Runtime handoff and cleanup tests are `tests\local_runtime_test.ps1 -Exe <portable-exe>` and `tests\local_cleanup_test.ps1`.
-
-Before contributing, read the [contribution guide](CONTRIBUTING.md) (also available in 简体中文) for PR scope, conflict handling, review readiness, and API compatibility checks.
-
-- **The interface is GPUI only.** There is no feature flag to build against and no second
-  frontend to keep in step. A bare `xenterm` launch and the migration-era `xenterm gpui`
-  argument both open the same shell.
-- **A page is a view with its own state**, built on first entry and kept after that, so a
-  half-typed filter or a scroll position survives switching away. The shell renders exactly
-  one page per frame; anything that cannot be done inside the page is queued and drained by
-  the shell at the top of the next frame, which is also why a click is never carried out
-  inside the render that received it.
-- **The interface uses icon-font glyphs and words, never emoji** — enforced by a test that
-  scans `src/ui`, because a check that ran once is a fact about that day rather than a
-  property of the code.
-- **Translations are pairs of literals**, not a catalogue: `crate::i18n::t("中文", "English")`
-  picks by the current language flag, and both languages ship in the binary.
-- **`cargo check` is the fastest feedback loop** while editing the UI.
-- Run the test suite with `cargo test`; the integration tests live under `tests/app/`.
-  Only the three suites wired in through `#[path]` are actually compiled today, so add a
-  new module to `mod.rs` rather than only creating the file.
+- The Python suites under `crates/xenterm/tests/` cover CLI, MCP, import/export and
+  SSH jump-chain behaviour end to end; `docs/` describes the operational details.
 
 ## Release
 
-Do not bump `Cargo.toml` by hand and then tag it. Use the release script, so the tag points
-at a commit that already carries the matching version:
+Do not bump the crate version by hand and then tag it. Use the release helper so the
+tag points at a commit that already carries the matching version:
 
 ```powershell
-.\scripts\release.ps1 v0.7.4 -Push
+.\scripts\release.ps1 v0.8.0 -Push
 ```
 
-It requires no uncommitted tracked-file changes, updates `Cargo.toml` and the `xenterm`
-entry in `Cargo.lock`, runs `cargo check --locked`, verifies `xenterm --version`, commits
-`Release v0.7.4` and creates an annotated tag, then pushes the branch and tag. See
-[docs/release.md](docs/release.md).
+The release workflow verifies that the tag matches the version in
+`crates/xenterm/Cargo.toml` and `Cargo.lock`, builds the desktop archives for Windows,
+macOS (Apple Silicon and Intel) and Linux, and attaches them to the GitHub Release in
+one step. See [docs/release.md](docs/release.md) for the full process and
+[docs/versioning.md](docs/versioning.md) for the version-string specification.
 
-> **Release build requirements:** Linux runners need development packages for GPUI's
-> platform libraries, and GPUI's Windows release build requires `fxc.exe` from the Windows
-> SDK (debug builds skip that step). The existing beta workflow provisions these prerequisites;
-> local release builds must provide them too. See `Cargo.toml` and the release workflows.
+## A note on the rewritten commit history
+
+In October 2026 the maintainers rebuilt this repository's commit history and
+published XenTerm as a new project. Both the interface layer — a Flutter desktop UI
+replacing the previous one — and the Rust core were rewritten on a different
+architecture, so the earlier history no longer described the code in this
+repository.
+
+Consequently, commit links, blame annotations, and references to earlier commits or
+pull requests from before October 2026 no longer resolve. We apologize for any
+inconvenience this causes readers who bookmarked or cited them. Release notes from
+before the rewrite are preserved in the [CHANGELOG](CHANGELOG.md); the source code,
+license and feature set are unaffected.
 
 ## Community
 
+Questions, bug reports and feature requests are welcome in
+[GitHub Issues](https://github.com/ixbaicn/XenTerm/issues). For Chinese-speaking
+users there is also a QQ group:
+
 <p align="center">
-  <img src="docs/QR/QQ_Group_QR_Code.jpg" alt="QQ group QR code" width="280"><br>
-  <em>Scan to join the QQ group for usage questions, bug reports and release news</em>
+  <img src="docs/QR/QQ_Group_QR_Code.jpg" alt="QQ group QR code" width="180"><br>
+  <em>Scan to join the QQ group for usage questions and release news</em>
 </p>
+
+## Contributing
+
+Contributions are welcome. Please read the [contribution guide](CONTRIBUTING.md)
+first; it covers the PR workflow, verification commands and review expectations.
+Small, focused pull requests are easiest to review. The community follows the
+[Code of Conduct](CODE_OF_CONDUCT.md). Report security issues privately as
+described in [SECURITY.md](SECURITY.md) rather than in a public issue.
 
 ## Acknowledgements
 
-- [ixbaicn/XenTerm](https://github.com/ixbaicn/XenTerm) — the upstream project on which XenTerm Next is based.
-- [meatshell](https://github.com/yituorou/meatshell)
+- [Flutter](https://flutter.dev) and [shadcn_flutter](https://pub.dev/packages/shadcn_flutter) for the UI layer
+- [Lucide](https://lucide.dev) icons and [Simple Icons](https://simpleicons.org) for the icon set
+- [rio-vt](https://crates.io/crates/rio-vt), [russh](https://crates.io/crates/russh),
+  [russh-sftp](https://crates.io/crates/russh-sftp), [portable-pty](https://crates.io/crates/portable-pty),
+  [serialport](https://crates.io/crates/serialport), [sysinfo](https://crates.io/crates/sysinfo),
+  [tokio](https://tokio.rs), [rusqlite](https://crates.io/crates/rusqlite) and [rmcp](https://crates.io/crates/rmcp)
+  for the Rust core
+- [Twemoji](https://github.com/jdecked/twemoji) for the colour emoji artwork
+- The Meatshell Mono, MiSans and HarmonyOS Sans typefaces, attributed in
+  [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+- The [MeatShell](https://github.com/yituorou/meatshell) project, whose portable
+  export format and profile migration path XenTerm keeps for compatibility
 
 ## License
 
-Released under the [MIT license](LICENSE). Contributions are accepted under the same terms.
+Released under the [MIT license](LICENSE). Contributions are accepted under the same
+terms.
 
-Third-party attributions — including the Twemoji artwork used for colour emoji — are in
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Third-party attributions — including the Twemoji artwork used for colour emoji and
+the bundled fonts — are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

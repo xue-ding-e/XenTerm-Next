@@ -1,7 +1,7 @@
 # CLI/MCP session imports
 
-XenTerm accepts the original MeatShell portable export without conversion. The
-export marker stays `"meatshell_export": 1`, and `enc:exp:v1:` credentials retain
+XenTerm accepts the pre-rename portable export without conversion. The export
+marker stays `"meatshell_export": 1`, and `enc:exp:v1:` credentials retain
 the original portable format. This fixed-key format is reversible obfuscation,
 not protection against someone who has the file. Keep exports private; do not
 paste them into prompts or version control.
@@ -19,14 +19,14 @@ Put the global `--data-dir` before the command. `XENTERM_DATA_DIR` is an
 alternative; the legacy `MEATSHELL_DATA_DIR` variable remains a fallback.
 An explicit directory is pinned for the process, uses its own `secret.key` and
 logs, and never restores or mirrors another profile or uses the shared OS
-keyring. Make this directory private to the service account. The normal GUI
+keyring. Make this directory private to the service account. The normal desktop
 profile selection is unchanged when neither option nor variable is supplied.
 
-Use a separate `--data-dir` for the service. All current GUI, background-save,
+Use a separate `--data-dir` for the service. All current desktop, background-save,
 CLI and MCP import writers compare their loaded snapshot and a per-commit token
 inside a SQLite write transaction. A stale writer is rejected before changing
 rows or credentials; queued background snapshots cannot overwrite newer saves.
-The GUI keeps a persistent warning on a failed save. Keep any pending edits,
+The desktop app reports a failed save instead of silently retrying. Keep any pending edits,
 reopen XenTerm to reload the latest profile, then reapply them deliberately.
 There is no automatic merge, forced overwrite, or silent retry. See
 [profile consistency and recovery](profile-consistency.md) for the lock,
@@ -53,7 +53,7 @@ non-sensitive compatibility warnings.
 
 ## Supported inputs and conflict policy
 
-- Original MeatShell/XenTerm v1 portable JSON exports
+- Original (pre-rename) / XenTerm v1 portable JSON exports
 - Native legacy `sessions.json`, reading only the required `sessions` array
 - FinalShell connection JSON accepted by XenTerm's existing FinalShell decoder
 
@@ -64,7 +64,7 @@ between profiles or computers. Unsupported transport kinds are rejected instead
 of silently changing their meaning. A batch containing RDP sessions is rejected
 in full because XenTerm does not implement that transport.
 
-The public MeatShell branch also exports `session_log` and
+The legacy format also exports `session_log` and
 `rdp_domain`/`rdp_width`/`rdp_height`/`rdp_fullscreen` metadata. This XenTerm
 version does not implement those settings. Preview and apply explicitly return
 `warnings` naming known unsupported fields and the number of affected entries;
@@ -78,7 +78,7 @@ preview and apply: opt in again through the local session editor if desired.
 This local permission is excluded from duplicate matching, so reimporting an
 otherwise identical session neither creates a duplicate nor changes an
 existing local choice. CLI/MCP metadata remains credential-free even if a local
-session permits GUI reveal.
+session permits a desktop reveal.
 
 Imports are **append-only**. An equivalent complete profile, including its
 credentials and resolved jump route, is skipped. Profiles sharing an endpoint
@@ -126,11 +126,11 @@ files. List/get retain the existing MCP saved-credentials permission gate.
 ```sh
 cargo test --no-default-features --features headless config::config::import
 cargo test --no-default-features --features headless config::config::profile
-python tests/config_import_e2e.py --exe target/debug/xenterm
+python crates/xenterm/tests/config_import_e2e.py --exe target/debug/xenterm
 ```
 
-All fixtures are synthetic. Regression coverage includes an original public
-MeatShell ciphertext fixture, export/import round trips across different profile
+All fixtures are synthetic. Regression coverage includes a pre-rename ciphertext fixture,
+export/import round trips across different profile
 keys, both jump-reference formats, aliases, preview, malformed inputs, explicit
 MCP permissions, rollback after a second-row SQLite failure, stale caches, and
 credential redaction. CRUD editing is still performed through the session editor;

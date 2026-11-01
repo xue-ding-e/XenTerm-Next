@@ -6,6 +6,8 @@ body:
     attributes:
       value: |
         感谢你帮助改进 XenTerm！提交前请先搜索现有 Issue，避免重复建议。
+        开放式想法和使用问题请到 [Discussions](https://github.com/ixbaicn/XenTerm/discussions)；
+        安全相关问题请按 [SECURITY.md](https://github.com/ixbaicn/XenTerm/blob/main/SECURITY.md) 私密报告。
 
   - type: textarea
     id: problem

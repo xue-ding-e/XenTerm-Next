@@ -1,6 +1,6 @@
 # Concurrent profile changes
 
-Current GUI, background-save, CLI and MCP import writers use the same optimistic
+The desktop app, background-save, CLI and MCP import writers use the same optimistic
 commit boundary. Multiple windows or processes may read a profile, but a cached
 writer cannot overwrite a newer committed snapshot. This is conflict detection,
 not automatic merging.

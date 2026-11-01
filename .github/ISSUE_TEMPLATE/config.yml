@@ -1,1 +1,8 @@
-blank_issues_enabled: true
+blank_issues_enabled: false
+contact_links:
+  - name: 使用问题与讨论 / Discussions
+    url: https://github.com/ixbaicn/XenTerm/discussions
+    about: 提问、分享使用经验和开放式想法，请到这里而不是 Issue。
+  - name: 安全漏洞 / Security
+    url: https://github.com/ixbaicn/XenTerm/security/advisories/new
+    about: 安全漏洞请通过 GitHub 私密漏洞报告提交，不要公开 Issue；详见 SECURITY.md。

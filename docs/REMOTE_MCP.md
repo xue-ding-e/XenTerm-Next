@@ -3,8 +3,9 @@
 `xenterm mcp serve` remains the existing local stdio transport. To run a
 remote service, use the **new, opt-in** `--http-config` mode. It serves the
 standard MCP Streamable HTTP protocol at the configured resource path, using the official Rust MCP
-SDK. Both desktop and `--no-default-features --features headless` builds include this mode. Running
-without arguments still starts the GUI in the default desktop build.
+SDK. Both the default build and the `--no-default-features --features headless`
+build include this mode; the desktop application links the same core as a
+bridge library and does not run the HTTP listener itself.
 
 This is an **OAuth resource server**, not an identity provider. It verifies
 RS256 access tokens from an established external OAuth 2.1 / OIDC provider.
@@ -244,8 +245,8 @@ location = /.well-known/oauth-protected-resource/xenterm/mcp {
 ```
 
 Do not add a URI suffix to `proxy_pass`: preserve the complete public path.
-For another service at `/meatshell/mcp`, configure its own loopback port and
-`/.well-known/oauth-protected-resource/meatshell/mcp` location. Keep OAuth audiences
+For another service at `/other-mcp/mcp`, configure its own loopback port and
+`/.well-known/oauth-protected-resource/other-mcp/mcp` location. Keep OAuth audiences
 and selected profiles distinct. The public discovery challenge names the full
 path-specific metadata URL. Do not route all `/.well-known/*` to one application,
 and avoid the optional root discovery alias on a shared domain.
@@ -315,9 +316,9 @@ distribution. Point `--exe` at a built binary or an independently downloaded,
 checksum-verified release executable:
 
 ```sh
-python tests/remote_mcp_e2e.py --exe /path/to/xenterm
-python tests/remote_mcp_e2e.py --exe /path/to/xenterm --nginx /path/to/nginx
-python tests/remote_mcp_e2e.py --exe /path/to/xenterm --nginx /path/to/nginx --protocol-version 2025-11-25
+python crates/xenterm/tests/remote_mcp_e2e.py --exe /path/to/xenterm
+python crates/xenterm/tests/remote_mcp_e2e.py --exe /path/to/xenterm --nginx /path/to/nginx
+python crates/xenterm/tests/remote_mcp_e2e.py --exe /path/to/xenterm --nginx /path/to/nginx --protocol-version 2025-11-25
 ```
 
 The default protocol revision is `2025-06-18`; the optional revision is asserted
@@ -369,21 +370,21 @@ separately in the intended deployment before calling the service connected.
 ## Reproducible checks
 
 ```sh
-cargo test --no-default-features --features headless --bin xenterm
-cargo build --no-default-features --features headless
-python3 tests/stdio_mcp_e2e.py --exe target/debug/xenterm
-python3 tests/remote_mcp_e2e.py --exe target/debug/xenterm
-python3 tests/config_import_e2e.py --exe target/debug/xenterm
+cargo test --locked --no-default-features --features headless --bin xenterm
+cargo build --locked --no-default-features --features headless
+python3 crates/xenterm/tests/stdio_mcp_e2e.py --exe target/debug/xenterm
+python3 crates/xenterm/tests/remote_mcp_e2e.py --exe target/debug/xenterm
+python3 crates/xenterm/tests/config_import_e2e.py --exe target/debug/xenterm
 # Synthetic HTTP and SSH/SFTP tests require Python cryptography + paramiko:
-python3 tests/ssh_jump_chain_e2e.py --exe target/debug/xenterm
-python3 tests/ssh_jump_chain_e2e.py --exe target/debug/xenterm --stage-timeouts
-cargo check                         # default desktop source compatibility
+python3 crates/xenterm/tests/ssh_jump_chain_e2e.py --exe target/debug/xenterm
+python3 crates/xenterm/tests/ssh_jump_chain_e2e.py --exe target/debug/xenterm --stage-timeouts
+cargo check --locked                 # default feature set (OS keychain backends included)
 ```
 
 Tests generate synthetic RSA signing keys in memory, write only their public
 JWKS, create disposable profiles and connect solely to loopback fixtures.
-Headless builds contain CLI/MCP functionality and no GUI; the default desktop
-build keeps the GUI, CLI, stdio MCP and HTTP MCP in the same executable.
-Remote HTTP is implemented with the official rmcp SDK. The public MeatShell
-authenticated-remote-mcp branch (890792d) was the adapter/test baseline; this
-port uses XenTerm's GPUI feature split and SQLite profile store.
+Both feature sets include the CLI, the stdio MCP server and the authenticated
+HTTP transport; the `headless` feature set omits only the native OS-keychain
+backends, for containers and servers without a keyring. Remote HTTP is
+implemented with the official rmcp SDK on top of the core's SQLite profile
+store.

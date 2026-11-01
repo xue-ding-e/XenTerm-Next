@@ -22,13 +22,13 @@
 ## 禁止事项（§3）与注入方式（§5）
 
 - 源码中不硬编码版本号；禁止在运行期通过 git/网络取版本号
-- 版本号的**唯一合法拼接点是 [scripts/version.sh](../scripts/version.sh)**；Rust 侧由 [build.rs](../build.rs) 调用它，以编译期环境变量 `XT_VERSION` 注入，运行期通过 `src/version.rs` 的 `version::VERSION` 只读
-- Cargo.toml 的 `[package] version` 仅作为打包元数据（deb / MSI / Info.plist 需要 semver），不是应用的显示版本
+- 版本号的**唯一合法拼接点是 [scripts/version.sh](../scripts/version.sh)**；Rust 侧由 [build.rs](../crates/xenterm/build.rs) 调用它，以编译期环境变量 `XT_VERSION` 注入，运行期通过 `crates/xenterm/src/version.rs` 的 `version::VERSION` 只读
+- `crates/xenterm/Cargo.toml` 的 `[package] version` 仅作为打包元数据（MSI / Info.plist / AUR 需要 semver），不是应用的显示版本
 
 ## version.sh 契约（§4）与可追溯（§6）
 
 - stdout 仅一行版本号，日志走 stderr；退出码 0 成功、非 0 失败
-- 解析器默认在仓库根生成 `version.json`（不提交，可用 `XT_VERSION_JSON` 指定输出路径），字段固定如下。它是构建期记录，当前发布工作流不承诺分发完整文件；Next beta/headless 包通过 `BUILD.json` 保存运行时版本、Cargo 包版本、版本方案、时间戳及来源证据，详见[打包契约](headless-server.md#运行时版本与包版本)。
+- 每次构建在仓库根生成 `version.json`（不提交，随发布产物分发），字段固定：
 
 | 字段 | 含义 |
 | --- | --- |
@@ -44,12 +44,15 @@
 ## 校验（§7）
 
 - 生成时自检：version.sh 组装出的版本号不合规立即非 0 退出，任何失败都不降级为 dev
+- 单一来源自检：version.sh 校验 `apps/xenterm/pubspec.yaml` 的 `version` 前缀与
+  `crates/xenterm/Cargo.toml` 的 crate 版本一致，不一致直接失败（避免本地
+  `flutter build` 打上与产品版本不一致的包）
 - 构建注入自检：`XT_VERSION` 非法时 build.rs 直接令构建失败
-- CI 二次校验：[release.yml](../.github/workflows/release.yml) 的 `Verify binary version` 步骤要求产物 `xenterm --version` 输出与 `XT_VERSION` 完全一致
+- CI 二次校验：[release.yml](../.github/workflows/release.yml) 的 `prepare` 作业用 `scripts/version.sh` 解析版本并再次校验 §1 格式，同时要求 `vX.Y.Z` 标签与 `crates/xenterm/Cargo.toml`、`Cargo.lock` 中的版本完全一致；`scripts/release.ps1` 在打标签前还会验证 `xenterm --version` 输出 `xenterm xt-vX.Y.Z`
 
 ## 更新检测（§8）
 
-判定逻辑在 `src/version.rs::update_decision`，已覆盖单元测试：
+判定逻辑在 `crates/xenterm/src/version.rs::update_decision`，已覆盖单元测试：
 
 - 稳定版：按 semver 大小比较；远端更旧视为异常（不更新、记录）
 - beta：hash 相同 → 同一构建不算更新；hash 不同且时间戳更大 → 有更新；hash 不同且时间戳更小/相等 → 不更新、记录异常；客户端需记录完整版本字符串
@@ -72,20 +75,21 @@ repository.
   anything else → dev) > dev fallback. A non-empty `XT_VERSION` that fails the
   §1 check fails the build; it is never silently downgraded.
 - **Single assembly point (§3/§4/§5)** — [scripts/version.sh](../scripts/version.sh)
-  is the only place a version string may be assembled. [build.rs](../build.rs)
+  is the only place a version string may be assembled. [build.rs](../crates/xenterm/build.rs)
   calls it and injects the result as the compile-time `XT_VERSION`; runtime
-  code reads `src/version.rs::VERSION`. Cargo.toml's `[package] version`
-  remains packaging metadata (deb / MSI / Info.plist need plain semver).
-- **Traceability (§6)** — the resolver writes gitignored `version.json`
-  (schema above) at the repository root unless `XT_VERSION_JSON` overrides
-  its path. This is build-time metadata; current release workflows do not
-  promise to ship the full file. Next beta/headless packages instead record
-  runtime/package versions, scheme, timestamp and provenance in `BUILD.json`;
-  see the [packaging contract](headless-server.md#运行时版本与包版本).
-- **Checks (§7)** — version.sh self-checks its output; build.rs fails the
-  build on any script failure; the release workflow's `Verify binary version`
-  step requires `xenterm --version` to match `XT_VERSION` exactly.
-- **Update detection (§8)** — `src/version.rs::update_decision`: stable
+  code reads `crates/xenterm/src/version.rs::VERSION`. The crate's
+  `[package] version` remains packaging metadata (MSI / Info.plist / AUR need
+  plain semver).
+- **Traceability (§6)** — every build writes `version.json` (schema above) at
+  the repository root; it is gitignored and shipped inside release artifacts.
+- **Checks (§7)** — version.sh self-checks its output and verifies that the
+  `version` prefix in `apps/xenterm/pubspec.yaml` matches the crate version
+  (a drifted Flutter package version fails the build); build.rs fails the
+  build on any script failure; the release workflow's `prepare` job re-checks
+  the `§1` format and requires a `vX.Y.Z` tag to match both
+  `crates/xenterm/Cargo.toml` and `Cargo.lock`. `scripts/release.ps1` verifies
+  `xenterm --version` prints `xenterm xt-vX.Y.Z` before tagging.
+- **Update detection (§8)** — `crates/xenterm/src/version.rs::update_decision`: stable
   compares semver; beta compares hash first, then timestamp (same hash → no
   update; different hash with older/equal timestamp → no update, record the
   anomaly); alpha/dev and cross-channel pairs never auto-update.

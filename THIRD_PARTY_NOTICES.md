@@ -1,262 +1,143 @@
 # Third-Party Notices
 
-## Twemoji
+XenTerm is released under the [MIT license](LICENSE). It bundles or adapts the
+third-party works listed below. Where a licence requires the full text to travel
+with the distribution, the text is kept in the repository next to the asset (for
+example `assets/fonts/`) and is also embedded in the asset itself where the
+licence allows that.
 
-Color emoji graphics are provided by Twemoji.
+## Twemoji — colour emoji artwork
 
-Copyright 2020 Twitter, Inc. and other contributors.
+Colour emoji are rendered from Twemoji graphics embedded in the Rust core.
 
-The graphics are licensed under the Creative Commons Attribution 4.0
-International License: https://creativecommons.org/licenses/by/4.0/
+- Copyright 2020 Twitter, Inc and other contributors.
+- Licensed under the Creative Commons Attribution 4.0 International licence:
+  <https://creativecommons.org/licenses/by/4.0/>
+- Project: <https://github.com/jdecked/twemoji>
 
-Twemoji project: https://github.com/jdecked/twemoji
+The images are embedded at build time from the `twemoji-assets` crate; they are
+not modified.
 
+## Fonts
 
-## HeroGPUI ColorArea
+### Meatshell Mono — bundled monospace terminal font
 
-The HSV gradient and pointer/keyboard interaction in `src/ui/impls/color_area.rs`
-are adapted from HeroGPUI's ColorArea, commit
-`875d67797968e5304f351490e66a866c3688622c`:
-https://github.com/Porabuild/HeroGPUI/blob/875d67797968e5304f351490e66a866c3688622c/crates/herogpui-components/src/color_picker/area.rs
+The terminal's default monospace family, **Meatshell Mono**, is a renamed,
+otherwise unmodified build of **Cascadia Mono** (version 2407.024), supplied by
+Microsoft.
 
-HeroGPUI is licensed under Apache-2.0. The original license is included, unchanged,
-in `licenses/HeroGPUI-APACHE-2.0`; the upstream NOTICE is preserved verbatim
-in `licenses/HeroGPUI-NOTICE`, including HeroUI/NextUI attribution. Icon references
-in that original notice describe HeroGPUI; no HeroGPUI icons are copied here.
-The adaptation uses XenTerm's existing GPUI Kit
-and CSS color parser, limits the control to HSV/alpha, retains uncommitted drafts,
-and supplies explicit track and thumb contrast in both themes. HeroGPUI's theme,
-icons, calendar, and other components are not included.
+- Copyright 2021 Microsoft Corporation. Cascadia Code is a trademark of the
+  Microsoft group of companies.
+- Typeface design: Saja Typeworks (Aaron Bell), <http://sajatypeworks.com>.
+- The font is distributed under Microsoft's supplied-font terms together with
+  the SIL Open Font License based terms, both of which are embedded in the
+  font's own `name` table and remain viewable in any font inspector.
+- Upstream licence text:
+  <https://github.com/microsoft/cascadia-code/blob/main/LICENSE>
 
+The font file is shipped unmodified; only its family name was changed so the
+application can refer to it as its own bundled family.
 
-## HeroGPUI license text included in binary distributions
+### MiSans
 
-The existing release packages include this notice file. The complete upstream
-license and NOTICE are therefore repeated here so those packages retain them.
+The proportional interface font **MiSans** is bundled under Xiaomi's *MiSans
+Font Intellectual Property License*.
 
-```text
-                                 Apache License
-                           Version 2.0, January 2004
-                        http://www.apache.org/licenses/
+- Copyright © 2020–2025 Beijing Xiaomi Mobile Software Co., Ltd.
+- The licence permits free use, including commercial use, redistribution and
+  embedding in applications, provided the font files are not sold on their own,
+  the copyright notice is kept, and the font is not used to defame or
+  misrepresent Xiaomi.
+- A summary of the terms is in
+  [`assets/fonts/LICENSE-MiSans.txt`](assets/fonts/LICENSE-MiSans.txt); the
+  official page (<https://hyperos.mi.com/font/>) governs.
 
-   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+The font files are shipped unmodified.
 
-   1. Definitions.
+### HarmonyOS Sans SC
 
-      "License" shall mean the terms and conditions for use, reproduction,
-      and distribution as defined by Sections 1 through 9 of this document.
+The proportional interface font **HarmonyOS Sans SC** is bundled under the
+*HarmonyOS Sans Fonts License Agreement*.
 
-      "Licensor" shall mean the copyright owner or entity authorized by
-      the copyright owner that is granting the License.
+- Copyright 2021 Huawei Device Co., Ltd.
+- The agreement permits use, copy, merge, embed, bundle and redistribute of
+  unmodified copies together with the software; it requires a prominent notice
+  that HarmonyOS Sans Fonts are used, forbids modifications, and forbids
+  standalone redistribution.
+- The full agreement is in
+  [`assets/fonts/LICENSE-HarmonyOS-Sans.txt`](assets/fonts/LICENSE-HarmonyOS-Sans.txt).
 
-      "Legal Entity" shall mean the union of the acting entity and all
-      other entities that control, are controlled by, or are under common
-      control with that entity. For the purposes of this definition,
-      "control" means (i) the power, direct or indirect, to cause the
-      direction or management of such entity, whether by contract or
-      otherwise, or (ii) ownership of fifty percent (50%) or more of the
-      outstanding shares, or (iii) beneficial ownership of such entity.
+The font files are shipped unmodified.
 
-      "You" (or "Your") shall mean an individual or Legal Entity
-      exercising permissions granted by this License.
+## UI components and icons
 
-      "Source" form shall mean the preferred form for making modifications,
-      including but not limited to software source code, documentation
-      source, and configuration files.
+### shadcn_flutter
 
-      "Object" form shall mean any form resulting from mechanical
-      transformation or translation of a Source form, including but
-      not limited to compiled object code, generated documentation,
-      and conversions to other media types.
+The desktop UI is built with the [shadcn_flutter](https://pub.dev/packages/shadcn_flutter)
+Flutter package for its widget set and theme system.
 
-      "Work" shall mean the work of authorship, whether in Source or
-      Object form, made available under the License, as indicated by a
-      copyright notice that is included in or attached to the work
-      (an example is provided in the Appendix below).
+- Licensed under the MIT licence.
+- The package also bundles the Lucide icon font used by many of those widgets.
 
-      "Derivative Works" shall mean any work, whether in Source or Object
-      form, that is based on (or derived from) the Work and for which the
-      editorial revisions, annotations, elaborations, or other modifications
-      represent, as a whole, an original work of authorship. For the purposes
-      of this License, Derivative Works shall not include works that remain
-      separable from, or merely link (or bind by name) to the interfaces of,
-      the Work and Derivative Works thereof.
+### Lucide
 
-      "Contribution" shall mean any work of authorship, including
-      the original version of the Work and any modifications or additions
-      to that Work or Derivative Works thereof, that is intentionally
-      submitted to the Licensor for inclusion in the Work by the copyright owner
-      or by an individual or Legal Entity authorized to submit on behalf of
-      the copyright owner. For the purposes of this definition, "submitted"
-      means any form of electronic, verbal, or written communication sent
-      to the Licensor or its representatives, including but not limited to
-      communication on electronic mailing lists, source code control systems,
-      and issue tracking systems that are managed by, or on behalf of, the
-      Licensor for the purpose of discussing and improving the Work, but
-      excluding communication that is conspicuously marked or otherwise
-      designated in writing by the copyright owner as "Not a Contribution."
+Interface icons come from [Lucide](https://lucide.dev).
 
-      "Contributor" shall mean Licensor and any individual or Legal Entity
-      on behalf of whom a Contribution has been received by the Licensor and
-      subsequently incorporated within the Work.
+- Licensed under the ISC licence.
+- Lucide includes icons derived from the Feather project, Copyright (c)
+  2013-present Cole Bemis, licensed under the MIT licence.
+- Two newer Lucide icons (`fingerprint-pattern` and `clipboard-clock`) are
+  embedded as SVG path data in
+  [`apps/xenterm/lib/widgets/lucide_extra_icons.dart`](apps/xenterm/lib/widgets/lucide_extra_icons.dart)
+  because they post-date the icon set bundled with shadcn_flutter.
 
-   2. Grant of Copyright License. Subject to the terms and conditions of
-      this License, each Contributor hereby grants to You a perpetual,
-      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
-      copyright license to reproduce, prepare Derivative Works of,
-      publicly display, publicly perform, sublicense, and distribute the
-      Work and such Derivative Works in Source or Object form.
+### Simple Icons
 
-   3. Grant of Patent License. Subject to the terms and conditions of
-      this License, each Contributor hereby grants to You a perpetual,
-      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
-      (except as stated in this section) patent license to make, have made,
-      use, offer to sell, sell, import, and otherwise transfer the Work,
-      where such license applies only to those patent claims licensable
-      by such Contributor that are necessarily infringed by their
-      Contribution(s) alone or by combination of their Contribution(s)
-      with the Work to which such Contribution(s) was submitted. If You
-      institute patent litigation against any entity (including a
-      cross-claim or counterclaim in a lawsuit) alleging that the Work
-      or a Contribution incorporated within the Work constitutes direct
-      or contributory patent infringement, then any patent licenses
-      granted to You under this License for that Work shall terminate
-      as of the date such litigation is filed.
+The Flutter project depends on the [Simple Icons](https://simpleicons.org)
+package for brand glyphs.
 
-   4. Redistribution. You may reproduce and distribute copies of the
-      Work or Derivative Works thereof in any medium, with or without
-      modifications, and in Source or Object form, provided that You
-      meet the following conditions:
+- The icon data is released under CC0 1.0 Universal.
+- Brand names and logos remain trademarks of their respective owners; they are
+  used only to identify the corresponding products or services.
 
-      (a) You must give any other recipients of the Work or
-          Derivative Works a copy of this License; and
+### Flutter
 
-      (b) You must cause any modified files to carry prominent notices
-          stating that You changed the files; and
+The desktop application is built with [Flutter](https://flutter.dev), licensed
+under the BSD 3-Clause licence. The Flutter engine and framework notices are
+included in the generated application bundle by the Flutter toolchain.
 
-      (c) You must retain, in the Source form of any Derivative Works
-          that You distribute, all copyright, patent, trademark, and
-          attribution notices from the Source form of the Work,
-          excluding those notices that do not pertain to any part of
-          the Derivative Works; and
+## Rust dependencies
 
-      (d) If the Work includes a "NOTICE" text file as part of its
-          distribution, then any Derivative Works that You distribute must
-          include a readable copy of the attribution notices contained
-          within such NOTICE file, excluding any notices that do not
-          pertain to any part of the Derivative Works, in at least one
-          of the following places: within a NOTICE text file distributed
-          as part of the Derivative Works; within the Source form or
-          documentation, if provided along with the Derivative Works; or,
-          within a display generated by the Derivative Works, if and
-          wherever such third-party notices normally appear. The contents
-          of the NOTICE file are for informational purposes only and
-          do not modify the License. You may add Your own attribution
-          notices within Derivative Works that You distribute, alongside
-          or as an addendum to the NOTICE text from the Work, provided
-          that such additional attribution notices cannot be construed
-          as modifying the License.
+The Rust core's dependency tree and exact versions are pinned in
+[`Cargo.lock`](Cargo.lock); each crate declares its own licence in its package
+metadata. No Rust dependency source code is vendored into this repository. To
+list the resolved licences for a build:
 
-      You may add Your own copyright statement to Your modifications and
-      may provide additional or different license terms and conditions
-      for use, reproduction, or distribution of Your modifications, or
-      for any such Derivative Works as a whole, provided Your use,
-      reproduction, and distribution of the Work otherwise complies with
-      the conditions stated in this License.
-
-   5. Submission of Contributions. Unless You explicitly state otherwise,
-      any Contribution intentionally submitted for inclusion in the Work
-      by You to the Licensor shall be under the terms and conditions of
-      this License, without any additional terms or conditions.
-      Notwithstanding the above, nothing herein shall supersede or modify
-      the terms of any separate license agreement you may have executed
-      with Licensor regarding such Contributions.
-
-   6. Trademarks. This License does not grant permission to use the trade
-      names, trademarks, service marks, or product names of the Licensor,
-      except as required for reasonable and customary use in describing the
-      origin of the Work and reproducing the content of the NOTICE file.
-
-   7. Disclaimer of Warranty. Unless required by applicable law or
-      agreed to in writing, Licensor provides the Work (and each
-      Contributor provides its Contributions) on an "AS IS" BASIS,
-      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
-      implied, including, without limitation, any warranties or conditions
-      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
-      PARTICULAR PURPOSE. You are solely responsible for determining the
-      appropriateness of using or redistributing the Work and assume any
-      risks associated with Your exercise of permissions under this License.
-
-   8. Limitation of Liability. In no event and under no legal theory,
-      whether in tort (including negligence), contract, or otherwise,
-      unless required by applicable law (such as deliberate and grossly
-      negligent acts) or agreed to in writing, shall any Contributor be
-      liable to You for damages, including any direct, indirect, special,
-      incidental, or consequential damages of any character arising as a
-      result of this License or out of the use or inability to use the
-      Work (including but not limited to damages for loss of goodwill,
-      work stoppage, computer failure or malfunction, or any and all
-      other commercial damages or losses), even if such Contributor
-      has been advised of the possibility of such damages.
-
-   9. Accepting Warranty or Additional Liability. While redistributing
-      the Work or Derivative Works thereof, You may choose to offer,
-      and charge a fee for, acceptance of support, warranty, indemnity,
-      or other liability obligations and/or rights consistent with this
-      License. However, in accepting such obligations, You may act only
-      on Your own behalf and on Your sole responsibility, not on behalf
-      of any other Contributor, and only if You agree to indemnify,
-      defend, and hold each Contributor harmless for any liability
-      incurred by, or claims asserted against, such Contributor by reason
-      of your accepting any such warranty or additional liability.
-
-   END OF TERMS AND CONDITIONS
-
-   APPENDIX: How to apply the Apache License to your work.
-
-      To apply the Apache License to your work, attach the following
-      boilerplate notice, with the fields enclosed by brackets "[]"
-      replaced with your own identifying information. (Don't include
-      the brackets!)  The text should be enclosed in the appropriate
-      comment syntax for the file format. We also recommend that a
-      file or class name and description of purpose be included on the
-      same "printed page" as the copyright notice for easier
-      identification within third-party archives.
-
-   Copyright 2025 NextUI Inc.
-   Copyright 2026 HeroGPUI contributors
-
-   Licensed under the Apache License, Version 2.0 (the "License");
-   you may not use this file except in compliance with the License.
-   You may obtain a copy of the License at
-
-       http://www.apache.org/licenses/LICENSE-2.0
-
-   Unless required by applicable law or agreed to in writing, software
-   distributed under the License is distributed on an "AS IS" BASIS,
-   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-   See the License for the specific language governing permissions and
-   limitations under the License.
+```bash
+cargo metadata --format-version 1 --locked
 ```
 
-## HeroGPUI upstream NOTICE
+## Build and packaging tools
 
-```text
-HeroGPUI
-Copyright 2026 HeroGPUI contributors
+The Windows MSI is built with [WiX Toolset](https://wixtoolset.org) 3.14.1
+(the pinned version is installed by `scripts/install-wix.ps1`). WiX Toolset is
+licensed under the Microsoft Reciprocal License (MS-RL). It is a build-time tool:
+the MSI contains generated installer tables and the standard WixUI dialogs it
+produces, not the toolchain's source code.
 
-This product is a Rust/GPUI port derived from HeroUI v3.
-HeroUI is Copyright 2025 NextUI Inc. and is licensed under the Apache License,
-Version 2.0.
+Flutter and the Rust toolchain are likewise build-time dependencies; their
+licences are not re-stated here because neither is redistributed in source form.
 
-HeroGPUI includes modified and translated implementations of HeroUI component
-behavior, design tokens, styles, and documentation structure.
+## Trademarks
 
-This product includes icons from Lucide (https://lucide.dev), copied from the
-lucide-static 1.31.0 release into crates/herogpui-components/assets/lucide/.
-Lucide is Copyright (c) 2026 Lucide Icons and Contributors and is licensed
-under the ISC License. The Lucide icons derived from the Feather project are
-Copyright (c) 2013-present Cole Bemis and are licensed under the MIT License.
-The full license text, including the list of Feather-derived icons, is in
-crates/herogpui-components/assets/lucide/LICENSE.
-```
+XenTerm is an independent project and is not affiliated with, endorsed by, or
+derived from any other terminal product. Product names used in this repository
+— including Windows, macOS, Linux, PuTTY, OpenSSH and FinalShell — are the
+trademarks of their respective owners and are used only for identification and
+interoperability descriptions (for example, importing a FinalShell connection
+export).
+
+## Corrections
+
+If you believe attribution is missing or incorrect, please open an issue at
+<https://github.com/ixbaicn/XenTerm/issues>.

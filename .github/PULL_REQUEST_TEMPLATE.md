@@ -1,19 +1,31 @@
-<!-- 请先阅读 CONTRIBUTING.zh-CN.md；English: CONTRIBUTING.md。
-协作规范、线性历史提案的适用状态和验证要求以贡献指南为准，模板不另设规则。
--->
+<!-- 请先阅读 CONTRIBUTING.zh-CN.md（English: CONTRIBUTING.md）。
+本模板只帮助组织信息，协作规范、验证要求和评审标准以贡献指南为准。 -->
 
-## 问题与方案
+## 动机
 
-<!-- 中文优先；关联已有 Issue/PR，说明根因、方案、影响和边界。同主题修复逐项列出。 -->
+<!-- 这个 PR 解决什么问题？关联已有 Issue（如 #123）；新功能请说明使用场景。 -->
+
+## 变更
+
+<!-- 逐项列出改动。同一主题的修复合并到一个 PR，不要夹带无关改动。 -->
 
 ## 验证
 
-<!-- 写明提交、环境、实际命令与结果；区分通过、失败、未运行和环境阻塞。纯文档无需冒报编译。 -->
+<!-- 写明实际运行的命令、环境与结果，区分：通过 / 失败 / 未运行 / 环境阻塞。 -->
 
-## 提交前核对
+- [ ] `cargo check --locked`
+- [ ] `cargo test --locked`
+- [ ] `cd apps/xenterm && flutter analyze && flutter test`（涉及 Flutter 界面时）
+- [ ] Windows MSI 安装验证：实机验证安装、升级、卸载（涉及 Windows 打包 / 安装 / 升级行为时；未涉及可跳过）
 
-- [ ] 已核对仓库、分支、PR base/head 和授权范围
-- [ ] 已对照[贡献指南](https://github.com/ixbaicn/XenTerm/blob/main/CONTRIBUTING.zh-CN.md)完成适用检查，并如实说明未覆盖项
-- [ ] 已阅读贡献指南中的“线性历史与迁移政策提案”，确认其适用状态；无未经授权的历史或权限变更
+## 截图或录屏（界面改动请附）
 
-<!-- 完成后由提交者主动从 Draft 转为 Ready for review，并核对当前提交的实际审核反馈。 -->
+## 破坏性变更
+
+<!-- 配置格式、CLI 参数、MCP 协议、FFI 接口等不兼容变化；没有请填“无”。 -->
+
+## 关联 Issue
+
+<!-- 例如：Closes #123；无则填“无”。 -->
+
+<!-- 实现与验证完成后，请自行把 PR 从 Draft 转为 Ready for review。 -->

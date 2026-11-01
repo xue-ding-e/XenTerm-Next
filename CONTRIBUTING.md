@@ -1,301 +1,168 @@
 <p align="center">
-
-## Independent repository branch policy (xue-ding-e/XenTerm-Next)
-
-This section applies only to the independently maintained XenTerm Next repository, not to upstream's branch policy. The Check official upstream mirror (read-only) workflow checks drift daily at 09:00 UTC (17:00 Asia/Shanghai), with manual dispatch also available. It reports current or pending synchronization, fails on divergence or detected concurrent updates, never executes upstream code, and never writes any remote refs, tags or releases. Actual mirror fast-forwards use the existing authorized connector after ancestry and expected-SHA checks, followed by a ref readback; no new workflow credentials are configured. A successful read-only check does not mean a pending update has been synchronized. GitHub may delay scheduled runs.
-
-- `main` is the maintained user branch and retains all verified custom features. New commits have one parent; prefer rebase for updates and integration. Preserve logical commits for independent features or fixes. Use squash only to tidy necessary fixups within one feature, not to collapse independent features or unrelated large file sets into one commit.
-- In this repository maintenance context, “merge” means this linear integration by default and does not create a merge commit. Consider an exception only when the user explicitly requests preserving merge nodes and their integration relationships; an ordinary merge request does not authorize it. This local rule takes precedence over the generic proposal below, which is still awaiting upstream adoption.
-- `upstream-main` mirrors the official `main` of `ixbaicn/XenTerm`, including its existing merge history. Do not develop or apply custom patches on this mirror.
-- `upstream` names the official remote. Fetching or updating the mirror never automatically changes our `main`. Update the mirror only with a verified mapping and a fast-forward; stop on rewritten history or concurrent changes.
-- Integrate upstream changes in an isolated temporary working copy, preserve custom behavior, resolve conflicts and run applicable checks. Then update `main` linearly. Do not replace custom features with an upstream tree or add merge commits.
-- Prefer isolated working copies of the main development line. Short-lived branches for upstream PRs are allowed. Retain heads/bases of unfinished PRs and branches whose unique changes have not been reviewed.
-- Clean up completed or duplicate temporary branches only after verifying their contributions and creating a recoverable backup with old refs and SHAs. Use normal pushes for development. A history replacement needs separate explicit authorization, a complete backup, an exact old-SHA lease, race checks and post-write verification; never use bare `--force`.
-- Fork cleanup does not imply upstream acceptance. Do not delete or rewrite upstream branches, tags or releases. Do not execute stale history-migration plans.
-
   <b>English</b> · <a href="CONTRIBUTING.zh-CN.md">简体中文</a>
 </p>
 
-# XenTerm Community Contribution Guide
+# Contributing to XenTerm
 
-Welcome bug reports, feature suggestions and code contributions. This guide
-consolidates the collaboration requirements already stated by the maintainers and
-offers pre-submission verification suggestions; the newly added communication
-conventions and check recommendations are submitted with this contribution-guide
-proposal for maintainer review and do not represent a community-wide resolution that
-is already in force. If a maintainer sets new requirements on a specific PR, those
-latest requirements prevail.
+Thanks for helping improve XenTerm. This guide covers problem reports, pull
+requests, verification and review standards; it is the source of truth for
+collaboration rules, while [AGENTS.md](AGENTS.md) is only an AI entry point.
 
-This guide supplements the existing [Chinese README](README.zh.md), the
-[app test instructions](tests/app/README.md) and the per-feature documents; it
-neither replaces nor removes them. AI-assisted contributors should start with the
-repository-root [AGENTS.md](AGENTS.md); it links back here rather than defining a
-second set of collaboration rules.
+## Project layout
+
+XenTerm is a Rust core with a Flutter desktop UI:
+
+| Path | Contents |
+| --- | --- |
+| `crates/xenterm/` | Rust service core: SSH/SFTP, terminal engine, Telnet, serial, sessions/config, CLI, MCP, resource monitoring |
+| `apps/xenterm/` | Flutter desktop application (UI) |
+| `apps/xenterm/native/` | `xenterm-bridge`, the FFI bridge between UI and core |
+| `packaging/`, `scripts/`, `docs/` | Packaging recipes, build/release helpers, design notes |
+
+The UI and the Rust core were both rewritten, so the maintainers rebuilt the
+repository history once in October 2026. Contributors do not need to migrate or
+replay old commits: start from current `main` and submit normal changes. Do not
+rewrite shared history unless you are a maintainer coordinating it.
+
+Everyone taking part follows the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Communication language
 
-- **Chinese first.** Issue and PR titles, descriptions and follow-up discussion are
-  primarily in Chinese, so that most community members can take part.
-- Non-native Chinese speakers are welcome to write in English; maintainers will reply
-  in Chinese where possible and add clarifications as needed.
-- Keep code identifiers, commands, raw error output and necessary English quotations
-  in their original form.
+- **Chinese first.** Issue and PR titles, descriptions and discussion are mainly
+  Chinese so most community members can take part.
+- English is welcome; maintainers reply in Chinese where they can.
+- Keep identifiers, commands, raw error output and necessary quotations as-is.
+- Community channels are listed in the README; decisions that affect code belong
+  in an issue or PR.
 
-## Maintainer-established collaboration requirements
+## Questions, bug reports and security
 
-### Stability and interaction quality first
+- Use GitHub Discussions for usage questions and open-ended ideas, not the issue
+  tracker.
+- Search existing issues and PRs first; extend an existing discussion and link
+  it when similar.
+- A bug report includes the XenTerm version, OS, install method (MSI, portable
+  archive, package manager or source build), reproduction steps, expected and
+  actual result.
+- Remove passwords, private keys, tokens and real session data from logs,
+  screenshots and examples before posting.
+- **Security issues must not be public issues.** Follow [SECURITY.md](SECURITY.md)
+  and use GitHub private vulnerability reporting.
 
-The current maintenance focus is fixing problems, improving UI and interaction
-feedback, and driving toward the first stable release; new features should start
-with a scope and design discussion, and a flood of feature proposals must not crowd
-out stability fixes. Fix proposals still need to explain their trade-offs and pass
-review — "the problem is real" does not mean any implementation is automatically
-approved for merge.
+## Pull requests
 
-### Keep PRs mergeable
+1. Fork and branch from current `main` (`fix/...`, `feat/...`, `docs/...`).
+2. Keep the scope focused; batch repeated fixes instead of many tiny PRs and do
+   not force unrelated changes together. When splitting, state boundaries and
+   dependencies so each part can be reviewed.
+3. Keep the PR mergeable: rebase before review, resolve conflicts and re-check
+   affected code and tests; handle new conflicts promptly. Do not bypass branch
+   protection or overwrite others' commits.
+4. Keep the PR as a **Draft** until implementation and verification are done,
+   then check the diff, fill in the template and convert **Draft → Ready for
+   review** yourself. A "done" comment triggers nothing, and older green checks
+   do not prove the current commit. If no feedback appears, report the PR state
+   and what you tried instead of guessing bot names or toggling drafts.
+5. Maintainers merge reviewed topics with **Squash and merge**, or **Rebase and
+   merge** when several complete commits should be kept. A fork is not a reason
+   for a merge commit. After merging, start the next task from updated `main`.
+6. Link related PRs and state their order; coordinate before rewriting a shared
+   branch.
 
-PRs with merge conflicts cannot be merged. Before requesting review, sync the target
-branch, resolve conflicts, and re-check the affected code and tests. While the
-target branch keeps moving during review, please handle new conflicts promptly.
+## Commit messages
 
-Correct conflict resolution, a clear diff and a mergeable result remain essential.
-New history recommendations are described separately in the
-[proposed linear-history and migration policy](#proposed-linear-history-and-migration-policy);
-their status is distinct from the maintainer-established requirements.
+Use Chinese [Conventional Commits](https://www.conventionalcommits.org/) as
+`<type>(<scope>): <summary>`.
 
-### Batch frequent, similar changes
+- Types: `feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `build`, `ci`,
+  `chore`, `revert`.
+- Scopes follow the area: `ssh`, `sftp`, `terminal`, `telnet`, `serial`,
+  `config`, `cli`, `mcp`, `bridge`, `ui`, `deps`, `ci`.
+- Summary in Chinese, concise and imperative, no trailing period, e.g.
+  `fix(ssh): 修正跳板链断开后未回收会话`.
+- One topic per commit; explain cause, trade-offs and impact in the body when
+  needed. Squash fixup commits before review.
+- Do not bump the version or create tags in a PR; maintainers do that through the
+  release helper.
 
-Please consolidate frequently repeated, similar changes into one PR instead of
-splitting the same round of fixes into many tiny PRs. Related bug fixes can be
-submitted together, itemizing the problem, the change and the verification result
-for each.
+## Verification
 
-Organize by shared problem, module or a verifiable theme: follow-up fixes for the
-same feature should go into the existing PR first; unrelated new features,
-refactors and fixes should not be force-combined just to reduce the PR count. When
-a split is needed, state the boundaries and dependencies so each part can be
-reviewed independently.
+Run the checks that match your change and record what actually ran:
 
-### Convert Draft to Ready when done
+```sh
+cargo check --locked
+cargo test --locked
+cd apps/xenterm && flutter pub get && flutter analyze && flutter test
+```
 
-The maintainers have switched PR review bots; the old bot's workflow is no longer
-the operational basis. When the work is done, the submitter must convert the PR
-from **Draft** to **Ready for review** themselves to trigger the current review
-bot.
+- Keep `--locked` for Cargo: `Cargo.lock` is tracked so releases are
+  reproducible. If it fails because manifest and lockfile disagree, fix the
+  dependency change instead of dropping the flag and calling a re-resolved build
+  "verified".
+- Service-only core: `cargo test --locked --no-default-features --features headless`;
+  passing headless does not prove the Flutter UI or platform APIs work.
+- Flutter-only changes need `flutter analyze` and `flutter test`; bridge changes
+  need both halves.
+- Windows packaging or install/upgrade changes: build the MSI or portable archive
+  and verify install, upgrade and uninstall on Windows. State platform gaps
+  instead of claiming "passed on all platforms".
+- State the exact commands, OS and commit SHA, and distinguish "passed",
+  "failed", "not run" and "blocked by environment". Manual checks list steps,
+  expected and actual behavior; UI changes include screenshots or a recording.
+- New behavior needs tests; bug fixes should show the same test failing before
+  and passing after. A filtered run that executes zero tests is not coverage.
+- Docs-only changes: check links, paths, examples and wording against current
+  code; no code-check claim is needed.
+- AI-generated output, unrun commands or screenshots from old commits are not
+  evidence. Re-run affected checks after conflict resolution or further edits.
 
-Keep the PR as a Draft while it is still being implemented, while conflicts are
-being handled or while verification is being added; once ready, complete the
-conversion proactively instead of leaving a "done" comment and waiting for a
-maintainer to do it. After converting, check the actual review feedback on the PR
-and respond item by item. A failed trigger, stale comments or stale check results
-from the old bot do not prove the current bot has finished reviewing, let alone
-that this change passed; verify against the commits the current bot's feedback
-actually refers to. If the expected feedback does not appear, report the PR's
-current state and the steps you already took before asking the maintainers; do not
-guess bot names, trigger phrases or permissions, and do not repeatedly toggle the
-state trying to force a trigger.
+## Dependencies and APIs
 
-### Verify current dependencies and APIs
+- Work against the current `Cargo.toml`, `Cargo.lock`,
+  `apps/xenterm/pubspec.yaml` and the locked source, not old branches, tutorials
+  or model memory.
+- `Cargo.lock` and `apps/xenterm/pubspec.lock` are tracked intentionally; do not
+  propose ignoring them.
+- Ordinary fixes keep locks stable. Dependency upgrades belong in a separate PR
+  (Dependabot opens them) with reason and impact; do not smuggle unrelated
+  upgrades into a feature or fix.
+- New crates/packages need a justification: maintenance, license compatibility
+  and build/CI cost; check MSRV and the Flutter SDK constraint first.
+- Protocol, config format and FFI changes are API changes: describe compatibility
+  impact, update all callers and docs, and mark breaking changes.
 
-AI-assisted development still requires checking API versions: an interface that
-worked on an old version does not necessarily apply to the current one. Submitters
-must review generated code and are responsible for the final result.
+## Code style
 
-Base your work on the target branch's current `Cargo.toml`, `Cargo.lock`, the
-actually enabled features, and the corresponding version's source code or
-documentation; do not copy interfaces straight from old branches, old tutorials or
-model memory.
+- Rust: rustfmt defaults, 4-space indent, UTF-8, LF, final newline; run
+  `cargo fmt --all` and keep `cargo clippy` warnings down. Do not silence a lint
+  without a comment explaining why.
+- Dart/Flutter: 2-space indent, `dart format`, the lints in
+  `apps/xenterm/analysis_options.yaml`, and a clean `flutter analyze`.
+- YAML/JSON/Markdown: 2-space indent, UTF-8, LF; keep the Chinese/English docs
+  aligned and UI strings bilingual where supported.
+- Preserve comments that explain why; remove debug prints, commented-out code and
+  unrelated formatting churn.
 
-## Proposed linear-history and migration policy
+## Review and merge criteria
 
-**Status: a policy proposal awaiting upstream maintainer acceptance.** The existing
-mainline contains merge commits, and the existing guide did not mandate rebase or
-merge. Do not present the new policy below as a previously established rule. Forks
-may adopt it within their own collaboration scope; upstream adoption, its effective
-date and exceptions require an explicit maintainer decision. Keep this section and
-its Chinese translation aligned. AI entry points and the PR template reference
-these sections rather than maintain another history policy.
+A PR is ready for review when:
 
-### Keep routine development history linear
+- [ ] Description states the problem, change and verification result
+- [ ] Diff is focused; unrelated formatting or features are not mixed in
+- [ ] CI passes on the current head commit (not an older one)
+- [ ] No merge conflicts and the target branch is synced
+- [ ] Dependencies, APIs, config and docs are updated as needed
+- [ ] Breaking changes are called out explicitly
+- [ ] Logs, screenshots and diff contain no secrets or real credentials
+- [ ] Draft → Ready for review was done by the submitter
 
-- Use short-lived branches for ordinary fixes and development on the same mainline.
-  Rebase onto the current target before review and organize coherent, verifiable
-  commits; avoid repeatedly merging main back into a topic branch.
-- Prefer **Squash and merge** for one reviewed topic. Use **Rebase and merge** when
-  several individually complete logical commits deserve preservation. Neither adds
-  an ordinary PR merge node to the mainline. There is no requirement to squash the
-  work branch into one commit after every PR update.
-- Group related fixes, listing each change, without combining unrelated features
-  merely to simplify the graph. After squash merging, start the next task from the
-  updated mainline rather than reusing the old topic history.
-- A merge commit is an exception for a substantial, independently evolving,
-  long-lived feature whose integration ancestry is important. Explain the reason
-  and obtain maintainer agreement first. Coming from a fork alone is not a reason.
-- Coordinate before rewriting a shared or published work branch. Keep a verified
-  recovery backup, reread the full remote SHA and use an explicit ref and expected
-  old SHA with `--force-with-lease` when replacement is needed. Never use bare
-  `--force`; stop if the remote changed.
-- Rerun affected checks after rebase, squash or conflict resolution. Green checks
-  on an old SHA are not validation of the rewritten SHA.
+Ready means ready for review, not approved. Keep answering comments and keep the
+description current; whether and when to merge is the maintainers' decision.
+Being responsive and keeping changes reviewable matters more than opening many
+PRs quickly.
 
-### Review and execute history migration separately
+## License
 
-- Ordinary PR squash/rebase merging appends contributions to the target history;
-  it does not replace the target branch's existing ancestors. Full-history cleanup
-  requires a coordinated maintenance window and explicit ref cutover. Feature PR
-  approval does not implicitly authorize rewriting shared history.
-- Create and verify a restorable Git bundle, and back up all affected refs, Git
-  objects, release tags and assets (release assets require a separate backup; they
-  are not in the bundle). Keep old → new mappings and genuine contributor
-  attribution. When linearizing merges,
-  preserve the actual integrated snapshot, including conflict resolutions, rather
-  than blindly replaying side commits. Verify every mainline snapshot's tree.
-- Do not incorporate unapproved feature PRs into main as part of a historical
-  rewrite. Document PR dependencies, branch restacking, archival, tag migration
-  and release rebuilding separately.
-- Inspect automation side effects first: in the current
-  [release.yml](.github/workflows/release.yml), an upstream `main` push triggers
-  rolling beta publication, deleting and recreating the beta release and tag.
-  Coordinate a release freeze, asset backup, rebuild verification and resumption;
-  do not rely solely on
-  skip-CI commit messages.
-- Check permissions, branch rules and exact expected ref SHAs before cutover.
-  Replacement updates require explicit `--force-with-lease=<ref>:<expected-old-sha>`;
-  a lease without the expected SHA or bare force is not a substitute. Never bypass
-  protection or overwrite concurrent work. Read back target and unaffected refs,
-  and retain CI, release rebuild and acceptance evidence for the new SHAs. Rollback
-  also requires exact expected SHAs so it cannot erase work added after cutover.
-  If access is insufficient, explain the action, target and required permission
-  and obtain authorization before expanding access.
-- GitHub-managed historical `refs/pull/*` are not ordinary writable branches. Old
-  PR pages and commit links are not guaranteed to disappear. Collaborators should
-  obtain the new development branches without pushing the archived old graph back.
-
-## Communication conventions
-
-- Search existing issues and PRs before submitting; highly similar issues should
-  extend the existing discussion and link to it
-- Bug reports state the XenTerm version or commit, the operating system, the
-  install or build method, reproduction steps, expected results and actual results
-- PRs state the problem solved, the solution and why, the scope of impact, related
-  issues and verification results; when combining multiple related fixes, list them
-  item by item. For bug fixes, state the identified root cause and the key call
-  chain; clearly mark undetermined parts as speculation
-- Remove passwords, private keys, access tokens, real session credentials and other
-  sensitive information from logs, screenshots and examples first
-
-## Recommended implementation and verification practices
-
-These are suggestions to improve reviewability and reduce regressions; they must
-not be presented as an all-encompassing test gate additionally mandated by the
-maintainers. Choose checks according to the scope of the change and honestly
-record what was not done.
-
-### Dependencies, lockfiles and features
-
-1. Check the target branch's latest dependency configuration before developing;
-   align first, then judge whether it is an incorrect call or a genuinely needed
-   upgrade.
-2. Use API documentation or source code matching the locked versions; pay attention
-   to method signatures, trait imports, conditional compilation, event lifetimes
-   and platform differences. Do not casually downgrade a dependency just to keep an
-   old interface.
-3. Ordinary feature fixes should keep the lockfile stable. When a dependency change
-   is truly needed, explain the reason, impact and the related `Cargo.toml` /
-   `Cargo.lock` changes in the PR; do not smuggle in unrelated upgrades.
-4. Prefer verifying with `--locked`. If it fails because the manifest and lockfile
-   disagree, fix the intentional dependency change; do not simply drop `--locked`
-   and treat a re-resolved success as the original lockfile having passed.
-5. Distinguish desktop from headless builds. The current feature definitions are in
-   [Cargo.toml](Cargo.toml): the default build contains the desktop features;
-   headless paths use `--no-default-features --features headless`. Headless tests
-   passing does not prove the desktop UI or platform APIs are correct; do not
-   accidentally pull optional GUI dependencies into headless paths.
-
-### Feature-specific Rust support
-
-Follow the [toolchain support policy](README.md#rust-toolchain-support): Rust 1.88
-is verified for Linux headless only. The locked default Linux GUI graph requires
-at least Rust 1.92 by declaration, but its actual 1.92 check fails on
-`slice::as_array` in `gpui-pre-util`. That API stabilized in Rust 1.93; 1.93
-also fails on `std::hint::cold_path` (stable since Rust 1.95). Same-source Linux
-desktop CI passed on Rust 1.99.1; the minimum version remains unproven. Windows and
-macOS desktop are verified on stable, not at a fixed minimum. Report the exact
-compiler, target, features and lockfile separately; do not extrapolate a headless
-pass to desktop, or a dependency minimum to a successful build.
-
-### Verify what you actually changed
-
-- Rust or desktop code: run `cargo check --locked` and execute tests covering the
-  change; if your machine lacks system development libraries, say so — do not write
-  an environment blocker up as a passed check
-- Related unit and integration tests: use `cargo test --locked` or an appropriate
-  test filter; give the complete command in the description and confirm the
-  intended tests actually ran — a filtered run that executed zero tests is not
-  valid coverage
-- New tests under `tests/app/`: follow the existing module wiring and confirm the
-  test is on a compiled and executed path; see that directory's README. Creating a
-  test file alone does not necessarily execute it
-- Headless, CLI or MCP paths: run
-  `cargo test --locked --no-default-features --features headless` and the related
-  scenario checks according to the affected scope; for deployment, authentication
-  or protocol work refer to the [Remote MCP document](docs/REMOTE_MCP.md)
-- GUI interactions: supplement real operation steps and results, with screenshots
-  or recordings when necessary; for focus, mouse, keyboard or dialog issues check
-  real event behavior, covering recovery after repeated operations, cancellation
-  and occlusion; for style changes observe light/dark themes plus necessary zoom
-  and window sizes, without rerunning the full suite of unrelated features.
-  Compilation success alone does not prove a fix
-- Platform-specific code: verify on the affected platforms and target toolchains;
-  when your machine cannot cover them, list the platform gaps explicitly and judge
-  from actual CI results — never claim "passed on all platforms"
-- Documentation-only changes: check that links, paths, examples and wording match
-  the current code; no need to fill unused code checks in as passed
-
-Existing development conventions continue to apply, including the GPUI interface,
-paired Chinese and English translations, and how UI icons and text are used — see
-the [README development section](README.zh.md#开发). Do not misread "the terminal
-content supports emoji" as permission to replace application UI icons with emoji.
-
-### Provide verifiable evidence
-
-Record in the PR the commit, system, toolchain, features, full commands and results
-used for verification. For manual verification, write out the steps, the expected
-and the actual behavior; attach run links for CI results. For bugs suited to
-automated regression, provide red-green evidence — the same test failing on the old
-implementation and passing after the fix — plus negative cases showing inputs that
-must be rejected are still rejected. Reproduction commands should pin the exact
-commit and state build dependencies, configuration and launch steps, so a reviewer
-can reproduce with one click or a few steps. Distinguish "passed", "failed", "not
-run" and "blocked by environment", and state known limitations.
-
-AI-generated test output, commands that were never actually run, screenshots of old
-commits, or green checks from other branches are not evidence that this change was
-verified. After resolving conflicts or continuing to change code, re-run the
-affected checks and update the description.
-
-## Review readiness and post-submission self-check
-
-The following checklist helps submitters confirm their preparation; it adds no
-mandatory platform or testing requirements that have not been confirmed by the
-maintainers.
-
-- [ ] Changes are complete; related fixes are grouped by topic; no unrelated
-      features smuggled in
-- [ ] The target branch's latest state was checked, merge conflicts resolved, and
-      the resolution reviewed
-- [ ] Current dependencies, lockfile, features and APIs verified; necessary
-      dependency changes explained
-- [ ] The PR states the problem, the solution and rationale, the scope of impact
-      and related discussion
-- [ ] Verification was completed according to the scope of the change with real
-      results; uncovered items and environment blockers are clearly listed
-- [ ] New tests are actually on an executed path; existing documentation, comments
-      and feature conventions are preserved or updated with a reason
-- [ ] Sensitive content has been removed from logs and screenshots
-- [ ] The submitter performed **Draft → Ready for review** themselves and checked
-      the current review bot's feedback
-
-Ready means ready for review, not approved for merge. Keep responding to review
-comments and updating the change description and verification results; whether to
-merge is ultimately the maintainer's decision.
+XenTerm is [MIT licensed](LICENSE). By contributing you agree to license your
+work under the same terms. Third-party code and assets need a compatible license
+and credit in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

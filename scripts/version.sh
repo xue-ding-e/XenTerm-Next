@@ -93,7 +93,32 @@ current_tag() {
 }
 
 cargo_semver() {
-    sed -n '/^\[package\]/,/^\[/ s/^version = "\(.*\)"/\1/p' "$REPO_ROOT/Cargo.toml" | head -n 1
+    # The product version lives in the crate, not in the root workspace
+    # manifest (the root is a virtual workspace manifest with no [package]).
+    sed -n '/^\[package\]/,/^\[/ s/^version = "\(.*\)"/\1/p' "$REPO_ROOT/crates/xenterm/Cargo.toml" | head -n 1
+}
+
+# Flutter's pubspec version is packaging metadata only (--build-name overrides
+# it in release builds), but it must not drift from the crate version: a local
+# `flutter build` without --build-name would otherwise stamp a different
+# version. Accept "X.Y.Z" and "X.Y.Z+N" (the build number is free).
+pubspec_semver() {
+    local file="$REPO_ROOT/apps/xenterm/pubspec.yaml"
+    [ -f "$file" ] || return 0
+    sed -n 's/^version:[[:space:]]*\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' "$file" | head -n 1
+}
+
+verify_flutter_version_alignment() {
+    local pub crate
+    pub="$(pubspec_semver)"
+    if [ -z "$pub" ]; then
+        log "WARNING: no 'version: X.Y.Z[+N]' line in apps/xenterm/pubspec.yaml; skipping the Flutter/crate alignment check"
+        return 0
+    fi
+    crate="$(cargo_semver)"
+    [ -n "$crate" ] || die "cannot read [package] version from crates/xenterm/Cargo.toml for the pubspec alignment check"
+    [ "$pub" = "$crate" ] || die \
+        "apps/xenterm/pubspec.yaml version '$pub' does not match crates/xenterm/Cargo.toml '$crate' — the crate version is the single source; run scripts/release.ps1 or update pubspec.yaml"
 }
 
 # Resolved inputs recorded for version.json.
@@ -193,6 +218,10 @@ fi
 
 # ── 4. Final self-check (§7): invalid results fail the build, never downgrade ─
 valid_version "$VERSION" || die "assembled version '$VERSION' is invalid (this is a bug in version.sh)"
+
+# Single-source guard: the Flutter app's pubspec must base its version on the
+# crate version, otherwise a local flutter build stamps a drifted version.
+verify_flutter_version_alignment
 
 # Fill the recorded fields for version.json from the final string.
 if [ -z "$CHANNEL" ]; then
