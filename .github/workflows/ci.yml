@@ -261,6 +261,28 @@ jobs:
         timeout-minutes: 10
         run: sudo apt-get update && sudo apt-get install --no-install-recommends -y nginx
       - run: python -m pip install cryptography paramiko "mcp>=2.3,<3"
+      # Prove the missing saved -D lifecycle against the fixed pre-feature
+      # binary, not a mocked error. Both binaries run only loopback fixtures.
+      - name: Reproduce missing dynamic tunnels on the fixed baseline
+        shell: bash
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          baseline_sha=37968f0334d40cac79f007b871b6a4f661e1c6e2
+          baseline="$RUNNER_TEMP/xenterm-dynamic-baseline-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          test ! -e "$baseline"
+          mkdir -p dynamic-tunnel-evidence
+          git fetch --no-tags --depth=1 origin "$baseline_sha"
+          git worktree add --detach "$baseline" "$baseline_sha"
+          test "$(git -C "$baseline" rev-parse HEAD)" = "$baseline_sha"
+          printf 'baseline_source=%s\ncandidate_source=%s\n' "$baseline_sha" "$(git rev-parse HEAD)" > dynamic-tunnel-evidence/sources.txt
+          # Reuse dependency outputs, but compile this exact old source before
+          # copying its binary; the candidate is built again by the next steps.
+          timeout 900s cargo build --locked --manifest-path "$baseline/Cargo.toml" --target-dir "$GITHUB_WORKSPACE/target" --no-default-features --features headless --jobs 2
+          cp target/debug/xenterm "$baseline/xenterm-baseline"
+          sha256sum "$baseline/xenterm-baseline" | awk '{print "baseline_binary_sha256=" $1}' >> dynamic-tunnel-evidence/sources.txt
+          timeout 180s python tests/dynamic_tunnel_e2e.py --exe "$baseline/xenterm-baseline" --expect-missing 2>&1 | tee dynamic-tunnel-evidence/baseline-red.log
+          grep -F 'REPRODUCED: old binary has no no-GUI dynamic-tunnel lifecycle entry point' dynamic-tunnel-evidence/baseline-red.log
       - name: Headless unit tests (no GUI system dependencies)
         run: env -u ALL_PROXY -u all_proxy -u HTTP_PROXY -u http_proxy -u HTTPS_PROXY -u https_proxy cargo test --locked --no-default-features --features headless
       - run: cargo build --locked --no-default-features --features headless
@@ -273,14 +295,30 @@ jobs:
       - run: python tests/migration_preview_e2e.py --exe target/debug/xenterm
       - run: python tests/ssh_jump_chain_e2e.py --exe target/debug/xenterm
       - run: python tests/ssh_proxy_e2e.py --exe target/debug/xenterm
-      - run: python tests/dynamic_tunnel_e2e.py --exe target/debug/xenterm
-      - run: python tests/dynamic_tunnel_http_e2e.py --exe target/debug/xenterm
+      - name: Verify candidate dynamic tunnel ownership and cleanup
+        shell: bash
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          sha256sum target/debug/xenterm | awk '{print "candidate_binary_sha256=" $1}' >> dynamic-tunnel-evidence/sources.txt
+          timeout 240s python tests/dynamic_tunnel_e2e.py --exe target/debug/xenterm 2>&1 | tee dynamic-tunnel-evidence/candidate-stdio-cli.log
+          timeout 240s python tests/dynamic_tunnel_http_e2e.py --exe target/debug/xenterm 2>&1 | tee dynamic-tunnel-evidence/candidate-http.log
       - run: python tests/ssh_stack_e2e.py --exe target/debug/xenterm
       - run: python tests/ssh_jump_chain_e2e.py --exe target/debug/xenterm --stage-timeouts
       - run: python tests/stdio_mcp_e2e.py --exe target/debug/xenterm
       - run: python tests/remote_mcp_e2e.py --exe target/debug/xenterm --path /mcp
       - run: python tests/remote_mcp_e2e.py --exe target/debug/xenterm --nginx /usr/sbin/nginx --path /xenterm/mcp
       - run: python tests/remote_mcp_e2e.py --exe target/debug/xenterm --nginx /usr/sbin/nginx --path /xenterm/mcp --protocol-version 2025-11-25
+
+      - name: Preserve dynamic tunnel baseline and candidate evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dynamic-tunnel-red-green-${{ github.sha }}
+          path: dynamic-tunnel-evidence/*
+          if-no-files-found: ignore
+          retention-days: 14
 
   msrv-headless:
     name: Rust 1.88 Linux headless regression
