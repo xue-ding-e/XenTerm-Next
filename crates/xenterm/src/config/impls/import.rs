@@ -1,0 +1,636 @@
+//! Append-only session imports. Parse and validate the entire batch before either
+//! the in-memory profile or its on-disk snapshot is changed.
+
+use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::io::Read;
+use std::path::Path;
+
+use anyhow::{bail, Context, Result};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use uuid::Uuid;
+
+use super::{ConfigFile, ConfigStore, SavedState, Secret, Session, SessionKind};
+
+/// Bound file reads as well as JSON parsing, including files that grow while read.
+pub(super) const MAX_IMPORT_BYTES: usize = 16 * 1024 * 1024;
+
+/// Import results deliberately contain no connection details or credentials.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ImportSummary {
+    pub added: usize,
+    pub skipped: usize,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<ImportWarning>,
+}
+
+/// Fixed, non-sensitive compatibility notices. Never echo source field values,
+/// session names/IDs, credentials, or unknown field names supplied by a file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ImportWarning {
+    pub code: &'static str,
+    pub field: &'static str,
+    pub entries: usize,
+    pub message: &'static str,
+}
+
+fn compatibility_warnings(value: &serde_json::Value) -> Result<Vec<ImportWarning>> {
+    let Some(sessions) = value.get("sessions").and_then(serde_json::Value::as_array) else {
+        return Ok(Vec::new());
+    };
+    let legacy = [
+        ("session_log", "Legacy session logging preferences were not applied; this XenTerm version does not implement them."),
+        ("allow_secret_reveal", "Saved-credential reveal is disabled for imported sessions. Enable it explicitly in the local GUI to allow subsequent reveal clicks."),
+        ("rdp_domain", "Legacy RDP domain settings were not applied; this XenTerm version does not implement RDP."),
+        ("rdp_width", "Legacy RDP width settings were not applied; this XenTerm version does not implement RDP."),
+        ("rdp_height", "Legacy RDP height settings were not applied; this XenTerm version does not implement RDP."),
+        ("rdp_fullscreen", "Legacy RDP fullscreen settings were not applied; this XenTerm version does not implement RDP."),
+    ];
+    let mut supported: HashSet<String> = serde_json::to_value(Session::new_empty())?
+        .as_object()
+        .expect("Session serializes as an object")
+        .keys()
+        .cloned()
+        .collect();
+    supported.insert("jump_session_ids".into()); // Omitted when empty in v1 exports.
+    let mut warnings = Vec::new();
+    let ignored_settings = value.as_object().map_or(0, |object| {
+        object
+            .keys()
+            .filter(|key| !matches!(key.as_str(), "sessions" | "meatshell_export" | "xenterm_export"))
+            .count()
+    });
+    if ignored_settings > 0 {
+        warnings.push(ImportWarning {
+            code: "global_settings_ignored", field: "settings", entries: ignored_settings,
+            message: "Only saved sessions are imported. Global settings, group definitions, command history and host trust are not applied; retain the source profile.",
+        });
+    }
+    for (field, message) in legacy {
+        let entries = sessions
+            .iter()
+            .filter(|session| {
+                if field == "allow_secret_reveal" {
+                    session.get(field).and_then(serde_json::Value::as_bool) == Some(true)
+                } else {
+                    session.get(field).is_some()
+                }
+            })
+            .count();
+        if entries > 0 {
+            warnings.push(ImportWarning {
+                code: if field == "allow_secret_reveal" {
+                    "local_permission_reset"
+                } else {
+                    "unsupported_session_field"
+                },
+                field,
+                entries,
+                message,
+            });
+        }
+    }
+    let forward_fields = serde_json::to_value(super::super::PortForward::default())?;
+    let trigger_fields = serde_json::to_value(super::super::SessionTrigger::default())?;
+    let unknown = sessions
+        .iter()
+        .filter(|session| {
+            session.as_object().is_some_and(|object| {
+                object.keys().any(|field| {
+                    !supported.contains(field) && !legacy.iter().any(|(known, _)| field == known)
+                }) || [("forwards", &forward_fields), ("triggers", &trigger_fields)]
+                    .iter()
+                    .any(|(field, known)| {
+                        session
+                            .get(field)
+                            .and_then(serde_json::Value::as_array)
+                            .is_some_and(|items| {
+                                items.iter().any(|item| {
+                                    item.as_object().is_some_and(|object| {
+                                        object.keys().any(|key| known.get(key).is_none())
+                                    })
+                                })
+                            })
+                    })
+            })
+        })
+        .count();
+    if unknown > 0 {
+        warnings.push(ImportWarning { code: "unknown_session_fields", field: "unknown", entries: unknown,
+            message: "Additional unrecognized session fields were not applied; retain the original export." });
+    }
+    for session in sessions {
+        if let Some(kind) = session.get("kind").and_then(serde_json::Value::as_str) {
+            if !matches!(kind, "ssh" | "serial" | "telnet" | "local") {
+                bail!("import contains an unsupported session transport; supported kinds are ssh, serial, telnet and local; no sessions were imported");
+            }
+        }
+    }
+    Ok(warnings)
+}
+
+/// Both session-import modes validate portable references without opening them.
+pub(super) fn validate_session_fields(session: &Session, index: usize) -> Result<()> {
+    if !ConfigStore::is_safe_session_id(&session.id) {
+        bail!(
+            "import entry {} has an invalid or reserved session ID",
+            index + 1
+        );
+    }
+    match session.kind {
+        SessionKind::Ssh | SessionKind::Telnet => {
+            // A single final dot is a valid absolute DNS name. Keep
+            // the original spelling, while validating its DNS labels.
+            let host = session.host.strip_suffix('.').unwrap_or(&session.host);
+            if !super::super::validation::is_valid_hostname(host) || session.port == 0 {
+                bail!("import entry {} has an invalid host or port", index + 1);
+            }
+        }
+        SessionKind::Serial if session.serial_port.trim().is_empty() => {
+            bail!("import entry {} has an empty serial device", index + 1);
+        }
+        _ => {}
+    }
+    // Paths are portable references, not files to open while importing.
+    // They can legitimately refer to another OS or a not-yet-mounted key.
+    for path in [
+        &session.private_key_path,
+        &session.local_working_dir,
+        &session.serial_port,
+    ] {
+        if path.chars().any(char::is_control) {
+            bail!("import entry {} has an invalid path", index + 1);
+        }
+    }
+    if session.user.chars().any(char::is_control) {
+        bail!("import entry {} has an invalid user", index + 1);
+    }
+    Ok(())
+}
+
+/// Both supported portable marker names describe the same version-one schema.
+pub(super) fn validate_export_version(value: &serde_json::Value) -> Result<()> {
+    for format in ["meatshell_export", "xenterm_export"] {
+        if let Some(version) = value.get(format) {
+            if version.as_u64() != Some(1) {
+                bail!("unsupported portable export version; expected version 1");
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct ImportedSessions {
+    // Deliberately required: an arbitrary settings object is not a session export.
+    sessions: Vec<Session>,
+}
+
+type SessionIdentity = String;
+
+fn identity(session: &Session, sessions: &[Session]) -> Result<SessionIdentity> {
+    // An endpoint is not a profile identity: users deliberately save aliases
+    // with different names, credentials, groups, proxies and jump routes.
+    // Compare the full configuration, excluding machine-local IDs/last_used.
+    // Hash only in memory so secret values are not retained as lookup keys.
+    fn fields(session: &Session) -> Result<serde_json::Value> {
+        let mut value = serde_json::to_value(session)?;
+        let object = value
+            .as_object_mut()
+            .expect("Session serializes as an object");
+        for key in [
+            "id",
+            "last_used",
+            "jump_session_id",
+            "jump_session_ids",
+            "allow_secret_reveal",
+        ] {
+            object.remove(key);
+        }
+        Ok(value)
+    }
+    let mut value = fields(session)?;
+    let route = super::super::jump_chain::resolve_jump_chain(sessions, session)?;
+    let route: Vec<_> = route.iter().map(fields).collect::<Result<_>>()?;
+    value["resolved_jump_chain"] = serde_json::Value::Array(route);
+    Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(&value)?)))
+}
+
+pub(super) fn read_import(path: &Path) -> Result<String> {
+    let metadata = fs::metadata(path).context("failed to inspect import file")?;
+    if !metadata.is_file() {
+        bail!("import source must be a regular JSON file");
+    }
+    if metadata.len() > MAX_IMPORT_BYTES as u64 {
+        bail!("import file exceeds the 16 MiB limit");
+    }
+    let file = fs::File::open(path).context("failed to open import file")?;
+    if !file
+        .metadata()
+        .context("failed to inspect import file")?
+        .is_file()
+    {
+        bail!("import source must be a regular JSON file");
+    }
+    let mut bytes = Vec::new();
+    file.take((MAX_IMPORT_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .context("failed to read import file")?;
+    if bytes.len() > MAX_IMPORT_BYTES {
+        bail!("import file exceeds the 16 MiB limit");
+    }
+    // Do not attach UTF-8/serde errors: they can quote credential-bearing input.
+    String::from_utf8(bytes).map_err(|_| anyhow::anyhow!("import file must be UTF-8 JSON"))
+}
+
+impl ConfigStore {
+    /// Import a portable MeatShell export, native sessions.json or FinalShell
+    /// connection JSON. Global settings in native files are never imported.
+    /// Dry-run performs the same parsing/validation without saving or mutating
+    /// this store. Existing sessions are never overwritten.
+    pub fn import_from_preview(&mut self, path: &Path, dry_run: bool) -> Result<ImportSummary> {
+        self.import_json_preview(&read_import(path)?, dry_run)
+    }
+
+    pub fn import_from_preserving_ids(
+        &mut self,
+        path: &Path,
+        dry_run: bool,
+    ) -> Result<ImportSummary> {
+        self.ensure_local_migration_profile()?;
+        self.import_json_with_ids(&read_import(path)?, dry_run, true)
+    }
+
+    /// ID-preserving migration must not modify the desktop's shared keyring
+    /// namespace. Check admission before source reads, including previews.
+    pub(super) fn ensure_local_migration_profile(&self) -> Result<()> {
+        if self.keyring_enabled {
+            bail!("migration requires an independent local-encryption profile; OS-keyring profiles are not supported");
+        }
+        Ok(())
+    }
+
+    pub fn import_json_preview(&mut self, raw: &str, dry_run: bool) -> Result<ImportSummary> {
+        self.import_json_with_ids(raw, dry_run, false)
+    }
+
+    fn import_json_with_ids(
+        &mut self,
+        raw: &str,
+        dry_run: bool,
+        preserve_ids: bool,
+    ) -> Result<ImportSummary> {
+        if preserve_ids {
+            self.ensure_local_migration_profile()?;
+        }
+        if raw.len() > MAX_IMPORT_BYTES {
+            bail!("import file exceeds the 16 MiB limit");
+        }
+        let value: serde_json::Value = serde_json::from_str(raw).map_err(|error| {
+            anyhow::anyhow!(
+                "invalid import JSON at line {}, column {}",
+                error.line(),
+                error.column()
+            )
+        })?;
+        let meatshell = value.get("meatshell_export").is_some()
+            || value.get("xenterm_export").is_some()
+            || value.get("sessions").is_some();
+        let warnings = if meatshell {
+            compatibility_warnings(&value)?
+        } else {
+            Vec::new()
+        };
+        let mut sessions = if meatshell {
+            validate_export_version(&value)?;
+            serde_json::from_value::<ImportedSessions>(value)
+                .map_err(|_| anyhow::anyhow!("invalid MeatShell session fields in import file"))?
+                .sessions
+        } else {
+            // FinalShell's decoder already returns plaintext. Never reinterpret
+            // a coincidental enc:* prefix in that decoded password as our format.
+            super::super::finalshell::parse_export(raw).map_err(|_| {
+                anyhow::anyhow!("invalid or unsupported FinalShell import; check connection fields and password encoding")
+            })?
+        };
+
+        let mut source_ids = HashSet::new();
+        for (index, session) in sessions.iter_mut().enumerate() {
+            // Imported preferences never grant local permission to reveal credentials.
+            session.allow_secret_reveal = false;
+            // Match the editor/load normalization for display-only group names,
+            // so repeating an import after a reload remains idempotent.
+            if super::is_reserved_session_group(session.group.trim()) {
+                session.group.clear();
+            }
+            if session.id.trim().is_empty() || !source_ids.insert(session.id.clone()) {
+                bail!(
+                    "import entry {} has an empty or repeated session ID",
+                    index + 1
+                );
+            }
+            validate_session_fields(session, index)?;
+            if meatshell {
+                self.decode_import_secret(&mut session.password, index, "password")?;
+                self.decode_import_secret(&mut session.private_key_inline, index, "private key")?;
+                for trigger in &mut session.triggers {
+                    self.decode_import_secret(&mut trigger.response, index, "trigger response")?;
+                }
+                let mut invalid = false;
+                if let Some(proxy) = Self::map_proxy_password(&session.proxy, |password| {
+                    let mut secret = Secret::new(password);
+                    match self.decode_import_secret(&mut secret, index, "proxy password") {
+                        Ok(()) => Some(secret.as_str().to_string()),
+                        Err(_) => {
+                            invalid = true;
+                            None
+                        }
+                    }
+                }) {
+                    session.proxy = proxy;
+                }
+                if invalid {
+                    bail!(
+                        "cannot decrypt proxy password in import entry {}",
+                        index + 1
+                    );
+                }
+            }
+        }
+
+        let mut identities = HashMap::new();
+        let mut used_ids = HashSet::new();
+        for session in &self.cache.sessions {
+            // An unrelated invalid existing route must not prevent importing
+            // valid profiles, and is never used as a duplicate match.
+            if let Ok(key) = identity(session, &self.cache.sessions) {
+                identities.entry(key).or_insert_with(|| session.id.clone());
+            }
+            used_ids.insert(session.id.clone());
+        }
+        let existing_ids = used_ids.clone();
+        let mut remapped_ids = HashMap::new();
+        let mut keep = Vec::with_capacity(sessions.len());
+        let mut summary = ImportSummary {
+            added: 0,
+            skipped: 0,
+            warnings,
+        };
+        let mut source_graph = sessions.clone();
+        source_graph.extend(
+            self.cache
+                .sessions
+                .iter()
+                .filter(|s| !source_ids.contains(&s.id))
+                .cloned(),
+        );
+        // Pass one maps every source ID, including duplicates, before resolving
+        // references. Forward references and references to skipped hops work.
+        for session in &sessions {
+            let key = identity(session, &source_graph)
+                .map_err(|_| anyhow::anyhow!("import contains an invalid SSH jump chain"))?;
+            let id = if preserve_ids {
+                // Migration must retain references used by ACLs and external clients.
+                if let Some(existing) = self.cache.sessions.iter().find(|s| s.id == session.id) {
+                    let existing_key = identity(existing, &self.cache.sessions)
+                        .map_err(|_| anyhow::anyhow!("existing session ID has an invalid SSH jump chain; no sessions imported"))?;
+                    if existing_key != key {
+                        bail!("session ID conflicts with an existing configuration; no sessions imported");
+                    }
+                    summary.skipped += 1;
+                    keep.push(false);
+                } else {
+                    used_ids.insert(session.id.clone());
+                    summary.added += 1;
+                    keep.push(true);
+                }
+                session.id.clone()
+            } else if let Some(existing) = identities.get(&key) {
+                summary.skipped += 1;
+                keep.push(false);
+                existing.clone()
+            } else {
+                let id = loop {
+                    let id = Uuid::new_v4().to_string();
+                    if used_ids.insert(id.clone()) {
+                        break id;
+                    }
+                };
+                identities.insert(key, id.clone());
+                summary.added += 1;
+                keep.push(true);
+                id
+            };
+            remapped_ids.insert(session.id.clone(), id);
+        }
+
+        let remap = |id: &str, index: usize| -> Result<String> {
+            if let Some(mapped) = remapped_ids.get(id) {
+                Ok(mapped.clone())
+            } else if existing_ids.contains(id) {
+                Ok(id.to_string())
+            } else {
+                bail!(
+                    "import entry {} references a missing SSH jump session",
+                    index + 1
+                );
+            }
+        };
+        for (index, session) in sessions.iter_mut().enumerate() {
+            session.id = remapped_ids[&session.id].clone();
+            if !session.jump_session_id.is_empty() {
+                session.jump_session_id = remap(&session.jump_session_id, index)?;
+            }
+            for id in &mut session.jump_session_ids {
+                *id = remap(id, index)?;
+            }
+        }
+
+        let mut candidate = self.cache.clone();
+        candidate.sessions.extend(
+            sessions
+                .iter()
+                .zip(&keep)
+                .filter(|(_, keep)| **keep)
+                .map(|(session, _)| session.clone()),
+        );
+        // Validate the final merged graph before entering a write transaction.
+        for (index, session) in sessions.iter().enumerate() {
+            super::super::jump_chain::resolve_jump_chain(&candidate.sessions, session).map_err(|_| {
+                anyhow::anyhow!("import entry {} has an invalid SSH jump chain (missing/non-SSH hop, cycle or too many hops)", index + 1)
+            })?;
+        }
+        if !dry_run {
+            self.commit_import(candidate)?;
+        }
+        Ok(summary)
+    }
+
+    /// Commit validated session changes in a single SQLite transaction. Normal
+    /// imports only append; native sync can also update explicitly matched IDs.
+    /// Unchanged rows, settings and keyring entries are never rewritten. Reject
+    /// a stale cache under the database's write lock, before any new row exists.
+    /// Append imports always use local encryption, avoiding OS-keyring effects.
+    pub(super) fn commit_import(&mut self, candidate: ConfigFile) -> Result<()> {
+        self.commit_session_changes(candidate)
+    }
+
+    /// Native updates and append imports use local encryption. Migration
+    /// admission rejects desktop keyring profiles before this transaction.
+    pub(super) fn commit_session_changes(&mut self, candidate: ConfigFile) -> Result<()> {
+        let _ordered = Self::save_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let mut saved = {
+            let mut shared = self.saved_state.lock().unwrap_or_else(|p| p.into_inner());
+            shared.submitted += 1;
+            let mut saved = shared.clone();
+            saved.attempted = shared.submitted;
+            saved
+        };
+        let result = self.commit_session_changes_locked(&candidate, &mut saved);
+        match result {
+            Ok(fingerprint) => {
+                Self::finish_snapshot(&mut saved, &candidate, fingerprint);
+                self.cache = candidate;
+                Self::publish_snapshot(&self.saved_state, saved);
+                Self::sync_backup_to(self.backup_dir.as_deref(), &self.path, self.path.parent());
+                Ok(())
+            }
+            Err(error) => {
+                Self::record_save_error(&mut saved, &error);
+                Self::publish_snapshot(&self.saved_state, saved);
+                Err(error)
+            }
+        }
+    }
+
+    fn commit_session_changes_locked(
+        &self,
+        candidate: &ConfigFile,
+        saved: &mut SavedState,
+    ) -> Result<Option<[u8; 32]>> {
+        if saved.credentials_uncertain {
+            return Err(super::SessionCredentialRollbackFailed.into());
+        }
+        // Pending foreground edits or an older queued snapshot are never
+        // silently folded into a successful import.
+        let cache = SavedState::of_cache(&self.cache);
+        if cache.sessions != saved.sessions
+            || cache.order != saved.order
+            || cache.settings != saved.settings
+            || cache.history != saved.history
+        {
+            bail!("save or discard pending configuration changes before importing");
+        }
+        let next = SavedState::of_cache(candidate);
+        let changed: Vec<_> = candidate
+            .sessions
+            .iter()
+            .enumerate()
+            .filter(|(_, session)| {
+                next.sessions.get(&session.id) != saved.sessions.get(&session.id)
+            })
+            .collect();
+        if saved.disk_fingerprint.is_none() && !self.path.exists() && changed.is_empty() {
+            return Ok(None);
+        }
+        if saved.disk_fingerprint.is_some() && !self.path.exists() {
+            return Err(super::ConfigurationChanged.into());
+        }
+        let io = super::profile_io::ProfileIoGuard::acquire(&self.path)?;
+        let mut conn = if saved.disk_fingerprint.is_some() {
+            Self::open_existing_db(&self.path)
+        } else {
+            Self::open_db(&self.path)
+        }
+        .map_err(|_| anyhow::anyhow!("failed to open destination configuration"))?;
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|_| anyhow::anyhow!("failed to lock destination configuration"))?;
+        io.recover(&tx, &self.key)?;
+        Self::validate_snapshot(&tx, saved)?;
+        if saved.disk_fingerprint.is_some() && changed.is_empty() {
+            return Ok(saved.disk_fingerprint);
+        }
+        if saved.disk_fingerprint.is_some() {
+            for (_, session) in changed {
+                Self::upsert_session_row_preserving_order(&tx, session, self.key, false)
+                    .map_err(|_| anyhow::anyhow!("failed to write imported session"))?;
+            }
+        } else {
+            let mut settings = candidate.clone();
+            settings.sessions.clear();
+            settings.command_history.clear();
+            if !settings.webdav_password.is_empty()
+                && !settings.webdav_password.is_local_ciphertext()
+            {
+                settings.webdav_password =
+                    Secret::new(Self::encrypt(&self.key, settings.webdav_password.as_str())?);
+            }
+            for (key, value) in [
+                ("schema_version", Self::SCHEMA_VERSION.to_string()),
+                ("settings", serde_json::to_string(&settings)?),
+            ] {
+                tx.execute(
+                    "INSERT INTO meta(key, value) VALUES(?1, ?2)",
+                    rusqlite::params![key, value],
+                )
+                .map_err(|_| anyhow::anyhow!("failed to initialise import settings"))?;
+            }
+            for (ordinal, session) in candidate.sessions.iter().enumerate() {
+                Self::upsert_session_row(&tx, ordinal, session, self.key, false)
+                    .map_err(|_| anyhow::anyhow!("failed to write imported session"))?;
+            }
+            for command in &candidate.command_history {
+                tx.execute("INSERT INTO command_history(command) VALUES(?1)", [command])
+                    .map_err(|_| anyhow::anyhow!("failed to initialise import history"))?;
+            }
+        }
+        Self::stamp_commit(&tx, &Uuid::new_v4().to_string())?;
+        let fingerprint = Self::disk_fingerprint(&tx)?;
+        tx.commit()
+            .map_err(|_| anyhow::anyhow!("failed to commit imported sessions"))?;
+        Ok(fingerprint)
+    }
+
+    pub(super) fn decode_import_secret(
+        &self,
+        secret: &mut Secret,
+        index: usize,
+        field: &str,
+    ) -> Result<()> {
+        let value = secret.as_str();
+        let decoded = if value.starts_with(Self::EXPORT_PREFIX) {
+            Some(Self::decrypt_export(value))
+        } else if value.starts_with(Self::ENC_PREFIX) {
+            Some(Self::try_decrypt(&self.key, value))
+        } else if value.starts_with("enc:") || value == Self::KEYRING_MARKER {
+            Some(None)
+        } else {
+            None
+        };
+        if let Some(decoded) = decoded {
+            let plaintext = decoded.ok_or_else(|| {
+                anyhow::anyhow!("cannot decrypt {} in import entry {}; use a portable MeatShell export or the matching local profile", field, index + 1)
+            })?;
+            *secret = Secret::new(plaintext);
+        }
+        Ok(())
+    }
+
+    /// Compatibility wrapper used by the GUI and WebDAV importer.
+    pub fn import_json(&mut self, raw: &str) -> Result<(usize, usize)> {
+        let summary = self.import_json_preview(raw, false)?;
+        Ok((summary.added, summary.skipped))
+    }
+
+    /// Compatibility wrapper used by the GUI file picker.
+    pub fn import_from(&mut self, path: &Path) -> Result<(usize, usize)> {
+        let summary = self.import_from_preview(path, false)?;
+        Ok((summary.added, summary.skipped))
+    }
+}
+
+#[cfg(test)]
+#[path = "import_tests.rs"]
+mod tests;

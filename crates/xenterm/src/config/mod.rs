@@ -1,0 +1,16 @@
+#[path = "impls/color.rs"]
+pub(crate) mod color;
+
+pub(crate) mod jump_chain;
+#[path = "impls/config.rs"]
+mod config;
+#[path = "impls/finalshell.rs"]
+mod finalshell;
+#[path = "struct/mod.rs"]
+mod structs;
+
+#[path = "validation.rs"]
+pub(crate) mod validation;
+
+pub use config::*;
+pub use structs::*;
