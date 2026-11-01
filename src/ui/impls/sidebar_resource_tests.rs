@@ -321,3 +321,61 @@ fn storage_projection_keeps_root_scope_separate_from_aggregate_and_stale_samples
         assert!(crate::resource::root_disk(&view.shown.disks).is_none());
     });
 }
+
+#[gpui_kit::gpui::test]
+fn version_copy_is_exact_repeatable_and_independent_of_host_copy(cx: &mut TestAppContext) {
+    let (view, _, cx) = fixture(cx);
+    let expected = format!("xenterm {}", crate::version::VERSION);
+    for _ in 0..2 {
+        let bounds = cx.debug_bounds("copy-app-version").expect("version copy control");
+        cx.simulate_click(bounds.center(), gpui_kit::gpui::Modifiers::default());
+        draw(cx);
+        assert_eq!(
+            cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text())),
+            Some(expected.clone())
+        );
+        view.read_with(cx, |view, _| {
+            assert!(view.version_copied);
+            assert!(!view.copied, "version copy must not impersonate host copy");
+            assert!(view.pending.is_none(), "copy must not open a remote tool");
+        });
+    }
+    view.update(cx, |view, cx| view.copy_host("192.0.2.10".into(), cx));
+    draw(cx);
+    let bounds = cx.debug_bounds("copy-app-version").unwrap();
+    cx.simulate_click(bounds.center(), gpui_kit::gpui::Modifiers::default());
+    draw(cx);
+    assert_eq!(
+        cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text())),
+        Some(expected)
+    );
+}
+
+#[gpui_kit::gpui::test]
+fn version_copy_feedback_restarts_without_clearing_host_feedback(cx: &mut TestAppContext) {
+    let (view, _, cx) = fixture(cx);
+    let click_version = |cx: &mut VisualTestContext| {
+        let bounds = cx.debug_bounds("copy-app-version").unwrap();
+        cx.simulate_click(bounds.center(), gpui_kit::gpui::Modifiers::default());
+        draw(cx);
+    };
+    click_version(cx);
+    cx.executor().advance_clock(Duration::from_millis(1000));
+    draw(cx);
+    click_version(cx);
+    // The first timer would have expired, but the repeated copy owns a fresh one.
+    cx.executor().advance_clock(Duration::from_millis(500));
+    draw(cx);
+    view.read_with(cx, |view, _| assert!(view.version_copied));
+    view.update(cx, |view, cx| view.copy_host("192.0.2.10".into(), cx));
+    draw(cx);
+    cx.executor().advance_clock(Duration::from_millis(901));
+    draw(cx);
+    view.read_with(cx, |view, _| {
+        assert!(!view.version_copied);
+        assert!(view.copied, "version expiry must not clear the later host confirmation");
+    });
+    cx.executor().advance_clock(Duration::from_millis(500));
+    draw(cx);
+    view.read_with(cx, |view, _| assert!(!view.copied));
+}

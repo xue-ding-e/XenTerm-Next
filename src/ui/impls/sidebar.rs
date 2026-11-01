@@ -219,6 +219,9 @@ pub(crate) struct SidebarView {
     /// Held rather than detached so a second copy replaces the first one's timer
     /// instead of leaving two tasks racing to clear the same flag.
     clear_copied: Option<Task<()>>,
+    /// Version feedback is separate from the connection-host copy confirmation.
+    version_copied: bool,
+    clear_version_copied: Option<Task<()>>,
     /// The sampler and the poll, kept alive for as long as the panel is.
     _sample: Task<()>,
 }
@@ -257,6 +260,8 @@ impl SidebarView {
             pending: None,
             copied: false,
             clear_copied: None,
+            version_copied: false,
+            clear_version_copied: None,
             _sample: sample,
         }
     }
@@ -564,6 +569,23 @@ impl SidebarView {
             cx.background_executor().timer(COPIED_FOR).await;
             let _ = this.update(cx, |view, cx| {
                 view.copied = false;
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
+    /// Copy the canonical build identity, not a clipped rendering or host details.
+    fn copy_version(&mut self, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(format!(
+            "xenterm {}",
+            crate::version::VERSION
+        )));
+        self.version_copied = true;
+        self.clear_version_copied = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(COPIED_FOR).await;
+            let _ = this.update(cx, |view, cx| {
+                view.version_copied = false;
                 cx.notify();
             });
         }));
@@ -1176,17 +1198,44 @@ impl Render for SidebarView {
                     .child(disks),
             )
             .child(
-                div()
+                v_flex()
                     .w_full()
                     .flex_shrink_0()
                     .pb_2()
                     .text_xs()
                     .text_color(theme.muted_foreground)
                     .text_center()
-                    .child(SharedString::from(format!(
-                        "xenterm {}",
-                        crate::version::VERSION
-                    ))),
+                    .child("xenterm")
+                    .child(
+                        Button::new("copy-app-version")
+                            .debug_selector(|| "copy-app-version".to_string())
+                            .ghost()
+                            .small()
+                            .w_full()
+                            .label(crate::version::VERSION)
+                            .icon(Icon::new(if self.version_copied {
+                                IconName::Check
+                            } else {
+                                IconName::Copy
+                            }))
+                            // A narrow sidebar may ellipsize the button label; hover and
+                            // assistive technology must still expose the whole identity.
+                            .tooltip(format!(
+                                "{}: xenterm {}",
+                                if self.version_copied {
+                                    crate::i18n::t("已复制版本信息", "Version information copied")
+                                } else {
+                                    crate::i18n::t("复制版本信息", "Copy version information")
+                                },
+                                crate::version::VERSION
+                            ))
+                            .accessibility_label(format!(
+                                "{}: xenterm {}",
+                                crate::i18n::t("复制版本信息", "Copy version information"),
+                                crate::version::VERSION
+                            ))
+                            .on_click(cx.listener(|this, _, _, cx| this.copy_version(cx))),
+                    ),
             )
             .into_any_element()
     }
