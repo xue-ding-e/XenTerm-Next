@@ -22,6 +22,49 @@
   <img src="assets/xt.jpg" alt="XenTerm —— SSH 终端 · SFTP · 系统监控" width="860">
 </p>
 
+## XenTerm Next Flutter 试用线
+
+历史 GPUI 的 `contribution-evidence/`、`maintenance/` 原样保留；退出当前构建的
+旧工具位于 `archive/gpui/`，旧流水线位于不自动执行的 `.github/*-workflows/`。
+这些历史材料**不代表 Flutter 已通过验证**，也不授权运行其中的生产操作脚本。
+
+旧 CLI/MCP/SSH/SFTP 与 GPUI 回归测试原样保存在 `archive/gpui/tests/`，不作为
+当前 workspace 的自动测试入口。新 Flutter 测试**不等于旧行为已覆盖**；迁移适用
+断言并完成两条实现的行为对照，是替换 GPUI 前尚未完成的验收门槛。
+
+独立 `flutter-next` 分支保留上游 MIT 许可证和作者归属，不替换 GPUI `main`
+发布或更新渠道。Windows 工作流仅在该分支推送或手动运行时上传试用制品，不发布、
+删除任何 release。必须完整解压 ZIP，不能只取 exe。需要 Windows 10/11 x64 及 Microsoft Visual C++
+x64 运行库，**不是完全自包含包**。附带 `Start-Flutter-Preview.ps1` 检查最低运行库
+版本（记录在 `WINDOWS-RUNTIME.json`），不自动下载、安装或提权。运行库只从
+[微软官方](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist)获取。
+遵循 [Flutter Windows 分发说明](https://docs.flutter.dev/platform-integration/windows/building)，
+未核实再分发许可前不从开发机复制微软运行库；干净 Windows 运行仍未实测。
+
+GUI 默认使用 exe 旁的
+`config-flutter-next`；目录不可写会报错，不回退到 GPUI 数据，也不自动迁移。
+用户明确设置的 `XENTERM_DATA_DIR` 可覆盖该位置。
+
+附带的 `xenterm-cli.exe` 使用同一 Rust 核心，所有默认入口（含配置诊断）均使用
+同一独立目录；显式 `--data-dir` 或 `XENTERM_DATA_DIR` 可覆盖。Windows GUI 拒绝
+命令行参数而非静默忽略；GUI 目录覆盖须使用上述环境变量。
+从解压目录在 PowerShell 显式选择
+同一独立配置，例如：
+
+```powershell
+.\xenterm-cli.exe --data-dir "$PWD\config-flutter-next" --config-info
+```
+
+不要指向生产配置。打包不扩大 MCP 权限，也不自动启动服务；GUI/CLI 同时访问配置
+及凭据的行为仍待验证。
+
+**验证状态：**合成运行文件的 Python 打包测试已通过；本试用线 Rust/Flutter 编译、
+Windows 启动及上述命令尚未实测。产出试用包不等于可以替代 GPUI。替代前必须逐项验证
+SSH/认证/密钥、SFTP/远程安全编辑、代理/多跳（含不打开 GUI 连接的 CLI/MCP）、
+CLI/MCP 权限、端口转发、重连、终端输入/输入法/历史、配置隔离和完整 Windows 依赖。
+GPUI 现有能力必须全部保留，不能只凭功能同名判定等价。
+
+
 ---
 
 ## 简介

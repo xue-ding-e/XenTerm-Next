@@ -22,6 +22,59 @@
   <img src="assets/xt.jpg" alt="XenTerm — SSH terminal, SFTP and system monitor" width="860">
 </p>
 
+## XenTerm Next Flutter preview
+
+Historical GPUI `contribution-evidence/` and `maintenance/` records are preserved
+unchanged, with retired tooling under `archive/gpui/` and old workflows in inert
+`.github/*-workflows/` directories. These records are **not Flutter validation**;
+none of their scripts or CI results authorizes running production operations.
+
+The original CLI/MCP/SSH/SFTP and GPUI regression tests remain byte-for-byte in
+`archive/gpui/tests/`, not in the active workspace test discovery. The new Flutter
+tests are **not equivalent coverage**: porting applicable old assertions and
+running both behavior suites is an outstanding replacement gate.
+
+This independent `flutter-next` line preserves upstream MIT attribution and does
+not replace the GPUI `main` release or its update channel. The Windows workflow
+runs only on this branch (or manual dispatch) and uploads experimental artifacts;
+it never publishes or removes releases. Extract the **entire** portable ZIP, not
+just the executable. **Windows 10/11 x64 and Microsoft Visual C++ x64 runtime
+are prerequisites**: this is not a fully self-contained archive. Use the included
+`Start-Flutter-Preview.ps1` gate; the minimum runtime version is recorded in
+`WINDOWS-RUNTIME.json`. It never downloads or installs software. Obtain the runtime
+only from [Microsoft](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist).
+This follows [Flutter's Windows distribution requirements](https://docs.flutter.dev/platform-integration/windows/building);
+Microsoft redistributables are not copied from a developer machine or redistributed
+without a verified license entitlement. Clean Windows execution remains untested.
+
+The GUI uses `config-flutter-next` beside `xenterm.exe`; an
+unwritable directory is an error, not a fallback to existing GPUI data. An explicit
+`XENTERM_DATA_DIR` overrides that location. No automatic migration is performed.
+
+The bundled `xenterm-cli.exe` uses the same Rust core and defaults every entry
+point (including diagnostics) to that same isolated directory. An explicit
+`--data-dir` or `XENTERM_DATA_DIR` remains an intentional override. The Windows
+GUI rejects command-line arguments rather than ignoring them; use the environment
+variable for a GUI override. For an explicit CLI selection, for example from the extracted directory in PowerShell:
+
+```powershell
+.\xenterm-cli.exe --data-dir "$PWD\config-flutter-next" --config-info
+```
+
+Do not point this preview at production profiles. MCP permissions are not expanded
+by packaging; no service is auto-started. Before simultaneous GUI/CLI use, profile
+concurrency and credential access still need verification.
+
+**Validation status:** Python packaging tests pass with synthetic runtime files.
+Rust/Flutter compilation, Windows launch, and the example above are **not yet
+verified** for this preview. An artifact build is not a claim of GPUI parity.
+Replacement requires behavior tests for SSH/authentication and keys, SFTP and safe
+remote editing, proxy/jump chains (including CLI/MCP without a GUI connection),
+CLI/MCP authorization, port forwarding, reconnect, terminal input/IME/history,
+configuration isolation, and complete Windows runtime packaging. All existing GPUI
+capabilities must remain available before replacing that line.
+
+
 ---
 
 ## Overview
