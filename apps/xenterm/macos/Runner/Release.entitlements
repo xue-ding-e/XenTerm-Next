@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- XenTerm is not distributed through the App Store, so it is not
+	sandboxed: SSH/SFTP need unrestricted outbound networking and the serial
+	console needs the device nodes. -->
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<!-- The bridge is ad-hoc signed (no Developer ID in CI), so dyld must not
+	apply library validation to the embedded dylib. -->
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+</dict>
+</plist>
