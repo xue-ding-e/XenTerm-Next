@@ -20,6 +20,9 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 60
     env:
+      # Match the repository identity recorded in all 87 hosted lock entries.
+      # Keep package versions/checksums pinned; do not silently switch registries.
+      PUB_HOSTED_URL: https://pub.flutter-io.cn
       XT_CHANNEL: dev
       XT_BASH: 'C:\Program Files\Git\bin\bash.exe'
     steps:
@@ -53,6 +56,9 @@ jobs:
       - name: Resolve and verify Flutter dependencies
         working-directory: apps/xenterm
         run: flutter pub get --enforce-lockfile
+      - name: Verify dependency resolution did not rewrite the lockfile
+        working-directory: apps/xenterm
+        run: git diff --exit-code -- pubspec.lock
       - name: Analyze and test Flutter
         working-directory: apps/xenterm
         run: |
