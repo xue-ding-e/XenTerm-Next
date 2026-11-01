@@ -1,0 +1,185 @@
+// Entry point. The GPUI shell is gone (docs/features.md records what the UI
+// did); this binary is the service core — CLI and MCP — until the Flutter
+// frontend embeds it. The console subsystem stays on purpose: cli and mcp
+// serve both print to stdout.
+
+
+mod allocator;
+
+#[global_allocator]
+static GLOBAL: allocator::Allocator = allocator::Allocator;
+
+
+enum StartMode {
+    Mcp,
+    Cli,
+    Version,
+    /// A bare launch, or the legacy `gpui` argument the old shortcuts and
+    /// jump-list tasks still send: nothing to open, so say so and point at
+    /// the two things this binary can do.
+    Help,
+}
+
+impl StartMode {
+    fn detect(args: &[String]) -> Self {
+        match args.get(1).map(String::as_str) {
+            Some("mcp") if args.get(2).is_some_and(|arg| arg == "serve") => Self::Mcp,
+            Some("cli") => Self::Cli,
+            _ if args.iter().any(|arg| arg == "--version" || arg == "-V") => Self::Version,
+            _ => Self::Help,
+        }
+    }
+}
+
+fn print_help() {
+    println!(
+        "xenterm {} — service core (the graphical frontend is a separate app)",
+        version::VERSION
+    );
+    println!();
+    println!("Usage:");
+    println!("  xenterm cli <command> [...]    one-shot SSH commands, files, sessions");
+    println!("  xenterm mcp serve [--http-config <file>]   expose sessions over MCP");
+    println!("  xenterm --config-info          print profile/session inventory as JSON");
+    println!("  xenterm --version              print the version");
+}
+
+use xenterm::config;
+use xenterm::{cli, logging, mcp, version};
+
+fn main() -> anyhow::Result<()> {
+    let mut args: Vec<String> = std::env::args().collect();
+    let migration_preview = config::configure_profile(&mut args)?;
+    let mode = StartMode::detect(&args);
+    if matches!(mode, StartMode::Version) {
+        println!("xenterm {}", version::VERSION);
+        return Ok(());
+    }
+
+    // Service entry only: the default desktop profile belongs to the (future)
+    // GUI app, so CLI/MCP refuse to touch it without an explicit profile.
+    if matches!(mode, StartMode::Mcp | StartMode::Cli) {
+        anyhow::ensure!(config::has_explicit_data_dir(),
+            "CLI/MCP requires --data-dir <independent-service-profile> or XENTERM_DATA_DIR; import an export into that profile instead of opening the default profile");
+    }
+
+    if args.get(1).is_some_and(|a| a == "--config-info") {
+        anyhow::ensure!(
+            args.len() == 2,
+            "--config-info does not accept command arguments"
+        );
+        let store = config::ConfigStore::load()?;
+        println!(
+            "{}",
+            serde_json::json!({
+                "executable": std::env::current_exe()?, "version": version::VERSION,
+                "data_dir": config::data_dir(), "session_count": store.sessions().len()
+            })
+        );
+        return Ok(());
+    }
+
+    // Refuse before initializing file logging: a service launch must not even
+    // touch the default desktop profile when an explicit profile is missing.
+    if matches!(mode, StartMode::Mcp) && args.iter().any(|arg| arg == "--http-config") {
+        anyhow::ensure!(
+            config::has_explicit_data_dir(),
+            "HTTP service requires an explicitly selected --data-dir or XENTERM_DATA_DIR profile"
+        );
+    }
+    init_tracing(!migration_preview);
+
+    match mode {
+        StartMode::Mcp => mcp::run(&args),
+        StartMode::Cli => cli::run(&args),
+        StartMode::Help => {
+            print_help();
+            Ok(())
+        }
+        StartMode::Version => unreachable!("handled above"),
+    }
+}
+
+/// Set up tracing: stderr (honours RUST_LOG, default info) **plus** a capped
+/// `error.log` file at WARN and above so users can send diagnostics — e.g. a
+/// bastion disconnect reason — without setting RUST_LOG (#86).
+fn init_tracing(file_logging: bool) {
+    use tracing_subscriber::prelude::*;
+    use tracing_subscriber::{fmt, EnvFilter};
+
+    // Third-party noise routed through `log` → tracing: ICU4X data-error warnings
+    // (icu_provider dependency) and fontdb's "malformed font" warning for fonts it
+    // can't parse but harmlessly skips (e.g. Windows' mstmc.ttf). Silence on every
+    // layer; keep fontdb at `error` so genuine failures still surface.
+    fn quiet_noise(mut f: EnvFilter) -> EnvFilter {
+        for d in [
+            "icu_provider=off",
+            "icu_segmenter=off",
+            "icu_normalizer=off",
+            "fontdb=error",
+        ] {
+            if let Ok(dir) = d.parse() {
+                f = f.add_directive(dir);
+            }
+        }
+        f
+    }
+
+    let env_filter =
+        quiet_noise(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")));
+    let stderr_layer = fmt::layer()
+        .with_writer(std::io::stderr)
+        .with_filter(env_filter);
+
+    // One file, capped at 50 MiB, auto-overwriting when full (5 MiB was too
+    // small to diagnose anything useful).
+    // Resolving the log path itself creates directories. Previews retain
+    // stderr diagnostics without touching the selected profile's log files.
+    let file_layer = file_logging
+        .then(logging::path)
+        .flatten()
+        .and_then(|p| logging::CappedFile::open(p, 50 * 1024 * 1024).ok())
+        .map(|cf| {
+            fmt::layer()
+                .with_ansi(false)
+                .with_writer(logging::CappedWriter::new(cf))
+                .with_filter(quiet_noise(EnvFilter::new("warn")))
+        });
+
+    tracing_subscriber::registry()
+        .with(stderr_layer)
+        .with(file_layer)
+        .init();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_start_mode() {
+        let mcp = vec![
+            "xenterm".to_string(),
+            "mcp".to_string(),
+            "serve".to_string(),
+        ];
+        assert!(matches!(StartMode::detect(&mcp), StartMode::Mcp));
+
+        let cli = vec![
+            "xenterm".to_string(),
+            "cli".to_string(),
+            "sessions".to_string(),
+        ];
+        assert!(matches!(StartMode::detect(&cli), StartMode::Cli));
+
+        let version = vec!["xenterm".to_string(), "--version".to_string()];
+        assert!(matches!(StartMode::detect(&version), StartMode::Version));
+
+        // Both the bare launch and the migration-era `gpui` argument land on
+        // the help text: the GUI is a separate app now.
+        let app = vec!["xenterm".to_string()];
+        assert!(matches!(StartMode::detect(&app), StartMode::Help));
+        let gpui = vec!["xenterm".to_string(), "gpui".to_string()];
+        assert!(matches!(StartMode::detect(&gpui), StartMode::Help));
+    }
+}

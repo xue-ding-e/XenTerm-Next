@@ -1,0 +1,5 @@
+[build]
+# One target directory for every toolchain: the historical separate target-gnu/
+# (30 GB of stale artifacts) came from per-shell CARGO_TARGET_DIR overrides and
+# is retired — cross-target builds land in target/<triple> on their own.
+target-dir = "target"

@@ -1,150 +1,18 @@
-[package]
-name = "xenterm"
-version = "0.7.3"
-edition = "2021"
-authors = ["xenterm contributors"]
-description = "A lightweight FinalShell-style SSH/terminal client written in Rust"
-license = "MIT"
-repository = "https://github.com/ixbaicn/XenTerm"
-readme = "README.md"
-# Base MSRV: verified for Linux headless only; desktop has higher requirements.
-# See README.md#rust-toolchain-support for the feature-specific support policy.
-rust-version = "1.88"
+[workspace]
+resolver = "2"
+members = ["crates/xenterm", "apps/xenterm/native"]
 
-[features]
-# The default remains the complete GPUI application. Servers can exclude all
-# native window/dialog libraries with --no-default-features --features headless.
-default = ["desktop", "remote-mcp"]
-desktop = ["dep:gpui-kit", "dep:rfd", "dep:serialport", "dep:url", "keyring/apple-native", "keyring/windows-native", "keyring/sync-secret-service"]
-headless = ["remote-mcp"]
-remote-mcp = ["dep:rmcp", "dep:axum", "dep:jsonwebtoken", "dep:tokio-util", "dep:url"]
-
-[dependencies]
-# The UI toolkit.
-gpui-kit = { version = "=0.7.1", optional = true, features = ["test-support"] }
-
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-regex = "1"
-# CSS/HSV parsing and conversion; the existing GPUI component supplies the picker UI.
-csscolorparser = "=0.9.0"
-glob = "0.3"
-encoding_rs = "0.8"
-anyhow = "1"
-thiserror = "1"
-directories = "5"
-chrono = { version = "0.4", features = ["serde"] }
-sysinfo = "0.33"
-uuid = { version = "1", features = ["v4", "serde"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-util", "net", "time", "fs", "signal"] }
-# russh 0.61.2 fixes RUSTSEC-2026-0154 (unbounded ssh-agent frame allocation;
-# unreachable here, see audit.toml history). The ring feature keeps the crypto
-# backend on ring: russh's default aws-lc-rs pulls aws-lc-sys, which needs NASM
-# and breaks every CI platform. Note the crypto stack is still pre-release
-# (ssh-key 0.7.0-rc, ed25519-dalek 3.0.0-rc) — revisit when it stabilises.
-russh = { version = "0.61", default-features = false, features = ["flate2", "rsa", "ring"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-rand = "0.8"
-async-trait = "0.1"
-futures = "0.3"
-rio-vt = { version = "=0.5.28", default-features = false }
-portable-pty = "0.8"
-# Rendering, selection and find share the terminal engine's grapheme-width
-# table so their columns agree with the native grid (#132).
-# Split terminal output into complete emoji grapheme clusters (ZWJ sequences,
-# flags, skin tones, variation selectors) before replacing them with images.
-unicode-segmentation = "1.12"
-# Terminal text rasterizers flatten color-font glyphs to a monochrome mask.
-# Embedded 72px Twemoji PNGs keep emoji colored on every renderer (#269).
-twemoji-assets = { version = "1.5", default-features = false, features = ["png"] }
-russh-sftp = "2"
-rfd = { version = "0.15", optional = true }
-keyring = { version = "3", default-features = false }
-# Zeroes password buffers on drop so plaintext credentials don't linger in
-# freed heap memory (core dumps / debuggers / /proc/pid/mem).
-zeroize = "1"
-# SOCKS5 proxy tunnelling for SSH/SFTP in network-restricted environments.
-# (HTTP CONNECT proxies are handled in src/proxy.rs without an extra crate.)
-tokio-socks = "0.5"
-base64 = "0.22"
-# Native PuTTY PPK v2/v3 private-key loading (#281). Conversion stays entirely
-# in memory: AES-CBC decrypts encrypted key blobs, Argon2 handles PPKv3 key
-# derivation, and HMAC verifies the file before it reaches the SSH parser.
-aes = "0.8"
-argon2 = "0.5"
-cbc = "0.1"
-hmac = "0.12"
-sha1 = "0.10"
-sha2 = "0.10"
-# FinalShell connection exports derive a DES key with MD5 using java.util.Random.
-des = "0.8"
-md5 = "0.7"
-# Enumerate installed system fonts for the Interface (font) settings picker.
-fontdb = "0.16"
-# Cross-platform serial port access for the Serial session type (#14, #17).
-# Opens COM3 / /dev/ttyUSB0 etc.; on Linux the default `libudev` feature is
-# used for port enumeration (CI installs libudev-dev).
-serialport = { version = "4", optional = true }
-# ChaCha20-Poly1305 AEAD for encrypting passwords at rest in sessions.json.
-# rand (OsRng) and base64 are already pulled in by other deps above.
-chacha20poly1305 = "0.10"
-# The config store: a single sessions.db (WAL mode) replaces the old
-# sessions.json so a command-history push writes one row instead of
-# re-serialising every session and re-pushing every saved password into the
-# OS keyring. `bundled` statically compiles SQLite — no system dependency on
-# any target; the C build needs a host C compiler (MSVC cl / MinGW gcc /
-# cc), which every CI image already has.
-rusqlite = { version = "0.39", features = ["bundled"] }
-# Short cross-process profile locks cover SQLite/keyring compensation windows.
-fs2 = "0.4.3"
-# Platform-native no-clobber publication (also supports removable filesystems).
-tempfile = "=3.27.0"
-# Lightweight synchronous HTTPS client (bundled rustls, no OpenSSL) for the
-# in-app update check against the GitHub releases API (#48). Runs on a
-# background thread so it never blocks startup; failure is silently ignored.
-ureq = { version = "2", features = ["tls"] }
-
-# Image decoding: embedded emoji assets and image protocol renders. On Windows
-# the window icon comes from the .ico embedded by winresource at link time.
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "bmp"] }
-
-# Use jemalloc on Unix-like desktop/mobile targets. Unsupported targets keep
-# Rust's portable System allocator without pulling in platform dependencies.
-[target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "ios", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd", target_os = "dragonfly"))'.dependencies]
-jemallocator = "0.5"
-
-[target.'cfg(unix)'.dependencies]
-# Drop uploads open regular files without following a swapped symlink/FIFO.
-libc = "0.2"
-
-# Embeds assets/xenterm.ico into the .exe so Explorer / taskbar / shortcuts
-# show the app icon. Windows-only; ignored on other targets.
-[target.'cfg(windows)'.build-dependencies]
-winresource = "0.1"
-
-# Win32 COM APIs for the taskbar jump list ("新建窗口" task, see
-# src/app/jump_list.rs). 0.58 matches the version already in Cargo.lock via
-# transitive deps, keeping the lock diff minimal.
-[target.'cfg(windows)'.dependencies]
-mimalloc = "0.1"
-windows = { version = "0.58", features = [
-    "Wdk_Storage_FileSystem",
-    "Win32_Foundation",
-    "Win32_Globalization",
-    "Win32_Security",
-    "Win32_Security_Authorization",
-    "Win32_Storage_EnhancedStorage",
-    "Win32_Storage_FileSystem",
-    "Win32_System_Com",
-    "Win32_System_Com_StructuredStorage",
-    "Win32_System_IO",
-    "Win32_System_SystemServices",
-    "Win32_System_Threading",
-    "Win32_UI_Shell",
-    "Win32_UI_Shell_Common",
-    "Win32_UI_Shell_PropertiesSystem",
-] }
+# The workspace is the repository: everything Rust lives under crates/, so the
+# root stays a manifest and nothing else. The lockfile is shared — one `cargo
+# build` at the root builds every member, and a `cargo update` cannot drift the
+# members apart.
+#
+# Central versioning note (docs/versioning.md): the crate's own version is the
+# product version and stays in crates/xenterm/Cargo.toml; release tooling reads
+# it there.
+#
+# Profiles live here and only here: Cargo ignores (and newer versions reject)
+# profile sections in member manifests.
 
 [profile.release]
 opt-level = 3
@@ -156,16 +24,15 @@ strip = "symbols"
 # space with it and there is nothing here to catch or to miss. What still needs
 # unwinding is this process: the plugin host and the terminal both spawn threads
 # around blocking OS handles, and a panic on one of them must not take the
-# application down. Under panic = "abort" it would. Costs some binary size and a
-# little codegen quality; that trade is worth more than the optimisation here.
+# application down. Under panic = "abort" it would. Costs some binary size and
+# a little codegen quality; that trade is worth more than the optimisation here.
 #
 # Known consequence: panics in spawned threads surface as an Err join result
-# instead of killing the process, and at least one site discards it —
-# src/terminal/impls/serial.rs does `let _ = reader_handle.join()`, so a
-# panicking serial reader is swallowed and shutdown reports a clean close. The
-# plugin host's pipe threads are detached on purpose and for a different reason:
-# they end when their pipe closes, so there is nothing left to join by the time
-# anyone would want to.
+# instead of killing the process, and at least one site discards it — the
+# serial reader's join is one, so a panicking reader is swallowed and shutdown
+# reports a clean close. The plugin host's pipe threads are detached on
+# purpose and for a different reason: they end when their pipe closes, so
+# there is nothing left to join by the time anyone would want to.
 panic = "unwind"
 
 [profile.dev]
@@ -174,28 +41,3 @@ debug = 1
 
 [profile.dev.package."*"]
 opt-level = 1
-
-# The GPUI test API is feature-gated with the optional desktop dependency above.
-# A unconditional dev-dependency would pull native GUI libraries into headless tests.
-
-[dependencies.rmcp]
-version = "=2.2.0"
-optional = true
-default-features = false
-features = ["server", "transport-streamable-http-server"]
-
-[dependencies.axum]
-version = "0.8"
-optional = true
-
-[dependencies.jsonwebtoken]
-version = "9.3"
-optional = true
-
-[dependencies.tokio-util]
-version = "0.7"
-optional = true
-
-[dependencies.url]
-version = "2"
-optional = true
