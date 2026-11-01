@@ -1,9 +1,9 @@
 [Desktop Entry]
 Type=Application
-Name=xenterm
+Name=XenTerm
 GenericName=SSH Client
-Comment=Lightweight Rust + GPUI SSH/SFTP client
-Comment[zh_CN]=轻量级 Rust + GPUI SSH/SFTP 客户端
+Comment=SSH, SFTP and terminal client with a Rust core
+Comment[zh_CN]=Rust 核心的 SSH / SFTP / 终端客户端
 Exec=xenterm
 Icon=xenterm
 Terminal=false
@@ -14,9 +14,3 @@ Categories=Network;TerminalEmulator;
 Keywords=ssh;sftp;terminal;shell;
 StartupNotify=true
 StartupWMClass=xenterm
-Actions=new-window;
-
-[Desktop Action new-window]
-Name=New Window
-Name[zh_CN]=新建窗口
-Exec=xenterm --new-window

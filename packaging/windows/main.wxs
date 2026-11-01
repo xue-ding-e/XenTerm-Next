@@ -1,0 +1,162 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  WiX Toolset 3.14 installer definition for the XenTerm Windows desktop app
+  (Flutter UI + the Rust core inside xenterm_bridge.dll).
+
+  Built by apps/xenterm/tool/package_windows_installer.ps1, which passes:
+    $(var.SourceDir)       staging directory with the Flutter release bundle
+    $(var.ProductVersion)  MSI product version, three numeric fields (X.Y.Z)
+    $(var.AppVersion)      the full app version (xt-vX.Y.Z, beta-..., ...)
+    $(var.IconFile)        assets/xenterm.ico
+    $(var.LicenseRtf)      packaging/windows/LICENSE.rtf
+  and compiles the harvested file list from heat.exe as a second source file.
+
+  ProductCode is regenerated for every build (Id="*"); UpgradeCode is fixed so
+  every XenTerm MSI upgrades any older XenTerm MSI in place. A per-machine
+  install into Program Files is intentionally *not* the portable layout: a
+  portable zip keeps its profile in the extracted folder, while this MSI
+  installs read-only program files only (the core then uses %APPDATA%).
+  The installer creates both a Start Menu entry and a desktop shortcut, using
+  the real XenTerm icon for the executable, the shortcuts and Add/Remove.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
+     xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
+    <Product
+        Id="*"
+        Name="XenTerm"
+        Manufacturer="xenterm contributors"
+        Language="1033"
+        Codepage="1252"
+        Version="$(var.ProductVersion)"
+        UpgradeCode="6E8F2A1B-3C4D-4E5F-9A0B-1C2D3E4F5A6B">
+
+        <Package
+            Id="*"
+            Keywords="Installer"
+            Description="XenTerm - SSH/SFTP/terminal client (Flutter UI + Rust core)"
+            Comments="$(var.AppVersion)"
+            Manufacturer="xenterm contributors"
+            InstallerVersion="500"
+            Languages="1033"
+            Compressed="yes"
+            InstallScope="perMachine"
+            InstallPrivileges="elevated"
+            SummaryCodepage="1252"/>
+
+        <MediaTemplate EmbedCab="yes" CompressionLevel="high"/>
+
+        <!--
+          Major upgrade: a newer MSI replaces the older install in one
+          transaction, uninstalling the old product with the same UpgradeCode.
+          AllowSameVersionUpgrades lets a rebuilt beta MSI (same numeric
+          version, new ProductCode) replace itself instead of failing with
+          "another version is already installed".
+        -->
+        <MajorUpgrade
+            Schedule="afterInstallInitialize"
+            AllowSameVersionUpgrades="yes"
+            DowngradeErrorMessage="A newer version of XenTerm is already installed. Setup will now exit."/>
+
+        <Icon Id="ProductICO" SourceFile="$(var.IconFile)"/>
+        <Property Id="ARPPRODUCTICON" Value="ProductICO"/>
+
+        <!--
+          Close a running XenTerm (or an MCP client keeping the exe alive)
+          during an upgrade. Without this Windows Installer can only schedule
+          the locked executables for replacement on the next reboot.
+        -->
+        <util:CloseApplication
+            Id="CloseRunningXenTerm"
+            Target="xenterm.exe"
+            Description="XenTerm is still running. Close XenTerm and any MCP client using it, then click Retry. Choose Ignore to close it automatically."
+            PromptToContinue="yes"
+            CloseMessage="yes"
+            ElevatedCloseMessage="yes"
+            Timeout="10"
+            TerminateProcess="0"
+            RebootPrompt="no">WIX_UPGRADE_DETECTED</util:CloseApplication>
+
+        <!-- Populate Programs and Features -> Install location. -->
+        <Property Id="ARPINSTALLLOCATION" Secure="yes"/>
+        <!-- INSTALLFOLDER is the public directory property; Secure makes a
+             silent override (msiexec /i ... INSTALLFOLDER=...) survive the
+             elevation boundary too. -->
+        <Property Id="INSTALLFOLDER" Secure="yes"/>
+
+        <Directory Id="TARGETDIR" Name="SourceDir">
+            <Directory Id="ProgramFiles64Folder">
+                <Directory Id="INSTALLFOLDER" Name="XenTerm"/>
+            </Directory>
+            <!--
+              All-users Start Menu folder: the package is per-machine, so
+              ProgramMenuFolder resolves to the shared menu. The component
+              keypath is HKCU (the canonical WiX shortcut layout) because
+              shortcuts are user-profile data; ICE38/43/57 otherwise reject a
+              per-machine keypath next to a shortcut.
+            -->
+            <Directory Id="ProgramMenuFolder">
+                <Directory Id="XenTermMenuFolder" Name="XenTerm">
+                    <Component Id="StartMenuShortcut" Guid="{7F1C4E7A-2D6B-4A8E-9C33-5B1D0A6F2E81}">
+                        <Shortcut Id="XenTermStartMenuShortcut"
+                            Name="XenTerm"
+                            Description="XenTerm - SSH/SFTP/terminal client"
+                            Target="[INSTALLFOLDER]xenterm.exe"
+                            WorkingDirectory="INSTALLFOLDER"
+                            Icon="ProductICO"/>
+                        <RemoveFolder Id="RemoveXenTermMenuFolder" On="uninstall"/>
+                        <RegistryValue Root="HKCU"
+                            Key="Software\XenTerm"
+                            Name="StartMenuShortcut"
+                            Type="integer"
+                            Value="1"
+                            KeyPath="yes"/>
+                    </Component>
+                </Directory>
+            </Directory>
+            <!--
+              Desktop shortcut. The package is per-machine, so DesktopFolder
+              resolves to the shared (Public) desktop. The keypath is HKCU for
+              the same ICE38/43/57 reason as the Start Menu component above.
+            -->
+            <Directory Id="DesktopFolder">
+                <Component Id="DesktopShortcut" Guid="{B4D7E2C9-8A31-4F6E-9B52-6C0A1E3D8F47}">
+                    <Shortcut Id="XenTermDesktopShortcut"
+                        Name="XenTerm"
+                        Description="XenTerm - SSH/SFTP/terminal client"
+                        Target="[INSTALLFOLDER]xenterm.exe"
+                        WorkingDirectory="INSTALLFOLDER"
+                        Icon="ProductICO"/>
+                    <RegistryValue Root="HKCU"
+                        Key="Software\XenTerm"
+                        Name="DesktopShortcut"
+                        Type="integer"
+                        Value="1"
+                        KeyPath="yes"/>
+                </Component>
+            </Directory>
+        </Directory>
+
+        <!-- ComponentGroup "XenTermFiles" comes from heat.exe (harvested bundle). -->
+        <Feature Id="MainProgram" Title="XenTerm" Level="1">
+            <ComponentGroupRef Id="XenTermFiles"/>
+            <ComponentRef Id="StartMenuShortcut"/>
+            <ComponentRef Id="DesktopShortcut"/>
+        </Feature>
+
+        <CustomAction Id="SetARPInstallLocation"
+            Property="ARPINSTALLLOCATION"
+            Value="[INSTALLFOLDER]"
+            Execute="immediate"/>
+        <InstallExecuteSequence>
+            <Custom Action="SetARPInstallLocation" After="CostFinalize">NOT REMOVE</Custom>
+        </InstallExecuteSequence>
+
+        <!-- Installer wizard: Welcome, License, install-folder picker, Ready,
+             Progress, Finish. WixUI_InstallDir needs WIXUI_INSTALLDIR; the
+             license page reads WixUILicenseRtf. -->
+        <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER"/>
+        <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)"/>
+        <UIRef Id="WixUI_InstallDir"/>
+        <UIRef Id="WixUI_ErrorProgressText"/>
+    </Product>
+</Wix>

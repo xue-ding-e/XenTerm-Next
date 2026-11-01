@@ -1,8 +1,8 @@
 # 发布到 AUR（xenterm-bin）
 
 仓库里已经备好 `PKGBUILD` 和发布工作流 `.github/workflows/aur-publish.yml`，
-走的是 **-bin 二进制包**：直接安装 GitHub Release 里预编译好的 Linux tar.gz，
-Arch 用户不用自己编译 Rust + GPUI。
+走的是 **-bin 二进制包**：直接安装 GitHub Release 里预编译好的桌面包（Flutter UI + Rust 核心），
+Arch 用户不用自己编译 Rust + Flutter。
 
 剩下的几步只能你来做（涉及你的 AUR 账号身份）。配好之后，**以后每次发 Release
 就会自动同步到 AUR**。
@@ -60,6 +60,6 @@ git push
 ## 备注
 - 包名用 `xenterm-bin`（二进制包惯例）。若以后想要从源码编译的 `xenterm`
   包，可另加一份从源码 `makepkg` 的 PKGBUILD（需要 Arch 上有 Rust 工具链 +
-  那串 GUI 依赖）。
+  Flutter 桌面构建依赖，例如 gtk3、clang、ninja）。
 - ArchLinuxCN 源：在 AUR 稳定后，可以向 archlinuxcn/repo 提 PR 把它纳入二进制源
   （他们会基于 AUR 的 PKGBUILD 打包），那是另外的流程，按其仓库说明走即可。
