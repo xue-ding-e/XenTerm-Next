@@ -143,7 +143,9 @@ jobs:
           core.info(`Admitted exact packaging-fixed source ${productSha}; real MSI acceptance is still required.`);
 
           // Payload provenance is distinct from packaging code provenance.
-          const packagingSha = '488f001949613327150abb8f74b464278604df69';
+          const packagingSha = '0d60b91691ce082137db3e3f995ef6fc8c783b83';
+          const encodingSha = '488f001949613327150abb8f74b464278604df69';
+          const encodingTree = '3d819d32b4520fc1e77abbbb7c3c91da97f928c1';
           const heatSha = '39679fcfc151f6e334d7855c5ec2d795b7144de1';
           const heatTree = '4620c68378f6bd03c3be9346d20eb4ffb6edcb98';
           const fixtureSha = 'a6754f41478e2770d5fc5abf4288228575078afb';
@@ -152,7 +154,7 @@ jobs:
           const lifecycleTree = 'd60294de8f6afd9f432acbaf7a072f6273606bfc';
           const evidenceSha = 'd9f2cf0587069ec944150a6292e458e9a5c17b5f';
           const evidenceTree = '0d8cbb5039b7f50de865329867001f97770c82f9';
-          const packagingTree = '3d819d32b4520fc1e77abbbb7c3c91da97f928c1';
+          const packagingTree = '007d4575d1cf9e8c057ef0906dca0cdf64015a79';
           const guidSha = '111427ca5c08d39468bffe2e161d6598e93c7404';
           const guidTree = '39473a6c199de239daeec7b28c5e8ec7ae21459f';
           const payloadRunId = 41378802968;
@@ -164,7 +166,8 @@ jobs:
           ];
           const changes = {
             'tests/fixtures/gpui-heat-component-group.wxs':'f2acdf988236605995e477abd153a42d133f8426',
-            'scripts/test_next_gpui_msi_e2e.ps1':'7cff6e8dde6ef94cdb4151e62ac9e1f5b753d181',
+            'scripts/test_next_gpui_msi_e2e.ps1':'21b7b1b96e728de671ade4858c3bc678e4343758',
+            'tests/test_gpui_msi_property.ps1':'c0a663cb8723efc78cb128a5eded91a8a449bb78',
             'scripts/gpui_msi_coexistence_sentinels.ps1':'fdf3a3c342e47992a8d93902c50e116371e8c14d',
             'scripts/gpui_msi_profile_evidence.py':'1fca29d1c507a174f04fb8e10afc4b010c6f5d75',
             'tests/test_gpui_profile_evidence.py':'e360a62def017916393495a40023ada4e2d3658a',
@@ -173,7 +176,7 @@ jobs:
             'scripts/package_next_gpui_msi.ps1':'ca57b67d6bb3bf94661fe4bda92bac845924d2a3',
             'tests/test_gpui_msi_evidence.py':'fc70dbd2b092f4432ca591b0aef310521cdcf9ad',
           };
-          for (const [sha,tree,parent] of [[guidSha,guidTree,productSha],[evidenceSha,evidenceTree,guidSha],[lifecycleSha,lifecycleTree,evidenceSha],[fixtureSha,fixtureTree,lifecycleSha],[heatSha,heatTree,fixtureSha],[packagingSha,packagingTree,heatSha]]) {
+          for (const [sha,tree,parent] of [[guidSha,guidTree,productSha],[evidenceSha,evidenceTree,guidSha],[lifecycleSha,lifecycleTree,evidenceSha],[fixtureSha,fixtureTree,lifecycleSha],[heatSha,heatTree,fixtureSha],[encodingSha,encodingTree,heatSha],[packagingSha,packagingTree,encodingSha]]) {
             const {data:c} = await github.rest.git.getCommit({owner,repo,commit_sha:sha});
             requireTrue(c.tree.sha === tree && c.parents.length === 1 && c.parents[0].sha === parent,'Packaging chain changed');
             for (const identity of [c.author,c.committer]) requireTrue(identity.name === 'Qing Liang' && identity.email === '106448173+xue-ding-e@users.noreply.github.com','Unexpected packaging author');
@@ -181,7 +184,7 @@ jobs:
           const packaging = await treeEntries(packagingTree);
           const delta = [...new Set([...after.entries.keys(),...packaging.entries.keys()])]
             .filter(p => after.entries.get(p) !== packaging.entries.get(p)).sort();
-          requireTrue(JSON.stringify(delta) === JSON.stringify(Object.keys(changes).sort()),'Packaging changes exceed reviewed nine files');
+          requireTrue(JSON.stringify(delta) === JSON.stringify(Object.keys(changes).sort()),'Packaging changes exceed reviewed ten files');
           for (const [path,sha] of Object.entries(changes)) requireTrue(packaging.entries.get(path) === `100644:blob:${sha}`,'Reviewed packaging blob differs');
           async function payloadRunProof() {
             const {data:r} = await github.rest.actions.getWorkflowRun({owner,repo,run_id:payloadRunId});
@@ -251,6 +254,7 @@ jobs:
         if ($LASTEXITCODE -ne 0) { throw 'Synthetic profile contracts failed' }
         python tests/test_next_gpui_msi.py
         if ($LASTEXITCODE -ne 0) { throw 'Heat directory and packaging contracts failed' }
+        ./tests/test_gpui_msi_property.ps1
     - name: Prepare pinned portable WiX toolset
       timeout-minutes: 5
       shell: pwsh
@@ -371,6 +375,7 @@ jobs:
         ./scripts/package_next_gpui_msi.ps1 -BundleDir "$oldRoot/$oldStem" -SourceSha $oldSha -WixBin $wix -Output $previous -EvidenceDir "$env:RUNNER_TEMP/gpui-packaging-evidence"
         $same = Join-Path $env:RUNNER_TEMP 'gpui-equal-build-fixture.msi'
         ./scripts/package_next_gpui_msi.ps1 -BundleDir $bundle -SourceSha $env:SOURCE_SHA -WixBin $wix -Output $same -EvidenceDir "$env:RUNNER_TEMP/gpui-packaging-evidence"
+        ./tests/test_gpui_msi_property.ps1 -MsiPaths @($msi,$previous,$same)
         ./scripts/test_next_gpui_msi_e2e.ps1 -Msi $msi -PreviousMsi $previous -SameVersionMsi $same -OutputDir "$env:RUNNER_TEMP/gpui-installer-evidence"
     - name: Keep real GPUI MSI and lifecycle evidence (not a release)
       if: always()
