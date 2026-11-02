@@ -4,7 +4,7 @@ name: Next Flutter Windows preview (artifacts only)
 # Inherited upstream workflows are retained under .github/upstream-workflows.
 on:
   push:
-    branches: [flutter-next]
+    branches: [flutter-next, validation/flutter-maintenance-20261102]
   workflow_dispatch:
 
 permissions:
@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   windows:
-    if: github.repository == 'xue-ding-e/XenTerm-Next' && github.ref == 'refs/heads/flutter-next'
+    if: github.repository == 'xue-ding-e/XenTerm-Next' && (github.ref == 'refs/heads/flutter-next' || github.ref == 'refs/heads/validation/flutter-maintenance-20261102')
     runs-on: windows-2025
     timeout-minutes: 60
     env:
@@ -42,11 +42,19 @@ jobs:
           rustc --version
           flutter --version
           python -m unittest discover -s scripts/next -p 'test_*.py'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Resolve canonical runtime version
         shell: bash
         run: |
           set -euo pipefail
           echo "XT_VERSION=$(bash scripts/version.sh)" >> "$GITHUB_ENV"
+      # Unlike --bin, this explicitly discovers and executes all 13 tunnel
+      # library regressions plus 3 settings regressions and the settings C ABI.
+      - name: Test exact Rust maintenance regressions (17 required)
+        shell: pwsh
+        run: |
+          python scripts/next/run_flutter_maintenance_regressions.py --suite rust --expected-source "$env:GITHUB_SHA"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Test Rust bridge
         run: cargo test --locked -p xenterm-bridge
       - name: Test CLI profile isolation
@@ -59,6 +67,11 @@ jobs:
       - name: Verify dependency resolution did not rewrite the lockfile
         working-directory: apps/xenterm
         run: git diff --exit-code -- pubspec.lock
+      - name: Test exact Flutter runtime regressions (14 required)
+        shell: pwsh
+        run: |
+          python scripts/next/run_flutter_maintenance_regressions.py --suite flutter --expected-source "$env:GITHUB_SHA"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Analyze and test Flutter
         working-directory: apps/xenterm
         run: |
