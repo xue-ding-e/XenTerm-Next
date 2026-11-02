@@ -2,10 +2,10 @@
 //! profile. No process-global env mutation in the parent test harness, no GUI,
 //! custom accept-all host-key handler, installed service or user credentials.
 use super::*;
+use russh::keys::{ssh_key::private::Ed25519Keypair, PrivateKey, PublicKey};
+use russh::{server, Channel};
 use std::sync::atomic::AtomicUsize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use russh::{server, Channel};
-use russh::keys::{PrivateKey, PublicKey, ssh_key::private::Ed25519Keypair};
 
 struct Node {
     target: SocketAddr,
@@ -16,22 +16,42 @@ struct Node {
 }
 impl server::Handler for Node {
     type Error = russh::Error;
-    async fn auth_password(&mut self, user: &str, password: &str) -> std::result::Result<server::Auth, Self::Error> {
-        if user != "fixture" || password != "fixture-password" { return Ok(server::Auth::reject()); }
+    async fn auth_password(
+        &mut self,
+        user: &str,
+        password: &str,
+    ) -> std::result::Result<server::Auth, Self::Error> {
+        if user != "fixture" || password != "fixture-password" {
+            return Ok(server::Auth::reject());
+        }
         self.auth.fetch_add(1, Ordering::SeqCst);
         Ok(server::Auth::Accept)
     }
-    async fn channel_open_session(&mut self, _channel: Channel<server::Msg>, _session: &mut server::Session)
-        -> std::result::Result<bool, Self::Error> {
+    async fn channel_open_session(
+        &mut self,
+        _channel: Channel<server::Msg>,
+        _session: &mut server::Session,
+    ) -> std::result::Result<bool, Self::Error> {
         self.sessions.fetch_add(1, Ordering::SeqCst);
         Ok(false) // A session/PTY/shell would make this fixture fail.
     }
-    async fn channel_open_direct_tcpip(&mut self, channel: Channel<server::Msg>, host: &str,
-        port: u32, _origin: &str, _origin_port: u32, _session: &mut server::Session)
-        -> std::result::Result<bool, Self::Error> {
-        let permitted = if self.echo { host == "echo.invalid" && port == 23 }
-            else { host == "127.0.0.1" && port == self.target.port() as u32 };
-        if !permitted { return Ok(false); }
+    async fn channel_open_direct_tcpip(
+        &mut self,
+        channel: Channel<server::Msg>,
+        host: &str,
+        port: u32,
+        _origin: &str,
+        _origin_port: u32,
+        _session: &mut server::Session,
+    ) -> std::result::Result<bool, Self::Error> {
+        let permitted = if self.echo {
+            host == "echo.invalid" && port == 23
+        } else {
+            host == "127.0.0.1" && port == self.target.port() as u32
+        };
+        if !permitted {
+            return Ok(false);
+        }
         let target = self.target;
         self.relays.lock().unwrap().push(tokio::spawn(async move {
             let mut tcp = tokio::net::TcpStream::connect(target).await.unwrap();
@@ -62,27 +82,59 @@ impl Fixture {
         let echo = tokio::spawn(async move {
             let (mut socket, _) = echo_listener.accept().await.unwrap();
             let mut bytes = [0; 256];
-            loop { let count = socket.read(&mut bytes).await.unwrap(); if count == 0 { break; }
-                socket.write_all(&bytes[..count]).await.unwrap(); }
+            loop {
+                let count = socket.read(&mut bytes).await.unwrap();
+                if count == 0 {
+                    break;
+                }
+                socket.write_all(&bytes[..count]).await.unwrap();
+            }
         });
         let mut listeners = Vec::new();
-        for _ in 0..3 { listeners.push(TcpListener::bind("127.0.0.1:0").await.unwrap()); }
-        let addresses: Vec<_> = listeners.iter().map(|listener| listener.local_addr().unwrap()).collect();
+        for _ in 0..3 {
+            listeners.push(TcpListener::bind("127.0.0.1:0").await.unwrap());
+        }
+        let addresses: Vec<_> = listeners
+            .iter()
+            .map(|listener| listener.local_addr().unwrap())
+            .collect();
         let relays = Arc::new(Mutex::new(Vec::new()));
         let sessions = Arc::new(AtomicUsize::new(0));
-        let mut servers = Vec::new(); let mut saved = Vec::new(); let mut auth = Vec::new();
+        let mut servers = Vec::new();
+        let mut saved = Vec::new();
+        let mut auth = Vec::new();
         let mut trust = String::new();
         for (index, listener) in listeners.into_iter().enumerate() {
-            let key = PrivateKey::new(Ed25519Keypair::from_seed(&[40 + index as u8; 32]).into(), "owner fixture").unwrap();
+            let key = PrivateKey::new(
+                Ed25519Keypair::from_seed(&[40 + index as u8; 32]).into(),
+                "owner fixture",
+            )
+            .unwrap();
             let expected = if wrong_key && index == 2 {
-                PrivateKey::new(Ed25519Keypair::from_seed(&[99; 32]).into(), "wrong fixture").unwrap()
-            } else { key.clone() };
+                PrivateKey::new(Ed25519Keypair::from_seed(&[99; 32]).into(), "wrong fixture")
+                    .unwrap()
+            } else {
+                key.clone()
+            };
             let wire_key = PublicKey::new(expected.public_key().key_data().clone(), "");
-            trust.push_str(&format!("127.0.0.1:{} {}\n", addresses[index].port(), wire_key.to_openssh().unwrap()));
-            let config = Arc::new(server::Config { keys: vec![key], ..Default::default() });
-            let count = Arc::new(AtomicUsize::new(0)); auth.push(count.clone());
-            let node = Node { target: addresses.get(index + 1).copied().unwrap_or(echo_addr), echo: index == 2,
-                auth: count, relays: relays.clone(), sessions: sessions.clone() };
+            trust.push_str(&format!(
+                "127.0.0.1:{} {}\n",
+                addresses[index].port(),
+                wire_key.to_openssh().unwrap()
+            ));
+            let config = Arc::new(server::Config {
+                keys: vec![key],
+                ..Default::default()
+            });
+            let count = Arc::new(AtomicUsize::new(0));
+            auth.push(count.clone());
+            let node = Node {
+                target: addresses.get(index + 1).copied().unwrap_or(echo_addr),
+                echo: index == 2,
+                auth: count,
+                relays: relays.clone(),
+                sessions: sessions.clone(),
+            };
             let handles = server_handles.clone();
             servers.push(tokio::spawn(async move {
                 let (stream, _) = listener.accept().await?;
@@ -90,117 +142,224 @@ impl Fixture {
                 handles.lock().unwrap()[index] = Some(running.handle());
                 running.await
             }));
-            let mut session = Session::new_empty(); session.host = "127.0.0.1".into();
-            session.port = addresses[index].port(); session.user = "fixture".into();
+            let mut session = Session::new_empty();
+            session.host = "127.0.0.1".into();
+            session.port = addresses[index].port();
+            session.user = "fixture".into();
             session.auth = crate::config::AuthMethod::Password;
             session.password = crate::config::Secret::new("fixture-password");
             // These saved unrelated rules must not be activated by headless D.
-            session.forwards.push(PortForward { kind: "remote".into(), bind_port: 42000 + index as u16,
-                host: "127.0.0.1".into(), host_port: forbidden_port, ..Default::default() });
+            session.forwards.push(PortForward {
+                kind: "remote".into(),
+                bind_port: 42000 + index as u16,
+                host: "127.0.0.1".into(),
+                host_port: forbidden_port,
+                ..Default::default()
+            });
             saved.push(session);
         }
         std::fs::write(crate::config::data_dir().join("known_hosts"), trust).unwrap();
-        let mut target = saved.pop().unwrap(); target.id = "fixture-saved-target".into();
-        target.forwards.push(PortForward { kind: "dynamic".into(), bind_port: bind, ..Default::default() });
+        let mut target = saved.pop().unwrap();
+        target.id = "fixture-saved-target".into();
+        target.forwards.push(PortForward {
+            kind: "dynamic".into(),
+            bind_port: bind,
+            ..Default::default()
+        });
         saved.reverse();
-        Self { target, jumps: saved, servers, relays, echo: Some(echo), auth, sessions, forbidden, server_handles }
+        Self {
+            target,
+            jumps: saved,
+            servers,
+            relays,
+            echo: Some(echo),
+            auth,
+            sessions,
+            forbidden,
+            server_handles,
+        }
     }
     async fn reject_unrequested_remote_maps(&self) {
-        let handles: Vec<_> = self.server_handles.lock().unwrap().iter()
-            .map(|handle| handle.clone().unwrap()).collect();
+        let handles: Vec<_> = self
+            .server_handles
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|handle| handle.clone().unwrap())
+            .collect();
         for (index, handle) in handles.into_iter().enumerate() {
-            let result = tokio::time::timeout(Duration::from_secs(2),
-                handle.channel_open_forwarded_tcpip("127.0.0.1", 42000 + index as u32, "127.0.0.1", 40001)).await
-                .expect("unsolicited channel confirmation stalled");
+            let result = tokio::time::timeout(
+                Duration::from_secs(2),
+                handle.channel_open_forwarded_tcpip(
+                    "127.0.0.1",
+                    42000 + index as u32,
+                    "127.0.0.1",
+                    40001,
+                ),
+            )
+            .await
+            .expect("unsolicited channel confirmation stalled");
             if let Ok(channel) = result {
                 // A confirmed SSH channel is not permission to open local TCP.
                 // Explicitly close the test probe; do not claim auto peer EOF.
                 channel.close().await.unwrap();
             }
-            assert!(tokio::time::timeout(Duration::from_millis(150), self.forbidden.accept()).await.is_err(),
-                "a headless hop accepted a saved but unrequested remote mapping");
+            assert!(
+                tokio::time::timeout(Duration::from_millis(150), self.forbidden.accept())
+                    .await
+                    .is_err(),
+                "a headless hop accepted a saved but unrequested remote mapping"
+            );
         }
     }
     async fn finish(&mut self, used_echo: bool) {
         for server in &mut self.servers {
-            let result = tokio::time::timeout(Duration::from_secs(3), server).await.unwrap().unwrap();
+            let result = tokio::time::timeout(Duration::from_secs(3), server)
+                .await
+                .unwrap()
+                .unwrap();
             assert!(!matches!(result, Err(russh::Error::Join(_))));
         }
         self.servers.clear();
         let relays = std::mem::take(&mut *self.relays.lock().unwrap());
-        for relay in relays { tokio::time::timeout(Duration::from_secs(3), relay).await.unwrap().unwrap(); }
+        for relay in relays {
+            tokio::time::timeout(Duration::from_secs(3), relay)
+                .await
+                .unwrap()
+                .unwrap();
+        }
         if let Some(echo) = self.echo.take() {
-            if !used_echo { echo.abort(); }
-            let result = tokio::time::timeout(Duration::from_secs(3), echo).await.unwrap();
-            if used_echo { result.unwrap(); } else { assert!(result.unwrap_err().is_cancelled()); }
+            if !used_echo {
+                echo.abort();
+            }
+            let result = tokio::time::timeout(Duration::from_secs(3), echo)
+                .await
+                .unwrap();
+            if used_echo {
+                result.unwrap();
+            } else {
+                assert!(result.unwrap_err().is_cancelled());
+            }
         }
         assert_eq!(self.sessions.load(Ordering::SeqCst), 0);
     }
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
-        for task in &self.servers { task.abort(); }
-        for task in self.relays.lock().unwrap().iter() { task.abort(); }
-        if let Some(task) = &self.echo { task.abort(); }
+        for task in &self.servers {
+            task.abort();
+        }
+        for task in self.relays.lock().unwrap().iter() {
+            task.abort();
+        }
+        if let Some(task) = &self.echo {
+            task.abort();
+        }
     }
 }
 async fn echo(address: SocketAddr) -> tokio::net::TcpStream {
     let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
-    client.write_all(&[5, 1, 0]).await.unwrap(); let mut greeting = [0; 2];
-    client.read_exact(&mut greeting).await.unwrap(); assert_eq!(greeting, [5, 0]);
-    let mut request = vec![5, 1, 0, 3, 12]; request.extend_from_slice(b"echo.invalid"); request.extend_from_slice(&23u16.to_be_bytes());
-    client.write_all(&request).await.unwrap(); let mut reply = [0; 10];
-    client.read_exact(&mut reply).await.unwrap(); assert_eq!(reply[1], 0);
-    client.write_all(b"no-terminal").await.unwrap(); let mut echoed = [0; 11];
-    client.read_exact(&mut echoed).await.unwrap(); assert_eq!(&echoed, b"no-terminal");
+    client.write_all(&[5, 1, 0]).await.unwrap();
+    let mut greeting = [0; 2];
+    client.read_exact(&mut greeting).await.unwrap();
+    assert_eq!(greeting, [5, 0]);
+    let mut request = vec![5, 1, 0, 3, 12];
+    request.extend_from_slice(b"echo.invalid");
+    request.extend_from_slice(&23u16.to_be_bytes());
+    client.write_all(&request).await.unwrap();
+    let mut reply = [0; 10];
+    client.read_exact(&mut reply).await.unwrap();
+    assert_eq!(reply[1], 0);
+    client.write_all(b"no-terminal").await.unwrap();
+    let mut echoed = [0; 11];
+    client.read_exact(&mut echoed).await.unwrap();
+    assert_eq!(&echoed, b"no-terminal");
     client
 }
 
 #[test]
 fn stalled_start_does_not_block_another_handles_release() {
-    isolated("tunnel::owner::lifecycle_tests::stalled_start_does_not_block_another_handles_release", || async {
-        let mut fixture = Fixture::new(0, false).await;
-        let owner = Arc::new(ForwardOwner::new(false));
-        let ready = owner.start(fixture.target.clone(), fixture.jumps.clone(), 1, 1, false, None).await.unwrap();
-        let address: SocketAddr = ready.proxy_url.strip_prefix("socks5h://").unwrap().parse().unwrap();
-        let mut client = echo(address).await;
+    isolated(
+        "tunnel::owner::lifecycle_tests::stalled_start_does_not_block_another_handles_release",
+        || async {
+            let mut fixture = Fixture::new(0, false).await;
+            let owner = Arc::new(ForwardOwner::new(false));
+            let ready = owner
+                .start(
+                    fixture.target.clone(),
+                    fixture.jumps.clone(),
+                    1,
+                    1,
+                    false,
+                    None,
+                )
+                .await
+                .unwrap();
+            let address: SocketAddr = ready
+                .proxy_url
+                .strip_prefix("socks5h://")
+                .unwrap()
+                .parse()
+                .unwrap();
+            let mut client = echo(address).await;
 
-        let silent = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let mut stalled = Session::new_empty();
-        stalled.host = "pending.invalid".into();
-        stalled.proxy = format!("http://{}", silent.local_addr().unwrap());
-        stalled.forwards.push(PortForward { kind: "dynamic".into(), bind_port: 0, ..Default::default() });
-        let worker = owner.clone();
-        let start = tokio::spawn(async move { worker.start(stalled, vec![], 0, 1, false, None).await });
-        // Accept is a barrier: B is registered and stuck in real HTTP CONNECT,
-        // while A already has an authenticated three-hop route and SOCKS client.
-        let (_transport, _) = tokio::time::timeout(Duration::from_secs(2), silent.accept()).await.unwrap().unwrap();
-        let released = tokio::time::timeout(Duration::from_secs(2), owner.release(&ready.handle)).await
-            .expect("unrelated startup held release behind its authentication deadline").unwrap();
-        assert_eq!(released.state, "released");
-        assert!(!start.is_finished(), "releasing A also cancelled independent startup B");
-        let mut byte = [0];
-        assert_eq!(client.read(&mut byte).await.unwrap(), 0);
-        drop(TcpListener::bind(address).await.unwrap());
-        fixture.finish(true).await;
-        owner.shutdown().await.unwrap();
-        assert!(start.await.unwrap().is_err());
-        assert!(owner.entries.lock().unwrap().is_empty());
-    });
+            let silent = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let mut stalled = Session::new_empty();
+            stalled.host = "pending.invalid".into();
+            stalled.proxy = format!("http://{}", silent.local_addr().unwrap());
+            stalled.forwards.push(PortForward {
+                kind: "dynamic".into(),
+                bind_port: 0,
+                ..Default::default()
+            });
+            let worker = owner.clone();
+            let start =
+                tokio::spawn(async move { worker.start(stalled, vec![], 0, 1, false, None).await });
+            // Accept is a barrier: B is registered and stuck in real HTTP CONNECT,
+            // while A already has an authenticated three-hop route and SOCKS client.
+            let (_transport, _) = tokio::time::timeout(Duration::from_secs(2), silent.accept())
+                .await
+                .unwrap()
+                .unwrap();
+            let released =
+                tokio::time::timeout(Duration::from_secs(2), owner.release(&ready.handle))
+                    .await
+                    .expect("unrelated startup held release behind its authentication deadline")
+                    .unwrap();
+            assert_eq!(released.state, "released");
+            assert!(
+                !start.is_finished(),
+                "releasing A also cancelled independent startup B"
+            );
+            let mut byte = [0];
+            assert_eq!(client.read(&mut byte).await.unwrap(), 0);
+            drop(TcpListener::bind(address).await.unwrap());
+            fixture.finish(true).await;
+            owner.shutdown().await.unwrap();
+            assert!(start.await.unwrap().is_err());
+            assert!(owner.entries.lock().unwrap().is_empty());
+        },
+    );
 }
 
 /// A deterministic stand-in for a synchronous key KDF. Drop opens the barrier
 /// even when an assertion fails, so the runtime never hangs on a test thread.
 struct KeyLoadBarrier(Arc<(Mutex<bool>, std::sync::Condvar)>);
 impl KeyLoadBarrier {
-    fn new() -> Self { Self(Arc::new((Mutex::new(false), std::sync::Condvar::new()))) }
+    fn new() -> Self {
+        Self(Arc::new((Mutex::new(false), std::sync::Condvar::new())))
+    }
     fn open(&self) {
         let (open, changed) = &*self.0;
         *open.lock().unwrap() = true;
         changed.notify_all();
     }
 }
-impl Drop for KeyLoadBarrier { fn drop(&mut self) { self.open(); } }
+impl Drop for KeyLoadBarrier {
+    fn drop(&mut self) {
+        self.open();
+    }
+}
 
 #[test]
 fn cancelled_or_timed_out_key_load_is_joined_before_release_ack() {
@@ -284,80 +443,200 @@ fn cancelled_or_timed_out_key_load_is_joined_before_release_ack() {
 async fn exercise() {
     let denied = ForwardOwner::unattended();
     let mut unauthorized = Session::new_empty();
-    unauthorized.forwards.push(PortForward { kind: "dynamic".into(), bind_port: 0, ..Default::default() });
-    assert!(denied.start(unauthorized, vec![], 0, 1, false, None).await.is_err());
+    unauthorized.forwards.push(PortForward {
+        kind: "dynamic".into(),
+        bind_port: 0,
+        ..Default::default()
+    });
+    assert!(denied
+        .start(unauthorized, vec![], 0, 1, false, None)
+        .await
+        .is_err());
     assert!(denied.entries.lock().unwrap().is_empty());
     let owner = ForwardOwner::new(false);
     for generation in 1..=2 {
         let mut fixture = Fixture::new(0, false).await;
-        let ready = owner.start(fixture.target.clone(), fixture.jumps.clone(), 1, generation, true, None).await.unwrap();
-        let address: SocketAddr = ready.proxy_url.strip_prefix("socks5h://").unwrap().parse().unwrap();
+        let ready = owner
+            .start(
+                fixture.target.clone(),
+                fixture.jumps.clone(),
+                1,
+                generation,
+                true,
+                None,
+            )
+            .await
+            .unwrap();
+        let address: SocketAddr = ready
+            .proxy_url
+            .strip_prefix("socks5h://")
+            .unwrap()
+            .parse()
+            .unwrap();
         assert_ne!(address.port(), 0);
-        let again = owner.start(fixture.target.clone(), fixture.jumps.clone(), 1, generation, true, None).await.unwrap();
+        let again = owner
+            .start(
+                fixture.target.clone(),
+                fixture.jumps.clone(),
+                1,
+                generation,
+                true,
+                None,
+            )
+            .await
+            .unwrap();
         assert_eq!(ready.handle, again.handle);
-        assert!(owner.start(fixture.target.clone(), fixture.jumps.clone(), 1, generation + 1, true, None).await.is_err());
+        assert!(owner
+            .start(
+                fixture.target.clone(),
+                fixture.jumps.clone(),
+                1,
+                generation + 1,
+                true,
+                None
+            )
+            .await
+            .is_err());
         let other = ForwardOwner::new(false);
         assert!(other.status(&ready.handle).is_err());
         assert!(other.release(&ready.handle).await.is_err());
-        let mut occupied = fixture.target.clone(); occupied.forwards[1].bind_port = address.port();
-        assert!(other.start(occupied, fixture.jumps.clone(), 1, generation, true, None).await.is_err());
+        let mut occupied = fixture.target.clone();
+        occupied.forwards[1].bind_port = address.port();
+        assert!(other
+            .start(occupied, fixture.jumps.clone(), 1, generation, true, None)
+            .await
+            .is_err());
         let trust_path = crate::config::data_dir().join("known_hosts");
         let original_trust = std::fs::read_to_string(&trust_path).unwrap();
         std::fs::write(&trust_path, "# explicitly removed synthetic trust").unwrap();
-        assert!(owner.start(fixture.target.clone(), fixture.jumps.clone(), 1, generation, true, None).await.is_err());
+        assert!(owner
+            .start(
+                fixture.target.clone(),
+                fixture.jumps.clone(),
+                1,
+                generation,
+                true,
+                None
+            )
+            .await
+            .is_err());
         std::fs::write(&trust_path, original_trust).unwrap();
         let mut client = echo(address).await;
         fixture.reject_unrequested_remote_maps().await;
-        assert_eq!(owner.release(&ready.handle).await.unwrap().state, "released");
-        let mut byte = [0]; assert_eq!(client.read(&mut byte).await.unwrap(), 0);
+        assert_eq!(
+            owner.release(&ready.handle).await.unwrap().state,
+            "released"
+        );
+        let mut byte = [0];
+        assert_eq!(client.read(&mut byte).await.unwrap(), 0);
         assert!(tokio::net::TcpStream::connect(address).await.is_err());
-        let rebound = TcpListener::bind(address).await.unwrap(); drop(rebound);
+        let rebound = TcpListener::bind(address).await.unwrap();
+        drop(rebound);
         fixture.finish(true).await;
-        for auth in &fixture.auth { assert_eq!(auth.load(Ordering::SeqCst), 1); }
+        for auth in &fixture.auth {
+            assert_eq!(auth.load(Ordering::SeqCst), 1);
+        }
     }
     let mut bad = Fixture::new(0, true).await;
-    assert!(owner.start(bad.target.clone(), bad.jumps.clone(), 1, 3, false, None).await.is_err());
+    assert!(owner
+        .start(bad.target.clone(), bad.jumps.clone(), 1, 3, false, None)
+        .await
+        .is_err());
     bad.finish(false).await;
     assert_eq!(bad.auth[2].load(Ordering::SeqCst), 0);
     owner.shutdown().await.unwrap();
-    assert!(owner.start(bad.target.clone(), bad.jumps.clone(), 1, 4, true, None).await.is_err());
+    assert!(owner
+        .start(bad.target.clone(), bad.jumps.clone(), 1, 4, true, None)
+        .await
+        .is_err());
 }
 
 #[test]
 fn headless_owner_three_node_lifecycle() {
-    isolated("tunnel::owner::lifecycle_tests::headless_owner_three_node_lifecycle", exercise);
+    isolated(
+        "tunnel::owner::lifecycle_tests::headless_owner_three_node_lifecycle",
+        exercise,
+    );
 }
 
 pub(super) fn isolated<F, Fut>(exact: &str, exercise: F)
-where F: FnOnce() -> Fut, Fut: std::future::Future<Output = ()> {
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
     const MARKER: &str = "XENTERM_SYNTHETIC_OWNER_CHILD";
     if let Some(root) = std::env::var_os(MARKER) {
         crate::config::configure_profile_from_env().unwrap();
-        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-        runtime.block_on(async { tokio::time::timeout(Duration::from_secs(30), exercise()).await.unwrap(); });
-        std::fs::write(std::path::Path::new(&root).join("completed"), b"actual-three-node-fixture-completed").unwrap();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(30), exercise())
+                .await
+                .unwrap();
+        });
+        std::fs::write(
+            std::path::Path::new(&root).join("completed"),
+            b"actual-three-node-fixture-completed",
+        )
+        .unwrap();
         return;
     }
     let directory = tempfile::tempdir().unwrap();
     let mut command = std::process::Command::new(std::env::current_exe().unwrap());
     command.env_clear();
-    for name in ["PATH", "SYSTEMROOT", "WINDIR", "LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH"] {
-        if let Some(value) = std::env::var_os(name) { command.env(name, value); }
+    for name in [
+        "PATH",
+        "SYSTEMROOT",
+        "WINDIR",
+        "LD_LIBRARY_PATH",
+        "DYLD_LIBRARY_PATH",
+    ] {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
     }
-    for name in ["HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME", "XDG_DATA_HOME",
-        "XDG_CACHE_HOME", "XDG_STATE_HOME", "TMP", "TEMP", "TMPDIR", "XENTERM_DATA_DIR"] {
-        let path = directory.path().join(name); std::fs::create_dir_all(&path).unwrap(); command.env(name, path);
+    for name in [
+        "HOME",
+        "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_STATE_HOME",
+        "TMP",
+        "TEMP",
+        "TMPDIR",
+        "XENTERM_DATA_DIR",
+    ] {
+        let path = directory.path().join(name);
+        std::fs::create_dir_all(&path).unwrap();
+        command.env(name, path);
     }
-    command.env(MARKER, directory.path()).args(["--exact", exact,
-        "--test-threads=1", "--nocapture"]);
+    command.env(MARKER, directory.path()).args([
+        "--exact",
+        exact,
+        "--test-threads=1",
+        "--nocapture",
+    ]);
     // No shell, inherited proxy/auth environment, or external server is used.
     let mut child = command.spawn().unwrap();
     let deadline = std::time::Instant::now() + Duration::from_secs(40);
     loop {
-        if let Some(status) = child.try_wait().unwrap() { assert!(status.success());
-            assert_eq!(std::fs::read(directory.path().join("completed")).unwrap(), b"actual-three-node-fixture-completed"); break; }
+        if let Some(status) = child.try_wait().unwrap() {
+            assert!(status.success());
+            assert_eq!(
+                std::fs::read(directory.path().join("completed")).unwrap(),
+                b"actual-three-node-fixture-completed"
+            );
+            break;
+        }
         if std::time::Instant::now() >= deadline {
-            let _ = child.kill(); let _ = child.wait(); panic!("isolated owner fixture exceeded deadline");
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("isolated owner fixture exceeded deadline");
         }
         std::thread::sleep(Duration::from_millis(25));
     }

@@ -114,10 +114,7 @@ pub fn entries() -> Vec<KnownHostEntry> {
                         .unwrap_or("unknown")
                         .to_string()
                 });
-            let fingerprint = parsed
-                .as_ref()
-                .map(fingerprint)
-                .unwrap_or_default();
+            let fingerprint = parsed.as_ref().map(fingerprint).unwrap_or_default();
             KnownHostEntry {
                 id,
                 key_type,
@@ -153,8 +150,7 @@ pub fn forget(id: &str) -> Result<bool> {
         tmp.push(".tmp");
         let tmp = std::path::PathBuf::from(tmp);
         std::fs::write(&tmp, out).with_context(|| format!("write {}", tmp.display()))?;
-        std::fs::rename(&tmp, &p)
-            .with_context(|| format!("replace {}", p.display()))?;
+        std::fs::rename(&tmp, &p).with_context(|| format!("replace {}", p.display()))?;
     }
     Ok(removed)
 }
@@ -197,8 +193,7 @@ pub fn remember(host: &str, port: u16, key: &PublicKey) -> Result<()> {
     tmp.push(".tmp");
     let tmp = std::path::PathBuf::from(tmp);
     std::fs::write(&tmp, out).with_context(|| format!("write {}", tmp.display()))?;
-    std::fs::rename(&tmp, &p)
-        .with_context(|| format!("replace {}", p.display()))?;
+    std::fs::rename(&tmp, &p).with_context(|| format!("replace {}", p.display()))?;
     Ok(())
 }
 
@@ -211,17 +206,26 @@ pub(crate) struct HostKeySnapshot {
 
 impl HostKeySnapshot {
     pub(crate) fn from_text(text: &str) -> Self {
-        Self { entries: text.lines().filter_map(|line| {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') { return None; }
-            let (id, key) = line.split_once(char::is_whitespace)?;
-            Some((id.to_owned(), key.trim().to_owned()))
-        }).collect() }
+        Self {
+            entries: text
+                .lines()
+                .filter_map(|line| {
+                    let line = line.trim();
+                    if line.is_empty() || line.starts_with('#') {
+                        return None;
+                    }
+                    let (id, key) = line.split_once(char::is_whitespace)?;
+                    Some((id.to_owned(), key.trim().to_owned()))
+                })
+                .collect(),
+        }
     }
 
     pub(crate) fn accepts(&self, host: &str, port: u16, key: &PublicKey) -> bool {
         let expected_id = id(host, port);
         let want = openssh_line(key);
-        self.entries.iter().any(|(entry_id, entry_key)| *entry_id == expected_id && *entry_key == want)
+        self.entries
+            .iter()
+            .any(|(entry_id, entry_key)| *entry_id == expected_id && *entry_key == want)
     }
 }

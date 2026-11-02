@@ -67,17 +67,25 @@ pub(crate) struct ListenerTask {
 
 impl ListenerTask {
     pub(crate) fn spawn<F, Fut>(run: F) -> Self
-    where F: FnOnce(tokio::sync::oneshot::Receiver<()>) -> Fut,
+    where
+        F: FnOnce(tokio::sync::oneshot::Receiver<()>) -> Fut,
         Fut: std::future::Future<Output = std::io::Result<()>> + Send + 'static,
     {
         let (stop, stopped) = tokio::sync::oneshot::channel();
-        Self { stop: Some(stop), task: tokio::spawn(run(stopped)) }
+        Self {
+            stop: Some(stop),
+            task: tokio::spawn(run(stopped)),
+        }
     }
 
-    pub(crate) fn is_finished(&self) -> bool { self.task.is_finished() }
+    pub(crate) fn is_finished(&self) -> bool {
+        self.task.is_finished()
+    }
 
     pub(crate) async fn stop(mut self) -> std::io::Result<()> {
-        if let Some(stop) = self.stop.take() { let _ = stop.send(()); }
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
         (&mut self.task).await.map_err(std::io::Error::other)?
     }
 }
@@ -91,17 +99,23 @@ impl Drop for ListenerTask {
 }
 
 async fn bind_listener(forward: &crate::config::PortForward) -> std::io::Result<TcpListener> {
-    tokio::time::timeout(std::time::Duration::from_secs(5),
-        TcpListener::bind(bind_target(&forward.bind_addr, forward.bind_port))).await
-        .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "listener bind timed out"))?
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        TcpListener::bind(bind_target(&forward.bind_addr, forward.bind_port)),
+    )
+    .await
+    .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "listener bind timed out"))?
 }
 
 /// Execute the same normalized destination used by runtime identity and row
 /// reconstruction. In particular, imported whitespace must not make the first
 /// start connect somewhere different from a restart of its displayed row.
 fn forward_target(forward: &crate::config::PortForward) -> Option<(String, u16)> {
-    if forward.kind == "dynamic" { None }
-    else { Some((forward.host.trim().to_string(), forward.host_port)) }
+    if forward.kind == "dynamic" {
+        None
+    } else {
+        Some((forward.host.trim().to_string(), forward.host_port))
+    }
 }
 
 /// Bind before returning an owner: returning Ok is the readiness acknowledgement,
@@ -114,23 +128,31 @@ pub(crate) async fn start_forward(
     let bind = bind_target(&forward.bind_addr, forward.bind_port);
     let listener = bind_listener(&forward).await?;
     let target = forward_target(&forward);
-    notice(&events, match &target {
-        Some((host, port)) => format!("-L {bind} → {host}:{port}"),
-        None => format!("-D {bind} (SOCKS5)"),
-    });
-    Ok(ListenerTask::spawn(|stopped| run_listener(handle, listener, target, Some(events), async move {
-        let _ = stopped.await;
-    })))
+    notice(
+        &events,
+        match &target {
+            Some((host, port)) => format!("-L {bind} → {host}:{port}"),
+            None => format!("-D {bind} (SOCKS5)"),
+        },
+    );
+    Ok(ListenerTask::spawn(|stopped| {
+        run_listener(handle, listener, target, Some(events), async move {
+            let _ = stopped.await;
+        })
+    }))
 }
 
 /// A pre-bound, shell-free dynamic listener uses exactly the terminal's accept
 /// loop and client drain. The caller owns SSH authentication and actual address.
 pub(crate) fn start_dynamic_bound(
-    handle: Arc<Handle<ClientHandler>>, listener: TcpListener,
+    handle: Arc<Handle<ClientHandler>>,
+    listener: TcpListener,
 ) -> ListenerTask {
-    ListenerTask::spawn(|stopped| run_listener(handle, listener, None, None, async move {
-        let _ = stopped.await;
-    }))
+    ListenerTask::spawn(|stopped| {
+        run_listener(handle, listener, None, None, async move {
+            let _ = stopped.await;
+        })
+    })
 }
 
 async fn run_listener(
@@ -141,26 +163,37 @@ async fn run_listener(
     shutdown: impl std::future::Future<Output = ()>,
 ) -> std::io::Result<()> {
     let health_handle = handle.clone();
-    serve_listener(listener, shutdown, move || health_handle.is_closed(), move |mut inbound, peer| {
-        let handle = handle.clone();
-        let target = target.clone();
-        let events = events.clone();
-        async move {
-            if let Some((host, port)) = target {
-                match open_direct(&handle, &host, port, peer).await {
-                    Ok(channel) => {
-                        let mut stream = channel.into_stream();
-                        let _ = copy_bidirectional(&mut inbound, &mut stream).await;
+    serve_listener(
+        listener,
+        shutdown,
+        move || health_handle.is_closed(),
+        move |mut inbound, peer| {
+            let handle = handle.clone();
+            let target = target.clone();
+            let events = events.clone();
+            async move {
+                if let Some((host, port)) = target {
+                    match open_direct(&handle, &host, port, peer).await {
+                        Ok(channel) => {
+                            let mut stream = channel.into_stream();
+                            let _ = copy_bidirectional(&mut inbound, &mut stream).await;
+                        }
+                        Err(error) => {
+                            if let Some(events) = events {
+                                notice(
+                                    &events,
+                                    format!("-L {host}:{port} 连接失败 / open failed: {error}"),
+                                );
+                            }
+                        }
                     }
-                    Err(error) => if let Some(events) = events {
-                        notice(&events, format!("-L {host}:{port} 连接失败 / open failed: {error}"));
-                    },
+                } else {
+                    let _ = socks5_serve(&handle, inbound, peer).await;
                 }
-            } else {
-                let _ = socks5_serve(&handle, inbound, peer).await;
             }
-        }
-    }).await
+        },
+    )
+    .await
 }
 
 /// The common accept/drain boundary is testable without an SSH server. The
@@ -171,7 +204,8 @@ async fn serve_listener<F, Fut>(
     closed: impl Fn() -> bool,
     serve: F,
 ) -> std::io::Result<()>
-where F: Fn(TcpStream, SocketAddr) -> Fut,
+where
+    F: Fn(TcpStream, SocketAddr) -> Fut,
     Fut: std::future::Future<Output = ()> + Send + 'static,
 {
     tokio::pin!(shutdown);
@@ -293,20 +327,38 @@ mod listener_lifecycle_tests {
 
     #[test]
     fn first_start_and_restart_execute_the_same_normalized_destination() {
-        let imported = crate::config::PortForward { kind: "local".into(),
-            bind_addr: "127.0.0.1".into(), bind_port: 41080,
-            host: "  service.invalid \t".into(), host_port: 8080, ..Default::default() };
+        let imported = crate::config::PortForward {
+            kind: "local".into(),
+            bind_addr: "127.0.0.1".into(),
+            bind_port: 41080,
+            host: "  service.invalid \t".into(),
+            host_port: 8080,
+            ..Default::default()
+        };
         let mut displayed = imported.clone();
         displayed.host = imported.host.trim().to_string();
-        assert_eq!(crate::core::tunnel::runtime_key(&imported), crate::core::tunnel::runtime_key(&displayed));
-        assert_eq!(forward_target(&imported), Some(("service.invalid".into(), 8080)));
+        assert_eq!(
+            crate::core::tunnel::runtime_key(&imported),
+            crate::core::tunnel::runtime_key(&displayed)
+        );
+        assert_eq!(
+            forward_target(&imported),
+            Some(("service.invalid".into(), 8080))
+        );
         assert_eq!(forward_target(&imported), forward_target(&displayed));
         displayed.host = "different.invalid".into();
         assert_ne!(forward_target(&imported), forward_target(&displayed));
-        assert_ne!(crate::core::tunnel::runtime_key(&imported), crate::core::tunnel::runtime_key(&displayed));
+        assert_ne!(
+            crate::core::tunnel::runtime_key(&imported),
+            crate::core::tunnel::runtime_key(&displayed)
+        );
         let mut dynamic = imported;
         dynamic.kind = "dynamic".into();
-        assert_eq!(forward_target(&dynamic), None, "SOCKS has no fixed destination");
+        assert_eq!(
+            forward_target(&dynamic),
+            None,
+            "SOCKS has no fixed destination"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -318,21 +370,30 @@ mod listener_lifecycle_tests {
         timeout(Duration::from_secs(10), async {
             const CAP: usize = 128;
             const BACKLOG: usize = 16;
-            let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+            let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+                .await
+                .unwrap();
             let address = listener.local_addr().unwrap();
             let (release, released) = tokio::sync::watch::channel(false);
             let (done, mut completed) = tokio::sync::mpsc::unbounded_channel();
             let (stop, stopped) = tokio::sync::oneshot::channel();
             let accepted = Arc::new(AtomicUsize::new(0));
             let count = accepted.clone();
-            let server = serve_listener(listener, async move { let _ = stopped.await; }, || false,
+            let server = serve_listener(
+                listener,
+                async move {
+                    let _ = stopped.await;
+                },
+                || false,
                 move |mut stream, _| {
                     let index = count.fetch_add(1, Ordering::SeqCst);
                     let mut released = released.clone();
                     let done = done.clone();
                     async move {
                         if index < CAP {
-                            while !*released.borrow() { released.changed().await.unwrap(); }
+                            while !*released.borrow() {
+                                released.changed().await.unwrap();
+                            }
                             // No await after the notification: on this current-thread
                             // runtime the task is finished before the test receives it.
                             let _ = done.send(());
@@ -340,30 +401,41 @@ mod listener_lifecycle_tests {
                             stream.write_all(b"ok").await.unwrap();
                         }
                     }
-                });
+                },
+            );
             tokio::pin!(server);
             let mut initial = Vec::new();
-            for _ in 0..CAP { initial.push(TcpStream::connect(address).await.unwrap()); }
+            for _ in 0..CAP {
+                initial.push(TcpStream::connect(address).await.unwrap());
+            }
             // Drive accepts until exactly the live-client cap, then deliberately
             // stop polling the accept loop while its client tasks finish.
             while accepted.load(Ordering::SeqCst) < CAP {
                 std::future::poll_fn(|cx| {
                     assert!(server.as_mut().poll(cx).is_pending());
                     Poll::Ready(())
-                }).await;
+                })
+                .await;
                 tokio::task::yield_now().await;
             }
             release.send(true).unwrap();
-            for _ in 0..CAP { completed.recv().await.unwrap(); }
+            for _ in 0..CAP {
+                completed.recv().await.unwrap();
+            }
             let mut backlog = Vec::new();
-            for _ in 0..BACKLOG { backlog.push(TcpStream::connect(address).await.unwrap()); }
+            for _ in 0..BACKLOG {
+                backlog.push(TcpStream::connect(address).await.unwrap());
+            }
             // Both JoinSet completions and all these accepts are now ready.
             // The old accept-first select drops this entire backlog at len=128.
             tokio::task::yield_now().await;
             let probes = async {
                 for stream in &mut backlog {
                     let mut reply = [0; 2];
-                    stream.read_exact(&mut reply).await.expect("completed clients must not consume capacity");
+                    stream
+                        .read_exact(&mut reply)
+                        .await
+                        .expect("completed clients must not consume capacity");
                     assert_eq!(&reply, b"ok");
                 }
                 stop.send(()).unwrap();
@@ -372,66 +444,102 @@ mod listener_lifecycle_tests {
             result.unwrap();
             assert_eq!(accepted.load(Ordering::SeqCst), CAP + BACKLOG);
             drop(initial);
-        }).await.expect("bounded ready-backlog recovery");
+        })
+        .await
+        .expect("bounded ready-backlog recovery");
     }
 
     #[tokio::test]
     async fn an_external_listener_is_reported_busy_and_never_adopted_or_closed() {
         timeout(Duration::from_secs(3), async {
-            let external = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+            let external = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+                .await
+                .unwrap();
             let address = external.local_addr().unwrap();
-            let forward = crate::config::PortForward { kind: "dynamic".into(),
-                bind_addr: "127.0.0.1".into(), bind_port: address.port(), ..Default::default() };
+            let forward = crate::config::PortForward {
+                kind: "dynamic".into(),
+                bind_addr: "127.0.0.1".into(),
+                bind_port: address.port(),
+                ..Default::default()
+            };
             let error = bind_listener(&forward).await.unwrap_err();
             assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse);
             let client = TcpStream::connect(address).await.unwrap();
             let (accepted, _) = external.accept().await.unwrap();
             drop((client, accepted, external));
-        }).await.expect("bounded external-owner check");
+        })
+        .await
+        .expect("bounded external-owner check");
     }
 
     #[tokio::test]
     async fn stop_drains_accepted_clients_before_same_port_restart() {
         timeout(Duration::from_secs(3), async {
-            let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+            let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+                .await
+                .unwrap();
             let address = listener.local_addr().unwrap();
             let (accepted, mut ready) = tokio::sync::mpsc::unbounded_channel();
-            let owner = ListenerTask::spawn(|stopped| serve_listener(listener,
-                async move { let _ = stopped.await; }, || false,
-                move |mut stream, _| {
-                    let accepted = accepted.clone();
+            let owner = ListenerTask::spawn(|stopped| {
+                serve_listener(
+                    listener,
                     async move {
-                        let _ = accepted.send(());
-                        let mut byte = [0];
-                        let _ = stream.read(&mut byte).await;
-                    }
-                }));
+                        let _ = stopped.await;
+                    },
+                    || false,
+                    move |mut stream, _| {
+                        let accepted = accepted.clone();
+                        async move {
+                            let _ = accepted.send(());
+                            let mut byte = [0];
+                            let _ = stream.read(&mut byte).await;
+                        }
+                    },
+                )
+            });
             let mut client = TcpStream::connect(address).await.unwrap();
             ready.recv().await.unwrap();
             owner.stop().await.unwrap();
-            let listener = TcpListener::bind(address).await.expect("stop acknowledged listener release");
+            let listener = TcpListener::bind(address)
+                .await
+                .expect("stop acknowledged listener release");
             let mut byte = [0];
-            assert_eq!(client.read(&mut byte).await.unwrap(), 0, "accepted client also closed");
+            assert_eq!(
+                client.read(&mut byte).await.unwrap(),
+                0,
+                "accepted client also closed"
+            );
             drop(listener);
-        }).await.expect("bounded loopback lifecycle");
+        })
+        .await
+        .expect("bounded loopback lifecycle");
     }
 
     #[tokio::test]
     async fn dropping_owner_requests_listener_and_client_cleanup() {
         timeout(Duration::from_secs(3), async {
-            let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+            let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+                .await
+                .unwrap();
             let address = listener.local_addr().unwrap();
             let (accepted, mut ready) = tokio::sync::mpsc::unbounded_channel();
-            let owner = ListenerTask::spawn(|stopped| serve_listener(listener,
-                async move { let _ = stopped.await; }, || false,
-                move |mut stream, _| {
-                    let accepted = accepted.clone();
+            let owner = ListenerTask::spawn(|stopped| {
+                serve_listener(
+                    listener,
                     async move {
-                        let _ = accepted.send(());
-                        let mut byte = [0];
-                        let _ = stream.read(&mut byte).await;
-                    }
-                }));
+                        let _ = stopped.await;
+                    },
+                    || false,
+                    move |mut stream, _| {
+                        let accepted = accepted.clone();
+                        async move {
+                            let _ = accepted.send(());
+                            let mut byte = [0];
+                            let _ = stream.read(&mut byte).await;
+                        }
+                    },
+                )
+            });
             let mut client = TcpStream::connect(address).await.unwrap();
             ready.recv().await.unwrap();
             drop(owner);
@@ -439,7 +547,8 @@ mod listener_lifecycle_tests {
             assert_eq!(client.read(&mut byte).await.unwrap(), 0);
             let listener = TcpListener::bind(address).await.unwrap();
             drop(listener);
-        }).await.expect("dropping an owner cannot leave an orphan listener");
+        })
+        .await
+        .expect("dropping an owner cannot leave an orphan listener");
     }
-
 }

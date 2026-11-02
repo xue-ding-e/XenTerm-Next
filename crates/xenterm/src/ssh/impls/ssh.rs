@@ -1000,8 +1000,12 @@ fn tunnel_label(f: &PortForward) -> String {
 fn next_tunnel_revision() -> u64 {
     static REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     // Refuse an impossible lifetime overflow rather than wrap to an old ack.
-    REVISION.fetch_update(std::sync::atomic::Ordering::Relaxed,
-        std::sync::atomic::Ordering::Relaxed, |value| value.checked_add(1))
+    REVISION
+        .fetch_update(
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+            |value| value.checked_add(1),
+        )
         .expect("tunnel revision exhausted")
 }
 
@@ -1044,15 +1048,22 @@ async fn ensure_runtime_forward<F, Fut>(
     Fut: std::future::Future<Output = std::io::Result<crate::tunnel::ListenerTask>>,
 {
     let key = crate::core::tunnel::runtime_key(&forward);
-    let id = forwards.iter().find_map(|(id, row)| {
-        (crate::core::tunnel::runtime_key(&row.info.forward()) == key).then(|| id.clone())
-    }).unwrap_or(requested_id);
+    let id = forwards
+        .iter()
+        .find_map(|(id, row)| {
+            (crate::core::tunnel::runtime_key(&row.info.forward()) == key).then(|| id.clone())
+        })
+        .unwrap_or(requested_id);
     if let Some(row) = forwards.get(&id) {
         if crate::core::tunnel::runtime_key(&row.info.forward()) != key {
-            let _ = events.send(SessionEvent::Output("\r\n[xenterm] tunnel id belongs to a different rule\r\n".into()));
+            let _ = events.send(SessionEvent::Output(
+                "\r\n[xenterm] tunnel id belongs to a different rule\r\n".into(),
+            ));
             return;
         }
-        if row.info.active || row.info.busy { return; }
+        if row.info.active || row.info.busy {
+            return;
+        }
     }
     let mut info = tunnel_info(id.clone(), &forward, false, t("启动中", "starting"));
     info.busy = true;
@@ -1062,16 +1073,26 @@ async fn ensure_runtime_forward<F, Fut>(
     // Wildcards/aliases and owners outside this session are left to the OS bind.
     let conflict = forwards.iter().any(|(other_id, row)| {
         let other = crate::core::tunnel::runtime_key(&row.info.forward());
-        other_id != &id && (row.info.active || row.info.busy)
-            && other.0 != "remote" && other.1 == key.1 && other.2 == key.2
+        other_id != &id
+            && (row.info.active || row.info.busy)
+            && other.0 != "remote"
+            && other.1 == key.1
+            && other.2 == key.2
     });
     let result = if conflict {
-        Err(std::io::Error::new(std::io::ErrorKind::AddrInUse,
-            t("监听端口已由此会话的另一个隧道使用", "listen port is owned by another tunnel in this session")))
+        Err(std::io::Error::new(
+            std::io::ErrorKind::AddrInUse,
+            t(
+                "监听端口已由此会话的另一个隧道使用",
+                "listen port is owned by another tunnel in this session",
+            ),
+        ))
     } else {
         start(forward).await
     };
-    let row = forwards.get_mut(&id).expect("starting row remains in this session");
+    let row = forwards
+        .get_mut(&id)
+        .expect("starting row remains in this session");
     row.info.busy = false;
     match result {
         Ok(task) => {
@@ -1081,7 +1102,10 @@ async fn ensure_runtime_forward<F, Fut>(
         }
         Err(error) => {
             row.info.status = format!("{}: {error}", t("启动失败", "failed to start"));
-            let _ = events.send(SessionEvent::Output(format!("\r\n[xenterm] {}: {}\r\n", row.info.name, row.info.status)));
+            let _ = events.send(SessionEvent::Output(format!(
+                "\r\n[xenterm] {}: {}\r\n",
+                row.info.name, row.info.status
+            )));
         }
     }
     emit_tunnel_update(forwards, events);
@@ -1092,17 +1116,26 @@ async fn stop_runtime_forward(
     id: &str,
     events: &UnboundedSender<SessionEvent>,
 ) {
-    let Some(row) = forwards.get_mut(id) else { return; };
+    let Some(row) = forwards.get_mut(id) else {
+        return;
+    };
     // Remote forwards require a server cancel acknowledgement, not a local
     // boolean flip. Until that command exists, never pretend they stopped.
-    if row.info.kind == "remote" || row.info.busy || !row.info.active { return; }
+    if row.info.kind == "remote" || row.info.busy || !row.info.active {
+        return;
+    }
     row.info.busy = true;
     row.info.revision = next_tunnel_revision();
     row.info.status = t("停止中", "stopping").into();
     let task = row.task.take();
     emit_tunnel_update(forwards, events);
-    let result = match task { Some(task) => task.stop().await, None => Ok(()) };
-    let row = forwards.get_mut(id).expect("stopping row remains in this session");
+    let result = match task {
+        Some(task) => task.stop().await,
+        None => Ok(()),
+    };
+    let row = forwards
+        .get_mut(id)
+        .expect("stopping row remains in this session");
     row.info.active = false;
     row.info.busy = false;
     row.info.status = match result {
@@ -1117,10 +1150,18 @@ async fn reap_runtime_forwards(
     forwards: &mut std::collections::HashMap<String, RuntimeForward>,
     events: &UnboundedSender<SessionEvent>,
 ) {
-    let ended: Vec<_> = forwards.iter().filter_map(|(id, row)| {
-        row.task.as_ref().filter(|task| task.is_finished()).map(|_| id.clone())
-    }).collect();
-    for id in ended { stop_runtime_forward(forwards, &id, events).await; }
+    let ended: Vec<_> = forwards
+        .iter()
+        .filter_map(|(id, row)| {
+            row.task
+                .as_ref()
+                .filter(|task| task.is_finished())
+                .map(|_| id.clone())
+        })
+        .collect();
+    for id in ended {
+        stop_runtime_forward(forwards, &id, events).await;
+    }
 }
 
 #[cfg(test)]
@@ -1132,9 +1173,14 @@ mod runtime_tunnel_tests {
     use tokio::sync::oneshot;
 
     fn rule(kind: &str, host: &str) -> PortForward {
-        PortForward { kind: kind.into(), name: "synthetic".into(),
-            bind_addr: "127.0.0.1".into(), bind_port: 41080,
-            host: host.into(), host_port: if kind == "dynamic" { 0 } else { 8080 } }
+        PortForward {
+            kind: kind.into(),
+            name: "synthetic".into(),
+            bind_addr: "127.0.0.1".into(),
+            bind_port: 41080,
+            host: host.into(),
+            host_port: if kind == "dynamic" { 0 } else { 8080 },
+        }
     }
 
     fn pending_task() -> crate::tunnel::ListenerTask {
@@ -1153,10 +1199,17 @@ mod runtime_tunnel_tests {
             for click in 0..3 {
                 let mut forward = rule("dynamic", "");
                 forward.name = format!("renamed-{click}");
-                ensure_runtime_forward(&mut rows, format!("request-{round}-{click}"), forward, &events, |_| async {
-                    starts.fetch_add(1, Ordering::SeqCst);
-                    Ok(pending_task())
-                }).await;
+                ensure_runtime_forward(
+                    &mut rows,
+                    format!("request-{round}-{click}"),
+                    forward,
+                    &events,
+                    |_| async {
+                        starts.fetch_add(1, Ordering::SeqCst);
+                        Ok(pending_task())
+                    },
+                )
+                .await;
             }
             assert_eq!(rows.len(), 1);
             let row = &rows["request-0-0"];
@@ -1174,9 +1227,14 @@ mod runtime_tunnel_tests {
         let mut rows = HashMap::new();
         let mut previous_revision = 0;
         for attempt in 0..5 {
-            ensure_runtime_forward(&mut rows, format!("attempt-{attempt}"), rule("dynamic", ""), &events, |_| async {
-                Err(Error::new(ErrorKind::AddrInUse, "synthetic external owner"))
-            }).await;
+            ensure_runtime_forward(
+                &mut rows,
+                format!("attempt-{attempt}"),
+                rule("dynamic", ""),
+                &events,
+                |_| async { Err(Error::new(ErrorKind::AddrInUse, "synthetic external owner")) },
+            )
+            .await;
             assert_eq!(rows.len(), 1);
             let row = &rows["attempt-0"];
             assert!(!row.info.active && !row.info.busy);
@@ -1184,8 +1242,14 @@ mod runtime_tunnel_tests {
             assert!(row.info.revision > previous_revision);
             previous_revision = row.info.revision;
         }
-        ensure_runtime_forward(&mut rows, "retry".into(), rule("dynamic", ""), &events,
-            |_| async { Ok(pending_task()) }).await;
+        ensure_runtime_forward(
+            &mut rows,
+            "retry".into(),
+            rule("dynamic", ""),
+            &events,
+            |_| async { Ok(pending_task()) },
+        )
+        .await;
         assert!(rows["attempt-0"].info.active);
         assert_eq!(rows.len(), 1);
         stop_runtime_forward(&mut rows, "attempt-0", &events).await;
@@ -1195,17 +1259,35 @@ mod runtime_tunnel_tests {
     async fn different_destination_conflicts_without_replacing_owner() {
         let (events, _) = mpsc::unbounded_channel();
         let mut rows = HashMap::new();
-        ensure_runtime_forward(&mut rows, "original".into(), rule("local", "a.invalid"), &events,
-            |_| async { Ok(pending_task()) }).await;
+        ensure_runtime_forward(
+            &mut rows,
+            "original".into(),
+            rule("local", "a.invalid"),
+            &events,
+            |_| async { Ok(pending_task()) },
+        )
+        .await;
         for attempt in 0..5 {
-            ensure_runtime_forward(&mut rows, format!("conflict-{attempt}"), rule("local", "b.invalid"), &events,
-                |_| async { panic!("must not replace the original listener") }).await;
+            ensure_runtime_forward(
+                &mut rows,
+                format!("conflict-{attempt}"),
+                rule("local", "b.invalid"),
+                &events,
+                |_| async { panic!("must not replace the original listener") },
+            )
+            .await;
         }
         assert_eq!(rows.len(), 2, "one original and one retryable failed rule");
         assert!(rows["original"].info.active);
         assert!(!rows["conflict-0"].info.active);
-        ensure_runtime_forward(&mut rows, "original".into(), rule("dynamic", ""), &events,
-            |_| async { panic!("an id collision cannot detach the original task") }).await;
+        ensure_runtime_forward(
+            &mut rows,
+            "original".into(),
+            rule("dynamic", ""),
+            &events,
+            |_| async { panic!("an id collision cannot detach the original task") },
+        )
+        .await;
         assert!(rows["original"].info.active);
         assert_eq!(rows["original"].info.host, "a.invalid");
         stop_runtime_forward(&mut rows, "original", &events).await;
@@ -1218,7 +1300,11 @@ mod runtime_tunnel_tests {
             let (ready, wait_ready) = oneshot::channel();
             let (drained, wait_drained) = oneshot::channel();
             let mut rows = HashMap::new();
-            let start = ensure_runtime_forward(&mut rows, "stable".into(), rule("dynamic", ""), &events,
+            let start = ensure_runtime_forward(
+                &mut rows,
+                "stable".into(),
+                rule("dynamic", ""),
+                &events,
                 |_| async {
                     wait_ready.await.unwrap();
                     Ok(crate::tunnel::ListenerTask::spawn(|stopped| async move {
@@ -1226,28 +1312,42 @@ mod runtime_tunnel_tests {
                         wait_drained.await.unwrap();
                         Ok(())
                     }))
-                });
+                },
+            );
             let observe = async {
-                let Some(SessionEvent::TunnelUpdate(rows)) = updates.recv().await else { panic!("starting update") };
+                let Some(SessionEvent::TunnelUpdate(rows)) = updates.recv().await else {
+                    panic!("starting update")
+                };
                 assert!(!rows[0].active && rows[0].busy);
                 assert!(updates.try_recv().is_err(), "not running before bind ack");
                 ready.send(()).unwrap();
             };
             tokio::join!(start, observe);
-            let Some(SessionEvent::TunnelUpdate(running)) = updates.recv().await else { panic!("running update") };
+            let Some(SessionEvent::TunnelUpdate(running)) = updates.recv().await else {
+                panic!("running update")
+            };
             assert!(running[0].active && !running[0].busy);
             let stop = stop_runtime_forward(&mut rows, "stable", &events);
             let observe = async {
-                let Some(SessionEvent::TunnelUpdate(rows)) = updates.recv().await else { panic!("stopping update") };
+                let Some(SessionEvent::TunnelUpdate(rows)) = updates.recv().await else {
+                    panic!("stopping update")
+                };
                 assert!(rows[0].active && rows[0].busy);
-                assert!(updates.try_recv().is_err(), "not stopped before client drain");
+                assert!(
+                    updates.try_recv().is_err(),
+                    "not stopped before client drain"
+                );
                 drained.send(()).unwrap();
             };
             tokio::join!(stop, observe);
-            let Some(SessionEvent::TunnelUpdate(stopped)) = updates.recv().await else { panic!("stopped update") };
+            let Some(SessionEvent::TunnelUpdate(stopped)) = updates.recv().await else {
+                panic!("stopped update")
+            };
             assert!(!stopped[0].active && !stopped[0].busy);
             assert_eq!(stopped[0].id, "stable");
-        }).await.expect("lifecycle acknowledgements must complete");
+        })
+        .await
+        .expect("lifecycle acknowledgements must complete");
     }
 
     #[test]
@@ -1262,10 +1362,21 @@ mod runtime_tunnel_tests {
     async fn a_listener_failure_after_readiness_updates_the_existing_row() {
         let (events, _) = mpsc::unbounded_channel();
         let mut rows = HashMap::new();
-        ensure_runtime_forward(&mut rows, "stable".into(), rule("dynamic", ""), &events,
-            |_| async { Ok(crate::tunnel::ListenerTask::spawn(|_| async {
-                Err(Error::new(ErrorKind::ConnectionAborted, "synthetic disconnect"))
-            })) }).await;
+        ensure_runtime_forward(
+            &mut rows,
+            "stable".into(),
+            rule("dynamic", ""),
+            &events,
+            |_| async {
+                Ok(crate::tunnel::ListenerTask::spawn(|_| async {
+                    Err(Error::new(
+                        ErrorKind::ConnectionAborted,
+                        "synthetic disconnect",
+                    ))
+                }))
+            },
+        )
+        .await;
         tokio::task::yield_now().await;
         reap_runtime_forwards(&mut rows, &events).await;
         assert_eq!(rows.len(), 1);
@@ -1278,14 +1389,16 @@ mod runtime_tunnel_tests {
 fn shell_free_route(session: &Session, jumps: &[Session]) -> (Session, Vec<Session>) {
     let mut target = session.clone();
     target.forwards.clear();
-    let jumps = jumps.iter().map(|jump| {
-        let mut jump = jump.clone();
-        jump.forwards.clear();
-        jump
-    }).collect();
+    let jumps = jumps
+        .iter()
+        .map(|jump| {
+            let mut jump = jump.clone();
+            jump.forwards.clear();
+            jump
+        })
+        .collect();
     (target, jumps)
 }
-
 
 /// Authenticate a shell-free owner using exactly the terminal's route and
 /// host-key/authentication implementation. No PTY, shell or monitor is opened.
@@ -1300,14 +1413,30 @@ pub(crate) async fn open_forward_connection(
     // This owner activates only the selected local SOCKS rule. Do not install
     // mappings for unrelated saved remote forwards in the server-open handler.
     let (transport_session, transport_jumps) = shell_free_route(session, jump);
-    let (mut handle, mut jumps) = connect_ssh(&transport_session, &transport_jumps, config.clone(), &events).await?;
-    match authenticate_session(&mut handle, &mut jumps, &transport_session, &transport_jumps, config, &events).await? {
+    let (mut handle, mut jumps) = connect_ssh(
+        &transport_session,
+        &transport_jumps,
+        config.clone(),
+        &events,
+    )
+    .await?;
+    match authenticate_session(
+        &mut handle,
+        &mut jumps,
+        &transport_session,
+        &transport_jumps,
+        config,
+        &events,
+    )
+    .await?
+    {
         AuthResult::Success => Ok((handle, jumps)),
-        AuthResult::Cancelled => Err(anyhow!("forward authentication requires a saved credential and trusted host key")),
+        AuthResult::Cancelled => Err(anyhow!(
+            "forward authentication requires a saved credential and trusted host key"
+        )),
         AuthResult::Failed => Err(anyhow!("forward authentication failed")),
     }
 }
-
 
 /// Open an SSH transport to the session's host (directly or via a SOCKS5 / HTTP
 /// proxy) and return the russh handle, ready for authentication. Factored out so
@@ -1608,11 +1737,11 @@ pub(crate) const COMPAT_CIPHER: &[russh::cipher::Name] = &[
     russh::cipher::AES_256_CTR,
     russh::cipher::AES_192_CTR,
     russh::cipher::AES_128_CTR,
-    russh::cipher::AES_256_CBC,    // legacy fallback
-    russh::cipher::AES_192_CBC,    // legacy fallback
-    russh::cipher::AES_128_CBC,    // legacy fallback
-    // 3DES was dropped from russh in 0.61; such legacy servers now fail at
-    // negotiation instead of being reachable with a broken cipher.
+    russh::cipher::AES_256_CBC, // legacy fallback
+    russh::cipher::AES_192_CBC, // legacy fallback
+    russh::cipher::AES_128_CBC, // legacy fallback
+                                // 3DES was dropped from russh in 0.61; such legacy servers now fail at
+                                // negotiation instead of being reachable with a broken cipher.
 ];
 
 fn ssh_client_config() -> Arc<client::Config> {
@@ -2078,7 +2207,10 @@ async fn run_session(
         .map(|kind| auxiliary_started_at + kind.delay());
     let mut resource_monitoring = true;
     if session.disable_shell_integration {
-        send_monitor_state(&events, crate::session::protocol::ResourceMonitorState::Unsupported);
+        send_monitor_state(
+            &events,
+            crate::session::protocol::ResourceMonitorState::Unsupported,
+        );
     }
     let mut first_terminal_output = true;
     // Local (-L) and dynamic (-D) listen client-side; their tasks are aborted
@@ -2087,8 +2219,10 @@ async fn run_session(
         match f.kind.as_str() {
             "local" | "dynamic" => {
                 let id = format!("config-{idx}");
-                ensure_runtime_forward(&mut runtime_forwards, id, f.clone(), &events,
-                    |forward| crate::tunnel::start_forward(handle.clone(), forward, events.clone())).await;
+                ensure_runtime_forward(&mut runtime_forwards, id, f.clone(), &events, |forward| {
+                    crate::tunnel::start_forward(handle.clone(), forward, events.clone())
+                })
+                .await;
             }
             _ => {}
         }
@@ -2668,9 +2802,7 @@ fn send_monitor_state(
     events: &tokio::sync::mpsc::UnboundedSender<SessionEvent>,
     state: crate::session::protocol::ResourceMonitorState,
 ) {
-    let _ = events.send(SessionEvent::ResourceMonitorStatus {
-        state,
-    });
+    let _ = events.send(SessionEvent::ResourceMonitorStatus { state });
 }
 
 /// OS identity from the monitor sample's `__OS__` section: the distro `ID`
@@ -2698,11 +2830,7 @@ fn parse_remote_os(block: &str) -> Option<String> {
                 .take(MAX_LEN)
                 .collect();
         } else if !line.is_empty() && !line.contains('=') {
-            uname = line
-                .to_ascii_lowercase()
-                .chars()
-                .take(MAX_LEN)
-                .collect();
+            uname = line.to_ascii_lowercase().chars().take(MAX_LEN).collect();
             break;
         }
     }
@@ -2875,7 +3003,10 @@ fn parse_monitor_block(
         } else if let Some(v) = line.strip_prefix("MemTotal:") {
             mem_total = parse_meminfo_kib(v);
         } else if let Some(v) = line.strip_prefix("MemAvailable:") {
-            mem_avail = v.split_whitespace().next().and_then(|value| value.parse::<u64>().ok());
+            mem_avail = v
+                .split_whitespace()
+                .next()
+                .and_then(|value| value.parse::<u64>().ok());
         } else if let Some(v) = line.strip_prefix("Buffers:") {
             mem_buffers = parse_meminfo_kib(v);
         } else if let Some(v) = line.strip_prefix("Cached:") {
@@ -3788,9 +3919,7 @@ mod osc_command_tests {
 
 #[cfg(test)]
 mod monitor_hardening_tests {
-    use super::{
-        parse_df_line, parse_monitor_block, parse_process_block, parse_remote_os,
-    };
+    use super::{parse_df_line, parse_monitor_block, parse_process_block, parse_remote_os};
     use std::collections::HashMap;
     use std::time::Instant;
 
@@ -3867,7 +3996,9 @@ Tesla T4, 0, 0, 16384, N/A
         let event = parse_monitor_block(block, &mut prev, &mut prev_net, &mut at).unwrap();
         match event {
             super::SessionEvent::ResourceStats {
-                gpus, gpu_unsupported, ..
+                gpus,
+                gpu_unsupported,
+                ..
             } => {
                 assert!(!gpu_unsupported);
                 assert_eq!(gpus.len(), 2);
@@ -3891,7 +4022,9 @@ __GPU_NOSMI__
         let event = parse_monitor_block(block, &mut prev, &mut prev_net, &mut at).unwrap();
         match event {
             super::SessionEvent::ResourceStats {
-                gpus, gpu_unsupported, ..
+                gpus,
+                gpu_unsupported,
+                ..
             } => {
                 assert!(gpu_unsupported);
                 assert!(gpus.is_empty());
@@ -4016,7 +4149,11 @@ __GPU_NOSMI__
                     sys,
                     ..
                 } => {
-                    assert_eq!(cpu_sampled, index > 0, "a first counter is a baseline, not measured zero");
+                    assert_eq!(
+                        cpu_sampled,
+                        index > 0,
+                        "a first counter is a baseline, not measured zero"
+                    );
                     assert_eq!(mem_total_kib, 10_206_504, "sample {index}");
                     assert_eq!(mem_used_kib, expected_used[index], "sample {index}");
                     assert_eq!(swap_total_kib, 0, "the captured host has no swap");
@@ -4081,8 +4218,7 @@ __GPU_NOSMI__
 
     #[test]
     fn resource_probe_rejects_malformed_memory_availability() {
-        let block =
-            "cpu 1 2 3 4\nMemTotal: 10206504 kB\nMemAvailable: invalid kB\n__DF__\n";
+        let block = "cpu 1 2 3 4\nMemTotal: 10206504 kB\nMemAvailable: invalid kB\n__DF__\n";
         let mut prev = None;
         let mut prev_net = HashMap::new();
         let mut at = Instant::now();
@@ -4119,9 +4255,16 @@ __GPU_NOSMI__
         for cpu in ["cpu 1 bad 2 3 4", "cpu 1 2 3 4", ""] {
             let block = format!("{cpu}\nMemTotal: 1000 kB\nMemAvailable: 0 kB");
             match parse_monitor_block(&block, &mut prev, &mut net, &mut at).unwrap() {
-                super::SessionEvent::ResourceStats { cpu_sampled, mem_used_kib, .. } => {
+                super::SessionEvent::ResourceStats {
+                    cpu_sampled,
+                    mem_used_kib,
+                    ..
+                } => {
                     assert!(!cpu_sampled);
-                    assert_eq!(mem_used_kib, 1000, "valid zero availability really is full RAM");
+                    assert_eq!(
+                        mem_used_kib, 1000,
+                        "valid zero availability really is full RAM"
+                    );
                 }
                 other => panic!("unexpected {other:?}"),
             }
@@ -4134,7 +4277,13 @@ __GPU_NOSMI__
         let mut net = HashMap::from([("eth0".to_string(), (7, 9))]);
         let mut at = Instant::now();
         let before_at = at;
-        assert!(parse_monitor_block("cpu 30 0 20 150\nMemTotal: 1000 kB", &mut prev, &mut net, &mut at).is_none());
+        assert!(parse_monitor_block(
+            "cpu 30 0 20 150\nMemTotal: 1000 kB",
+            &mut prev,
+            &mut net,
+            &mut at
+        )
+        .is_none());
         assert_eq!(prev, Some((100, 80)));
         assert_eq!(net["eth0"], (7, 9));
         assert_eq!(at, before_at);
@@ -4145,13 +4294,25 @@ __GPU_NOSMI__
         let mut prev = None;
         let mut net = HashMap::new();
         let mut at = Instant::now();
-        let block = "MemTotal: 1000 kB\n__DF__\n__SYS__\nOS=Synthetic Linux\nCPU_MODEL=Synthetic CPU\n";
+        let block =
+            "MemTotal: 1000 kB\n__DF__\n__SYS__\nOS=Synthetic Linux\nCPU_MODEL=Synthetic CPU\n";
         let event = parse_monitor_block(block, &mut prev, &mut net, &mut at).unwrap();
         match event {
-            super::SessionEvent::ResourceStats { sys: Some(details), .. } => {
-                assert!(details.overview.iter().any(|(_, value)| value == "Synthetic Linux"));
-                assert!(details.cpu_info.iter().any(|(_, value)| value == "Synthetic CPU"));
-                assert!(details.memory.is_empty(), "missing available RAM must not invent 100% usage");
+            super::SessionEvent::ResourceStats {
+                sys: Some(details), ..
+            } => {
+                assert!(details
+                    .overview
+                    .iter()
+                    .any(|(_, value)| value == "Synthetic Linux"));
+                assert!(details
+                    .cpu_info
+                    .iter()
+                    .any(|(_, value)| value == "Synthetic CPU"));
+                assert!(
+                    details.memory.is_empty(),
+                    "missing available RAM must not invent 100% usage"
+                );
             }
             other => panic!("unexpected {other:?}"),
         }

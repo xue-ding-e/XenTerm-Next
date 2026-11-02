@@ -1,17 +1,20 @@
 //! Process-owned dynamic SOCKS, independent of TerminalSession/PTY. This is not
 //! an IPC broker and never adopts an existing listener by guessing its port.
-use std::collections::HashMap;
-use std::net::{IpAddr, SocketAddr};
-use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
-use std::time::Duration;
+use crate::config::{PortForward, Session};
 use anyhow::{anyhow, ensure, Result};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
+use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::sync::{oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
-use crate::config::{PortForward, Session};
 
 #[derive(Clone, Serialize)]
 pub(crate) struct ForwardStatus {
@@ -44,7 +47,8 @@ impl Entry {
         status
     }
     async fn drain(&self) -> Result<()> {
-        self.drain_until(Instant::now() + Duration::from_secs(5)).await
+        self.drain_until(Instant::now() + Duration::from_secs(5))
+            .await
     }
     async fn drain_until(&self, deadline: Instant) -> Result<()> {
         self.stop.send_replace(true);
@@ -52,16 +56,34 @@ impl Entry {
         // Timeout drops only this borrow; the entry keeps the worker handle.
         tokio::time::timeout_at(deadline, async {
             let mut task = self.task.lock().await;
-            if self.completed.load(Ordering::Acquire) { return Ok(()); }
-            let joined = match task.as_mut() { Some(task) => task.await, None => return Err(anyhow!("cleanup_unconfirmed: dynamic owner failed to drain")) };
+            if self.completed.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            let joined = match task.as_mut() {
+                Some(task) => task.await,
+                None => {
+                    return Err(anyhow!(
+                        "cleanup_unconfirmed: dynamic owner failed to drain"
+                    ))
+                }
+            };
             task.take();
-            ensure!(matches!(joined, Ok(true)), "cleanup_unconfirmed: dynamic owner failed to drain");
+            ensure!(
+                matches!(joined, Ok(true)),
+                "cleanup_unconfirmed: dynamic owner failed to drain"
+            );
             self.completed.store(true, Ordering::Release);
             Ok(())
-        }).await.map_err(|_| anyhow!("cleanup_unconfirmed: dynamic owner is still stopping"))?
+        })
+        .await
+        .map_err(|_| anyhow!("cleanup_unconfirmed: dynamic owner is still stopping"))?
     }
 }
-impl Drop for Entry { fn drop(&mut self) { self.stop.send_replace(true); } }
+impl Drop for Entry {
+    fn drop(&mut self) {
+        self.stop.send_replace(true);
+    }
+}
 
 /// A pending caller owns cancellation, not the worker's raw JoinHandle. Dropping
 /// the request asks its retained lifecycle worker to stop and drain clients.
@@ -87,63 +109,137 @@ pub(crate) struct ForwardOwner {
     entries: Mutex<HashMap<String, Arc<Entry>>>,
 }
 impl ForwardOwner {
-    pub(crate) fn unattended() -> Self { Self::new(true) }
-    fn new(enforce_permissions: bool) -> Self {
-        Self { serial: tokio::sync::Mutex::new(()), closed: AtomicBool::new(false),
-            shutdown: watch::channel(false).0, enforce_permissions,
-            entries: Mutex::new(HashMap::new()) }
+    pub(crate) fn unattended() -> Self {
+        Self::new(true)
     }
-    fn permitted(&self) -> bool { permitted(self.enforce_permissions) }
+    fn new(enforce_permissions: bool) -> Self {
+        Self {
+            serial: tokio::sync::Mutex::new(()),
+            closed: AtomicBool::new(false),
+            shutdown: watch::channel(false).0,
+            enforce_permissions,
+            entries: Mutex::new(HashMap::new()),
+        }
+    }
+    fn permitted(&self) -> bool {
+        permitted(self.enforce_permissions)
+    }
 
     /// Inputs must come from the trusted profile/config service, never directly
     /// from untrusted tool arguments. Generation is that service's authorization
     /// cycle, not a user-controlled way to upgrade an existing route.
-    pub(crate) async fn start(&self, session: Session, jumps: Vec<Session>, index: usize,
-        generation: u64, reuse: bool, expires: Option<Instant>) -> Result<ForwardStatus> {
-        ensure!(std::iter::once(&session).chain(jumps.iter()).all(|hop| matches!(hop.kind, crate::config::SessionKind::Ssh)), "dynamic forwarding requires SSH sessions");
-        let rule = session.forwards.get(index).ok_or_else(|| anyhow!("saved forward rule not found"))?;
+    pub(crate) async fn start(
+        &self,
+        session: Session,
+        jumps: Vec<Session>,
+        index: usize,
+        generation: u64,
+        reuse: bool,
+        expires: Option<Instant>,
+    ) -> Result<ForwardStatus> {
+        ensure!(
+            std::iter::once(&session)
+                .chain(jumps.iter())
+                .all(|hop| matches!(hop.kind, crate::config::SessionKind::Ssh)),
+            "dynamic forwarding requires SSH sessions"
+        );
+        let rule = session
+            .forwards
+            .get(index)
+            .ok_or_else(|| anyhow!("saved forward rule not found"))?;
         let bind = loopback_bind(rule)?;
         let fingerprint = route_fingerprint(&session, &jumps, index)?;
-        ensure!(!self.closed.load(Ordering::Acquire), "dynamic owner is closed");
-        ensure!(self.permitted(), "saved-credential dynamic forwarding is not authorized");
-        ensure!(expires.is_none_or(|end| end > Instant::now()), "dynamic authorization expired");
+        ensure!(
+            !self.closed.load(Ordering::Acquire),
+            "dynamic owner is closed"
+        );
+        ensure!(
+            self.permitted(),
+            "saved-credential dynamic forwarding is not authorized"
+        );
+        ensure!(
+            expires.is_none_or(|end| end > Instant::now()),
+            "dynamic authorization expired"
+        );
         let policy = crate::ssh::headless_policy::Policy::capture(&session, &jumps)?;
         // Cancelled startup records are reclaimed only after their actual worker
         // has finished; a live/stopping bind is never forgotten to make space.
-        let abandoned: Vec<_> = self.entries.lock().unwrap_or_else(|e| e.into_inner()).values()
-            .filter(|entry| entry.abandoned.load(Ordering::Acquire)).cloned().collect();
+        let abandoned: Vec<_> = self
+            .entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .filter(|entry| entry.abandoned.load(Ordering::Acquire))
+            .cloned()
+            .collect();
         for entry in abandoned {
             entry.drain().await?;
-            self.entries.lock().unwrap_or_else(|e| e.into_inner()).remove(&entry.status.handle);
+            self.entries
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&entry.status.handle);
         }
         // Serialize only registration/reuse, never SSH authentication or joins
         // of cancelled startups belonging to unrelated handles.
         let serial = self.serial.lock().await;
-        ensure!(!self.closed.load(Ordering::Acquire), "dynamic owner is closed");
-        ensure!(self.permitted(), "saved-credential dynamic forwarding is not authorized");
-        ensure!(expires.is_none_or(|end| end > Instant::now()), "dynamic authorization expired");
+        ensure!(
+            !self.closed.load(Ordering::Acquire),
+            "dynamic owner is closed"
+        );
+        ensure!(
+            self.permitted(),
+            "saved-credential dynamic forwarding is not authorized"
+        );
+        ensure!(
+            expires.is_none_or(|end| end > Instant::now()),
+            "dynamic authorization expired"
+        );
         {
             let entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(entry) = entries.values().find(|entry| entry.status.session_id == session.id
-                && entry.status.forward_index == index) {
+            if let Some(entry) = entries.values().find(|entry| {
+                entry.status.session_id == session.id && entry.status.forward_index == index
+            }) {
                 ensure!(reuse, "dynamic tunnel already exists; ensure or release it");
-                ensure!(entry.reusable && policy.reusable(), "path-backed credential reuse is unavailable; release and start explicitly");
-                ensure!(entry.fingerprint == fingerprint && entry.policy == policy.identity() && entry.generation == generation
-                    && entry.expires == expires, "dynamic configuration or authorization changed; release before restarting");
+                ensure!(
+                    entry.reusable && policy.reusable(),
+                    "path-backed credential reuse is unavailable; release and start explicitly"
+                );
+                ensure!(
+                    entry.fingerprint == fingerprint
+                        && entry.policy == policy.identity()
+                        && entry.generation == generation
+                        && entry.expires == expires,
+                    "dynamic configuration or authorization changed; release before restarting"
+                );
                 let status = entry.status();
-                ensure!(status.state == "running" && !*entry.stop.borrow(), "dynamic tunnel is not running; release before restarting");
+                ensure!(
+                    status.state == "running" && !*entry.stop.borrow(),
+                    "dynamic tunnel is not running; release before restarting"
+                );
                 return Ok(status);
             }
-            ensure!(entries.len() < 32, "dynamic owner limit reached; release unused handles");
+            ensure!(
+                entries.len() < 32,
+                "dynamic owner limit reached; release unused handles"
+            );
         }
-        let listener = TcpListener::bind(bind).await.map_err(|error| match error.kind() {
-            std::io::ErrorKind::AddrInUse => anyhow!("dynamic port is in use; existing listener was not changed or adopted"),
-            _ => anyhow!("cannot bind the saved dynamic address"),
-        })?;
+        let listener = TcpListener::bind(bind)
+            .await
+            .map_err(|error| match error.kind() {
+                std::io::ErrorKind::AddrInUse => {
+                    anyhow!("dynamic port is in use; existing listener was not changed or adopted")
+                }
+                _ => anyhow!("cannot bind the saved dynamic address"),
+            })?;
         let address = listener.local_addr()?;
-        let status = ForwardStatus { handle: uuid::Uuid::new_v4().to_string(), session_id: session.id.clone(),
-            forward_index: index, proxy_url: format!("socks5h://{address}"), state: "starting".into(),
-            ownership: "current-owner-only; no external listener adoption" };
+        let status = ForwardStatus {
+            handle: uuid::Uuid::new_v4().to_string(),
+            session_id: session.id.clone(),
+            forward_index: index,
+            proxy_url: format!("socks5h://{address}"),
+            state: "starting".into(),
+            ownership: "current-owner-only; no external listener adoption",
+        };
         let (state_tx, state) = watch::channel("starting");
         let (stop, stopped) = watch::channel(false);
         let (ready, ready_rx) = oneshot::channel();
@@ -151,83 +247,159 @@ impl ForwardOwner {
         let reusable = policy.reusable();
         let shutdown = self.shutdown.subscribe();
         let enforce = self.enforce_permissions;
-        let task = tokio::spawn(owned_worker(policy, state_tx.clone(),
-            run(session, jumps, listener, ready, state_tx, stopped, shutdown, enforce, expires)));
-        let entry = Arc::new(Entry { status, fingerprint, generation, policy: identity, reusable, expires, state, stop,
-            task: tokio::sync::Mutex::new(Some(task)), completed: AtomicBool::new(false), abandoned: AtomicBool::new(false) });
-        self.entries.lock().unwrap_or_else(|e| e.into_inner()).insert(entry.status.handle.clone(), entry.clone());
+        let task = tokio::spawn(owned_worker(
+            policy,
+            state_tx.clone(),
+            run(
+                session, jumps, listener, ready, state_tx, stopped, shutdown, enforce, expires,
+            ),
+        ));
+        let entry = Arc::new(Entry {
+            status,
+            fingerprint,
+            generation,
+            policy: identity,
+            reusable,
+            expires,
+            state,
+            stop,
+            task: tokio::sync::Mutex::new(Some(task)),
+            completed: AtomicBool::new(false),
+            abandoned: AtomicBool::new(false),
+        });
+        self.entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(entry.status.handle.clone(), entry.clone());
         let mut pending = Pending(entry.clone(), true);
         drop(serial);
         let result = ready_rx.await;
-        if !matches!(result, Ok(true)) || self.closed.load(Ordering::Acquire) || !self.permitted()
-            || *entry.stop.borrow() || expires.is_some_and(|end| end <= Instant::now()) {
+        if !matches!(result, Ok(true))
+            || self.closed.load(Ordering::Acquire)
+            || !self.permitted()
+            || *entry.stop.borrow()
+            || expires.is_some_and(|end| end <= Instant::now())
+        {
             entry.drain().await?;
-            self.entries.lock().unwrap_or_else(|e| e.into_inner()).remove(&entry.status.handle);
+            self.entries
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&entry.status.handle);
             return Err(anyhow!("dynamic startup failed or was cancelled; verify saved credentials, trusted keys and route"));
         }
         let status = entry.status();
-        ensure!(status.state == "running", "dynamic route stopped before readiness");
+        ensure!(
+            status.state == "running",
+            "dynamic route stopped before readiness"
+        );
         pending.1 = false;
         Ok(status)
     }
     pub(crate) fn status(&self, handle: &str) -> Result<ForwardStatus> {
-        self.entries.lock().unwrap_or_else(|e| e.into_inner()).get(handle)
-            .map(|entry| entry.status()).ok_or_else(|| anyhow!("tunnel handle not found in this owner"))
+        self.entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(handle)
+            .map(|entry| entry.status())
+            .ok_or_else(|| anyhow!("tunnel handle not found in this owner"))
     }
     pub(crate) async fn release(&self, handle: &str) -> Result<ForwardStatus> {
-        let entry = self.entries.lock().unwrap_or_else(|e| e.into_inner()).get(handle).cloned()
+        let entry = self
+            .entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(handle)
+            .cloned()
             .ok_or_else(|| anyhow!("tunnel handle not found in this owner"))?;
         entry.drain().await?;
-        self.entries.lock().unwrap_or_else(|e| e.into_inner()).remove(handle);
-        let mut status = entry.status(); status.state = "released".into(); Ok(status)
+        self.entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(handle);
+        let mut status = entry.status();
+        status.state = "released".into();
+        Ok(status)
     }
     pub(crate) async fn shutdown(&self) -> Result<()> {
         let deadline = Instant::now() + Duration::from_secs(5);
-        self.closed.store(true, Ordering::Release); self.shutdown.send_replace(true);
-        let serial = tokio::time::timeout_at(deadline, self.serial.lock()).await
+        self.closed.store(true, Ordering::Release);
+        self.shutdown.send_replace(true);
+        let serial = tokio::time::timeout_at(deadline, self.serial.lock())
+            .await
             .map_err(|_| anyhow!("cleanup_unconfirmed: dynamic registration is still stopping"))?;
-        let entries: Vec<_> = self.entries.lock().unwrap_or_else(|e| e.into_inner()).values().cloned().collect();
+        let entries: Vec<_> = self
+            .entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .cloned()
+            .collect();
         drop(serial);
         for entry in entries {
             entry.drain_until(deadline).await?;
-            self.entries.lock().unwrap_or_else(|e| e.into_inner()).remove(&entry.status.handle);
+            self.entries
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&entry.status.handle);
         }
         Ok(())
     }
 }
 impl Drop for ForwardOwner {
     fn drop(&mut self) {
-        self.closed.store(true, Ordering::Release); self.shutdown.send_replace(true);
+        self.closed.store(true, Ordering::Release);
+        self.shutdown.send_replace(true);
         // Async shutdown is required for an acknowledgement. Drop only requests
         // cancellation; workers retain their listener until its drain finishes.
     }
 }
 fn permitted(enforce: bool) -> bool {
-    !enforce || crate::config::ConfigStore::load().is_ok_and(|store|
-        store.mcp_enabled() && store.mcp_use_saved_credentials() && store.mcp_allow_commands())
+    !enforce
+        || crate::config::ConfigStore::load().is_ok_and(|store| {
+            store.mcp_enabled() && store.mcp_use_saved_credentials() && store.mcp_allow_commands()
+        })
 }
 async fn owned_worker(
     policy: crate::ssh::headless_policy::Policy,
     state: watch::Sender<&'static str>,
     operation: impl std::future::Future<Output = (&'static str, bool)>,
 ) -> bool {
-    let (reason, confirmed) = policy.run(async {
-        let outcome = operation.await;
-        // The route is gone, but a cancelled blocking key loader can still be
-        // live. Publish a terminal state only after its join.
-        state.send_replace("stopping");
-        outcome
-    }).await.unwrap_or(("cleanup_unconfirmed", false));
-    state.send_replace(if confirmed { reason } else { "cleanup_unconfirmed" });
+    let (reason, confirmed) = policy
+        .run(async {
+            let outcome = operation.await;
+            // The route is gone, but a cancelled blocking key loader can still be
+            // live. Publish a terminal state only after its join.
+            state.send_replace("stopping");
+            outcome
+        })
+        .await
+        .unwrap_or(("cleanup_unconfirmed", false));
+    state.send_replace(if confirmed {
+        reason
+    } else {
+        "cleanup_unconfirmed"
+    });
     confirmed
 }
-async fn cancelled(mut stop: watch::Receiver<bool>, mut shutdown: watch::Receiver<bool>,
-    enforce: bool, expires: Option<Instant>) -> &'static str {
+async fn cancelled(
+    mut stop: watch::Receiver<bool>,
+    mut shutdown: watch::Receiver<bool>,
+    enforce: bool,
+    expires: Option<Instant>,
+) -> &'static str {
     loop {
-        if *stop.borrow() { return "released"; }
-        if *shutdown.borrow() { return "owner_closed"; }
-        if !permitted(enforce) { return "permission_revoked"; }
-        if expires.is_some_and(|end| end <= Instant::now()) { return "authorization_expired"; }
+        if *stop.borrow() {
+            return "released";
+        }
+        if *shutdown.borrow() {
+            return "owner_closed";
+        }
+        if !permitted(enforce) {
+            return "permission_revoked";
+        }
+        if expires.is_some_and(|end| end <= Instant::now()) {
+            return "authorization_expired";
+        }
         tokio::select! {
             _ = stop.changed() => {},
             _ = shutdown.changed() => {},
@@ -235,10 +407,17 @@ async fn cancelled(mut stop: watch::Receiver<bool>, mut shutdown: watch::Receive
         }
     }
 }
-async fn run(session: Session, jumps: Vec<Session>, listener: TcpListener,
-    ready: oneshot::Sender<bool>, state: watch::Sender<&'static str>,
-    stopped: watch::Receiver<bool>, shutdown: watch::Receiver<bool>,
-    enforce: bool, expires: Option<Instant>) -> (&'static str, bool) {
+async fn run(
+    session: Session,
+    jumps: Vec<Session>,
+    listener: TcpListener,
+    ready: oneshot::Sender<bool>,
+    state: watch::Sender<&'static str>,
+    stopped: watch::Receiver<bool>,
+    shutdown: watch::Receiver<bool>,
+    enforce: bool,
+    expires: Option<Instant>,
+) -> (&'static str, bool) {
     crate::ssh::connection::with_automation_cancellation(async move {
         let cancellation = cancelled(stopped, shutdown, enforce, expires);
         tokio::pin!(cancellation);
@@ -280,15 +459,27 @@ async fn run(session: Session, jumps: Vec<Session>, listener: TcpListener,
     }).await
 }
 fn loopback_bind(rule: &PortForward) -> Result<SocketAddr> {
-    ensure!(rule.kind == "dynamic", "selected forward rule is not dynamic SOCKS5");
-    let text = rule.bind_addr.trim().trim_start_matches('[').trim_end_matches(']');
+    ensure!(
+        rule.kind == "dynamic",
+        "selected forward rule is not dynamic SOCKS5"
+    );
+    let text = rule
+        .bind_addr
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']');
     let address: IpAddr = match text {
         "" | "localhost" => "127.0.0.1".parse().unwrap(),
-        _ => text.parse().map_err(|_| anyhow!("dynamic tunnel bind must be a loopback IP address"))?,
+        _ => text
+            .parse()
+            .map_err(|_| anyhow!("dynamic tunnel bind must be a loopback IP address"))?,
     };
     // Unauthenticated SOCKS must never silently expose a saved wildcard bind to
     // a network. Broader listening needs a separately designed access policy.
-    ensure!(address.is_loopback(), "unattended dynamic tunnels require a loopback bind address");
+    ensure!(
+        address.is_loopback(),
+        "unattended dynamic tunnels require a loopback bind address"
+    );
     Ok(SocketAddr::new(address, rule.bind_port))
 }
 
@@ -309,16 +500,33 @@ struct RouteHop<'a> {
 }
 
 fn route_fingerprint(session: &Session, jumps: &[Session], index: usize) -> Result<[u8; 32]> {
-    let rule = session.forwards.get(index).ok_or_else(|| anyhow!("saved forward rule not found"))?;
-    let route: Vec<_> = jumps.iter().chain(std::iter::once(session)).enumerate().map(|(i, hop)| RouteHop {
-        id: &hop.id, host: &hop.host, port: hop.port, user: &hop.user, auth: hop.auth,
-        password: &hop.password, private_key_path: &hop.private_key_path,
-        private_key_inline: &hop.private_key_inline,
-        // Jump chains are immediate-first: the last jump opens TCP/proxy.
-        // Without jumps, the target at index zero opens TCP. All other
-        // hops use direct-tcpip channels and do not consume saved proxies.
-        proxy: if i == jumps.len().saturating_sub(1) { &hop.proxy } else { "" },
-    }).collect();
+    let rule = session
+        .forwards
+        .get(index)
+        .ok_or_else(|| anyhow!("saved forward rule not found"))?;
+    let route: Vec<_> = jumps
+        .iter()
+        .chain(std::iter::once(session))
+        .enumerate()
+        .map(|(i, hop)| RouteHop {
+            id: &hop.id,
+            host: &hop.host,
+            port: hop.port,
+            user: &hop.user,
+            auth: hop.auth,
+            password: &hop.password,
+            private_key_path: &hop.private_key_path,
+            private_key_inline: &hop.private_key_inline,
+            // Jump chains are immediate-first: the last jump opens TCP/proxy.
+            // Without jumps, the target at index zero opens TCP. All other
+            // hops use direct-tcpip channels and do not consume saved proxies.
+            proxy: if i == jumps.len().saturating_sub(1) {
+                &hop.proxy
+            } else {
+                ""
+            },
+        })
+        .collect();
     let bytes = zeroize::Zeroizing::new(serde_json::to_vec(&(route, loopback_bind(rule)?))?);
     Ok(Sha256::digest(bytes.as_slice()).into())
 }
@@ -329,11 +537,19 @@ mod tests {
     #[test]
     fn unattended_bind_is_loopback_only() {
         for bind in ["", "localhost", "127.0.0.1", "::1", "[::1]"] {
-            let rule = PortForward { kind: "dynamic".into(), bind_addr: bind.into(), ..Default::default() };
+            let rule = PortForward {
+                kind: "dynamic".into(),
+                bind_addr: bind.into(),
+                ..Default::default()
+            };
             assert!(loopback_bind(&rule).unwrap().ip().is_loopback());
         }
         for bind in ["0.0.0.0", "::", "192.0.2.1", "proxy.example"] {
-            let rule = PortForward { kind: "dynamic".into(), bind_addr: bind.into(), ..Default::default() };
+            let rule = PortForward {
+                kind: "dynamic".into(),
+                bind_addr: bind.into(),
+                ..Default::default()
+            };
             assert!(loopback_bind(&rule).is_err());
         }
     }
@@ -341,7 +557,11 @@ mod tests {
     fn fixture_session(port: u16) -> Session {
         let mut session = Session::new_empty();
         session.host = "target.invalid".into();
-        session.forwards.push(PortForward { kind: "dynamic".into(), bind_port: port, ..Default::default() });
+        session.forwards.push(PortForward {
+            kind: "dynamic".into(),
+            bind_port: port,
+            ..Default::default()
+        });
         session
     }
 
@@ -397,7 +617,14 @@ mod tests {
 
     // A synthetic HTTP proxy accepts TCP but withholds CONNECT completion.
     // This forces a real pending SSH route, not a mocked future or parser test.
-    async fn pending_start(expires: Option<Instant>) -> (Arc<ForwardOwner>, JoinHandle<Result<ForwardStatus>>, TcpListener, SocketAddr) {
+    async fn pending_start(
+        expires: Option<Instant>,
+    ) -> (
+        Arc<ForwardOwner>,
+        JoinHandle<Result<ForwardStatus>>,
+        TcpListener,
+        SocketAddr,
+    ) {
         let silent = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let reserve = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let bind = reserve.local_addr().unwrap();
@@ -406,59 +633,90 @@ mod tests {
         session.proxy = format!("http://{}", silent.local_addr().unwrap());
         let owner = Arc::new(ForwardOwner::new(false));
         let worker = owner.clone();
-        let start = tokio::spawn(async move { worker.start(session, vec![], 0, 1, false, expires).await });
+        let start =
+            tokio::spawn(async move { worker.start(session, vec![], 0, 1, false, expires).await });
         (owner, start, silent, bind)
     }
 
     async fn assert_listener_released(bind: SocketAddr) {
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
-                if TcpListener::bind(bind).await.is_ok() { break; }
+                if TcpListener::bind(bind).await.is_ok() {
+                    break;
+                }
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
-        }).await.expect("startup left the dynamic listener bound");
+        })
+        .await
+        .expect("startup left the dynamic listener bound");
     }
 
     #[test]
     fn cancelled_start_rolls_back_listener_and_pending_proxy_transport() {
-        super::lifecycle_tests::isolated("tunnel::owner::tests::cancelled_start_rolls_back_listener_and_pending_proxy_transport", || async {
-        use tokio::io::AsyncReadExt;
-        let (_owner, start, silent, bind) = pending_start(None).await;
-        let (mut transport, _) = tokio::time::timeout(Duration::from_secs(2), silent.accept()).await.unwrap().unwrap();
-        start.abort();
-        let _ = start.await;
-        assert_listener_released(bind).await;
-        let mut bytes = Vec::new();
-        tokio::time::timeout(Duration::from_secs(2), transport.read_to_end(&mut bytes)).await
-            .expect("cancelled startup left an SSH proxy transport open").unwrap();
-        });
+        super::lifecycle_tests::isolated(
+            "tunnel::owner::tests::cancelled_start_rolls_back_listener_and_pending_proxy_transport",
+            || async {
+                use tokio::io::AsyncReadExt;
+                let (_owner, start, silent, bind) = pending_start(None).await;
+                let (mut transport, _) =
+                    tokio::time::timeout(Duration::from_secs(2), silent.accept())
+                        .await
+                        .unwrap()
+                        .unwrap();
+                start.abort();
+                let _ = start.await;
+                assert_listener_released(bind).await;
+                let mut bytes = Vec::new();
+                tokio::time::timeout(Duration::from_secs(2), transport.read_to_end(&mut bytes))
+                    .await
+                    .expect("cancelled startup left an SSH proxy transport open")
+                    .unwrap();
+            },
+        );
     }
 
     #[test]
     fn expired_start_rolls_back_without_ever_becoming_ready() {
-        super::lifecycle_tests::isolated("tunnel::owner::tests::expired_start_rolls_back_without_ever_becoming_ready", || async {
-        let (_owner, start, silent, bind) = pending_start(Some(Instant::now() + Duration::from_millis(200))).await;
-        let (_transport, _) = tokio::time::timeout(Duration::from_secs(2), silent.accept()).await.unwrap().unwrap();
-        let result = tokio::time::timeout(Duration::from_secs(2), start).await.unwrap().unwrap();
-        assert!(result.is_err());
-        assert_listener_released(bind).await;
-        });
+        super::lifecycle_tests::isolated(
+            "tunnel::owner::tests::expired_start_rolls_back_without_ever_becoming_ready",
+            || async {
+                let (_owner, start, silent, bind) =
+                    pending_start(Some(Instant::now() + Duration::from_millis(200))).await;
+                let (_transport, _) = tokio::time::timeout(Duration::from_secs(2), silent.accept())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let result = tokio::time::timeout(Duration::from_secs(2), start)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert!(result.is_err());
+                assert_listener_released(bind).await;
+            },
+        );
     }
-
 
     #[test]
     fn owner_shutdown_cancels_a_registered_pending_start() {
-        super::lifecycle_tests::isolated("tunnel::owner::tests::owner_shutdown_cancels_a_registered_pending_start", || async {
-        let (owner, start, silent, bind) = pending_start(None).await;
-        let (_transport, _) = tokio::time::timeout(Duration::from_secs(2), silent.accept()).await.unwrap().unwrap();
-        owner.shutdown().await.unwrap();
-        let result = tokio::time::timeout(Duration::from_secs(2), start).await.unwrap().unwrap();
-        assert!(result.is_err());
-        assert_listener_released(bind).await;
-        assert!(owner.entries.lock().unwrap().is_empty());
-        });
+        super::lifecycle_tests::isolated(
+            "tunnel::owner::tests::owner_shutdown_cancels_a_registered_pending_start",
+            || async {
+                let (owner, start, silent, bind) = pending_start(None).await;
+                let (_transport, _) = tokio::time::timeout(Duration::from_secs(2), silent.accept())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                owner.shutdown().await.unwrap();
+                let result = tokio::time::timeout(Duration::from_secs(2), start)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert!(result.is_err());
+                assert_listener_released(bind).await;
+                assert!(owner.entries.lock().unwrap().is_empty());
+            },
+        );
     }
-
 }
 
 #[cfg(test)]

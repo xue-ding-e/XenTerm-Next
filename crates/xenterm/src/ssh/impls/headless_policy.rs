@@ -1,13 +1,13 @@
 //! Narrow frozen inputs for the in-process saved-forward owner. This is not a
 //! platform-consistent profile loader: path-backed private keys are deliberately
 //! ineligible for reuse until their parsed-key ownership is available.
-use std::future::Future;
-use std::sync::{Arc, Mutex};
+use crate::config::Session;
+use crate::ssh::{known_hosts::HostKeySnapshot, ProxyConfig};
 use anyhow::{Context, Result};
 use russh::keys::PrivateKey;
 use sha2::{Digest, Sha256};
-use crate::config::Session;
-use crate::ssh::{known_hosts::HostKeySnapshot, ProxyConfig};
+use std::future::Future;
+use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
 pub(crate) struct Policy {
@@ -36,17 +36,32 @@ impl Policy {
         Self::from_parts(&trust, proxy, reusable)
     }
     fn from_parts(trust: &str, proxy: Option<ProxyConfig>, reusable: bool) -> Result<Self> {
-        let proxy_parts = proxy.as_ref().map(|proxy| (
-            format!("{:?}", proxy.kind), &proxy.host, proxy.port, &proxy.auth,
-        ));
-        let bytes = zeroize::Zeroizing::new(serde_json::to_vec(&(trust, proxy_parts))
-            .context("cannot identify frozen forwarding policy")?);
-        Ok(Self { trust: Arc::new(HostKeySnapshot::from_text(trust)), proxy,
-            identity: Sha256::digest(bytes.as_slice()).into(), reusable,
-            key_loads: Arc::new(Mutex::new(Vec::new())) })
+        let proxy_parts = proxy.as_ref().map(|proxy| {
+            (
+                format!("{:?}", proxy.kind),
+                &proxy.host,
+                proxy.port,
+                &proxy.auth,
+            )
+        });
+        let bytes = zeroize::Zeroizing::new(
+            serde_json::to_vec(&(trust, proxy_parts))
+                .context("cannot identify frozen forwarding policy")?,
+        );
+        Ok(Self {
+            trust: Arc::new(HostKeySnapshot::from_text(trust)),
+            proxy,
+            identity: Sha256::digest(bytes.as_slice()).into(),
+            reusable,
+            key_loads: Arc::new(Mutex::new(Vec::new())),
+        })
     }
-    pub(crate) fn identity(&self) -> [u8; 32] { self.identity }
-    pub(crate) fn reusable(&self) -> bool { self.reusable }
+    pub(crate) fn identity(&self) -> [u8; 32] {
+        self.identity
+    }
+    pub(crate) fn reusable(&self) -> bool {
+        self.reusable
+    }
     /// The retained owner worker must await this scope, even when the inner
     /// connection is cancelled. Its completion includes all blocking key work.
     pub(crate) async fn run<F: Future>(&self, future: F) -> Result<F::Output> {
@@ -77,18 +92,25 @@ pub(crate) async fn load_private_key(
         loads.lock().unwrap_or_else(|e| e.into_inner()).push(task);
         received.await.context("private-key loader task failed")?
     } else {
-        tokio::task::spawn_blocking(work).await.context("private-key loader task failed")?
+        tokio::task::spawn_blocking(work)
+            .await
+            .context("private-key loader task failed")?
     }
 }
 fn reusable_credentials(session: &Session, jumps: &[Session]) -> bool {
-    std::iter::once(session).chain(jumps.iter()).all(|hop|
-        !matches!(hop.auth, crate::config::AuthMethod::Key) || !hop.private_key_inline.as_str().trim().is_empty())
+    std::iter::once(session).chain(jumps.iter()).all(|hop| {
+        !matches!(hop.auth, crate::config::AuthMethod::Key)
+            || !hop.private_key_inline.as_str().trim().is_empty()
+    })
 }
 /// Recheck trust/effective proxy before publishing ready. The connection itself
 /// already consumed the frozen policy; this never substitutes a new verifier.
 pub(crate) fn still_current(session: &Session, jumps: &[Session]) -> bool {
-    let Ok(current) = Policy::capture(session, jumps) else { return false; };
-    TASK.try_with(|policy| policy.identity == current.identity).unwrap_or(false)
+    let Ok(current) = Policy::capture(session, jumps) else {
+        return false;
+    };
+    TASK.try_with(|policy| policy.identity == current.identity)
+        .unwrap_or(false)
 }
 pub(crate) fn current_trust() -> Option<Arc<HostKeySnapshot>> {
     TASK.try_with(|policy| policy.trust.clone()).ok()
@@ -106,9 +128,14 @@ mod tests {
     #[tokio::test]
     async fn captured_direct_never_falls_back_to_later_proxy_input() {
         let policy = Policy::from_parts("", None, true).unwrap();
-        policy.run(async {
-            assert!(proxy_for_connection("invalid://must-not-be-read").unwrap().is_none());
-        }).await.unwrap();
+        policy
+            .run(async {
+                assert!(proxy_for_connection("invalid://must-not-be-read")
+                    .unwrap()
+                    .is_none());
+            })
+            .await
+            .unwrap();
         assert!(proxy_for_connection("invalid://must-not-be-read").is_err());
     }
     #[test]
@@ -125,8 +152,8 @@ mod tests {
         assert!(!reusable_credentials(&target, &[]));
         target.private_key_inline = crate::config::Secret::new("synthetic-inline-material");
         assert!(reusable_credentials(&target, &[]));
-        let mut jump = target.clone(); jump.private_key_inline = crate::config::Secret::default();
+        let mut jump = target.clone();
+        jump.private_key_inline = crate::config::Secret::default();
         assert!(!reusable_credentials(&target, &[jump]));
     }
-
 }
