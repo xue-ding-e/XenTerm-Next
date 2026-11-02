@@ -23,7 +23,7 @@ jobs:
         script: |
           const fs = require('fs'), path = require('path'), crypto = require('crypto');
           const owner='xue-ding-e', repo='XenTerm-Next', branch='validation/gpui-msi-repack-20261102';
-          const prior='89fd985c6275085acd2c5babbd4dadb05ec6155e', source='0d60b91691ce082137db3e3f995ef6fc8c783b83';
+          const prior='be41254a8ae5c4da596cd839d7b2a494e54ba3e5', retained='89fd985c6275085acd2c5babbd4dadb05ec6155e', source='0d60b91691ce082137db3e3f995ef6fc8c783b83';
           const need=(v,m)=>{if(!v)throw new Error(m);};
           need(context.repo.owner===owner && context.repo.repo===repo && context.eventName==='push' && context.ref===`refs/heads/${branch}` && context.payload.before===prior, 'Wrong event/ref/before');
           const {data:ref}=await github.rest.git.getRef({owner,repo,ref:`heads/${branch}`});
@@ -32,13 +32,13 @@ jobs:
           need(commit.parents.length===1 && commit.parents[0].sha===prior,'Wrong controller parent');
           for(const who of [commit.author,commit.committer]) need(who.name==='Qing Liang' && who.email==='106448173+xue-ding-e@users.noreply.github.com','Wrong attribution');
           const {data:diff}=await github.rest.repos.compareCommits({owner,repo,base:prior,head:context.sha});
-          need(diff.files.length===1 && diff.files[0].filename==='.github/workflows/gpui-msi-registration-probe.yml' && diff.files[0].status==='added','Controller must only add this diagnostic workflow');
+          need(diff.files.length===1 && diff.files[0].filename==='.github/workflows/gpui-msi-registration-probe.yml' && diff.files[0].status==='modified','Controller must only modify this diagnostic workflow');
           const {data:src}=await github.rest.git.getCommit({owner,repo,commit_sha:source});
           need(src.tree.sha==='007d4575d1cf9e8c057ef0906dca0cdf64015a79' && src.parents.length===1 && src.parents[0].sha==='488f001949613327150abb8f74b464278604df69','Wrong packaging source');
           const {data:run}=await github.rest.actions.getWorkflowRun({owner,repo,run_id:41502584678});
-          need(run.head_sha===prior && run.head_branch===branch && run.run_attempt===1 && run.event==='push' && run.repository.full_name===`${owner}/${repo}` && run.head_repository.full_name===`${owner}/${repo}` && run.path==='.github/workflows/gpui-msi-repack-verify.yml' && run.status==='completed' && run.conclusion==='failure','Wrong retained run');
+          need(run.head_sha===retained && run.head_branch===branch && run.run_attempt===1 && run.event==='push' && run.repository.full_name===`${owner}/${repo}` && run.head_repository.full_name===`${owner}/${repo}` && run.path==='.github/workflows/gpui-msi-repack-verify.yml' && run.status==='completed' && run.conclusion==='failure','Wrong retained run');
           const jobs=await github.paginate(github.rest.actions.listJobsForWorkflowRunAttempt,{owner,repo,run_id:run.id,attempt_number:1,per_page:100});
-          need(jobs.length===2 && jobs.every(j=>j.status==='completed' && j.head_sha===prior),'Wrong prior jobs');
+          need(jobs.length===2 && jobs.every(j=>j.status==='completed' && j.head_sha===retained),'Wrong prior jobs');
           need(jobs.find(j=>j.name==='source-proof')?.conclusion==='success','Prior proof failed');
           const native=jobs.find(j=>j.name==='real-windows-msi');
           need(native?.conclusion==='failure','Wrong native state');
@@ -47,7 +47,7 @@ jobs:
           const args={owner,repo,artifact_id:13169117796};
           const {data:meta}=await github.rest.actions.getArtifact(args);
           const digest='9129458976c5b1c9d2d5bf829a0ae0b4d4e78b8771f6557a11746c65808bd4a9';
-          need(!meta.expired && meta.size_in_bytes===115615510 && meta.digest===`sha256:${digest}` && meta.name===`gpui-msi-repack-${source}` && meta.workflow_run.id===run.id && meta.workflow_run.head_sha===prior,'Wrong retained artifact');
+          need(!meta.expired && meta.size_in_bytes===115615510 && meta.digest===`sha256:${digest}` && meta.name===`gpui-msi-repack-${source}` && meta.workflow_run.id===run.id && meta.workflow_run.head_sha===retained,'Wrong retained artifact');
           const {data}=await github.rest.actions.downloadArtifact({...args,archive_format:'zip'});
           const bytes=Buffer.from(data);
           need(bytes.length===115615510 && crypto.createHash('sha256').update(bytes).digest('hex')===digest,'Artifact bytes differ');
@@ -79,134 +79,41 @@ jobs:
       timeout-minutes: 5
       shell: pwsh
       run: |
-        & {
-        # Diagnostic only: one exact retained old GPUI MSI, isolated hosted runner.
-        [CmdletBinding()]
-        param([Parameter(Mandatory=$true)][string]$Msi)
+        $script=Join-Path $env:RUNNER_TEMP 'gpui-registration-probe.ps1'
+        if(Test-Path -LiteralPath $script){throw 'Refusing existing probe file'}
+        $content=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('IyBEaWFnbm9zdGljIG9ubHk6IG9uZSBleGFjdCByZXRhaW5lZCBvbGQgR1BVSSBNU0ksIGlzb2xhdGVkIGhvc3RlZCBydW5uZXIuCltDbWRsZXRCaW5kaW5nKCldCnBhcmFtKFtQYXJhbWV0ZXIoTWFuZGF0b3J5PSR0cnVlKV1bc3RyaW5nXSRNc2kpClNldC1TdHJpY3RNb2RlIC1WZXJzaW9uIExhdGVzdAokRXJyb3JBY3Rpb25QcmVmZXJlbmNlPSdTdG9wJwppZiAoJGVudjpHSVRIVUJfQUNUSU9OUyAtbmUgJ3RydWUnIC1vciAkZW52OlJVTk5FUl9FTlZJUk9OTUVOVCAtbmUgJ2dpdGh1Yi1ob3N0ZWQnKSB7IHRocm93ICdEaXNwb3NhYmxlIGhvc3RlZCBydW5uZXIgcmVxdWlyZWQnIH0KJE1zaT0oUmVzb2x2ZS1QYXRoIC1MaXRlcmFsUGF0aCAkTXNpKS5QYXRoCmlmICgoR2V0LUl0ZW0gLUxpdGVyYWxQYXRoICRNc2kpLkxlbmd0aCAtbmUgMzg3MDcyMDAgLW9yIChHZXQtRmlsZUhhc2ggLUxpdGVyYWxQYXRoICRNc2kgLUFsZ29yaXRobSBTSEEyNTYpLkhhc2guVG9Mb3dlckludmFyaWFudCgpIC1uZSAnOGIxNGRhYWNkYTMwZjQ5ZDU0YTRiZGNlNmFlMGFmNDM5ZTQ4YTgwOTdhMGI3MDc3ZGM0ZDYxOWIwNzE5MDU3YycpIHsgdGhyb3cgJ1dyb25nIHJldGFpbmVkIG9sZCBNU0knIH0KJGNvZGU9J3s1RkU4MDBBOS0wMTYzLTQyRUQtODIyQS0zNEQ3OEQ1NDJFRUN9JwokcGFja2VkPSc5QTAwOEVGNTM2MTBERTI0MjhBMjQzN0REODQ1RTJDRScKJHNpZD1bU2VjdXJpdHkuUHJpbmNpcGFsLldpbmRvd3NJZGVudGl0eV06OkdldEN1cnJlbnQoKS5Vc2VyLlZhbHVlCiRmb2xkZXI9Sm9pbi1QYXRoICRlbnY6TE9DQUxBUFBEQVRBICdQcm9ncmFtc1xYZW5UZXJtLU5leHQgR1BVSScKaWYgKFRlc3QtUGF0aCAtTGl0ZXJhbFBhdGggJGZvbGRlcikgeyB0aHJvdyAnUmVmdXNpbmcgcHJlZXhpc3RpbmcgR1BVSSBkaXJlY3RvcnknIH0KZm9yZWFjaCgkbGluayBpbiBAKChKb2luLVBhdGggKFtFbnZpcm9ubWVudF06OkdldEZvbGRlclBhdGgoJ1Byb2dyYW1zJykpICdYZW5UZXJtLU5leHQgR1BVSScpLChKb2luLVBhdGggKFtFbnZpcm9ubWVudF06OkdldEZvbGRlclBhdGgoJ0Rlc2t0b3BEaXJlY3RvcnknKSkgJ1hlblRlcm0tTmV4dCBHUFVJLmxuaycpKSkgewogaWYoVGVzdC1QYXRoIC1MaXRlcmFsUGF0aCAkbGluayl7dGhyb3cgJ1JlZnVzaW5nIHByZWV4aXN0aW5nIEdQVUkgc2hvcnRjdXQnfQp9CmZvcmVhY2goJHZpZXcgaW4gQChbTWljcm9zb2Z0LldpbjMyLlJlZ2lzdHJ5Vmlld106OlJlZ2lzdHJ5MzIsW01pY3Jvc29mdC5XaW4zMi5SZWdpc3RyeVZpZXddOjpSZWdpc3RyeTY0KSkgewogJGJhc2U9W01pY3Jvc29mdC5XaW4zMi5SZWdpc3RyeUtleV06Ok9wZW5CYXNlS2V5KFtNaWNyb3NvZnQuV2luMzIuUmVnaXN0cnlIaXZlXTo6Q3VycmVudFVzZXIsJHZpZXcpCiAkYW5jaG9yPSRudWxsCiB0cnkgewogICRhbmNob3I9JGJhc2UuT3BlblN1YktleSgnU29mdHdhcmVcWGVuVGVybS1OZXh0XEdQVUlcSW5zdGFsbGVyJywkZmFsc2UpCiAgaWYoJG51bGwgLW5lICRhbmNob3Ipe3Rocm93ICdSZWZ1c2luZyBwcmVleGlzdGluZyBHUFVJIGluc3RhbGxlciBhbmNob3IgaW4gZWl0aGVyIGN1cnJlbnQtdXNlciByZWdpc3RyeSB2aWV3J30KIH0gZmluYWxseSB7aWYoJG51bGwgLW5lICRhbmNob3IpeyRhbmNob3IuRGlzcG9zZSgpfTskYmFzZS5EaXNwb3NlKCl9Cn0KJG91dD1Kb2luLVBhdGggJGVudjpSVU5ORVJfVEVNUCAnZ3B1aS1yZWdpc3RyYXRpb24tb2JzZXJ2YXRpb24nCmlmIChUZXN0LVBhdGggLUxpdGVyYWxQYXRoICRvdXQpIHsgdGhyb3cgJ1JlZnVzaW5nIGV4aXN0aW5nIGV2aWRlbmNlIGRpcmVjdG9yeScgfQpbdm9pZF1bSU8uRGlyZWN0b3J5XTo6Q3JlYXRlRGlyZWN0b3J5KCRvdXQpCkFkZC1UeXBlIC1UeXBlRGVmaW5pdGlvbiBAJwp1c2luZyBTeXN0ZW07CnVzaW5nIFN5c3RlbS5UZXh0Owp1c2luZyBTeXN0ZW0uUnVudGltZS5JbnRlcm9wU2VydmljZXM7CnB1YmxpYyBzdGF0aWMgY2xhc3MgR1BVSVJlZ2lzdHJhdGlvbkFwaSB7CiBbRGxsSW1wb3J0KCJtc2kuZGxsIixDaGFyU2V0PUNoYXJTZXQuVW5pY29kZSxFeGFjdFNwZWxsaW5nPXRydWUpXQogcHVibGljIHN0YXRpYyBleHRlcm4gdWludCBNc2lFbnVtUmVsYXRlZFByb2R1Y3RzVyhzdHJpbmcgdXBncmFkZUNvZGUsdWludCByZXNlcnZlZCx1aW50IGluZGV4LFN0cmluZ0J1aWxkZXIgcHJvZHVjdENvZGUpOwogW0RsbEltcG9ydCgibXNpLmRsbCIsQ2hhclNldD1DaGFyU2V0LlVuaWNvZGUsRXhhY3RTcGVsbGluZz10cnVlKV0KIHB1YmxpYyBzdGF0aWMgZXh0ZXJuIHVpbnQgTXNpRW51bVByb2R1Y3RzRXhXKHN0cmluZyBjb2RlLHN0cmluZyBzaWQsdWludCBjb250ZXh0LHVpbnQgaW5kZXgsU3RyaW5nQnVpbGRlciBmb3VuZENvZGUsb3V0IHVpbnQgZm91bmRDb250ZXh0LFN0cmluZ0J1aWxkZXIgZm91bmRTaWQscmVmIHVpbnQgc2lkTGVuZ3RoKTsKIFtEbGxJbXBvcnQoIm1zaS5kbGwiLENoYXJTZXQ9Q2hhclNldC5Vbmljb2RlLEV4YWN0U3BlbGxpbmc9dHJ1ZSldCiBwdWJsaWMgc3RhdGljIGV4dGVybiB1aW50IE1zaUdldFByb2R1Y3RJbmZvRXhXKHN0cmluZyBjb2RlLHN0cmluZyBzaWQsdWludCBjb250ZXh0LHN0cmluZyBwcm9wZXJ0eSxTdHJpbmdCdWlsZGVyIHZhbHVlLHJlZiB1aW50IGxlbmd0aCk7Cn0KJ0AKZnVuY3Rpb24gQXNzZXJ0LUVtcHR5RmFtaWx5KCRDb21Db3VudCwgW29iamVjdFtdXSRDb21JdGVtcywgJE5hdGl2ZVN0YXR1cywgW3N0cmluZ10kTmF0aXZlQ29kZSkgewogIyBVbmtub3duIGNvdW50cy9zdGF0dXNlcyBhbmQgZGlzYWdyZWVtZW50IGZhaWwgY2xvc2VkLCBqdXN0IGxpa2UgYSByZWFsIGZhbWlseSBtZW1iZXIuCiBpZigkQ29tQ291bnQgLWlzbm90IFtpbnRdIC1vciAkQ29tQ291bnQgLWx0IDAgLW9yICRudWxsIC1lcSAkQ29tSXRlbXMgLW9yICROYXRpdmVTdGF0dXMgLWlzbm90IFt1aW50MzJdKSB7IHRocm93ICdVbmtub3duIHVwZ3JhZGUtZmFtaWx5IGV2aWRlbmNlJyB9CiBpZigkQ29tQ291bnQgLW5lICRDb21JdGVtcy5Db3VudCkgeyB0aHJvdyAnSW5jb25zaXN0ZW50IENPTSB1cGdyYWRlLWZhbWlseSBlbnVtZXJhdGlvbicgfQogaWYoJENvbUNvdW50IC1uZSAwIC1vciAkTmF0aXZlU3RhdHVzIC1uZSAyNTkgLW9yICROYXRpdmVDb2RlIC1jbmUgJycpIHsgdGhyb3cgJ1JlZnVzaW5nIGV4aXN0aW5nLCBpbmNvbnNpc3RlbnQgb3IgdW5rbm93biBHUFVJIHVwZ3JhZGUtZmFtaWx5IHN0YXRlJyB9Cn0KZnVuY3Rpb24gU25hcHNob3QgewogJGluc3RhbmNlcz1AKCkKIGZvcmVhY2goJHNjb3BlIGluIEAoMyw0KSkgewogICRxdWVyeVNpZD1pZigkc2NvcGUgLWVxIDQpeyRudWxsfWVsc2V7JHNpZH0KICBmb3IoW3VpbnQzMl0kaT0wOyRpIC1sdCA0OyRpKyspIHsKICAgJGZvdW5kPVtUZXh0LlN0cmluZ0J1aWxkZXJdOjpuZXcoMzkpOyR1c2VyPVtUZXh0LlN0cmluZ0J1aWxkZXJdOjpuZXcoMjU2KTtbdWludDMyXSRsZW5ndGg9MjU2O1t1aW50MzJdJGNvbnRleHQ9MAogICAkcmM9W0dQVUlSZWdpc3RyYXRpb25BcGldOjpNc2lFbnVtUHJvZHVjdHNFeFcoJGNvZGUsJHF1ZXJ5U2lkLCRzY29wZSwkaSwkZm91bmQsW3JlZl0kY29udGV4dCwkdXNlcixbcmVmXSRsZW5ndGgpCiAgIGlmKCRyYyAtZXEgMjU5IC1vciAkcmMgLWVxIDE2MDUpe2JyZWFrfQogICBpZigkcmMgLW5lIDApe3Rocm93ICJFeGFjdC1wcm9kdWN0IGVudW1lcmF0aW9uIGZhaWxlZDogJHJjIn0KICAgaWYoJGZvdW5kLlRvU3RyaW5nKCkgLWNuZSAkY29kZSl7dGhyb3cgJ1VuZXhwZWN0ZWQgcHJvZHVjdCBlbnVtZXJhdGlvbid9CiAgICRxdWVyeVVzZXI9aWYoJGNvbnRleHQgLWVxIDQpeyRudWxsfWVsc2V7JHVzZXIuVG9TdHJpbmcoKX0KICAgJHByb3BlcnRpZXM9QHt9CiAgIGZvcmVhY2goJG5hbWUgaW4gQCgnSW5zdGFsbGVkUHJvZHVjdE5hbWUnLCdWZXJzaW9uU3RyaW5nJywnSW5zdGFsbExvY2F0aW9uJywnQXNzaWdubWVudFR5cGUnLCdTdGF0ZScsJ0xvY2FsUGFja2FnZScpKSB7CiAgICAkdmFsdWU9W1RleHQuU3RyaW5nQnVpbGRlcl06Om5ldyg0MDk2KTtbdWludDMyXSRzaXplPTQwOTYKICAgICRzdGF0dXM9W0dQVUlSZWdpc3RyYXRpb25BcGldOjpNc2lHZXRQcm9kdWN0SW5mb0V4VygkY29kZSwkcXVlcnlVc2VyLCRjb250ZXh0LCRuYW1lLCR2YWx1ZSxbcmVmXSRzaXplKQogICAgJHByb3BlcnRpZXNbJG5hbWVdPUB7c3RhdHVzPSRzdGF0dXM7dmFsdWU9JHZhbHVlLlRvU3RyaW5nKCl9CiAgIH0KICAgJGluc3RhbmNlcys9QHtwcm9kdWN0PSRmb3VuZC5Ub1N0cmluZygpO2NvbnRleHQ9JGNvbnRleHQ7c2lkPSR1c2VyLlRvU3RyaW5nKCk7cHJvcGVydGllcz0kcHJvcGVydGllc30KICB9CiB9CiAkcmVnaXN0cnk9QCgpCiBmb3JlYWNoKCRoaXZlIGluIEAoW01pY3Jvc29mdC5XaW4zMi5SZWdpc3RyeUhpdmVdOjpDdXJyZW50VXNlcixbTWljcm9zb2Z0LldpbjMyLlJlZ2lzdHJ5SGl2ZV06OkxvY2FsTWFjaGluZSkpIHsKICBmb3JlYWNoKCR2aWV3IGluIEAoW01pY3Jvc29mdC5XaW4zMi5SZWdpc3RyeVZpZXddOjpSZWdpc3RyeTMyLFtNaWNyb3NvZnQuV2luMzIuUmVnaXN0cnlWaWV3XTo6UmVnaXN0cnk2NCkpIHsKICAgJHBhdGhzPUAoIlNvZnR3YXJlXE1pY3Jvc29mdFxXaW5kb3dzXEN1cnJlbnRWZXJzaW9uXFVuaW5zdGFsbFwkY29kZSIpCiAgIGlmKCRoaXZlIC1lcSBbTWljcm9zb2Z0LldpbjMyLlJlZ2lzdHJ5SGl2ZV06OkxvY2FsTWFjaGluZSl7JHBhdGhzKz0iU29mdHdhcmVcTWljcm9zb2Z0XFdpbmRvd3NcQ3VycmVudFZlcnNpb25cSW5zdGFsbGVyXFVzZXJEYXRhXCRzaWRcUHJvZHVjdHNcJHBhY2tlZFxJbnN0YWxsUHJvcGVydGllcyJ9CiAgICRiYXNlPVtNaWNyb3NvZnQuV2luMzIuUmVnaXN0cnlLZXldOjpPcGVuQmFzZUtleSgkaGl2ZSwkdmlldykKICAgdHJ5IHsKICAgIGZvcmVhY2goJHBhdGggaW4gJHBhdGhzKSB7CiAgICAgJGtleT0kYmFzZS5PcGVuU3ViS2V5KCRwYXRoLCRmYWxzZSkKICAgICB0cnkgewogICAgICAkdmFsdWVzPUB7fQogICAgICBpZigkbnVsbCAtbmUgJGtleSl7Zm9yZWFjaCgkbmFtZSBpbiBAKCdEaXNwbGF5TmFtZScsJ0Rpc3BsYXlWZXJzaW9uJywnSW5zdGFsbExvY2F0aW9uJywnVW5pbnN0YWxsU3RyaW5nJywnUXVpZXRVbmluc3RhbGxTdHJpbmcnLCdXaW5kb3dzSW5zdGFsbGVyJywnU3lzdGVtQ29tcG9uZW50JywnTm9SZW1vdmUnLCdOb01vZGlmeScpKXskdmFsdWVzWyRuYW1lXT0ka2V5LkdldFZhbHVlKCRuYW1lLCRudWxsLFtNaWNyb3NvZnQuV2luMzIuUmVnaXN0cnlWYWx1ZU9wdGlvbnNdOjpEb05vdEV4cGFuZEVudmlyb25tZW50TmFtZXMpfX0KICAgICAgJHJlZ2lzdHJ5Kz1Ae2hpdmU9W3N0cmluZ10kaGl2ZTt2aWV3PVtzdHJpbmddJHZpZXc7cGF0aD0kcGF0aDtwcmVzZW50PSgkbnVsbCAtbmUgJGtleSk7dmFsdWVzPSR2YWx1ZXN9CiAgICAgfSBmaW5hbGx5IHtpZigkbnVsbCAtbmUgJGtleSl7JGtleS5EaXNwb3NlKCl9fQogICAgfQogICB9IGZpbmFsbHkgeyRiYXNlLkRpc3Bvc2UoKX0KICB9CiB9CiByZXR1cm4gQHtpbnN0YW5jZXM9JGluc3RhbmNlcztyZWdpc3RyeT0kcmVnaXN0cnk7ZGlyZWN0b3J5X3ByZXNlbnQ9KFRlc3QtUGF0aCAtTGl0ZXJhbFBhdGggJGZvbGRlcil9Cn0KJGluc3RhbGxlcj1OZXctT2JqZWN0IC1Db21PYmplY3QgV2luZG93c0luc3RhbGxlci5JbnN0YWxsZXIKZnVuY3Rpb24gUmVhZC1Qcm9wZXJ0eShbc3RyaW5nXSRuYW1lKSB7CiAkZGI9JG51bGw7JHZpZXc9JG51bGw7JHJlY29yZD0kbnVsbAogdHJ5IHsKICAkZGI9JGluc3RhbGxlci5PcGVuRGF0YWJhc2UoJE1zaSwwKTskdmlldz0kZGIuT3BlblZpZXcoIlNFTEVDVCBgYFZhbHVlYGAgRlJPTSBgYFByb3BlcnR5YGAgV0hFUkUgYGBQcm9wZXJ0eWBgPSckbmFtZSciKQogIFt2b2lkXSR2aWV3LkV4ZWN1dGUoKTskcmVjb3JkPSR2aWV3LkZldGNoKCk7aWYoJG51bGwgLWVxICRyZWNvcmQpe3JldHVybiAnJ307cmV0dXJuICRyZWNvcmQuU3RyaW5nRGF0YSgxKQogfSBmaW5hbGx5IHsKICB0cnkge2lmKCRudWxsIC1uZSAkdmlldyl7W3ZvaWRdJHZpZXcuQ2xvc2UoKX19CiAgZmluYWxseSB7Zm9yZWFjaCgkY29tIGluIEAoJHJlY29yZCwkdmlldywkZGIpKXtpZigkbnVsbCAtbmUgJGNvbSl7W3ZvaWRdW1J1bnRpbWUuSW50ZXJvcFNlcnZpY2VzLk1hcnNoYWxdOjpGaW5hbFJlbGVhc2VDb21PYmplY3QoJGNvbSl9fX0KIH0KfQpmdW5jdGlvbiBSdW4tRXhhY3RNc2koW3N0cmluZ10kb3BlcmF0aW9uLFtzdHJpbmddJHRhcmdldCxbc3RyaW5nXSRsYWJlbCkgewogJHA9U3RhcnQtUHJvY2VzcyAiJGVudjpTeXN0ZW1Sb290XFN5c3RlbTMyXG1zaWV4ZWMuZXhlIiAtQXJndW1lbnRMaXN0IEAoJG9wZXJhdGlvbiwiYCIkdGFyZ2V0YCIiLCcvcW4nLCcvbm9yZXN0YXJ0JywnL2wqdicsImAiJChKb2luLVBhdGggJG91dCAiJGxhYmVsLmxvZyIpYCIiKSAtUGFzc1RocnUKIHRyeSB7aWYoLW5vdCAkcC5XYWl0Rm9yRXhpdCgxMjAwMDApKXsgJHAuS2lsbCgpO3Rocm93ICIkbGFiZWwgdGltZWQgb3V0IChzZXJ2aWNlIGNsZWFudXAgc3RpbGwgcmVxdWlyZWQpIiB9O3JldHVybiAkcC5FeGl0Q29kZX0KIGZpbmFsbHkgeyRwLkRpc3Bvc2UoKX0KfQokcmVzdWx0PUB7cHJvZHVjdD0kY29kZTtzb3VyY2U9Jzg4MTllMmVjMTMyNzYwMDQ3MjA5ZTlkY2ZmNzM0MWM1ZjhhMTVmOTQnO2N1cnJlbnRfc2lkPSRzaWQ7YWN0dWFsX2luc3RhbGxlZF9hcHBzX3VpX3Rlc3RlZD0kZmFsc2U7cmVnaXN0cnlfdW5pbnN0YWxsX3N0cmluZ3NfZXhlY3V0ZWQ9JGZhbHNlfQokYXR0ZW1wdGVkPSRmYWxzZQp0cnkgewogaWYoKFJlYWQtUHJvcGVydHkgJ1Byb2R1Y3RDb2RlJykgLWNuZSAkY29kZSAtb3IgKFJlYWQtUHJvcGVydHkgJ1VwZ3JhZGVDb2RlJykgLWNuZSAnezc1NDhBN0NCLUY3MEItNEFFNy1BNUYwLUY5NTJENDVBQTgyNn0nIC1vciAoUmVhZC1Qcm9wZXJ0eSAnQUxMVVNFUlMnKSAtY25lICcnIC1vciAoUmVhZC1Qcm9wZXJ0eSAnUHJvZHVjdE5hbWUnKSAtY25lICdYZW5UZXJtLU5leHQgR1BVSScgLW9yIChSZWFkLVByb3BlcnR5ICdQcm9kdWN0VmVyc2lvbicpIC1jbmUgJzEwNi4yMjcuNDE2MTYnKXt0aHJvdyAnUGlubmVkIGlkZW50aXR5IG1pc21hdGNoJ30KICRyZWxhdGVkPSRudWxsCiB0cnkgewogICRyZWxhdGVkPSRpbnN0YWxsZXIuUmVsYXRlZFByb2R1Y3RzKCd7NzU0OEE3Q0ItRjcwQi00QUU3LUE1RjAtRjk1MkQ0NUFBODI2fScpCiAgJGNvdW50PSRyZWxhdGVkLkdldFR5cGUoKS5JbnZva2VNZW1iZXIoJ0NvdW50JyxbUmVmbGVjdGlvbi5CaW5kaW5nRmxhZ3NdOjpHZXRQcm9wZXJ0eSwkbnVsbCwkcmVsYXRlZCwkbnVsbCkKICAkaXRlbXM9QCgpCiAgZm9yZWFjaCgkaXRlbSBpbiAkcmVsYXRlZCl7aWYoJGl0ZW1zLkNvdW50IC1nZSAxMDApe3Rocm93ICdVcGdyYWRlLWZhbWlseSBlbnVtZXJhdGlvbiBleGNlZWRlZCBib3VuZCd9OyRpdGVtcys9LCRpdGVtfQogICRuYXRpdmVDb2RlPVtUZXh0LlN0cmluZ0J1aWxkZXJdOjpuZXcoMzkpCiAgW3VpbnQzMl0kbmF0aXZlU3RhdHVzPVtHUFVJUmVnaXN0cmF0aW9uQXBpXTo6TXNpRW51bVJlbGF0ZWRQcm9kdWN0c1coJ3s3NTQ4QTdDQi1GNzBCLTRBRTctQTVGMC1GOTUyRDQ1QUE4MjZ9JywwLDAsJG5hdGl2ZUNvZGUpCiAgJHJlc3VsdC5mYW1pbHlfYmVmb3JlPUB7ZGlzcGF0Y2hfY291bnQ9JGNvdW50O2NvbV9pdGVtcz0kaXRlbXM7bmF0aXZlX3N0YXR1cz0kbmF0aXZlU3RhdHVzO25hdGl2ZV9jb2RlPSRuYXRpdmVDb2RlLlRvU3RyaW5nKCl9CiAgQXNzZXJ0LUVtcHR5RmFtaWx5ICRjb3VudCAkaXRlbXMgJG5hdGl2ZVN0YXR1cyAkbmF0aXZlQ29kZS5Ub1N0cmluZygpCiB9IGZpbmFsbHkge2lmKCRudWxsIC1uZSAkcmVsYXRlZCAtYW5kIFtSdW50aW1lLkludGVyb3BTZXJ2aWNlcy5NYXJzaGFsXTo6SXNDb21PYmplY3QoJHJlbGF0ZWQpKXtbdm9pZF1bUnVudGltZS5JbnRlcm9wU2VydmljZXMuTWFyc2hhbF06OkZpbmFsUmVsZWFzZUNvbU9iamVjdCgkcmVsYXRlZCl9fQogJHJlc3VsdC5iZWZvcmU9U25hcHNob3QKIGlmKCRyZXN1bHQuYmVmb3JlLmluc3RhbmNlcy5Db3VudCAtbmUgMCAtb3IgQCgkcmVzdWx0LmJlZm9yZS5yZWdpc3RyeXxXaGVyZS1PYmplY3QgcHJlc2VudCkuQ291bnQgLW5lIDApe3Rocm93ICdSZWZ1c2luZyBhbnkgcHJlZXhpc3RpbmcgZXhhY3QgcHJvZHVjdCByZWdpc3RyYXRpb24nfQogJGF0dGVtcHRlZD0kdHJ1ZQogJHJlc3VsdC5pbnN0YWxsX2V4aXQ9UnVuLUV4YWN0TXNpICcvaScgJE1zaSAnaW5zdGFsbCcKIGlmKCRyZXN1bHQuaW5zdGFsbF9leGl0IC1ub3RpbiBAKDAsMzAxMCkpe3Rocm93ICJJbnN0YWxsYXRpb24gZmFpbGVkOiAkKCRyZXN1bHQuaW5zdGFsbF9leGl0KSJ9CiAkcmVzdWx0Lmluc3RhbGxlZD1TbmFwc2hvdAp9IGNhdGNoIHskcmVzdWx0LmVycm9yPSRfLkV4Y2VwdGlvbi5NZXNzYWdlO3Rocm93fQpmaW5hbGx5IHsKIHRyeSB7CiAgaWYoJGF0dGVtcHRlZCl7CiAgICRyZXN1bHQuY2xlYW51cF9leGl0PVJ1bi1FeGFjdE1zaSAnL3gnICRjb2RlICdjbGVhbnVwJwogICAkcmVzdWx0LmFmdGVyX2NsZWFudXA9U25hcHNob3QKICAgaWYoJHJlc3VsdC5jbGVhbnVwX2V4aXQgLW5vdGluIEAoMCwzMDEwKSAtb3IgJHJlc3VsdC5hZnRlcl9jbGVhbnVwLmluc3RhbmNlcy5Db3VudCAtbmUgMCAtb3IgQCgkcmVzdWx0LmFmdGVyX2NsZWFudXAucmVnaXN0cnl8V2hlcmUtT2JqZWN0IHByZXNlbnQpLkNvdW50IC1uZSAwIC1vciAkcmVzdWx0LmFmdGVyX2NsZWFudXAuZGlyZWN0b3J5X3ByZXNlbnQpe3Rocm93ICdFeGFjdC1wcm9kdWN0IGNsZWFudXAgaW5jb21wbGV0ZTsgcmV0YWluZWQgZGlhZ25vc3RpYyBkZXNjcmliZXMgcmVtYWluaW5nIHN0YXRlJ30KICB9CiB9IGNhdGNoIHskcmVzdWx0LmNsZWFudXBfZXJyb3I9JF8uRXhjZXB0aW9uLk1lc3NhZ2U7dGhyb3d9CiBmaW5hbGx5IHsKICBbdm9pZF1bUnVudGltZS5JbnRlcm9wU2VydmljZXMuTWFyc2hhbF06OkZpbmFsUmVsZWFzZUNvbU9iamVjdCgkaW5zdGFsbGVyKQogICRieXRlcz1bVGV4dC5VVEY4RW5jb2RpbmddOjpuZXcoJGZhbHNlKS5HZXRCeXRlcygoJHJlc3VsdHxDb252ZXJ0VG8tSnNvbiAtRGVwdGggMTIpKQogICRzdHJlYW09W0lPLkZpbGVdOjpPcGVuKChKb2luLVBhdGggJG91dCAncmVnaXN0cmF0aW9uLmpzb24nKSxbSU8uRmlsZU1vZGVdOjpDcmVhdGVOZXcsW0lPLkZpbGVBY2Nlc3NdOjpXcml0ZSxbSU8uRmlsZVNoYXJlXTo6Tm9uZSkKICB0cnkgeyRzdHJlYW0uV3JpdGUoJGJ5dGVzLDAsJGJ5dGVzLkxlbmd0aCl9ZmluYWxseXskc3RyZWFtLkRpc3Bvc2UoKX0KIH0KfQo='))
+        [IO.File]::WriteAllText($script,$content,[Text.UTF8Encoding]::new($false))
+        & { param($Script)
         Set-StrictMode -Version Latest
         $ErrorActionPreference='Stop'
-        if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted') { throw 'Disposable hosted runner required' }
-        $Msi=(Resolve-Path -LiteralPath $Msi).Path
-        if ((Get-Item -LiteralPath $Msi).Length -ne 38707200 -or (Get-FileHash -LiteralPath $Msi -Algorithm SHA256).Hash.ToLowerInvariant() -ne '8b14daacda30f49d54a4bdce6ae0af439e48a8097a0b7077dc4d619b0719057c') { throw 'Wrong retained old MSI' }
-        $code='{5FE800A9-0163-42ED-822A-34D78D542EEC}'
-        $packed='9A008EF53610DE2428A2437DD845E2CE'
-        $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-        $folder=Join-Path $env:LOCALAPPDATA 'Programs\XenTerm-Next GPUI'
-        if (Test-Path -LiteralPath $folder) { throw 'Refusing preexisting GPUI directory' }
-        foreach($link in @((Join-Path ([Environment]::GetFolderPath('Programs')) 'XenTerm-Next GPUI'),(Join-Path ([Environment]::GetFolderPath('DesktopDirectory')) 'XenTerm-Next GPUI.lnk'))) {
-         if(Test-Path -LiteralPath $link){throw 'Refusing preexisting GPUI shortcut'}
-        }
-        foreach($view in @([Microsoft.Win32.RegistryView]::Registry32,[Microsoft.Win32.RegistryView]::Registry64)) {
-         $base=[Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::CurrentUser,$view)
-         $anchor=$null
-         try {
-          $anchor=$base.OpenSubKey('Software\XenTerm-Next\GPUI\Installer',$false)
-          if($null -ne $anchor){throw 'Refusing preexisting GPUI installer anchor in either current-user registry view'}
-         } finally {if($null -ne $anchor){$anchor.Dispose()};$base.Dispose()}
-        }
-        $out=Join-Path $env:RUNNER_TEMP 'gpui-registration-observation'
-        if (Test-Path -LiteralPath $out) { throw 'Refusing existing evidence directory' }
-        [void][IO.Directory]::CreateDirectory($out)
-        Add-Type -TypeDefinition @'
-        using System;
-        using System.Text;
-        using System.Runtime.InteropServices;
-        public static class GPUIRegistrationApi {
-         [DllImport("msi.dll",CharSet=CharSet.Unicode,ExactSpelling=true)]
-         public static extern uint MsiEnumProductsExW(string code,string sid,uint context,uint index,StringBuilder foundCode,out uint foundContext,StringBuilder foundSid,ref uint sidLength);
-         [DllImport("msi.dll",CharSet=CharSet.Unicode,ExactSpelling=true)]
-         public static extern uint MsiGetProductInfoExW(string code,string sid,uint context,string property,StringBuilder value,ref uint length);
-        }
-        '@
-        function Snapshot {
-         $instances=@()
-         foreach($scope in @(3,4)) {
-          $querySid=if($scope -eq 4){$null}else{$sid}
-          for([uint32]$i=0;$i -lt 4;$i++) {
-           $found=[Text.StringBuilder]::new(39);$user=[Text.StringBuilder]::new(256);[uint32]$length=256;[uint32]$context=0
-           $rc=[GPUIRegistrationApi]::MsiEnumProductsExW($code,$querySid,$scope,$i,$found,[ref]$context,$user,[ref]$length)
-           if($rc -eq 259 -or $rc -eq 1605){break}
-           if($rc -ne 0){throw "Exact-product enumeration failed: $rc"}
-           if($found.ToString() -cne $code){throw 'Unexpected product enumeration'}
-           $queryUser=if($context -eq 4){$null}else{$user.ToString()}
-           $properties=@{}
-           foreach($name in @('InstalledProductName','VersionString','InstallLocation','AssignmentType','State','LocalPackage')) {
-            $value=[Text.StringBuilder]::new(4096);[uint32]$size=4096
-            $status=[GPUIRegistrationApi]::MsiGetProductInfoExW($code,$queryUser,$context,$name,$value,[ref]$size)
-            $properties[$name]=@{status=$status;value=$value.ToString()}
-           }
-           $instances+=@{product=$found.ToString();context=$context;sid=$user.ToString();properties=$properties}
-          }
-         }
-         $registry=@()
-         foreach($hive in @([Microsoft.Win32.RegistryHive]::CurrentUser,[Microsoft.Win32.RegistryHive]::LocalMachine)) {
-          foreach($view in @([Microsoft.Win32.RegistryView]::Registry32,[Microsoft.Win32.RegistryView]::Registry64)) {
-           $paths=@("Software\Microsoft\Windows\CurrentVersion\Uninstall\$code")
-           if($hive -eq [Microsoft.Win32.RegistryHive]::LocalMachine){$paths+="Software\Microsoft\Windows\CurrentVersion\Installer\UserData\$sid\Products\$packed\InstallProperties"}
-           $base=[Microsoft.Win32.RegistryKey]::OpenBaseKey($hive,$view)
-           try {
-            foreach($path in $paths) {
-             $key=$base.OpenSubKey($path,$false)
-             try {
-              $values=@{}
-              if($null -ne $key){foreach($name in @('DisplayName','DisplayVersion','InstallLocation','UninstallString','QuietUninstallString','WindowsInstaller','SystemComponent','NoRemove','NoModify')){$values[$name]=$key.GetValue($name,$null,[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)}}
-              $registry+=@{hive=[string]$hive;view=[string]$view;path=$path;present=($null -ne $key);values=$values}
-             } finally {if($null -ne $key){$key.Dispose()}}
-            }
-           } finally {$base.Dispose()}
-          }
-         }
-         return @{instances=$instances;registry=$registry;directory_present=(Test-Path -LiteralPath $folder)}
-        }
-        $installer=New-Object -ComObject WindowsInstaller.Installer
-        function Read-Property([string]$name) {
-         $db=$null;$view=$null;$record=$null
-         try {
-          $db=$installer.OpenDatabase($Msi,0);$view=$db.OpenView("SELECT ``Value`` FROM ``Property`` WHERE ``Property``='$name'")
-          [void]$view.Execute();$record=$view.Fetch();if($null -eq $record){return ''};return $record.StringData(1)
-         } finally {
-          try {if($null -ne $view){[void]$view.Close()}}
-          finally {foreach($com in @($record,$view,$db)){if($null -ne $com){[void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($com)}}}
-         }
-        }
-        function Run-ExactMsi([string]$operation,[string]$target,[string]$label) {
-         $p=Start-Process "$env:SystemRoot\System32\msiexec.exe" -ArgumentList @($operation,"`"$target`"",'/qn','/norestart','/l*v',"`"$(Join-Path $out "$label.log")`"") -PassThru
-         try {if(-not $p.WaitForExit(120000)){ $p.Kill();throw "$label timed out (service cleanup still required)" };return $p.ExitCode}
-         finally {$p.Dispose()}
-        }
-        $result=@{product=$code;source='8819e2ec132760047209e9dcff7341c5f8a15f94';current_sid=$sid;actual_installed_apps_ui_tested=$false;registry_uninstall_strings_executed=$false}
-        $attempted=$false
-        try {
-         if((Read-Property 'ProductCode') -cne $code -or (Read-Property 'UpgradeCode') -cne '{7548A7CB-F70B-4AE7-A5F0-F952D45AA826}' -or (Read-Property 'ALLUSERS') -cne '' -or (Read-Property 'ProductName') -cne 'XenTerm-Next GPUI' -or (Read-Property 'ProductVersion') -cne '106.227.41616'){throw 'Pinned identity mismatch'}
-         $related=$null
-         try {
-          $related=$installer.RelatedProducts('{7548A7CB-F70B-4AE7-A5F0-F952D45AA826}')
-          if($related.Count -ne 0){throw 'Refusing any existing GPUI upgrade-family product'}
-         } finally {if($null -ne $related -and [Runtime.InteropServices.Marshal]::IsComObject($related)){[void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($related)}}
-         $result.before=Snapshot
-         if($result.before.instances.Count -ne 0 -or @($result.before.registry|Where-Object present).Count -ne 0){throw 'Refusing any preexisting exact product registration'}
-         $attempted=$true
-         $result.install_exit=Run-ExactMsi '/i' $Msi 'install'
-         if($result.install_exit -notin @(0,3010)){throw "Installation failed: $($result.install_exit)"}
-         $result.installed=Snapshot
-        } catch {$result.error=$_.Exception.Message;throw}
-        finally {
-         try {
-          if($attempted){
-           $result.cleanup_exit=Run-ExactMsi '/x' $code 'cleanup'
-           $result.after_cleanup=Snapshot
-           if($result.cleanup_exit -notin @(0,3010) -or $result.after_cleanup.instances.Count -ne 0 -or @($result.after_cleanup.registry|Where-Object present).Count -ne 0 -or $result.after_cleanup.directory_present){throw 'Exact-product cleanup incomplete; retained diagnostic describes remaining state'}
-          }
-         } catch {$result.cleanup_error=$_.Exception.Message;throw}
-         finally {
-          [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($installer)
-          $bytes=[Text.UTF8Encoding]::new($false).GetBytes(($result|ConvertTo-Json -Depth 12))
-          $stream=[IO.File]::Open((Join-Path $out 'registration.json'),[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
-          try {$stream.Write($bytes,0,$bytes.Length)}finally{$stream.Dispose()}
-         }
-        }
+        $tokens=$null;$errors=$null
+        $ast=[Management.Automation.Language.Parser]::ParseFile((Resolve-Path -LiteralPath $Script).Path,[ref]$tokens,[ref]$errors)
+        if($errors.Count -ne 0){throw 'Probe parse errors'}
+        $functions=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Assert-EmptyFamily'},$true))
+        if($functions.Count -ne 1){throw 'Expected exactly one family guard'}
+        . ([scriptblock]::Create($functions[0].Extent.Text))
+        $passed=0
+        function Reject([scriptblock]$case){$rejected=$false;try{& $case}catch{$rejected=$true};if(-not $rejected){throw 'Unsafe family evidence accepted'}}
+        # Observed COM adapter .Count was null, but explicit dispatch Count was int 0.
+        $adapter=[pscustomobject]@{Count=$null;DispatchCount=[int]0;Items=@()}
+        if(-not ($adapter.Count -ne 0)){throw 'Old expression negative control unexpectedly changed'}
+        Assert-EmptyFamily $adapter.DispatchCount $adapter.Items ([uint32]259) ''; $passed++
+        Reject {Assert-EmptyFamily $null @() ([uint32]259) ''};$passed++
+        Reject {Assert-EmptyFamily '0' @() ([uint32]259) ''};$passed++
+        Reject {Assert-EmptyFamily -1 @() ([uint32]259) ''};$passed++
+        Reject {Assert-EmptyFamily 0 $null ([uint32]259) ''};$passed++
+        Reject {Assert-EmptyFamily 1 @('{5FE800A9-0163-42ED-822A-34D78D542EEC}') ([uint32]0) '{5FE800A9-0163-42ED-822A-34D78D542EEC}'};$passed++
+        Reject {Assert-EmptyFamily 0 @('unexpected') ([uint32]259) ''};$passed++
+        Reject {Assert-EmptyFamily 0 @() ([uint32]0) '{5FE800A9-0163-42ED-822A-34D78D542EEC}'};$passed++
+        Reject {Assert-EmptyFamily 0 @() ([uint32]1603) ''};$passed++
+        Reject {Assert-EmptyFamily 0 @() ([uint32]259) 'unexpected'};$passed++
+        Reject {Assert-EmptyFamily 0 @() $null ''};$passed++
+        Reject {Assert-EmptyFamily 0 @() 259 ''};$passed++
+        if($passed -ne 12){throw 'Missing guard tests'}
+        Write-Output "Family guard regression passed: $passed"
 
-        } -Msi (Join-Path $env:RUNNER_TEMP 'gpui-registration-input/input-0.msi')
+        } $script
+        & $script -Msi (Join-Path $env:RUNNER_TEMP 'gpui-registration-input/input-0.msi')
     - name: Keep registration and cleanup evidence (not acceptance or release)
       if: always()
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
