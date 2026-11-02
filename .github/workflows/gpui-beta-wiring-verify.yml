@@ -1,0 +1,78 @@
+name: Validate actual beta builder without publication
+'on':
+  push:
+    branches:
+    - validation/gpui-beta-wiring-20261102
+    paths:
+    - .github/workflows/gpui-beta-wiring-verify.yml
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: gpui-msi-only-${{ github.repository }}
+  cancel-in-progress: false
+jobs:
+  source-proof:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+    - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
+      with:
+        script: "const owner='xue-ding-e',repo='XenTerm-Next';\nconst base=\"5ea9c21a594006c32ab32d3268121d463d89a975\",source=\"\
+          89dc5bce82cdc0191948e687391758272e1801c7\",chain=[{\"sha\": \"c7d47e05ef776be240b1c43cfdc243d8d0acc36e\", \"tree\"\
+          : \"c9fd6291847f93fd493a48cda0e1c983a1dffd2e\", \"parent\": \"5ea9c21a594006c32ab32d3268121d463d89a975\"}, {\"sha\"\
+          : \"7f59be4a22a750db69fa6e822f99fd150e04b642\", \"tree\": \"0c37cdcb68589394f99daeee6cd67baa139f74ad\", \"parent\"\
+          : \"c7d47e05ef776be240b1c43cfdc243d8d0acc36e\"}, {\"sha\": \"6a6c59f0364f1f15f037c10611b1c57055e2534f\", \"tree\"\
+          : \"3eadbc203833528ef85a5439448986fe85d78253\", \"parent\": \"7f59be4a22a750db69fa6e822f99fd150e04b642\"}, {\"sha\"\
+          : \"4400363a2e5589b61271632c454a318affb64bbf\", \"tree\": \"f9ae73f6b8b7d2838fcc9cd715dd8fbff46be276\", \"parent\"\
+          : \"6a6c59f0364f1f15f037c10611b1c57055e2534f\"}, {\"sha\": \"bd205f967c4e54e96cb7d8dd96122ed877472c9d\", \"tree\"\
+          : \"6aad6759b839a89e3626531e3968de7fe8a33238\", \"parent\": \"4400363a2e5589b61271632c454a318affb64bbf\"}, {\"sha\"\
+          : \"89dc5bce82cdc0191948e687391758272e1801c7\", \"tree\": \"34676db65d547c717c5581c4ef6f3bd8e2095e31\", \"parent\"\
+          : \"bd205f967c4e54e96cb7d8dd96122ed877472c9d\"}],allowed={\"scripts/gpui_msi_coexistence_sentinels.ps1\": \"fdf3a3c342e47992a8d93902c50e116371e8c14d\"\
+          , \"scripts/gpui_msi_gui_observation.ps1\": \"2869264c05f8f8d6cd6bd2527017f9b9809216ed\", \"scripts/gpui_msi_profile_evidence.py\"\
+          : \"660af1211e4f61ef66581307fe0a5db69af1243e\", \"scripts/gpui_msi_registration_evidence.ps1\": \"eea0acab2afa68c8f8e2627618017f0e0b62d49d\"\
+          , \"scripts/initialize_gpui_test_profile.ps1\": \"3906617a53fab2c0dee0efa0c56eb9ea4ef622c9\", \"scripts/install-wix.ps1\"\
+          : \"b9d5c3f6f5d82e0e9434a6eb7d2c8e7096fd1565\", \"scripts/package_next_gpui_msi.ps1\": \"068dc9bf02148ed44c2e603589f0b67d2e98e45b\"\
+          , \"scripts/packaging_version.py\": \"e99d110b5c271b63f9ec5aa89ecebfea5d88a907\", \"scripts/prepare_next_gpui_msi.py\"\
+          : \"88102f833e73e66e4c76ae6f08b43a351bf6fcc7\", \"scripts/test_next_gpui_msi_e2e.ps1\": \"1342976af42d8d3b8801fe582bdd7956766b5d3e\"\
+          , \"tests/fixtures/gpui-heat-component-group.wxs\": \"f2acdf988236605995e477abd153a42d133f8426\", \"tests/test_gpui_gui_observation.ps1\"\
+          : \"ea98a17bb6e2e5002a407e308db458e73111167b\", \"tests/test_gpui_initialization.ps1\": \"c50c8c35501ec0bd8caabe397fc1d93b905af9dc\"\
+          , \"tests/test_gpui_msi_evidence.py\": \"fc70dbd2b092f4432ca591b0aef310521cdcf9ad\", \"tests/test_gpui_msi_property.ps1\"\
+          : \"c0a663cb8723efc78cb128a5eded91a8a449bb78\", \"tests/test_gpui_native_environment.ps1\": \"ea92d230f007f3b235ece8fc78db57f18f1f74e9\"\
+          , \"tests/test_gpui_profile_environment.ps1\": \"59a2575f5473749816dd24be57470dcf87feb0e8\", \"tests/test_gpui_profile_evidence.py\"\
+          : \"90dfafa722618abfc9bacd6c2d80c23a249a6754\", \"tests/test_gpui_registration.ps1\": \"a560418caed507b369e7cbccb23cad6625e5dd72\"\
+          , \"tests/test_next_gpui_msi.py\": \"ad15bdf0514066ea6f8e9d96a98f5f89e29953d5\", \"tests/test_packaging_version.py\"\
+          : \"43ef2badd368820d4a921b8d76924cd6a1098c21\", \"wix/next-gpui.wxs\": \"53da276ab599cc89b15dbf60e043bff201fbfef7\"\
+          , \".github/workflows/ci.yml\": \"b828619d6fca1cd6fe90bf73497cb042616cd809\", \".github/workflows/next-beta-build.yml\"\
+          : \"ca35889998ba7ea5433b31cee30643c42616faf6\", \"scripts/next_beta.py\": \"b6f77241520f6f264f7e2f887a3ef59fedb641be\"\
+          , \"tests/next_beta_test.py\": \"ac6910ae5cd3ce293f7a7162815c7b76ceaf0979\", \"tests/test_gpui_msi_workflow.py\"\
+          : \"b7d2730bb7fccd0e0fa9e4a7018fef3a6fca39cf\"};\nconst branch='validation/gpui-beta-wiring-20261102',ownPath='.github/workflows/gpui-beta-wiring-verify.yml';\n\
+          function requireThat(ok,msg){if(!ok)throw new Error(msg);}\nrequireThat(context.eventName==='push' && context.repo.owner===owner\
+          \ && context.repo.repo===repo && context.ref==='refs/heads/'+branch,'Wrong event scope');\nconst ref=await github.rest.git.getRef({owner,repo,ref:'heads/'+branch});\n\
+          requireThat(ref.data.object.sha===context.sha && context.payload.after===context.sha && !context.payload.deleted,'Stale\
+          \ event');\nconst main=await github.rest.git.getRef({owner,repo,ref:'heads/main'});\nrequireThat(main.data.object.sha===base,'Main\
+          \ changed; re-review required');\nconst control=(await github.rest.git.getCommit({owner,repo,commit_sha:context.sha})).data;\n\
+          requireThat(control.parents.length===1 && control.parents[0].sha===base,'Controller must only descend from verified\
+          \ main');\nconst delta=(await github.rest.repos.compareCommitsWithBasehead({owner,repo,basehead:base+'...'+context.sha})).data;\n\
+          requireThat(delta.commits.length===1 && delta.files.length===1 && delta.files[0].filename===ownPath && delta.files[0].status==='added','Unexpected\
+          \ control changes');\nfor(const c of chain){const actual=(await github.rest.git.getCommit({owner,repo,commit_sha:c.sha})).data;\n\
+          \ requireThat(actual.sha===c.sha && actual.tree.sha===c.tree && actual.parents.length===1 && actual.parents[0].sha===c.parent,'Wrong\
+          \ source chain');\n requireThat(actual.author.name==='Qing Liang' && actual.author.email==='106448173+xue-ding-e@users.noreply.github.com'\
+          \ && actual.committer.name==='Qing Liang','Unexpected source attribution');}\nconst a=(await github.rest.git.getTree({owner,repo,tree_sha:base,recursive:'1'})).data;\n\
+          const b=(await github.rest.git.getTree({owner,repo,tree_sha:source,recursive:'1'})).data;\nrequireThat(!a.truncated&&!b.truncated,'Truncated\
+          \ trees');\nconst old=new Map(a.tree.filter(x=>x.type!=='tree').map(x=>[x.path,x]));\nconst now=new Map(b.tree.filter(x=>x.type!=='tree').map(x=>[x.path,x]));\n\
+          const changed=[];for(const[path,item]of now){const before=old.get(path);if(!before||before.sha!==item.sha||before.mode!==item.mode)changed.push(path);}\n\
+          requireThat([...old.keys()].every(path=>now.has(path)),'Source deletion');\nrequireThat(changed.length===Object.keys(allowed).length\
+          \ && changed.every(path=>Object.hasOwn(allowed,path)),'Source scope changed');\nfor(const[path,sha]of Object.entries(allowed)){const\
+          \ item=now.get(path);requireThat(item&&item.type==='blob'&&item.mode==='100644'&&item.sha===sha,'Source blob mismatch:\
+          \ '+path);}\ncore.info('Verified current main, six linear installer/release commits, exact 27-file delta, and artifact-only\
+          \ controller.');\n"
+  build:
+    needs: source-proof
+    uses: xue-ding-e/XenTerm-Next/.github/workflows/next-beta-build.yml@89dc5bce82cdc0191948e687391758272e1801c7
+    with:
+      source_sha: 89dc5bce82cdc0191948e687391758272e1801c7
+      ci_run: ${{ format('{0}', github.run_id) }}
+    permissions:
+      contents: read
+      actions: read
