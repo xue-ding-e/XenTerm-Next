@@ -23,6 +23,8 @@ class WorkflowContract(unittest.TestCase):
         self.assertIn('ref: ${{ github.sha }}', self.windows)
         self.assertIn('SOURCE_SHA: ${{ inputs.source_sha }}', self.builder)
         self.assertIn('ref: ${{ inputs.source_sha }}', self.builder)
+        self.assertIn('  prepare:\n    timeout-minutes: 10\n', self.builder)
+        self.assertIn('  verify-artifacts:\n    timeout-minutes: 20\n', self.builder)
         self.assertIn('max-parallel: 1', self.builder)
         self.assertIn('fail-fast: true', self.builder)
         self.assertIn('timeout-minutes: 120', self.windows)

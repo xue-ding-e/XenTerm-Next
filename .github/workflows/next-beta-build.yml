@@ -21,6 +21,7 @@ permissions:
 
 jobs:
   prepare:
+    timeout-minutes: 10
     runs-on: ubuntu-22.04
     outputs:
       xt_version: ${{ steps.version.outputs.xt_version }}
@@ -186,6 +187,7 @@ jobs:
           retention-days: 7
 
   verify-artifacts:
+    timeout-minutes: 20
     needs: [prepare, build]
     runs-on: ubuntu-latest
     env:
