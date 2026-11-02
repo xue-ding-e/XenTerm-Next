@@ -1,0 +1,191 @@
+name: Next Flutter headless Windows validation (artifacts only)
+
+# This is deliberately separate from GPUI's beta publisher and updater.
+# Inherited upstream workflows are retained under .github/upstream-workflows.
+on:
+  push:
+    branches: [validation/flutter-headless-windows-20261102]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: next-product-heavy
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  windows:
+    if: github.repository == 'xue-ding-e/XenTerm-Next' && github.ref == 'refs/heads/validation/flutter-headless-windows-20261102'
+    runs-on: windows-2025
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: source
+    env:
+      # Match the repository identity recorded in all 87 hosted lock entries.
+      # Keep package versions/checksums pinned; do not silently switch registries.
+      PUB_HOSTED_URL: https://pub.flutter-io.cn
+      XT_CHANNEL: dev
+      XENTERM_DATA_DIR: ${{ runner.temp }}/windows-owner-profile
+      CARGO_BUILD_JOBS: '2'
+      # Keep canonical blob bytes for SHA256/rustfmt verification on Windows.
+      # These are per-job Git overrides, never user/global Git configuration.
+      GIT_CONFIG_COUNT: '2'
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: 'false'
+      GIT_CONFIG_KEY_1: core.eol
+      GIT_CONFIG_VALUE_1: lf
+      XT_BASH: 'C:\Program Files\Git\bin\bash.exe'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: control
+          persist-credentials: false
+      - name: Bind the reviewed formatted source
+        id: source
+        working-directory: .
+        shell: pwsh
+        run: |
+          $manifest = Get-Content control/scripts/next/windows_owner_candidate.json -Raw | ConvertFrom-Json
+          $source = $manifest.source_sha
+          if ($source -notmatch '^[0-9a-f]{40}$') { throw 'Draft is not bound to the reviewed formatted source' }
+          "sha=$source" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "XT_SOURCE_SHA=$source" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.source.outputs.sha }}
+          path: source
+          fetch-depth: 3
+          persist-credentials: false
+      - name: Check Windows controller and immutable source identity
+        working-directory: .
+        shell: pwsh
+        run: |
+          python -m unittest discover -s control/scripts/next -p 'test_windows_owner_gate.py'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python control/scripts/next/run_windows_owner_gate.py --source source --manifest control/scripts/next/windows_owner_candidate.json --logs evidence --mode verify
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: dtolnay/rust-toolchain@1.99.1
+        with:
+          components: rustfmt
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.7'
+          channel: stable
+          cache: true
+      - name: Verify source and artifact-only workflow policy
+        shell: pwsh
+        run: |
+          git rev-parse HEAD
+          rustc --version
+          flutter --version
+          python -m unittest discover -s scripts/next -p 'test_*.py'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Check formatting of exactly the eight reviewed core files
+        timeout-minutes: 3
+        shell: pwsh
+        run: |
+          python ../control/scripts/next/run_windows_owner_gate.py --source . --manifest ../control/scripts/next/windows_owner_candidate.json --logs ../evidence --mode format
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Resolve canonical runtime version
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "XT_VERSION=$(bash scripts/version.sh)" >> "$GITHUB_ENV"
+      - name: Resolve and verify Flutter dependencies
+        working-directory: source/apps/xenterm
+        run: flutter pub get --enforce-lockfile
+      - name: Verify dependency resolution did not rewrite the lockfile
+        working-directory: source/apps/xenterm
+        run: git diff --exit-code -- pubspec.lock
+      # Analyze and these injected-source tests do not need the native DLL.
+      # Fail fast here; keep the complete suite and packaged-DLL smoke below.
+      - name: Analyze Flutter
+        working-directory: source/apps/xenterm
+        run: flutter analyze
+      - name: Test exact Flutter runtime regressions (14 required)
+        shell: pwsh
+        run: |
+          python scripts/next/run_flutter_maintenance_regressions.py --suite flutter --expected-source "$env:XT_SOURCE_SHA"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      # Unlike --bin, this explicitly discovers and executes all 13 tunnel
+      # library regressions plus 3 settings regressions and the settings C ABI.
+      - name: Test exact Rust maintenance regressions (17 required)
+        shell: pwsh
+        run: |
+          python scripts/next/run_flutter_maintenance_regressions.py --suite rust --expected-source "$env:XT_SOURCE_SHA"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Test exact headless-owner regressions and full default-feature core
+        timeout-minutes: 25
+        shell: pwsh
+        run: |
+          python ../control/scripts/next/run_windows_owner_gate.py --source . --manifest ../control/scripts/next/windows_owner_candidate.json --logs ../evidence --mode core
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Test Rust bridge
+        run: cargo test --locked -p xenterm-bridge
+      - name: Test CLI profile isolation
+        run: cargo test --locked -p xenterm --bin xenterm
+      - name: Build Rust bridge and CLI/MCP companion
+        run: cargo build --release --locked -p xenterm-bridge -p xenterm
+      - name: Test Flutter
+        working-directory: source/apps/xenterm
+        run: flutter test
+      - name: Build Flutter Windows
+        working-directory: source/apps/xenterm
+        run: flutter build windows --release
+      - name: Bundle native bridge
+        shell: bash
+        run: bash apps/xenterm/tool/bundle_native.sh
+      - name: Bundle and verify CLI/MCP companion
+        shell: pwsh
+        run: |
+          $cli = "$env:GITHUB_WORKSPACE\source\target\release\xenterm.exe"
+          $actual = & $cli --version
+          if ($LASTEXITCODE -ne 0 -or $actual -ne "xenterm $env:XT_VERSION") { throw "CLI version mismatch: $actual" }
+          Copy-Item $cli apps/xenterm/build/windows/x64/runner/Release/xenterm-cli.exe
+      - name: Smoke test packaged native bridge with isolated data
+        shell: pwsh
+        working-directory: source/apps/xenterm
+        run: |
+          $env:XENTERM_BRIDGE_PATH = "$env:GITHUB_WORKSPACE\source\apps\xenterm\build\windows\x64\runner\Release\xenterm_bridge.dll"
+          $env:XENTERM_DATA_DIR = Join-Path $env:RUNNER_TEMP "flutter-smoke-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          flutter test test/native_bridge_smoke_test.dart
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify Windows resources and record runtime prerequisite
+        shell: pwsh
+        run: |
+          $bundle = 'apps/xenterm/build/windows/x64/runner/Release'
+          $gui = (Get-Item "$bundle/xenterm.exe").VersionInfo
+          if ($gui.FileVersion -ne $env:XT_VERSION -or $gui.ProductVersion -ne $env:XT_VERSION) { throw 'GUI resource version differs from CLI/bridge' }
+          $vc = @('HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\VisualStudio\14.0\VC\Runtimes\x64') | ForEach-Object {
+            $entry = Get-ItemProperty $_ -ErrorAction SilentlyContinue
+            if ($entry -and $entry.Installed -eq 1) { [version]($entry.Version -replace '^v', '') }
+          } | Sort-Object -Descending | Select-Object -First 1
+          if (-not $vc) { throw 'Cannot establish Microsoft VC++ runtime prerequisite' }
+          $hashes = @{}
+          foreach ($file in @('xenterm.exe', 'xenterm-cli.exe', 'xenterm_bridge.dll')) {
+            $hashes[$file] = (Get-FileHash "$bundle/$file" -Algorithm SHA256).Hash.ToLowerInvariant()
+          }
+          @{core_version=$env:XT_VERSION; source_sha=$env:XT_SOURCE_SHA; minimum_vc_runtime=$vc.ToString(); windows='Windows 10/11 x64'; runtime_mode='external-prerequisite'; binary_sha256=$hashes; clean_windows_tested=$false} | ConvertTo-Json -Depth 3 | Set-Content "$bundle/WINDOWS-RUNTIME.json" -Encoding utf8NoBOM
+      - name: Package application with explicit runtime prerequisite
+        run: python scripts/next/package_flutter_windows.py --bundle apps/xenterm/build/windows/x64/runner/Release --output ../dist-flutter-owner --version "$env:XT_VERSION"
+      - name: Recheck source identity after all Windows steps
+        if: always()
+        shell: pwsh
+        run: |
+          python ../control/scripts/next/run_windows_owner_gate.py --source . --manifest ../control/scripts/next/windows_owner_candidate.json --logs ../evidence --mode verify
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: XenTerm-Next-Flutter-Owner-${{ steps.source.outputs.sha }}-windows-x86_64
+          path: dist-flutter-owner/*
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-owner-evidence-${{ steps.source.outputs.sha }}-${{ github.run_attempt }}-${{ job.status }}
+          path: evidence/*
+          if-no-files-found: warn
+          retention-days: 14

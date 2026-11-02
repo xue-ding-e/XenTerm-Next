@@ -1,0 +1,48 @@
+{
+  "source_sha": "fd5c0f8ceafb3975710a4c784bba820ddcefdb8b",
+  "source_tree": "a337f6719e7e75ce49ab50dc72f99751fc85ef1b",
+  "parent_sha": "f29ec94af56dc30feaf4a42adc05f8f34880d385",
+  "parent_tree": "4683249102509d1a214c874feb24a2cec395137f",
+  "grandparent_sha": "f29aa3604d5f7af5faa066e6346c01d0a7c305e5",
+  "files": {
+    "crates/xenterm/src/ssh/impls/headless_policy.rs": "18cbd8337a6eab41ff5a64ed8f801dcb34405805497f9a636828f437c5007727",
+    "crates/xenterm/src/ssh/impls/known_hosts.rs": "fec380c2f3f1fc9444e4237353538bc3b9cd9179342fb839ae557b1495174ac8",
+    "crates/xenterm/src/ssh/impls/ssh.rs": "189aeee13da0c92404b3a8ad5a5cf2aba60d5c4a8961ac388e59dbbc36b7040b",
+    "crates/xenterm/src/ssh/mod.rs": "a739184f13924c881dedbeed20e721ee0f8392a3f4f26060ee85ad2203ccfcbd",
+    "crates/xenterm/src/tunnel/impls/forward.rs": "f314b91dcba489baec5609bbd83514f511d77ef607f507bb5f2ee1754058542a",
+    "crates/xenterm/src/tunnel/impls/owner.rs": "29fb107a97f4b299375f4670837df3bc392c9eb0d0bc2356616c0feed89311a5",
+    "crates/xenterm/src/tunnel/impls/owner_tests.rs": "0b2bfa07d0a54eafcb52be9101cfe19f877a216b81cdc93523fe319ca69f899f",
+    "crates/xenterm/src/tunnel/mod.rs": "a18fb31a33adc0cdd944b6a29e471e7562b27400d6194ae3219d0f7ca6d51e5c"
+  },
+  "changed_files": [
+    "crates/xenterm/src/ssh/impls/headless_policy.rs",
+    "crates/xenterm/src/ssh/impls/known_hosts.rs",
+    "crates/xenterm/src/ssh/impls/ssh.rs",
+    "crates/xenterm/src/ssh/mod.rs",
+    "crates/xenterm/src/tunnel/impls/forward.rs",
+    "crates/xenterm/src/tunnel/impls/owner.rs",
+    "crates/xenterm/src/tunnel/impls/owner_tests.rs"
+  ],
+  "new_tests": [
+    "ssh::headless_policy::tests::captured_direct_never_falls_back_to_later_proxy_input",
+    "ssh::headless_policy::tests::changed_trust_changes_private_reuse_identity",
+    "ssh::headless_policy::tests::file_key_paths_never_count_as_reusable_credential_snapshots",
+    "tunnel::owner::tests::unattended_bind_is_loopback_only",
+    "tunnel::owner::tests::reuse_identity_ignores_ui_metadata_but_tracks_selected_route_and_auth",
+    "tunnel::owner::tests::reuse_fingerprint_tracks_only_the_actual_outer_tcp_proxy",
+    "tunnel::owner::tests::cancelled_start_rolls_back_listener_and_pending_proxy_transport",
+    "tunnel::owner::tests::expired_start_rolls_back_without_ever_becoming_ready",
+    "tunnel::owner::tests::owner_shutdown_cancels_a_registered_pending_start",
+    "tunnel::owner::lifecycle_tests::headless_owner_three_node_lifecycle",
+    "tunnel::owner::lifecycle_tests::stalled_start_does_not_block_another_handles_release",
+    "tunnel::owner::lifecycle_tests::cancelled_or_timed_out_key_load_is_joined_before_release_ack"
+  ],
+  "isolated_tests": [
+    "tunnel::owner::tests::cancelled_start_rolls_back_listener_and_pending_proxy_transport",
+    "tunnel::owner::tests::expired_start_rolls_back_without_ever_becoming_ready",
+    "tunnel::owner::tests::owner_shutdown_cancels_a_registered_pending_start",
+    "tunnel::owner::lifecycle_tests::headless_owner_three_node_lifecycle",
+    "tunnel::owner::lifecycle_tests::stalled_start_does_not_block_another_handles_release",
+    "tunnel::owner::lifecycle_tests::cancelled_or_timed_out_key_load_is_joined_before_release_ack"
+  ]
+}
