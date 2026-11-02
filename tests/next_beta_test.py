@@ -103,9 +103,9 @@ def archives(path, manifest_sha=SHA, versions=None):
                  root + 'BUILD.json': json.dumps({'repository': release.REPOSITORY, 'sha': manifest_sha, 'platform': platform,
                                                  'ci_run': '12', 'build_run': '34',
                                                  **((versions or {}).get(platform) or {
-                                                     'version_scheme': 'cargo-legacy', 'runtime_version': '1.2.3',
-                                                     'package_version': '1.2.3', 'version_timestamp': None,
-                                                     'binary_version': 'xenterm 1.2.3'})}).encode()}
+                                                     'version_scheme': 'xt-v1', 'runtime_version': 'xt-beta-aaaaaaa-T1792060000',
+                                                     'package_version': '1.2.3', 'version_timestamp': 1792060000,
+                                                     'binary_version': 'xenterm xt-beta-aaaaaaa-T1792060000'})}).encode()}
         output = path / (release.prefix(SHA) + platform + suffix)
         if suffix == '.zip':
             with zipfile.ZipFile(output, 'w') as archive:
@@ -115,6 +115,22 @@ def archives(path, manifest_sha=SHA, versions=None):
                 for name, data in files.items():
                     item = tarfile.TarInfo(name); item.size = len(data)
                     archive.addfile(item, io.BytesIO(data))
+
+
+    # Structural MSI/receipt fixtures test admission only, never native install.
+    name = release.prefix(SHA) + 'windows-x86_64.msi'
+    msi = path / name
+    msi.write_bytes(bytes.fromhex('d0cf11e0a1b11ae1') + b'unit fixture, not runnable')
+    with zipfile.ZipFile(path / (release.prefix(SHA) + 'windows-x86_64.zip')) as archive:
+        root = release.prefix(SHA) + 'windows-x86_64/'
+        info = json.loads(archive.read(root + 'BUILD.json'))
+        receipt = dict(product='XenTerm-Next GPUI', source_sha=manifest_sha,
+                       runtime_version=info['runtime_version'], package_version=info['package_version'],
+                       installer_version=release.installer_version(info), upgrade_test_fixture=False,
+                       sha256=release.digest(msi),
+                       payload=[dict(path=n[len(root):], sha256=release.hashlib.sha256(archive.read(n)).hexdigest())
+                                for n in archive.namelist()])
+    (path / (name + '.json')).write_text(json.dumps(receipt))
 
 
 class ReleaseSelectionTests(unittest.TestCase):
@@ -205,11 +221,23 @@ class GateTests(unittest.TestCase):
 
 
 class AssetTests(unittest.TestCase):
+    def test_msi_source_hash_and_payload_are_bound(self):
+        import json
+        for field in ('source_sha', 'sha256', 'payload', 'upgrade_test_fixture', 'installer_version'):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp); archives(path)
+                receipt = next(path.glob('*.msi.json'))
+                info = json.loads(receipt.read_text())
+                info[field] = [] if field == 'payload' else True if field == 'upgrade_test_fixture' else 'wrong'
+                receipt.write_text(json.dumps(info))
+                with self.assertRaises(RuntimeError):
+                    release.prepare_assets(path, SHA, '12', '34')
+
     def test_required_platform_set_and_checksums(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp); archives(path)
             hashes = release.prepare_assets(path, SHA, '12', '34')
-            self.assertEqual(len(hashes), 5)
+            self.assertEqual(len(hashes), 7)
             sums = (path / (release.prefix(SHA) + 'SHA256SUMS')).read_text(encoding='utf-8')
             for file in path.iterdir():
                 self.assertEqual(hashes[file.name], release.digest(file))
@@ -341,9 +369,9 @@ class PublisherTests(unittest.TestCase):
             path = Path(tmp); archives(path); api = StaleList()
             release.publish(api, path, SHA, '12', '34')
             self.assertEqual(api.ref, SHA)
-            self.assertEqual(api.events.count('upload'), 5)
-            self.assertEqual(api.events.count('asset'), 10)
-            self.assertEqual(api.events.count('verify'), 10)
+            self.assertEqual(api.events.count('upload'), 7)
+            self.assertEqual(api.events.count('asset'), 14)
+            self.assertEqual(api.events.count('verify'), 14)
 
     def test_asset_response_and_readback_identity_must_match(self):
         bad_fields = {'id': [True, 0, 999], 'name': ['wrong'], 'size': [-1],
@@ -385,12 +413,12 @@ class PublisherTests(unittest.TestCase):
         class ChangedAsset(FakeGitHub):
             def asset(self, asset_id):
                 result = super().asset(asset_id)
-                return result | {'size': 0} if self.events.count('verify') == 5 else result
+                return result | {'size': 0} if self.events.count('verify') == 7 else result
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp); archives(path); api = ChangedAsset()
             with self.assertRaisesRegex(RuntimeError, 'identity mismatch'):
                 release.publish(api, path, SHA, '12', '34')
-            self.assertEqual(api.events.count('upload'), 5)
+            self.assertEqual(api.events.count('upload'), 7)
             self.assertEqual(api.ref, OLD)
             self.assertIn(release.prefix(OLD) + 'windows-x86_64.zip', api.files)
 
@@ -457,7 +485,7 @@ class PublisherTests(unittest.TestCase):
             class Changed(FakeGitHub):
                 def asset(self, asset_id):
                     result = super().asset(asset_id)
-                    if self.events.count('verify') == 5:
+                    if self.events.count('verify') == 7:
                         if failure == '404': raise RuntimeError('HTTP 404')
                         data = self.files[result['name']]
                         self.files[result['name']] = bytes([data[0] ^ 1]) + data[1:]
@@ -602,7 +630,7 @@ class PublisherTests(unittest.TestCase):
             self.assertEqual(api.files['manual.txt'], b'keep')
             self.assertEqual(api.files[flutter], b'other channel')
             self.assertEqual(api.files[release.prefix(OLD) + 'windows-x86_64.zip'], b'old')
-            self.assertEqual(len(api.files), 8)
+            self.assertEqual(len(api.files), 10)
             self.assertIn('GPUI', api.current['name'])
             self.assertIn('不替换 Flutter 版本', api.current['body'])
             self.assertGreater(api.events.index('move_tag'), max(i for i, event in enumerate(api.events) if event == 'verify'))

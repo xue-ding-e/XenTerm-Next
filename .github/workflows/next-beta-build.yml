@@ -1,4 +1,4 @@
-name: Build XenTerm Next portable artifacts
+name: Build XenTerm Next desktop artifacts
 
 # Read-only reusable packaging. No release/tag API, write token or secrets.
 on:
@@ -101,6 +101,38 @@ jobs:
           }
       - name: Package and verify binary version
         run: python3 scripts/next_beta_package.py
+      - name: Build and verify real GPUI MSI from this exact release bundle
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $stem = "XenTerm-Next-beta-$env:SOURCE_SHA-windows-x86_64"
+          $bundle = Join-Path $pwd "next-stage/$stem"
+          $wix = & ./scripts/install-wix.ps1
+          $msi = Join-Path $pwd "dist/$stem.msi"
+          ./scripts/package_next_gpui_msi.ps1 -BundleDir $bundle -SourceSha $env:SOURCE_SHA -WixBin $wix -Output $msi
+          # A fixed real prior beta, never relabeled as this build. This tests
+          # actual old-source -> current-source payload replacement as well as
+          # the MSI transaction. Hash-check before extraction or execution.
+          $oldSha = '8819e2ec132760047209e9dcff7341c5f8a15f94'
+          $oldStem = "XenTerm-Next-beta-$oldSha-windows-x86_64"
+          $oldZip = Join-Path $env:RUNNER_TEMP 'gpui-real-prior.zip'
+          Invoke-WebRequest "https://github.com/xue-ding-e/XenTerm-Next/releases/download/beta/$oldStem.zip" -OutFile $oldZip
+          if ((Get-FileHash $oldZip -Algorithm SHA256).Hash -ine 'ab9aaab43cc4b7feeb5b8e6852f359a5dcafa04f35f2957d6344c28858029cad') { throw 'Prior real GPUI archive hash mismatch' }
+          $oldRoot = Join-Path $env:RUNNER_TEMP 'gpui-real-prior'
+          Expand-Archive -LiteralPath $oldZip -DestinationPath $oldRoot
+          $previous = Join-Path $env:RUNNER_TEMP 'gpui-real-prior.msi'
+          ./scripts/package_next_gpui_msi.ps1 -BundleDir "$oldRoot/$oldStem" -SourceSha $oldSha -WixBin $wix -Output $previous
+          $same = Join-Path $env:RUNNER_TEMP 'gpui-equal-build-fixture.msi'
+          ./scripts/package_next_gpui_msi.ps1 -BundleDir $bundle -SourceSha $env:SOURCE_SHA -WixBin $wix -Output $same
+          ./scripts/test_next_gpui_msi_e2e.ps1 -Msi $msi -PreviousMsi $previous -SameVersionMsi $same -OutputDir "$env:RUNNER_TEMP/gpui-installer-evidence"
+      - name: Keep real Windows installer lifecycle evidence
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: gpui-installer-evidence
+          path: ${{ runner.temp }}/gpui-installer-evidence
+          if-no-files-found: error
+          retention-days: 7
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: next-${{ matrix.platform }}
