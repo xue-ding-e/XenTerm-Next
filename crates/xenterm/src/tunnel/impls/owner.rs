@@ -2,6 +2,7 @@
 //! an IPC broker and never adopts an existing listener by guessing its port.
 use crate::config::{PortForward, Session};
 use anyhow::{anyhow, ensure, Result};
+use futures::FutureExt;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -12,7 +13,7 @@ use std::sync::{
 };
 use std::time::Duration;
 use tokio::net::TcpListener;
-use tokio::sync::{oneshot, watch};
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
@@ -26,25 +27,132 @@ pub(crate) struct ForwardStatus {
     pub ownership: &'static str,
 }
 
-struct Entry {
-    status: ForwardStatus,
+const LIVE_LIMIT: usize = 32;
+const TERMINAL_LIMIT: usize = 128;
+// Measured from the confirmed join, pruned lazily by owner operations.
+const TERMINAL_TTL: Duration = Duration::from_secs(5 * 60);
+
+/// Frozen route inputs supplied only by trusted in-process preparation. This is
+/// not a consistent profile loader or a public authorization/epoch constructor.
+pub(crate) struct PreparedForward {
+    session: Session,
+    jumps: Vec<Session>,
+    bind: SocketAddr,
+    index: usize,
+    identity: ReuseIdentity,
+    policy: crate::ssh::headless_policy::Policy,
+}
+struct ReuseIdentity {
     fingerprint: [u8; 32],
     generation: u64,
     policy: [u8; 32],
     reusable: bool,
+}
+impl PreparedForward {
+    pub(crate) fn capture(
+        session: Session,
+        jumps: Vec<Session>,
+        index: usize,
+        generation: u64,
+    ) -> Result<Self> {
+        ensure!(
+            std::iter::once(&session)
+                .chain(jumps.iter())
+                .all(|hop| matches!(hop.kind, crate::config::SessionKind::Ssh)),
+            "dynamic forwarding requires SSH sessions"
+        );
+        let rule = session
+            .forwards
+            .get(index)
+            .ok_or_else(|| anyhow!("saved forward rule not found"))?;
+        let bind = loopback_bind(rule)?;
+        let policy = crate::ssh::headless_policy::Policy::capture(&session, &jumps)?;
+        let identity = ReuseIdentity {
+            fingerprint: route_fingerprint(&session, &jumps, index)?,
+            generation,
+            policy: policy.identity(),
+            reusable: policy.reusable(),
+        };
+        Ok(Self {
+            session,
+            jumps,
+            bind,
+            index,
+            identity,
+            policy,
+        })
+    }
+}
+
+struct Entry {
+    status: ForwardStatus,
+    // Only private reuse digests and the ready address enter the registry;
+    // prepared sessions, credentials and parsed keys stay in the owned worker.
+    identity: Mutex<Option<ReuseIdentity>>,
+    proxy_url: Mutex<String>,
     expires: Option<Instant>,
     state: watch::Receiver<&'static str>,
     stop: watch::Sender<bool>,
     // Retained across a timed-out or cancelled release; no early successful ACK.
     task: tokio::sync::Mutex<Option<JoinHandle<bool>>>,
     completed: AtomicBool,
-    abandoned: AtomicBool,
+    unconfirmed: AtomicBool,
+    finished_at: Mutex<Option<Instant>>,
 }
 impl Entry {
     fn status(&self) -> ForwardStatus {
+        self.reap();
         let mut status = self.status.clone();
-        status.state = (*self.state.borrow()).into();
+        let state = *self.state.borrow();
+        status.state = if self.unconfirmed.load(Ordering::Acquire) {
+            "cleanup_unconfirmed"
+        } else if self.completed.load(Ordering::Acquire) {
+            if *self.stop.borrow() {
+                "released"
+            } else {
+                state
+            }
+        } else if *self.stop.borrow() || !matches!(state, "preparing" | "starting" | "running") {
+            // A terminal worker notification is not yet a confirmed join.
+            "stopping"
+        } else {
+            state
+        }
+        .into();
+        status.proxy_url = if status.state == "running" {
+            self.proxy_url
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+        } else {
+            String::new()
+        };
         status
+    }
+    fn joined(&self, result: std::result::Result<bool, tokio::task::JoinError>) -> Result<()> {
+        if !matches!(result, Ok(true)) {
+            self.unconfirmed.store(true, Ordering::Release);
+            return Err(anyhow!(
+                "cleanup_unconfirmed: dynamic owner failed to drain"
+            ));
+        }
+        *self.finished_at.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+        self.completed.store(true, Ordering::Release);
+        Ok(())
+    }
+    /// Poll only an already-finished worker, through a borrow of its handle. An
+    /// unexpected Pending keeps the handle owned; status never blocks on a join.
+    fn reap(&self) {
+        let Ok(mut task) = self.task.try_lock() else {
+            return;
+        };
+        let Some(worker) = task.as_mut().filter(|worker| worker.is_finished()) else {
+            return;
+        };
+        if let Some(result) = (&mut *worker).now_or_never() {
+            task.take();
+            let _ = self.joined(result);
+        }
     }
     async fn drain(&self) -> Result<()> {
         self.drain_until(Instant::now() + Duration::from_secs(5))
@@ -68,12 +176,7 @@ impl Entry {
                 }
             };
             task.take();
-            ensure!(
-                matches!(joined, Ok(true)),
-                "cleanup_unconfirmed: dynamic owner failed to drain"
-            );
-            self.completed.store(true, Ordering::Release);
-            Ok(())
+            self.joined(joined)
         })
         .await
         .map_err(|_| anyhow!("cleanup_unconfirmed: dynamic owner is still stopping"))?
@@ -91,7 +194,6 @@ struct Pending(Arc<Entry>, bool);
 impl Drop for Pending {
     fn drop(&mut self) {
         if self.1 {
-            self.0.abandoned.store(true, Ordering::Release);
             self.0.stop.send_replace(true);
         }
     }
@@ -102,7 +204,6 @@ impl Drop for Pending {
 /// listener. Independent frontends must not share this object implicitly.
 /// No public/native/wire constructor is exposed in this core-only slice.
 pub(crate) struct ForwardOwner {
-    serial: tokio::sync::Mutex<()>,
     closed: AtomicBool,
     shutdown: watch::Sender<bool>,
     enforce_permissions: bool,
@@ -114,7 +215,6 @@ impl ForwardOwner {
     }
     fn new(enforce_permissions: bool) -> Self {
         Self {
-            serial: tokio::sync::Mutex::new(()),
             closed: AtomicBool::new(false),
             shutdown: watch::channel(false).0,
             enforce_permissions,
@@ -138,18 +238,6 @@ impl ForwardOwner {
         expires: Option<Instant>,
     ) -> Result<ForwardStatus> {
         ensure!(
-            std::iter::once(&session)
-                .chain(jumps.iter())
-                .all(|hop| matches!(hop.kind, crate::config::SessionKind::Ssh)),
-            "dynamic forwarding requires SSH sessions"
-        );
-        let rule = session
-            .forwards
-            .get(index)
-            .ok_or_else(|| anyhow!("saved forward rule not found"))?;
-        let bind = loopback_bind(rule)?;
-        let fingerprint = route_fingerprint(&session, &jumps, index)?;
-        ensure!(
             !self.closed.load(Ordering::Acquire),
             "dynamic owner is closed"
         );
@@ -161,31 +249,12 @@ impl ForwardOwner {
             expires.is_none_or(|end| end > Instant::now()),
             "dynamic authorization expired"
         );
-        let policy = crate::ssh::headless_policy::Policy::capture(&session, &jumps)?;
-        // Cancelled startup records are reclaimed only after their actual worker
-        // has finished; a live/stopping bind is never forgotten to make space.
-        let abandoned: Vec<_> = self
-            .entries
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .values()
-            .filter(|entry| entry.abandoned.load(Ordering::Acquire))
-            .cloned()
-            .collect();
-        for entry in abandoned {
-            entry.drain().await?;
-            self.entries
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .remove(&entry.status.handle);
-        }
-        // Serialize only registration/reuse, never SSH authentication or joins
-        // of cancelled startups belonging to unrelated handles.
-        let serial = self.serial.lock().await;
-        ensure!(
-            !self.closed.load(Ordering::Acquire),
-            "dynamic owner is closed"
-        );
+        // Preserve the existing trusted start/reuse contract. The new begin
+        // entry point below instead owns slow preparation after registration.
+        let prepared = PreparedForward::capture(session, jumps, index, generation)?;
+        let session_id = prepared.session.id.clone();
+        // Recheck after potentially slow policy capture, but never under the
+        // registry lock. The worker repeats admission before opening SSH.
         ensure!(
             self.permitted(),
             "saved-credential dynamic forwarding is not authorized"
@@ -194,20 +263,27 @@ impl ForwardOwner {
             expires.is_none_or(|end| end > Instant::now()),
             "dynamic authorization expired"
         );
-        {
-            let entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(entry) = entries.values().find(|entry| {
-                entry.status.session_id == session.id && entry.status.forward_index == index
-            }) {
+        let entry = {
+            let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+            Self::prune(&mut entries, Instant::now());
+            ensure!(
+                !self.closed.load(Ordering::Acquire),
+                "dynamic owner is closed"
+            );
+            if let Some(entry) = Self::existing(&entries, &session_id, index) {
                 ensure!(reuse, "dynamic tunnel already exists; ensure or release it");
+                let identity = entry.identity.lock().unwrap_or_else(|e| e.into_inner());
+                let identity = identity
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("dynamic tunnel is still preparing"))?;
                 ensure!(
-                    entry.reusable && policy.reusable(),
+                    identity.reusable && prepared.identity.reusable,
                     "path-backed credential reuse is unavailable; release and start explicitly"
                 );
                 ensure!(
-                    entry.fingerprint == fingerprint
-                        && entry.policy == policy.identity()
-                        && entry.generation == generation
+                    identity.fingerprint == prepared.identity.fingerprint
+                        && identity.policy == prepared.identity.policy
+                        && identity.generation == generation
                         && entry.expires == expires,
                     "dynamic configuration or authorization changed; release before restarting"
                 );
@@ -218,129 +294,189 @@ impl ForwardOwner {
                 );
                 return Ok(status);
             }
-            ensure!(
-                entries.len() < 32,
-                "dynamic owner limit reached; release unused handles"
-            );
-        }
-        let listener = TcpListener::bind(bind)
-            .await
-            .map_err(|error| match error.kind() {
-                std::io::ErrorKind::AddrInUse => {
-                    anyhow!("dynamic port is in use; existing listener was not changed or adopted")
-                }
-                _ => anyhow!("cannot bind the saved dynamic address"),
-            })?;
-        let address = listener.local_addr()?;
-        let status = ForwardStatus {
-            handle: uuid::Uuid::new_v4().to_string(),
-            session_id: session.id.clone(),
-            forward_index: index,
-            proxy_url: format!("socks5h://{address}"),
-            state: "starting".into(),
-            ownership: "current-owner-only; no external listener adoption",
+            self.register(&mut entries, session_id, index, expires, move || {
+                Ok(prepared)
+            })?
         };
-        let (state_tx, state) = watch::channel("starting");
-        let (stop, stopped) = watch::channel(false);
-        let (ready, ready_rx) = oneshot::channel();
-        let identity = policy.identity();
-        let reusable = policy.reusable();
-        let shutdown = self.shutdown.subscribe();
-        let enforce = self.enforce_permissions;
-        let task = tokio::spawn(owned_worker(
-            policy,
-            state_tx.clone(),
-            run(
-                session, jumps, listener, ready, state_tx, stopped, shutdown, enforce, expires,
-            ),
-        ));
+        let mut pending = Pending(entry.clone(), true);
+        let mut state = entry.state.clone();
+        loop {
+            let phase = *state.borrow_and_update();
+            if phase == "running" {
+                if self.closed.load(Ordering::Acquire)
+                    || !self.permitted()
+                    || *entry.stop.borrow()
+                    || expires.is_some_and(|end| end <= Instant::now())
+                {
+                    break;
+                }
+                let status = entry.status();
+                if status.state != "running" {
+                    break;
+                }
+                pending.1 = false;
+                return Ok(status);
+            }
+            if !matches!(phase, "preparing" | "starting") || state.changed().await.is_err() {
+                break;
+            }
+        }
+        entry.drain().await?;
+        // Compatibility start never returned this failed handle to its caller.
+        // Explicit begin, in contrast, keeps its queryable failure tombstone.
+        self.entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&entry.status.handle);
+        Err(anyhow!("dynamic startup failed or was cancelled; verify saved credentials, trusted keys and route"))
+    }
+
+    /// Register before slow work. The trusted closure is one synchronous owned
+    /// preparation job: it must not spawn detached work or bind/connect itself.
+    /// Its result is validated against this saved selector before any listener.
+    /// No public/native/wire adapter or caller-provided authorization is added.
+    pub(crate) fn begin(
+        &self,
+        session_id: String,
+        index: usize,
+        expires: Option<Instant>,
+        prepare: impl FnOnce() -> Result<PreparedForward> + Send + 'static,
+    ) -> Result<ForwardStatus> {
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        Self::prune(&mut entries, Instant::now());
+        ensure!(
+            !self.closed.load(Ordering::Acquire),
+            "dynamic owner is closed"
+        );
+        ensure!(
+            Self::existing(&entries, &session_id, index).is_none(),
+            "dynamic tunnel already exists; ensure or release it"
+        );
+        let entry = self.register(&mut entries, session_id, index, expires, prepare)?;
+        // This is acceptance, never a claim that authorization/SSH is ready.
+        Ok(entry.status.clone())
+    }
+    fn existing<'a>(
+        entries: &'a HashMap<String, Arc<Entry>>,
+        session_id: &str,
+        index: usize,
+    ) -> Option<&'a Arc<Entry>> {
+        entries.values().find(|entry| {
+            !entry.completed.load(Ordering::Acquire)
+                && entry.status.session_id == session_id
+                && entry.status.forward_index == index
+        })
+    }
+    fn register(
+        &self,
+        entries: &mut HashMap<String, Arc<Entry>>,
+        session_id: String,
+        index: usize,
+        expires: Option<Instant>,
+        prepare: impl FnOnce() -> Result<PreparedForward> + Send + 'static,
+    ) -> Result<Arc<Entry>> {
+        ensure!(
+            entries
+                .values()
+                .filter(|entry| !entry.completed.load(Ordering::Acquire))
+                .count()
+                < LIVE_LIMIT,
+            "dynamic owner limit reached; release unused handles"
+        );
+        ensure!(
+            expires.is_none_or(|end| end > Instant::now()),
+            "dynamic authorization expired"
+        );
+        let runtime = tokio::runtime::Handle::try_current()
+            .map_err(|_| anyhow!("dynamic owner requires a runtime"))?;
+        let (state_tx, state) = watch::channel("preparing");
+        let (stop, _) = watch::channel(false);
         let entry = Arc::new(Entry {
-            status,
-            fingerprint,
-            generation,
-            policy: identity,
-            reusable,
+            status: ForwardStatus {
+                handle: uuid::Uuid::new_v4().to_string(),
+                session_id,
+                forward_index: index,
+                proxy_url: String::new(),
+                state: "preparing".into(),
+                ownership: "current-owner-only; no external listener adoption",
+            },
+            identity: Mutex::new(None),
+            proxy_url: Mutex::new(String::new()),
             expires,
             state,
             stop,
-            task: tokio::sync::Mutex::new(Some(task)),
+            task: tokio::sync::Mutex::new(None),
             completed: AtomicBool::new(false),
-            abandoned: AtomicBool::new(false),
+            unconfirmed: AtomicBool::new(false),
+            finished_at: Mutex::new(None),
         });
-        self.entries
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(entry.status.handle.clone(), entry.clone());
-        let mut pending = Pending(entry.clone(), true);
-        drop(serial);
-        let result = ready_rx.await;
-        if !matches!(result, Ok(true))
-            || self.closed.load(Ordering::Acquire)
-            || !self.permitted()
-            || *entry.stop.borrow()
-            || expires.is_some_and(|end| end <= Instant::now())
-        {
-            entry.drain().await?;
-            self.entries
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .remove(&entry.status.handle);
-            return Err(anyhow!("dynamic startup failed or was cancelled; verify saved credentials, trusted keys and route"));
+        // Registration has no await or disk/network work. The sole map lock
+        // excludes shutdown until the complete worker handle has been retained.
+        entries.insert(entry.status.handle.clone(), entry.clone());
+        let task = runtime.spawn(prepare_worker(
+            entry.clone(),
+            state_tx,
+            self.shutdown.subscribe(),
+            self.enforce_permissions,
+            prepare,
+        ));
+        *entry.task.try_lock().expect("unpublished worker handle") = Some(task);
+        Ok(entry)
+    }
+    fn prune(entries: &mut HashMap<String, Arc<Entry>>, now: Instant) {
+        // Cancelled startup records are reclaimed only after their actual worker
+        // has joined; a live/stopping bind is never forgotten to make space.
+        let mut terminal = Vec::new();
+        for (handle, entry) in entries.iter() {
+            entry.reap();
+            if entry.completed.load(Ordering::Acquire) {
+                if let Some(at) = *entry.finished_at.lock().unwrap_or_else(|e| e.into_inner()) {
+                    terminal.push((at, handle.clone()));
+                }
+            }
         }
-        let status = entry.status();
-        ensure!(
-            status.state == "running",
-            "dynamic route stopped before readiness"
-        );
-        pending.1 = false;
-        Ok(status)
+        terminal.sort_unstable();
+        let excess = terminal.len().saturating_sub(TERMINAL_LIMIT);
+        for (index, (at, handle)) in terminal.into_iter().enumerate() {
+            if index < excess || now.saturating_duration_since(at) >= TERMINAL_TTL {
+                entries.remove(&handle);
+            }
+        }
     }
-    pub(crate) fn status(&self, handle: &str) -> Result<ForwardStatus> {
-        self.entries
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(handle)
-            .map(|entry| entry.status())
-            .ok_or_else(|| anyhow!("tunnel handle not found in this owner"))
-    }
-    pub(crate) async fn release(&self, handle: &str) -> Result<ForwardStatus> {
-        let entry = self
-            .entries
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+    fn entry(&self, handle: &str) -> Result<Arc<Entry>> {
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        Self::prune(&mut entries, Instant::now());
+        entries
             .get(handle)
             .cloned()
-            .ok_or_else(|| anyhow!("tunnel handle not found in this owner"))?;
+            .ok_or_else(|| anyhow!("tunnel handle not found in this owner"))
+    }
+    pub(crate) fn status(&self, handle: &str) -> Result<ForwardStatus> {
+        Ok(self.entry(handle)?.status())
+    }
+    /// Only requests cancellation. A stopping/unconfirmed result is not a
+    /// release acknowledgement; status can harvest the eventual confirmed join.
+    pub(crate) fn request_release(&self, handle: &str) -> Result<ForwardStatus> {
+        let entry = self.entry(handle)?;
+        entry.stop.send_replace(true);
+        Ok(entry.status())
+    }
+    pub(crate) async fn release(&self, handle: &str) -> Result<ForwardStatus> {
+        let entry = self.entry(handle)?;
         entry.drain().await?;
-        self.entries
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(handle);
-        let mut status = entry.status();
-        status.state = "released".into();
-        Ok(status)
+        Ok(entry.status())
     }
     pub(crate) async fn shutdown(&self) -> Result<()> {
         let deadline = Instant::now() + Duration::from_secs(5);
         self.closed.store(true, Ordering::Release);
         self.shutdown.send_replace(true);
-        let serial = tokio::time::timeout_at(deadline, self.serial.lock())
-            .await
-            .map_err(|_| anyhow!("cleanup_unconfirmed: dynamic registration is still stopping"))?;
-        let entries: Vec<_> = self
-            .entries
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .values()
-            .cloned()
-            .collect();
-        drop(serial);
+        let entries: Vec<_> = {
+            let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+            Self::prune(&mut entries, Instant::now());
+            entries.values().cloned().collect()
+        };
         for entry in entries {
             entry.drain_until(deadline).await?;
-            self.entries
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .remove(&entry.status.handle);
         }
         Ok(())
     }
@@ -353,6 +489,129 @@ impl Drop for ForwardOwner {
         // cancellation; workers retain their listener until its drain finishes.
     }
 }
+/// No configuration or other I/O belongs in preparation cancellation polling.
+fn preparation_cancel_reason(
+    stopped: &watch::Receiver<bool>,
+    shutdown: &watch::Receiver<bool>,
+    expires: Option<Instant>,
+) -> Option<&'static str> {
+    if *stopped.borrow() {
+        Some("released")
+    } else if *shutdown.borrow() {
+        Some("owner_closed")
+    } else if expires.is_some_and(|end| end <= Instant::now()) {
+        Some("authorization_expired")
+    } else {
+        None
+    }
+}
+
+/// The preparation JoinHandle never escapes this retained worker. Cancellation
+/// stops admission immediately but joins the synchronous job before reporting a
+/// terminal outcome; a late prepared route is dropped without binding its port.
+async fn prepare_worker(
+    entry: Arc<Entry>,
+    state: watch::Sender<&'static str>,
+    shutdown: watch::Receiver<bool>,
+    enforce: bool,
+    prepare: impl FnOnce() -> Result<PreparedForward> + Send + 'static,
+) -> bool {
+    let mut stopped = entry.stop.subscribe();
+    let mut owner_closed = shutdown.clone();
+    let expires = entry.expires;
+    if let Some(reason) = preparation_cancel_reason(&stopped, &owner_closed, expires) {
+        state.send_replace(reason);
+        return true;
+    }
+    let mut job = tokio::task::spawn_blocking(move || {
+        ensure!(
+            permitted(enforce),
+            "saved-credential dynamic forwarding is not authorized"
+        );
+        prepare()
+    });
+    let cancellation = async {
+        loop {
+            if let Some(reason) = preparation_cancel_reason(&stopped, &owner_closed, expires) {
+                break reason;
+            }
+            tokio::select! {
+                _ = stopped.changed() => {},
+                _ = owner_closed.changed() => {},
+                _ = tokio::time::sleep(Duration::from_millis(100)) => {},
+            }
+        }
+    };
+    tokio::pin!(cancellation);
+    let prepared = tokio::select! {
+        biased;
+        reason = &mut cancellation => {
+            state.send_replace("stopping");
+            let joined = job.await;
+            // Drop any successful result before terminal notification/return.
+            let confirmed = joined.is_ok();
+            drop(joined);
+            state.send_replace(if confirmed { reason } else { "cleanup_unconfirmed" });
+            return confirmed;
+        },
+        result = &mut job => result,
+    };
+    let prepared = match prepared {
+        Ok(Ok(prepared)) => prepared,
+        Ok(Err(_)) => {
+            state.send_replace("failed");
+            return true;
+        }
+        Err(_) => {
+            state.send_replace("cleanup_unconfirmed");
+            return false;
+        }
+    };
+    if let Some(reason) = preparation_cancel_reason(&entry.stop.subscribe(), &shutdown, expires) {
+        drop(prepared);
+        state.send_replace(reason);
+        return true;
+    }
+    if prepared.session.id != entry.status.session_id
+        || prepared.index != entry.status.forward_index
+    {
+        state.send_replace("failed");
+        return true;
+    }
+    state.send_replace("starting");
+    let listener = match TcpListener::bind(prepared.bind).await {
+        Ok(listener) => listener,
+        Err(_) => {
+            state.send_replace("failed");
+            return true;
+        }
+    };
+    let address = match listener.local_addr() {
+        Ok(address) => address,
+        Err(_) => {
+            state.send_replace("failed");
+            return true;
+        }
+    };
+    *entry.proxy_url.lock().unwrap_or_else(|e| e.into_inner()) = format!("socks5h://{address}");
+    *entry.identity.lock().unwrap_or_else(|e| e.into_inner()) = Some(prepared.identity);
+    owned_worker(
+        prepared.policy,
+        state.clone(),
+        run(
+            prepared.session,
+            prepared.jumps,
+            listener,
+            state,
+            entry.stop.subscribe(),
+            shutdown,
+            enforce,
+            expires,
+        ),
+    )
+    .await
+}
+
 fn permitted(enforce: bool) -> bool {
     !enforce
         || crate::config::ConfigStore::load().is_ok_and(|store| {
@@ -366,7 +625,12 @@ async fn owned_worker(
 ) -> bool {
     let (reason, confirmed) = policy
         .run(async {
-            let outcome = operation.await;
+            // Even an operation panic must pass through Policy::run's owned
+            // loader joins. A panic remains unconfirmed, never a clean ACK.
+            let outcome = std::panic::AssertUnwindSafe(operation)
+                .catch_unwind()
+                .await
+                .unwrap_or(("cleanup_unconfirmed", false));
             // The route is gone, but a cancelled blocking key loader can still be
             // live. Publish a terminal state only after its join.
             state.send_replace("stopping");
@@ -411,7 +675,6 @@ async fn run(
     session: Session,
     jumps: Vec<Session>,
     listener: TcpListener,
-    ready: oneshot::Sender<bool>,
     state: watch::Sender<&'static str>,
     stopped: watch::Receiver<bool>,
     shutdown: watch::Receiver<bool>,
@@ -438,12 +701,10 @@ async fn run(
         let handle = Arc::new(handle);
         let listener = super::forward::start_dynamic_bound(handle.clone(), listener);
         state.send_replace("running");
-        let reason = if ready.send(true).is_err() { "cancelled" } else {
-            tokio::select! {
-                biased;
-                reason = &mut cancellation => reason,
-                _ = async { while !listener.is_finished() { tokio::time::sleep(Duration::from_millis(50)).await; } } => "disconnected",
-            }
+        let reason = tokio::select! {
+            biased;
+            reason = &mut cancellation => reason,
+            _ = async { while !listener.is_finished() { tokio::time::sleep(Duration::from_millis(50)).await; } } => "disconnected",
         };
         state.send_replace("stopping");
         // Unlike aborting the enclosing future, this acknowledges the shared
@@ -713,7 +974,12 @@ mod tests {
                     .unwrap();
                 assert!(result.is_err());
                 assert_listener_released(bind).await;
-                assert!(owner.entries.lock().unwrap().is_empty());
+                assert!(owner
+                    .entries
+                    .lock()
+                    .unwrap()
+                    .values()
+                    .all(|entry| entry.completed.load(Ordering::Acquire)));
             },
         );
     }

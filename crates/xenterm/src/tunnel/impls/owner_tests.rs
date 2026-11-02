@@ -6,6 +6,7 @@ use russh::keys::{ssh_key::private::Ed25519Keypair, PrivateKey, PublicKey};
 use russh::{server, Channel};
 use std::sync::atomic::AtomicUsize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::oneshot;
 
 struct Node {
     target: SocketAddr,
@@ -337,7 +338,12 @@ fn stalled_start_does_not_block_another_handles_release() {
             fixture.finish(true).await;
             owner.shutdown().await.unwrap();
             assert!(start.await.unwrap().is_err());
-            assert!(owner.entries.lock().unwrap().is_empty());
+            assert!(owner
+                .entries
+                .lock()
+                .unwrap()
+                .values()
+                .all(|entry| entry.completed.load(Ordering::Acquire)));
         },
     );
 }
@@ -405,9 +411,10 @@ fn cancelled_or_timed_out_key_load_is_joined_before_release_ack() {
                 status: ForwardStatus { handle: "blocked-key-load".into(), session_id: session.id,
                     forward_index: 0, proxy_url: "socks5h://127.0.0.1:1".into(),
                     state: "starting".into(), ownership: "synthetic-owner" },
-                fingerprint: [0; 32], generation: 1, policy: [0; 32], reusable: false,
+                identity: Mutex::new(None), proxy_url: Mutex::new(String::new()),
                 expires: None, state, stop, task: tokio::sync::Mutex::new(Some(task)),
-                completed: AtomicBool::new(false), abandoned: AtomicBool::new(false),
+                completed: AtomicBool::new(false), unconfirmed: AtomicBool::new(false),
+                finished_at: Mutex::new(None),
             });
             owner.entries.lock().unwrap().insert(entry.status.handle.clone(), entry.clone());
             tokio::time::timeout(Duration::from_secs(2), entered_rx).await.unwrap().unwrap();
@@ -435,8 +442,357 @@ fn cancelled_or_timed_out_key_load_is_joined_before_release_ack() {
             assert_eq!(owner.release(&entry.status.handle).await.unwrap().state, "released");
             assert!(finished.load(Ordering::Acquire));
             assert!(entry.completed.load(Ordering::Acquire));
-            assert!(owner.entries.lock().unwrap().is_empty());
+            assert!(owner.entries.lock().unwrap().values().all(|entry| entry.completed.load(Ordering::Acquire)));
         }
+    });
+}
+
+/// Polling is allowed to harvest only finished workers, never wait on the
+/// preparation/keyring/SSH path. All test profiles remain child-process local.
+async fn wait_status(owner: &ForwardOwner, handle: &str, wanted: &str) -> ForwardStatus {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let status = owner.status(handle).unwrap();
+            if status.state == wanted {
+                return status;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("owner never reached {wanted}"))
+}
+
+fn saved_dynamic(port: u16) -> Session {
+    let mut session = Session::new_empty();
+    session.host = "synthetic.invalid".into();
+    session.forwards.push(PortForward {
+        kind: "dynamic".into(),
+        bind_port: port,
+        ..Default::default()
+    });
+    session
+}
+
+#[test]
+fn begin_registers_before_preparation_and_cancel_joins_late_result_without_binding() {
+    isolated("tunnel::owner::lifecycle_tests::begin_registers_before_preparation_and_cancel_joins_late_result_without_binding", || async {
+        let owner = ForwardOwner::new(false);
+        let reserve = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = reserve.local_addr().unwrap();
+        drop(reserve);
+        let session = saved_dynamic(address.port());
+        let selector = session.id.clone();
+        let barrier = KeyLoadBarrier::new();
+        let gate = barrier.0.clone();
+        let (entered, entered_rx) = oneshot::channel();
+        let finished = Arc::new(AtomicBool::new(false));
+        let prepared = finished.clone();
+        let accepted = owner.begin(selector.clone(), 0, None, move || {
+            let _ = entered.send(());
+            let (open, changed) = &*gate;
+            let mut open = open.lock().unwrap();
+            while !*open { open = changed.wait(open).unwrap(); }
+            let result = PreparedForward::capture(session, vec![], 0, 1);
+            prepared.store(true, Ordering::Release);
+            result
+        }).unwrap();
+        assert_eq!(accepted.state, "preparing");
+        assert!(accepted.proxy_url.is_empty());
+        tokio::time::timeout(Duration::from_secs(2), entered_rx).await.unwrap().unwrap();
+        assert_eq!(owner.status(&accepted.handle).unwrap().state, "preparing");
+        drop(TcpListener::bind(address).await.unwrap());
+        assert!(owner.begin(selector.clone(), 0, None, || panic!("duplicate preparation must not run")).is_err());
+        let other = ForwardOwner::new(false);
+        assert!(other.status(&accepted.handle).is_err());
+        assert!(other.request_release(&accepted.handle).is_err());
+
+        assert_eq!(owner.request_release(&accepted.handle).unwrap().state, "stopping");
+        let entry = owner.entry(&accepted.handle).unwrap();
+        assert!(entry.drain_until(Instant::now() + Duration::from_millis(25)).await
+            .unwrap_err().to_string().contains("cleanup_unconfirmed"));
+        assert!(!entry.completed.load(Ordering::Acquire));
+        assert!(!finished.load(Ordering::Acquire));
+        assert!(owner.begin(selector, 0, None, || panic!("stopping slot must remain reserved")).is_err());
+        barrier.open();
+        let released = wait_status(&owner, &accepted.handle, "released").await;
+        assert!(released.proxy_url.is_empty());
+        assert!(finished.load(Ordering::Acquire));
+        assert!(entry.completed.load(Ordering::Acquire));
+        assert!(entry.task.lock().await.is_none(), "terminal status did not join its worker");
+        assert!(entry.identity.lock().unwrap().is_none(), "late result reached listener setup");
+        assert!(entry.proxy_url.lock().unwrap().is_empty());
+        drop(TcpListener::bind(address).await.unwrap());
+        assert_eq!(owner.release(&accepted.handle).await.unwrap().state, "released");
+        assert_eq!(owner.request_release(&accepted.handle).unwrap().state, "released");
+        owner.shutdown().await.unwrap();
+    });
+}
+
+#[test]
+fn blocked_preparation_does_not_block_active_owner_release() {
+    isolated(
+        "tunnel::owner::lifecycle_tests::blocked_preparation_does_not_block_active_owner_release",
+        || async {
+            let owner = ForwardOwner::new(false);
+            let mut fixture = Fixture::new(0, false).await;
+            let target = fixture.target.clone();
+            let jumps = fixture.jumps.clone();
+            let accepted = owner
+                .begin(target.id.clone(), 1, None, move || {
+                    PreparedForward::capture(target, jumps, 1, 1)
+                })
+                .unwrap();
+            assert_eq!(accepted.state, "preparing");
+            assert!(accepted.proxy_url.is_empty());
+            let ready = wait_status(&owner, &accepted.handle, "running").await;
+            let reused = owner
+                .start(
+                    fixture.target.clone(),
+                    fixture.jumps.clone(),
+                    1,
+                    1,
+                    true,
+                    None,
+                )
+                .await
+                .unwrap();
+            assert_eq!(reused.handle, accepted.handle);
+            let address = ready
+                .proxy_url
+                .strip_prefix("socks5h://")
+                .unwrap()
+                .parse()
+                .unwrap();
+            let mut client = echo(address).await;
+            let barrier = KeyLoadBarrier::new();
+            let gate = barrier.0.clone();
+            let (entered, entered_rx) = oneshot::channel();
+            let pending = owner
+                .begin("blocked-preparation".into(), 0, None, move || {
+                    let _ = entered.send(());
+                    let (open, changed) = &*gate;
+                    let mut open = open.lock().unwrap();
+                    while !*open {
+                        open = changed.wait(open).unwrap();
+                    }
+                    Err(anyhow!("synthetic preparation failure"))
+                })
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(2), entered_rx)
+                .await
+                .unwrap()
+                .unwrap();
+            let released =
+                tokio::time::timeout(Duration::from_secs(2), owner.release(&ready.handle))
+                    .await
+                    .expect("preparation blocked another handle's release")
+                    .unwrap();
+            assert_eq!(released.state, "released");
+            assert_eq!(owner.status(&pending.handle).unwrap().state, "preparing");
+            let mut byte = [0];
+            assert_eq!(client.read(&mut byte).await.unwrap(), 0);
+            drop(TcpListener::bind(address).await.unwrap());
+            owner.request_release(&pending.handle).unwrap();
+            barrier.open();
+            owner.release(&pending.handle).await.unwrap();
+            fixture.finish(true).await;
+            owner.shutdown().await.unwrap();
+        },
+    );
+}
+
+#[test]
+fn terminal_retention_is_bounded_without_evicting_pending_or_unconfirmed_work() {
+    isolated("tunnel::owner::lifecycle_tests::terminal_retention_is_bounded_without_evicting_pending_or_unconfirmed_work", || async {
+        let owner = ForwardOwner::new(false);
+        let barrier = KeyLoadBarrier::new();
+        let gate = barrier.0.clone();
+        let (entered, entered_rx) = oneshot::channel();
+        let pending = owner.begin("pending-retention".into(), 0, None, move || {
+            let _ = entered.send(());
+            let (open, changed) = &*gate;
+            let mut open = open.lock().unwrap();
+            while !*open { open = changed.wait(open).unwrap(); }
+            Err(anyhow!("synthetic preparation failure"))
+        }).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), entered_rx).await.unwrap().unwrap();
+        let uncertain = owner.begin("unconfirmed-retention".into(), 0, None,
+            || panic!("synthetic owned preparation panic")).unwrap();
+        wait_status(&owner, &uncertain.handle, "cleanup_unconfirmed").await;
+        let mut first = None;
+        let mut last = None;
+        for index in 0..TERMINAL_LIMIT + 2 {
+            let accepted = owner.begin(format!("failed-{index}"), 0, None,
+                || Err(anyhow!("synthetic secret must not enter status"))).unwrap();
+            let failed = wait_status(&owner, &accepted.handle, "failed").await;
+            assert!(!serde_json::to_string(&failed).unwrap().contains("synthetic secret"));
+            first.get_or_insert(accepted.handle.clone());
+            last = Some(accepted.handle);
+        }
+        assert!(owner.status(&first.unwrap()).is_err());
+        assert_eq!(owner.status(&pending.handle).unwrap().state, "preparing");
+        assert_eq!(owner.status(&uncertain.handle).unwrap().state, "cleanup_unconfirmed");
+        assert!(owner.entries.lock().unwrap().len() <= TERMINAL_LIMIT + 2);
+        assert_eq!(owner.release(&last.unwrap()).await.unwrap().state, "released");
+        {
+            let mut entries = owner.entries.lock().unwrap();
+            ForwardOwner::prune(&mut entries, Instant::now() + TERMINAL_TTL);
+            assert_eq!(entries.len(), 2);
+            assert!(entries.contains_key(&pending.handle));
+            assert!(entries.contains_key(&uncertain.handle));
+        }
+        assert!(owner.release(&uncertain.handle).await.is_err());
+        owner.request_release(&pending.handle).unwrap();
+        barrier.open();
+        owner.release(&pending.handle).await.unwrap();
+        assert!(owner.shutdown().await.is_err(), "unconfirmed cleanup must never become a successful shutdown ACK");
+    });
+}
+
+#[test]
+fn pending_entries_enforce_the_live_limit_and_shutdown_joins_them() {
+    isolated("tunnel::owner::lifecycle_tests::pending_entries_enforce_the_live_limit_and_shutdown_joins_them", || async {
+        let owner = ForwardOwner::new(false);
+        let barrier = KeyLoadBarrier::new();
+        for index in 0..LIVE_LIMIT {
+            let gate = barrier.0.clone();
+            owner.begin(format!("pending-{index}"), 0, None, move || {
+                let (open, changed) = &*gate;
+                let mut open = open.lock().unwrap();
+                while !*open { open = changed.wait(open).unwrap(); }
+                Err(anyhow!("synthetic preparation failure"))
+            }).unwrap();
+        }
+        assert!(owner.begin("over-limit".into(), 0, None, || panic!("over-limit work started")).is_err());
+        assert_eq!(owner.entries.lock().unwrap().len(), LIVE_LIMIT);
+        let handles: Vec<_> = owner.entries.lock().unwrap().keys().cloned().collect();
+        for handle in &handles { owner.request_release(handle).unwrap(); }
+        barrier.open();
+        owner.shutdown().await.unwrap();
+        for handle in handles {
+            assert_eq!(owner.status(&handle).unwrap().state, "released");
+            assert!(owner.entry(&handle).unwrap().task.lock().await.is_none());
+        }
+        assert!(owner.begin("closed".into(), 0, None, || panic!("closed owner started work")).is_err());
+    });
+}
+
+#[test]
+fn begin_rejects_mismatched_preparation_before_binding_and_keeps_unattended_gate() {
+    isolated("tunnel::owner::lifecycle_tests::begin_rejects_mismatched_preparation_before_binding_and_keeps_unattended_gate", || async {
+        let owner = ForwardOwner::new(false);
+        for wrong_id in [false, true] {
+            let session = saved_dynamic(0);
+            let selector = if wrong_id { "different-saved-id".into() } else { session.id.clone() };
+            let accepted = owner.begin(selector, if wrong_id { 0 } else { 1 }, None,
+                move || PreparedForward::capture(session, vec![], 0, 1)).unwrap();
+            wait_status(&owner, &accepted.handle, "failed").await;
+            let entry = owner.entry(&accepted.handle).unwrap();
+            assert!(entry.identity.lock().unwrap().is_none());
+            assert!(entry.proxy_url.lock().unwrap().is_empty());
+        }
+        let denied = ForwardOwner::unattended();
+        let called = Arc::new(AtomicBool::new(false));
+        let ran = called.clone();
+        let accepted = denied.begin("denied".into(), 0, None, move || {
+            ran.store(true, Ordering::Release);
+            Err(anyhow!("unauthorized preparation ran"))
+        }).unwrap();
+        wait_status(&denied, &accepted.handle, "failed").await;
+        assert!(!called.load(Ordering::Acquire));
+        owner.shutdown().await.unwrap();
+        denied.shutdown().await.unwrap();
+    });
+}
+
+#[test]
+fn panicked_operation_still_joins_its_owned_key_loader() {
+    isolated(
+        "tunnel::owner::lifecycle_tests::panicked_operation_still_joins_its_owned_key_loader",
+        || async {
+            let session = Session::new_empty();
+            let policy = crate::ssh::headless_policy::Policy::capture(&session, &[]).unwrap();
+            let barrier = KeyLoadBarrier::new();
+            let gate = barrier.0.clone();
+            let finished = Arc::new(AtomicBool::new(false));
+            let loaded = finished.clone();
+            let (entered, entered_rx) = oneshot::channel();
+            let (explode, exploded) = oneshot::channel::<()>();
+            let (state_tx, mut state) = watch::channel("starting");
+            let mut task = tokio::spawn(owned_worker(policy, state_tx, async move {
+                let loading = crate::ssh::headless_policy::load_private_key(move || {
+                    let _ = entered.send(());
+                    let (open, changed) = &*gate;
+                    let mut open = open.lock().unwrap();
+                    while !*open {
+                        open = changed.wait(open).unwrap();
+                    }
+                    loaded.store(true, Ordering::Release);
+                    Err(anyhow!("synthetic key failure"))
+                });
+                tokio::select! {
+                    _ = exploded => panic!("synthetic operation panic after starting a key loader"),
+                    _ = loading => panic!("loader escaped its preparation barrier"),
+                }
+            }));
+            tokio::time::timeout(Duration::from_secs(2), entered_rx)
+                .await
+                .unwrap()
+                .unwrap();
+            explode.send(()).unwrap();
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while *state.borrow_and_update() != "stopping" {
+                    state.changed().await.unwrap();
+                }
+            })
+            .await
+            .unwrap();
+            assert!(!finished.load(Ordering::Acquire));
+            assert!(tokio::time::timeout(Duration::from_millis(25), &mut task)
+                .await
+                .is_err());
+            barrier.open();
+            assert!(
+                !task.await.unwrap(),
+                "panic must not become a successful cleanup ACK"
+            );
+            assert!(finished.load(Ordering::Acquire));
+            assert_eq!(*state.borrow(), "cleanup_unconfirmed");
+        },
+    );
+}
+
+#[test]
+fn expiring_preparation_retains_its_slot_until_the_job_is_joined() {
+    isolated("tunnel::owner::lifecycle_tests::expiring_preparation_retains_its_slot_until_the_job_is_joined", || async {
+        let owner = ForwardOwner::new(false);
+        let barrier = KeyLoadBarrier::new();
+        let gate = barrier.0.clone();
+        let (entered, entered_rx) = oneshot::channel();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let accepted = owner.begin("expiring-preparation".into(), 0, Some(deadline), move || {
+            let _ = entered.send(());
+            let (open, changed) = &*gate;
+            let mut open = open.lock().unwrap();
+            while !*open { open = changed.wait(open).unwrap(); }
+            Err(anyhow!("late synthetic preparation result"))
+        }).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), entered_rx).await.unwrap().unwrap();
+        // The barrier, not a sleep, holds the actual job across its deadline.
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while owner.status(&accepted.handle).unwrap().state != "stopping" {
+                tokio::task::yield_now().await;
+            }
+        }).await.unwrap();
+        let entry = owner.entry(&accepted.handle).unwrap();
+        assert!(!entry.completed.load(Ordering::Acquire));
+        assert!(owner.begin("expiring-preparation".into(), 0, None,
+            || panic!("expired but unjoined work lost its slot")).is_err());
+        barrier.open();
+        wait_status(&owner, &accepted.handle, "authorization_expired").await;
+        assert!(entry.task.lock().await.is_none());
+        owner.shutdown().await.unwrap();
     });
 }
 
