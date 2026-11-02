@@ -1,0 +1,219 @@
+name: Observe exact old GPUI per-user installation registration
+'on':
+  push:
+    branches:
+    - validation/gpui-msi-repack-20261102
+    paths:
+    - .github/workflows/gpui-msi-registration-probe.yml
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: gpui-msi-only-${{ github.repository }}
+  cancel-in-progress: false
+jobs:
+  registration:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+    - name: Pin prior failed run and exact retained artifact
+      timeout-minutes: 3
+      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
+      with:
+        script: |
+          const fs = require('fs'), path = require('path'), crypto = require('crypto');
+          const owner='xue-ding-e', repo='XenTerm-Next', branch='validation/gpui-msi-repack-20261102';
+          const prior='89fd985c6275085acd2c5babbd4dadb05ec6155e', source='0d60b91691ce082137db3e3f995ef6fc8c783b83';
+          const need=(v,m)=>{if(!v)throw new Error(m);};
+          need(context.repo.owner===owner && context.repo.repo===repo && context.eventName==='push' && context.ref===`refs/heads/${branch}` && context.payload.before===prior, 'Wrong event/ref/before');
+          const {data:ref}=await github.rest.git.getRef({owner,repo,ref:`heads/${branch}`});
+          need(ref.object.sha===context.sha,'Stale controller');
+          const {data:commit}=await github.rest.git.getCommit({owner,repo,commit_sha:context.sha});
+          need(commit.parents.length===1 && commit.parents[0].sha===prior,'Wrong controller parent');
+          for(const who of [commit.author,commit.committer]) need(who.name==='Qing Liang' && who.email==='106448173+xue-ding-e@users.noreply.github.com','Wrong attribution');
+          const {data:diff}=await github.rest.repos.compareCommits({owner,repo,base:prior,head:context.sha});
+          need(diff.files.length===1 && diff.files[0].filename==='.github/workflows/gpui-msi-registration-probe.yml' && diff.files[0].status==='added','Controller must only add this diagnostic workflow');
+          const {data:src}=await github.rest.git.getCommit({owner,repo,commit_sha:source});
+          need(src.tree.sha==='007d4575d1cf9e8c057ef0906dca0cdf64015a79' && src.parents.length===1 && src.parents[0].sha==='488f001949613327150abb8f74b464278604df69','Wrong packaging source');
+          const {data:run}=await github.rest.actions.getWorkflowRun({owner,repo,run_id:41502584678});
+          need(run.head_sha===prior && run.head_branch===branch && run.run_attempt===1 && run.event==='push' && run.repository.full_name===`${owner}/${repo}` && run.head_repository.full_name===`${owner}/${repo}` && run.path==='.github/workflows/gpui-msi-repack-verify.yml' && run.status==='completed' && run.conclusion==='failure','Wrong retained run');
+          const jobs=await github.paginate(github.rest.actions.listJobsForWorkflowRunAttempt,{owner,repo,run_id:run.id,attempt_number:1,per_page:100});
+          need(jobs.length===2 && jobs.every(j=>j.status==='completed' && j.head_sha===prior),'Wrong prior jobs');
+          need(jobs.find(j=>j.name==='source-proof')?.conclusion==='success','Prior proof failed');
+          const native=jobs.find(j=>j.name==='real-windows-msi');
+          need(native?.conclusion==='failure','Wrong native state');
+          need(JSON.stringify(native.steps.filter(s=>s.conclusion==='failure').map(s=>s.name))===JSON.stringify(['Verify real old-to-current GPUI MSI lifecycle']),'Unexpected prior failing steps');
+          for(const name of ['Verify synthetic profile preservation contracts','Verify exact archive and payload identity before safe extraction','Reject unpackaged Microsoft runtime dependencies in actual PE','Keep real GPUI MSI and lifecycle evidence (not a release)']) need(native.steps.find(s=>s.name===name)?.conclusion==='success','Missing prior evidence');
+          const args={owner,repo,artifact_id:13169117796};
+          const {data:meta}=await github.rest.actions.getArtifact(args);
+          const digest='9129458976c5b1c9d2d5bf829a0ae0b4d4e78b8771f6557a11746c65808bd4a9';
+          need(!meta.expired && meta.size_in_bytes===115615510 && meta.digest===`sha256:${digest}` && meta.name===`gpui-msi-repack-${source}` && meta.workflow_run.id===run.id && meta.workflow_run.head_sha===prior,'Wrong retained artifact');
+          const {data}=await github.rest.actions.downloadArtifact({...args,archive_format:'zip'});
+          const bytes=Buffer.from(data);
+          need(bytes.length===115615510 && crypto.createHash('sha256').update(bytes).digest('hex')===digest,'Artifact bytes differ');
+          const dir=path.join(process.env.RUNNER_TEMP,'gpui-registration-input');
+          fs.mkdirSync(dir);
+          fs.writeFileSync(path.join(dir,'input.zip'),bytes,{flag:'wx'});
+    - name: Extract only exact old 8819 MSI
+      timeout-minutes: 1
+      shell: python
+      run: |
+        import hashlib, os, zipfile, stat
+        from pathlib import Path
+        root=Path(os.environ['RUNNER_TEMP'])/'gpui-registration-input'
+        raw=(root/'input.zip').read_bytes()
+        assert len(raw)==115615510 and hashlib.sha256(raw).hexdigest()=='9129458976c5b1c9d2d5bf829a0ae0b4d4e78b8771f6557a11746c65808bd4a9'
+        expected={'_temp/gpui-real-prior.msi':'8b14daacda30f49d54a4bdce6ae0af439e48a8097a0b7077dc4d619b0719057c'}
+        with zipfile.ZipFile(root/'input.zip') as z:
+            names=z.namelist()
+            for i,(name,digest) in enumerate(expected.items()):
+                assert names.count(name)==1
+                e=z.getinfo(name)
+                assert not e.is_dir() and not e.flag_bits & 1 and not stat.S_ISLNK(e.external_attr >> 16)
+                assert 0 < e.file_size < 100000000
+                data=z.read(e)
+                assert hashlib.sha256(data).hexdigest()==digest
+                with (root/f'input-{i}.msi').open('xb') as f: f.write(data)
+        # No other ZIP entry is extracted; no source/executable is run.
+    - name: Observe one isolated installation and always uninstall exact product
+      timeout-minutes: 5
+      shell: pwsh
+      run: |
+        & {
+        # Diagnostic only: one exact retained old GPUI MSI, isolated hosted runner.
+        [CmdletBinding()]
+        param([Parameter(Mandatory=$true)][string]$Msi)
+        Set-StrictMode -Version Latest
+        $ErrorActionPreference='Stop'
+        if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted') { throw 'Disposable hosted runner required' }
+        $Msi=(Resolve-Path -LiteralPath $Msi).Path
+        if ((Get-Item -LiteralPath $Msi).Length -ne 38707200 -or (Get-FileHash -LiteralPath $Msi -Algorithm SHA256).Hash.ToLowerInvariant() -ne '8b14daacda30f49d54a4bdce6ae0af439e48a8097a0b7077dc4d619b0719057c') { throw 'Wrong retained old MSI' }
+        $code='{5FE800A9-0163-42ED-822A-34D78D542EEC}'
+        $packed='9A008EF53610DE2428A2437DD845E2CE'
+        $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+        $folder=Join-Path $env:LOCALAPPDATA 'Programs\XenTerm-Next GPUI'
+        if (Test-Path -LiteralPath $folder) { throw 'Refusing preexisting GPUI directory' }
+        foreach($link in @((Join-Path ([Environment]::GetFolderPath('Programs')) 'XenTerm-Next GPUI'),(Join-Path ([Environment]::GetFolderPath('DesktopDirectory')) 'XenTerm-Next GPUI.lnk'))) {
+         if(Test-Path -LiteralPath $link){throw 'Refusing preexisting GPUI shortcut'}
+        }
+        foreach($view in @([Microsoft.Win32.RegistryView]::Registry32,[Microsoft.Win32.RegistryView]::Registry64)) {
+         $base=[Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::CurrentUser,$view)
+         $anchor=$null
+         try {
+          $anchor=$base.OpenSubKey('Software\XenTerm-Next\GPUI\Installer',$false)
+          if($null -ne $anchor){throw 'Refusing preexisting GPUI installer anchor in either current-user registry view'}
+         } finally {if($null -ne $anchor){$anchor.Dispose()};$base.Dispose()}
+        }
+        $out=Join-Path $env:RUNNER_TEMP 'gpui-registration-observation'
+        if (Test-Path -LiteralPath $out) { throw 'Refusing existing evidence directory' }
+        [void][IO.Directory]::CreateDirectory($out)
+        Add-Type -TypeDefinition @'
+        using System;
+        using System.Text;
+        using System.Runtime.InteropServices;
+        public static class GPUIRegistrationApi {
+         [DllImport("msi.dll",CharSet=CharSet.Unicode,ExactSpelling=true)]
+         public static extern uint MsiEnumProductsExW(string code,string sid,uint context,uint index,StringBuilder foundCode,out uint foundContext,StringBuilder foundSid,ref uint sidLength);
+         [DllImport("msi.dll",CharSet=CharSet.Unicode,ExactSpelling=true)]
+         public static extern uint MsiGetProductInfoExW(string code,string sid,uint context,string property,StringBuilder value,ref uint length);
+        }
+        '@
+        function Snapshot {
+         $instances=@()
+         foreach($scope in @(3,4)) {
+          $querySid=if($scope -eq 4){$null}else{$sid}
+          for([uint32]$i=0;$i -lt 4;$i++) {
+           $found=[Text.StringBuilder]::new(39);$user=[Text.StringBuilder]::new(256);[uint32]$length=256;[uint32]$context=0
+           $rc=[GPUIRegistrationApi]::MsiEnumProductsExW($code,$querySid,$scope,$i,$found,[ref]$context,$user,[ref]$length)
+           if($rc -eq 259 -or $rc -eq 1605){break}
+           if($rc -ne 0){throw "Exact-product enumeration failed: $rc"}
+           if($found.ToString() -cne $code){throw 'Unexpected product enumeration'}
+           $queryUser=if($context -eq 4){$null}else{$user.ToString()}
+           $properties=@{}
+           foreach($name in @('InstalledProductName','VersionString','InstallLocation','AssignmentType','State','LocalPackage')) {
+            $value=[Text.StringBuilder]::new(4096);[uint32]$size=4096
+            $status=[GPUIRegistrationApi]::MsiGetProductInfoExW($code,$queryUser,$context,$name,$value,[ref]$size)
+            $properties[$name]=@{status=$status;value=$value.ToString()}
+           }
+           $instances+=@{product=$found.ToString();context=$context;sid=$user.ToString();properties=$properties}
+          }
+         }
+         $registry=@()
+         foreach($hive in @([Microsoft.Win32.RegistryHive]::CurrentUser,[Microsoft.Win32.RegistryHive]::LocalMachine)) {
+          foreach($view in @([Microsoft.Win32.RegistryView]::Registry32,[Microsoft.Win32.RegistryView]::Registry64)) {
+           $paths=@("Software\Microsoft\Windows\CurrentVersion\Uninstall\$code")
+           if($hive -eq [Microsoft.Win32.RegistryHive]::LocalMachine){$paths+="Software\Microsoft\Windows\CurrentVersion\Installer\UserData\$sid\Products\$packed\InstallProperties"}
+           $base=[Microsoft.Win32.RegistryKey]::OpenBaseKey($hive,$view)
+           try {
+            foreach($path in $paths) {
+             $key=$base.OpenSubKey($path,$false)
+             try {
+              $values=@{}
+              if($null -ne $key){foreach($name in @('DisplayName','DisplayVersion','InstallLocation','UninstallString','QuietUninstallString','WindowsInstaller','SystemComponent','NoRemove','NoModify')){$values[$name]=$key.GetValue($name,$null,[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)}}
+              $registry+=@{hive=[string]$hive;view=[string]$view;path=$path;present=($null -ne $key);values=$values}
+             } finally {if($null -ne $key){$key.Dispose()}}
+            }
+           } finally {$base.Dispose()}
+          }
+         }
+         return @{instances=$instances;registry=$registry;directory_present=(Test-Path -LiteralPath $folder)}
+        }
+        $installer=New-Object -ComObject WindowsInstaller.Installer
+        function Read-Property([string]$name) {
+         $db=$null;$view=$null;$record=$null
+         try {
+          $db=$installer.OpenDatabase($Msi,0);$view=$db.OpenView("SELECT ``Value`` FROM ``Property`` WHERE ``Property``='$name'")
+          [void]$view.Execute();$record=$view.Fetch();if($null -eq $record){return ''};return $record.StringData(1)
+         } finally {
+          try {if($null -ne $view){[void]$view.Close()}}
+          finally {foreach($com in @($record,$view,$db)){if($null -ne $com){[void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($com)}}}
+         }
+        }
+        function Run-ExactMsi([string]$operation,[string]$target,[string]$label) {
+         $p=Start-Process "$env:SystemRoot\System32\msiexec.exe" -ArgumentList @($operation,"`"$target`"",'/qn','/norestart','/l*v',"`"$(Join-Path $out "$label.log")`"") -PassThru
+         try {if(-not $p.WaitForExit(120000)){ $p.Kill();throw "$label timed out (service cleanup still required)" };return $p.ExitCode}
+         finally {$p.Dispose()}
+        }
+        $result=@{product=$code;source='8819e2ec132760047209e9dcff7341c5f8a15f94';current_sid=$sid;actual_installed_apps_ui_tested=$false;registry_uninstall_strings_executed=$false}
+        $attempted=$false
+        try {
+         if((Read-Property 'ProductCode') -cne $code -or (Read-Property 'UpgradeCode') -cne '{7548A7CB-F70B-4AE7-A5F0-F952D45AA826}' -or (Read-Property 'ALLUSERS') -cne '' -or (Read-Property 'ProductName') -cne 'XenTerm-Next GPUI' -or (Read-Property 'ProductVersion') -cne '106.227.41616'){throw 'Pinned identity mismatch'}
+         $related=$null
+         try {
+          $related=$installer.RelatedProducts('{7548A7CB-F70B-4AE7-A5F0-F952D45AA826}')
+          if($related.Count -ne 0){throw 'Refusing any existing GPUI upgrade-family product'}
+         } finally {if($null -ne $related -and [Runtime.InteropServices.Marshal]::IsComObject($related)){[void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($related)}}
+         $result.before=Snapshot
+         if($result.before.instances.Count -ne 0 -or @($result.before.registry|Where-Object present).Count -ne 0){throw 'Refusing any preexisting exact product registration'}
+         $attempted=$true
+         $result.install_exit=Run-ExactMsi '/i' $Msi 'install'
+         if($result.install_exit -notin @(0,3010)){throw "Installation failed: $($result.install_exit)"}
+         $result.installed=Snapshot
+        } catch {$result.error=$_.Exception.Message;throw}
+        finally {
+         try {
+          if($attempted){
+           $result.cleanup_exit=Run-ExactMsi '/x' $code 'cleanup'
+           $result.after_cleanup=Snapshot
+           if($result.cleanup_exit -notin @(0,3010) -or $result.after_cleanup.instances.Count -ne 0 -or @($result.after_cleanup.registry|Where-Object present).Count -ne 0 -or $result.after_cleanup.directory_present){throw 'Exact-product cleanup incomplete; retained diagnostic describes remaining state'}
+          }
+         } catch {$result.cleanup_error=$_.Exception.Message;throw}
+         finally {
+          [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($installer)
+          $bytes=[Text.UTF8Encoding]::new($false).GetBytes(($result|ConvertTo-Json -Depth 12))
+          $stream=[IO.File]::Open((Join-Path $out 'registration.json'),[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+          try {$stream.Write($bytes,0,$bytes.Length)}finally{$stream.Dispose()}
+         }
+        }
+
+        } -Msi (Join-Path $env:RUNNER_TEMP 'gpui-registration-input/input-0.msi')
+    - name: Keep registration and cleanup evidence (not acceptance or release)
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: gpui-msi-registration-observation
+        path: |-
+          ${{ runner.temp }}/gpui-registration-observation/registration.json
+          ${{ runner.temp }}/gpui-registration-observation/*.log
+        if-no-files-found: warn
+        retention-days: 7
