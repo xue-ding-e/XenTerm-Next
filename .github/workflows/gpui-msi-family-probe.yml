@@ -1,0 +1,96 @@
+name: Read-only GPUI upgrade family enumeration
+'on':
+  push:
+    branches:
+    - validation/gpui-msi-repack-20261102
+    paths:
+    - .github/workflows/gpui-msi-family-probe.yml
+permissions:
+  contents: read
+concurrency:
+  group: gpui-msi-only-${{ github.repository }}
+  cancel-in-progress: false
+jobs:
+  family:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+    - name: Verify exact observation-only controller
+      timeout-minutes: 1
+      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
+      with:
+        script: |
+          const owner='xue-ding-e', repo='XenTerm-Next', branch='validation/gpui-msi-repack-20261102';
+          const prior='f38396d0552582350b79d981af939b76ff67a2da';
+          const need=(v,m)=>{if(!v)throw new Error(m);};
+          need(context.repo.owner===owner && context.repo.repo===repo && context.eventName==='push' && context.ref===`refs/heads/${branch}` && context.payload.before===prior, 'Wrong event/ref/before');
+          const {data:ref}=await github.rest.git.getRef({owner,repo,ref:`heads/${branch}`});
+          need(ref.object.sha===context.sha,'Stale controller');
+          const {data:commit}=await github.rest.git.getCommit({owner,repo,commit_sha:context.sha});
+          need(commit.parents.length===1 && commit.parents[0].sha===prior,'Wrong controller parent');
+          for(const who of [commit.author,commit.committer]) need(who.name==='Qing Liang' && who.email==='106448173+xue-ding-e@users.noreply.github.com','Wrong attribution');
+          const {data:diff}=await github.rest.repos.compareCommits({owner,repo,base:prior,head:context.sha});
+          need(diff.files.length===1 && diff.files[0].filename==='.github/workflows/gpui-msi-family-probe.yml' && diff.files[0].status==='added','Controller must only add this diagnostic workflow');
+    - name: Observe COM count and native family API without installing
+      timeout-minutes: 2
+      shell: pwsh
+      run: |
+        # Read-only observation. No MSI installation, package download, or executable launch.
+        Set-StrictMode -Version Latest
+        $ErrorActionPreference='Stop'
+        if($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted'){throw 'Disposable hosted runner required'}
+        $guid='{7548A7CB-F70B-4AE7-A5F0-F952D45AA826}'
+        $out=Join-Path $env:RUNNER_TEMP 'gpui-family-observation.json'
+        if(Test-Path -LiteralPath $out){throw 'Refusing existing evidence file'}
+        Add-Type -TypeDefinition @'
+        using System.Text;
+        using System.Runtime.InteropServices;
+        public static class GPUIFamilyApi {
+         [DllImport("msi.dll",CharSet=CharSet.Unicode,ExactSpelling=true)]
+         public static extern uint MsiEnumRelatedProductsW(string upgradeCode,uint reserved,uint index,StringBuilder productCode);
+        }
+        '@
+        function Describe($value){if($null -eq $value){return @{type='<null>';value=$null}};return @{type=$value.GetType().FullName;value=[string]$value}}
+        $installer=$null;$related=$null
+        $result=@{upgrade_code=$guid;read_only=$true;installed_or_removed_any_product=$false;current_sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value}
+        try {
+         $failed=$false
+         try {$installer=New-Object -ComObject WindowsInstaller.Installer;$related=$installer.RelatedProducts($guid)}catch{$result.com_open_error=$_.Exception.Message;$failed=$true}
+         try {$result.com_object=Describe $related}catch{$result.com_object_error=$_.Exception.Message;$failed=$true}
+         try {$result.powershell_count=Describe $related.Count}catch{$result.powershell_count_error=$_.Exception.Message;$failed=$true}
+         try {$result.dispatch_count=Describe ($related.GetType().InvokeMember('Count',[Reflection.BindingFlags]::GetProperty,$null,$related,$null))}catch{$result.dispatch_count_error=$_.Exception.Message;$failed=$true}
+         $items=@()
+         try {
+          foreach($item in $related){if($items.Count -ge 100){throw 'COM enumeration exceeded diagnostic bound'};$items+=@(Describe $item)}
+         }catch{$result.powershell_enumeration_error=$_.Exception.Message;$failed=$true}
+         $result.powershell_enumerated_items=$items
+         $native=@();$terminal=$false
+         for([uint32]$i=0;$i -lt 100;$i++) {
+          $code=[Text.StringBuilder]::new(39)
+          $status=[GPUIFamilyApi]::MsiEnumRelatedProductsW($guid,0,$i,$code)
+          $native+=@{index=$i;status=$status;product_code=$code.ToString()}
+          $result.native_enumeration=$native
+          if($status -eq 259){$terminal=$true;break}
+          if($status -ne 0){throw "Read-only family enumeration failed: $status"}
+         }
+         $result.native_enumeration=$native
+         if(-not $terminal){throw 'Enumeration exceeded diagnostic bound'}
+         if($failed){throw 'One or more COM observations failed; native crosscheck retained'}
+        } catch {$result.error=$_.Exception.Message;throw}
+        finally {
+         try {foreach($com in @($related,$installer)){if($null -ne $com -and [Runtime.InteropServices.Marshal]::IsComObject($com)){[void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($com)}}}
+         catch {$result.release_error=$_.Exception.Message;throw}
+         finally {
+         $bytes=[Text.UTF8Encoding]::new($false).GetBytes(($result|ConvertTo-Json -Depth 8))
+         $stream=[IO.File]::Open($out,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+         try{$stream.Write($bytes,0,$bytes.Length)}finally{$stream.Dispose()}
+         }
+        }
+    - name: Keep read-only enumeration evidence
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: gpui-msi-family-observation
+        path: ${{ runner.temp }}/gpui-family-observation.json
+        if-no-files-found: warn
+        retention-days: 7
