@@ -70,8 +70,14 @@ class NativeBridgeError implements Exception {
   String toString() => message;
 }
 
+/// The runtime-status read surface. Tests can supply an absent or synthetic
+/// source without loading a native library or touching a real profile.
+abstract interface class RuntimeTunnelSource {
+  String runtimeTunnelsJson();
+}
+
 /// Owns the loaded library and the three step-1 entry points.
-class NativeBridge {
+class NativeBridge implements RuntimeTunnelSource {
   final DynamicLibrary _lib;
 
   NativeBridge._(this._lib);
@@ -414,6 +420,7 @@ class NativeBridge {
           as Map<String, dynamic>;
 
   /// Live tunnels across all open sessions (port-forward runtime state).
+  @override
   String runtimeTunnelsJson() => _take(_runtimeTunnels());
 
   /// Portable profile export (the CLI's JSON, secrets export-key obfuscated).
@@ -1625,10 +1632,16 @@ class RuntimeTunnel {
 }
 
 /// Tunnels currently open by the running sessions (empty when none).
-Future<List<RuntimeTunnel>> loadRuntimeTunnelsFromCore() {
+Future<List<RuntimeTunnel>> loadRuntimeTunnelsFromCore({
+  RuntimeTunnelSource? Function()? loadBridge,
+}) {
   return Isolate.run(() {
-    final bridge = NativeBridge.tryLoad();
-    if (bridge == null) return const <RuntimeTunnel>[];
+    final bridge = (loadBridge ?? NativeBridge.tryLoad)();
+    // Unavailable is not a valid empty snapshot: keep the UI's last known rows
+    // and let its error state say that their current status could not be read.
+    if (bridge == null) {
+      throw NativeBridgeError(NativeBridge.unavailableMessage());
+    }
     final rows = jsonDecode(bridge.runtimeTunnelsJson()) as List<dynamic>;
     return rows
         .cast<Map<String, dynamic>>()
