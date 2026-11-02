@@ -133,9 +133,8 @@ pub(crate) async fn load_session_private_key_offthread(
 ) -> Result<PrivateKey> {
     let session = session.clone();
     let pass = Zeroizing::new(pass.to_string());
-    tokio::task::spawn_blocking(move || load_session_private_key(&session, &pass))
+    crate::ssh::headless_policy::load_private_key(move || load_session_private_key(&session, &pass))
         .await
-        .context("private-key loader task failed")?
 }
 
 /// Format a byte count as a human-readable string.
@@ -1275,6 +1274,41 @@ mod runtime_tunnel_tests {
     }
 }
 
+/// Clone and remove every saved forward before constructing any headless hop.
+fn shell_free_route(session: &Session, jumps: &[Session]) -> (Session, Vec<Session>) {
+    let mut target = session.clone();
+    target.forwards.clear();
+    let jumps = jumps.iter().map(|jump| {
+        let mut jump = jump.clone();
+        jump.forwards.clear();
+        jump
+    }).collect();
+    (target, jumps)
+}
+
+
+/// Authenticate a shell-free owner using exactly the terminal's route and
+/// host-key/authentication implementation. No PTY, shell or monitor is opened.
+/// The owner must keep its automation cancellation guard alive until release.
+pub(crate) async fn open_forward_connection(
+    session: &Session,
+    jump: &[Session],
+) -> Result<(Handle<ClientHandler>, Vec<Handle<ClientHandler>>)> {
+    let (events, event_rx) = mpsc::unbounded_channel();
+    drop(event_rx); // Unknown keys fail closed; unattended auth cannot prompt.
+    let config = ssh_client_config();
+    // This owner activates only the selected local SOCKS rule. Do not install
+    // mappings for unrelated saved remote forwards in the server-open handler.
+    let (transport_session, transport_jumps) = shell_free_route(session, jump);
+    let (mut handle, mut jumps) = connect_ssh(&transport_session, &transport_jumps, config.clone(), &events).await?;
+    match authenticate_session(&mut handle, &mut jumps, &transport_session, &transport_jumps, config, &events).await? {
+        AuthResult::Success => Ok((handle, jumps)),
+        AuthResult::Cancelled => Err(anyhow!("forward authentication requires a saved credential and trusted host key")),
+        AuthResult::Failed => Err(anyhow!("forward authentication failed")),
+    }
+}
+
+
 /// Open an SSH transport to the session's host (directly or via a SOCKS5 / HTTP
 /// proxy) and return the russh handle, ready for authentication. Factored out so
 /// the keyboard-interactive fallback can reconnect on a *fresh* handle — russh
@@ -1296,6 +1330,7 @@ async fn connect_ssh(
         .map(|f| (f.bind_port as u32, (f.host.clone(), f.host_port)))
         .collect();
     let handler = ClientHandler {
+        headless_trust: crate::ssh::headless_policy::current_trust(),
         host: session.host.clone(),
         port: session.port,
         remote_forwards,
@@ -1340,7 +1375,7 @@ where
     H::Error: std::error::Error + Send + Sync + 'static,
 {
     let addr = format!("{}:{}", session.host, session.port);
-    let stream = match crate::ssh::proxy::resolve(&session.proxy)? {
+    let stream = match crate::ssh::headless_policy::proxy_for_connection(&session.proxy)? {
         Some(p) => {
             let _ = events.send(SessionEvent::Status(format!(
                 "{} {} → {}",
@@ -3290,6 +3325,7 @@ async fn ask_mfa_prompt(
 /// Carries the remote-forward (-R) map so we can service channels the server
 /// opens back to us: server bind-port → local `(host, port)` target (#56).
 pub(crate) struct ClientHandler {
+    headless_trust: Option<Arc<crate::ssh::known_hosts::HostKeySnapshot>>,
     host_key_wait: HostKeyWait,
     pub(crate) host: String,
     pub(crate) port: u16,
@@ -3429,6 +3465,9 @@ impl Handler for ClientHandler {
         &mut self,
         server_public_key: &PublicKey,
     ) -> Result<bool, Self::Error> {
+        if let Some(trust) = &self.headless_trust {
+            return Ok(trust.accepts(&self.host, self.port, server_public_key));
+        }
         Ok(verify_host_key(
             &self.host,
             self.port,

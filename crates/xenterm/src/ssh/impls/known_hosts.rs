@@ -201,3 +201,27 @@ pub fn remember(host: &str, port: u16, key: &PublicKey) -> Result<()> {
         .with_context(|| format!("replace {}", p.display()))?;
     Ok(())
 }
+
+/// Immutable verifier for an unattended route. Parsing receives already-read
+/// bytes, and verification never reopens known_hosts or prompts a GUI.
+#[derive(Clone)]
+pub(crate) struct HostKeySnapshot {
+    entries: Vec<(String, String)>,
+}
+
+impl HostKeySnapshot {
+    pub(crate) fn from_text(text: &str) -> Self {
+        Self { entries: text.lines().filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') { return None; }
+            let (id, key) = line.split_once(char::is_whitespace)?;
+            Some((id.to_owned(), key.trim().to_owned()))
+        }).collect() }
+    }
+
+    pub(crate) fn accepts(&self, host: &str, port: u16, key: &PublicKey) -> bool {
+        let expected_id = id(host, port);
+        let want = openssh_line(key);
+        self.entries.iter().any(|(entry_id, entry_key)| *entry_id == expected_id && *entry_key == want)
+    }
+}

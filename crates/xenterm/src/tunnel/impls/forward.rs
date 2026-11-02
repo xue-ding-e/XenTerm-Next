@@ -123,6 +123,16 @@ pub(crate) async fn start_forward(
     })))
 }
 
+/// A pre-bound, shell-free dynamic listener uses exactly the terminal's accept
+/// loop and client drain. The caller owns SSH authentication and actual address.
+pub(crate) fn start_dynamic_bound(
+    handle: Arc<Handle<ClientHandler>>, listener: TcpListener,
+) -> ListenerTask {
+    ListenerTask::spawn(|stopped| run_listener(handle, listener, None, None, async move {
+        let _ = stopped.await;
+    }))
+}
+
 async fn run_listener(
     handle: Arc<Handle<ClientHandler>>,
     listener: TcpListener,
