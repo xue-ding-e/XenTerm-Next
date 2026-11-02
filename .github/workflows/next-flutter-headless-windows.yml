@@ -27,7 +27,6 @@ jobs:
       # Keep package versions/checksums pinned; do not silently switch registries.
       PUB_HOSTED_URL: https://pub.flutter-io.cn
       XT_CHANNEL: dev
-      XENTERM_DATA_DIR: ${{ runner.temp }}/windows-owner-profile
       CARGO_BUILD_JOBS: '2'
       # Keep canonical blob bytes for SHA256/rustfmt verification on Windows.
       # These are per-job Git overrides, never user/global Git configuration.
@@ -52,6 +51,9 @@ jobs:
           if ($source -notmatch '^[0-9a-f]{40}$') { throw 'Draft is not bound to the reviewed formatted source' }
           "sha=$source" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           "XT_SOURCE_SHA=$source" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          # Runner paths are available in steps, not the job-level env context.
+          $ownerDataDir = Join-Path $env:RUNNER_TEMP "windows-owner-profile-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          "XENTERM_DATA_DIR=$ownerDataDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - uses: actions/checkout@v4
         with:
           ref: ${{ steps.source.outputs.sha }}

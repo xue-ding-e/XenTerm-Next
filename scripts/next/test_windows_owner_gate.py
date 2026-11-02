@@ -1,3 +1,4 @@
+import re
 import signal
 import subprocess
 import tempfile
@@ -15,6 +16,25 @@ PASS = "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 694 filtered
 
 
 class WindowsGateTests(unittest.TestCase):
+    def test_job_env_cannot_reference_runner_context(self):
+        workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/next-flutter-headless-windows.yml").read_text(encoding="utf-8")
+
+        def verify_job_env(text):
+            # A targeted regression for the service-side validation failure;
+            # this does not claim to be a complete Actions schema validator.
+            job_env = text.split("    env:\n", 1)[1].split("    steps:\n", 1)[0]
+            allowed = {"github", "needs", "strategy", "matrix", "vars", "secrets", "inputs"}
+            contexts = set(re.findall(r"\$\{\{\s*([A-Za-z_]\w*)\.", job_env))
+            if not contexts.issubset(allowed):
+                raise ValueError("context unavailable in job env")
+
+        verify_job_env(workflow)
+        invalid = workflow.replace("    env:\n", "    env:\n      XENTERM_DATA_DIR: ${{ runner.temp }}/profile\n", 1)
+        with self.assertRaisesRegex(ValueError, "unavailable"):
+            verify_job_env(invalid)
+        self.assertIn("$ownerDataDir = Join-Path $env:RUNNER_TEMP", workflow)
+        self.assertIn('"XENTERM_DATA_DIR=$ownerDataDir" | Out-File -FilePath $env:GITHUB_ENV', workflow)
+
     def test_immutable_source_sha(self):
         verify_sha("a" * 40, "a" * 40)
         for expected, actual in [("UNBOUND", "a" * 40), ("a" * 40, "b" * 40)]:
