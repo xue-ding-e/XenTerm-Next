@@ -46,15 +46,22 @@ jobs:
           , \".github/workflows/ci.yml\": \"b828619d6fca1cd6fe90bf73497cb042616cd809\", \".github/workflows/next-beta-build.yml\"\
           : \"ca35889998ba7ea5433b31cee30643c42616faf6\", \"scripts/next_beta.py\": \"b6f77241520f6f264f7e2f887a3ef59fedb641be\"\
           , \"tests/next_beta_test.py\": \"ac6910ae5cd3ce293f7a7162815c7b76ceaf0979\", \"tests/test_gpui_msi_workflow.py\"\
-          : \"b7d2730bb7fccd0e0fa9e4a7018fef3a6fca39cf\"};\nconst branch='validation/gpui-beta-wiring-20261102',ownPath='.github/workflows/gpui-beta-wiring-verify.yml';\n\
+          : \"b7d2730bb7fccd0e0fa9e4a7018fef3a6fca39cf\"};\nconst previous=\"81eed6d6bda149463a91e5df29571980d1dbf3a8\",anchor=\"\
+          ccb0c4bde897a7097b77c169ed18454f38623a78\",anchorRef='heads/validation/gpui-beta-source-20261102';\nconst branch='validation/gpui-beta-wiring-20261102',ownPath='.github/workflows/gpui-beta-wiring-verify.yml';\n\
           function requireThat(ok,msg){if(!ok)throw new Error(msg);}\nrequireThat(context.eventName==='push' && context.repo.owner===owner\
           \ && context.repo.repo===repo && context.ref==='refs/heads/'+branch,'Wrong event scope');\nconst ref=await github.rest.git.getRef({owner,repo,ref:'heads/'+branch});\n\
           requireThat(ref.data.object.sha===context.sha && context.payload.after===context.sha && !context.payload.deleted,'Stale\
           \ event');\nconst main=await github.rest.git.getRef({owner,repo,ref:'heads/main'});\nrequireThat(main.data.object.sha===base,'Main\
-          \ changed; re-review required');\nconst control=(await github.rest.git.getCommit({owner,repo,commit_sha:context.sha})).data;\n\
-          requireThat(control.parents.length===1 && control.parents[0].sha===base,'Controller must only descend from verified\
-          \ main');\nconst delta=(await github.rest.repos.compareCommitsWithBasehead({owner,repo,basehead:base+'...'+context.sha})).data;\n\
-          requireThat(delta.commits.length===1 && delta.files.length===1 && delta.files[0].filename===ownPath && delta.files[0].status==='added','Unexpected\
+          \ changed; re-review required');\nconst anchorHead=(await github.rest.git.getRef({owner,repo,ref:anchorRef})).data;\n\
+          requireThat(anchorHead.object.sha===anchor,'Source anchor moved');\nconst anchorCommit=(await github.rest.git.getCommit({owner,repo,commit_sha:anchor})).data;\n\
+          requireThat(anchorCommit.parents.length===1 && anchorCommit.parents[0].sha===source && anchorCommit.tree.sha===chain[chain.length-1].tree\
+          \ && anchorCommit.message==='chore(ci): anchor reviewed GPUI reusable source [skip ci]','Wrong reference-only anchor');\n\
+          const prior=(await github.rest.git.getCommit({owner,repo,commit_sha:previous})).data;\nrequireThat(prior.parents.length===1\
+          \ && prior.parents[0].sha===base && prior.tree.sha==='58493b28799861431a659dc080124e3fb3f08e1e','Previous controller\
+          \ changed');\nconst control=(await github.rest.git.getCommit({owner,repo,commit_sha:context.sha})).data;\nrequireThat(control.parents.length===1\
+          \ && control.parents[0].sha===previous,'Controller must descend from exact previous validation');\nconst delta=(await\
+          \ github.rest.repos.compareCommitsWithBasehead({owner,repo,basehead:base+'...'+context.sha})).data;\nrequireThat(delta.commits.length===2\
+          \ && delta.files.length===1 && delta.files[0].filename===ownPath && delta.files[0].status==='added','Unexpected\
           \ control changes');\nfor(const c of chain){const actual=(await github.rest.git.getCommit({owner,repo,commit_sha:c.sha})).data;\n\
           \ requireThat(actual.sha===c.sha && actual.tree.sha===c.tree && actual.parents.length===1 && actual.parents[0].sha===c.parent,'Wrong\
           \ source chain');\n requireThat(actual.author.name==='Qing Liang' && actual.author.email==='106448173+xue-ding-e@users.noreply.github.com'\
