@@ -88,6 +88,24 @@ class MaintenanceGateTests(unittest.TestCase):
         self.assertIn("'{count} active': '{count} 个进行中'", (root / "zh_terminal.dart").read_text(encoding="utf-8"))
         self.assertIn("...zhTerminal,", (root / "app_language.dart").read_text(encoding="utf-8"))
 
+    def test_authoritative_dart_gates_precede_rust_but_native_consumers_do_not(self):
+        root = Path(__file__).resolve().parents[2]
+        workflow = (root / ".github/workflows/next-flutter-windows.yml").read_text()
+        steps = [
+            "Resolve and verify Flutter dependencies",
+            "Verify dependency resolution did not rewrite the lockfile",
+            "Analyze Flutter",
+            "Test exact Flutter runtime regressions (14 required)",
+            "Test exact Rust maintenance regressions (17 required)",
+            "Build Rust bridge and CLI/MCP companion",
+            "Test Flutter",
+            "Build Flutter Windows",
+            "Bundle native bridge",
+            "Smoke test packaged native bridge with isolated data",
+        ]
+        positions = [workflow.index(f"- name: {name}\n") for name in steps]
+        self.assertEqual(positions, sorted(positions))
+
     def test_validation_ref_has_one_readonly_artifact_workflow(self):
         root = Path(__file__).resolve().parents[2]
         workflows = root / ".github/workflows"

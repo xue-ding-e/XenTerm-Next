@@ -48,6 +48,22 @@ jobs:
         run: |
           set -euo pipefail
           echo "XT_VERSION=$(bash scripts/version.sh)" >> "$GITHUB_ENV"
+      - name: Resolve and verify Flutter dependencies
+        working-directory: apps/xenterm
+        run: flutter pub get --enforce-lockfile
+      - name: Verify dependency resolution did not rewrite the lockfile
+        working-directory: apps/xenterm
+        run: git diff --exit-code -- pubspec.lock
+      # Analyze and these injected-source tests do not need the native DLL.
+      # Fail fast here; keep the complete suite and packaged-DLL smoke below.
+      - name: Analyze Flutter
+        working-directory: apps/xenterm
+        run: flutter analyze
+      - name: Test exact Flutter runtime regressions (14 required)
+        shell: pwsh
+        run: |
+          python scripts/next/run_flutter_maintenance_regressions.py --suite flutter --expected-source "$env:GITHUB_SHA"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       # Unlike --bin, this explicitly discovers and executes all 13 tunnel
       # library regressions plus 3 settings regressions and the settings C ABI.
       - name: Test exact Rust maintenance regressions (17 required)
@@ -61,24 +77,9 @@ jobs:
         run: cargo test --locked -p xenterm --bin xenterm
       - name: Build Rust bridge and CLI/MCP companion
         run: cargo build --release --locked -p xenterm-bridge -p xenterm
-      - name: Resolve and verify Flutter dependencies
+      - name: Test Flutter
         working-directory: apps/xenterm
-        run: flutter pub get --enforce-lockfile
-      - name: Verify dependency resolution did not rewrite the lockfile
-        working-directory: apps/xenterm
-        run: git diff --exit-code -- pubspec.lock
-      - name: Test exact Flutter runtime regressions (14 required)
-        shell: pwsh
-        run: |
-          python scripts/next/run_flutter_maintenance_regressions.py --suite flutter --expected-source "$env:GITHUB_SHA"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Analyze and test Flutter
-        working-directory: apps/xenterm
-        run: |
-          flutter analyze
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          flutter test
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        run: flutter test
       - name: Build Flutter Windows
         working-directory: apps/xenterm
         run: flutter build windows --release
