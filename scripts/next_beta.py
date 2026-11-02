@@ -9,15 +9,42 @@ import stat
 from pathlib import PurePosixPath
 import subprocess
 import tempfile
+from datetime import datetime, timezone
 from urllib.parse import urlencode, urlsplit
 import tarfile
 import zipfile
 from packaging_version import prepared_metadata, validate_manifest_version
+from prepare_next_gpui_msi import installer_version
 
 REPOSITORY = 'xue-ding-e/XenTerm-Next'
 WORKFLOW = '.github/workflows/ci.yml'
 PLATFORMS = {'windows-x86_64': '.zip', 'linux-x86_64': '.tar.gz', 'macos-aarch64': '.zip'}
-MANAGED = re.compile(r'^XenTerm-Next-beta-[0-9a-f]{40}-(?:windows-x86_64\.zip|linux-x86_64\.tar\.gz|macos-aarch64\.zip|SHA256SUMS|BUILD\.json)$')
+MANAGED = re.compile(r'^XenTerm-Next-beta-[0-9a-f]{40}-(?:windows-x86_64\.(?:zip|msi(?:\.json)?)|linux-x86_64\.tar\.gz|macos-aarch64\.zip|SHA256SUMS|BUILD\.json)$')
+
+# Long-lived real upgrade baseline. This is a retained release asset, not an
+# expiring Actions artifact. Do not rotate/delete it as part of beta promotion.
+# Replacing it requires a separately reviewed real baseline and digest; absence
+# is fatal, never a reason to skip upgrade acceptance or use a mock payload.
+GPUI_UPGRADE_BASELINE = {
+    'source_sha': '8819e2ec132760047209e9dcff7341c5f8a15f94',
+    'id': 689823772,
+    'name': 'XenTerm-Next-beta-8819e2ec132760047209e9dcff7341c5f8a15f94-windows-x86_64.zip',
+    'size': 43825978,
+    'sha256': 'ab9aaab43cc4b7feeb5b8e6852f359a5dcafa04f35f2957d6344c28858029cad',
+}
+
+
+def require_upgrade_baseline(assets):
+    pin = GPUI_UPGRADE_BASELINE
+    matches = [a for a in assets if a.get('name') == pin['name'] or a.get('id') == pin['id']]
+    expected = {k: pin[k] for k in ('id', 'name', 'size')}
+    expected.update(state='uploaded', digest='sha256:' + pin['sha256'],
+                    url=f'https://api.github.com/repos/{REPOSITORY}/releases/assets/{pin["id"]}',
+                    browser_download_url=f'https://github.com/{REPOSITORY}/releases/download/beta/{pin["name"]}')
+    if (len(matches) != 1 or any(type(matches[0].get(k)) is not type(v) or
+                                matches[0].get(k) != v for k, v in expected.items())):
+        raise RuntimeError('Pinned real GPUI upgrade baseline is missing or changed; preserve/restore the reviewed asset, never skip the upgrade test')
+    return matches[0]
 
 
 def gate(repository, sha, main_sha, run):
@@ -104,17 +131,64 @@ def verify_archive(path, platform, sha, ci_id, build_id):
         raise RuntimeError(str(error)) from error
 
 
+def unique_json_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise RuntimeError('Duplicate installer receipt key')
+        result[key] = value
+    return result
+
+
+def verify_msi(directory, sha, version):
+    """Admit the real Windows job's complete, hash-bound installer receipt."""
+    name = prefix(sha) + 'windows-x86_64.msi'
+    msi = directory / name
+    with msi.open('rb') as source:
+        if source.read(8) != bytes.fromhex('d0cf11e0a1b11ae1'):
+            raise RuntimeError('Not a Windows Installer compound file')
+    receipt_path = directory / (name + '.json')
+    if receipt_path.stat().st_size > 1024 * 1024:
+        raise RuntimeError('Oversized installer receipt')
+    receipt = json.loads(receipt_path.read_text(encoding='utf-8-sig'), object_pairs_hook=unique_json_object)
+    expected_fields = {
+        'product': 'XenTerm-Next GPUI', 'source_sha': sha,
+        'runtime_version': version['runtime_version'],
+        'build_time_utc': datetime.fromtimestamp(version['version_timestamp'], timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.0000000Z'),
+        'package_version': version['package_version'], 'installer_version': installer_version(version),
+        'upgrade_test_fixture': False,
+        'sha256': digest(msi),
+    }
+    if (not isinstance(receipt, dict) or set(receipt) != set(expected_fields) | {'payload'} or
+            any(type(receipt.get(k)) is not type(v) or receipt.get(k) != v for k, v in expected_fields.items())):
+        raise RuntimeError('MSI receipt differs from tested product source or installer')
+    archive_path = directory / (prefix(sha) + 'windows-x86_64.zip')
+    with zipfile.ZipFile(archive_path) as archive:
+        root = prefix(sha) + 'windows-x86_64/'
+        expected = {n[len(root):]: hashlib.sha256(archive.read(n)).hexdigest()
+                    for n in archive.namelist() if not n.endswith('/')}
+    payload = receipt.get('payload', [])
+    if (not isinstance(payload, list) or len(payload) != len(expected) or
+            any(not isinstance(item, dict) or set(item) != {'path', 'sha256'} or
+                type(item['path']) is not str or type(item['sha256']) is not str for item in payload) or
+            len({item['path'] for item in payload}) != len(payload) or
+            {item['path']: item['sha256'] for item in payload} != expected):
+        raise RuntimeError('MSI payload receipt does not exactly match the portable GUI bundle')
+
+
 def prepare_assets(directory, sha, ci_id, build_id):
     p = prefix(sha)
     packages = {p + platform + suffix for platform, suffix in PLATFORMS.items()}
+    packages |= {p + 'windows-x86_64.msi', p + 'windows-x86_64.msi.json'}
     sidecars = {p + 'BUILD.json', p + 'SHA256SUMS'}
     actual = {f.name for f in directory.iterdir()}
     if actual not in (packages, packages | sidecars) or any(not f.is_file() or f.is_symlink() or f.stat().st_size == 0 for f in directory.iterdir()):
-        raise RuntimeError('Expected exactly three nonempty, regular platform archives')
+        raise RuntimeError('Expected three platform archives plus the real Windows MSI and receipt')
     versions = [verify_archive(directory / (p + platform + suffix), platform, sha, ci_id, build_id)
                 for platform, suffix in PLATFORMS.items()]
     if any(version != versions[0] for version in versions[1:]):
         raise RuntimeError('Platform archives disagree on runtime/package version')
+    verify_msi(directory, sha, versions[0])
     metadata = {**versions[0], 'repository': REPOSITORY, 'commit': sha, 'ci_run': str(ci_id),
                 'build_run': str(build_id), 'platforms': sorted(PLATFORMS),
                 'windows_signing': 'unsigned', 'macos_signing': 'ad-hoc, not notarized',
@@ -136,7 +210,11 @@ def prepare_assets(directory, sha, ci_id, build_id):
 
 
 def obsolete_assets(assets, current):
-    return [a for a in assets if MANAGED.fullmatch(a['name']) and a['name'] not in current]
+    # Even a separately invoked cleanup planner cannot nominate the pinned
+    # baseline by its name or immutable asset ID. Publication itself deletes none.
+    return [a for a in assets if MANAGED.fullmatch(a['name']) and a['name'] not in current
+            and a['name'] != GPUI_UPGRADE_BASELINE['name']
+            and a.get('id') != GPUI_UPGRADE_BASELINE['id']]
 
 
 class GitHub:
@@ -314,6 +392,7 @@ def publish(api, directory, sha, ci_id, build_id):
         raise RuntimeError('Immutable beta cannot be rolled; no settings will be changed')
     rid = release['id']
     listed = api.assets(rid)
+    require_upgrade_baseline(listed)
     assets = {a['name']: a for a in listed}
     if len(assets) != len(listed):
         raise RuntimeError('Duplicate release asset names')
@@ -332,6 +411,9 @@ def publish(api, directory, sha, ci_id, build_id):
     # Re-read every known asset by ID; list visibility is not publication proof.
     for name, checksum in expected.items():
         verify_asset(api, assets[name], name, checksum, (directory / name).stat().st_size, origins[name], 'final', rid)
+    # Recheck retention immediately before promotion, after potentially long
+    # uploads; a concurrent manual deletion must stop tag/release mutation.
+    require_upgrade_baseline(api.assets(rid))
     old = api.tag()
     api.check(sha, ci_id)
     api.move_tag(sha, old)
@@ -343,7 +425,8 @@ def publish(api, directory, sha, ci_id, build_id):
     body = (f'XenTerm Next GPUI 独立增强预览版（Rust + GPUI 桌面渠道，不替换 Flutter 版本），基于 [XenTerm](https://github.com/ixbaicn/XenTerm)，保留 MIT 归属。\n\n'
             f'源码 SHA: `{sha}`\nCI: https://github.com/{REPOSITORY}/actions/runs/{ci_id}\n'
             f'Build: https://github.com/{REPOSITORY}/actions/runs/{build_id}\n\n'
-            'Windows portable 未签名（unsigned）；macOS 仅 ad-hoc 签名、未公证。请核对 SHA256SUMS；不要关闭系统安全保护。\n'
+            'MSI 安装器数字版本是构建时间的无损编码，与应用版本不同；应用版本和源码在 BUILD.json 与 MSI 收据中保留。\n'
+            'Windows MSI 安装包与 portable ZIP 均未签名（unsigned）；macOS 仅 ad-hoc 签名、未公证。请核对 SHA256SUMS；不要关闭系统安全保护。\n'
             'Linux x86_64 构建于 Ubuntu 22.04，不宣称 glibc 2.28 兼容。可执行文件内部名称仍为 xenterm。\n'
             '滚动预览更新时不同 SHA 资产可能短暂共存；以下链接明确指定本次构建。\n\n' + links)
     api.api(f'releases/{rid}', 'PATCH', {'name': f'XenTerm Next GPUI beta ({sha[:12]})',
@@ -352,7 +435,8 @@ def publish(api, directory, sha, ci_id, build_id):
     if verified['body'] != body or verified['draft'] or api.tag() != sha:
         raise RuntimeError('Release readback mismatch; preserving all old assets')
     # Publication preserves every prior/manual asset, including other channels.
-    # Only a separate reviewed cleanup may remove old GPUI assets after the new
+    # The pinned upgrade baseline must remain even during separate cleanup.
+    # Only a separate reviewed cleanup may remove other old GPUI assets after the new
     # downloads are verified and a recoverable copy of the old assets is secured.
 
 

@@ -20,6 +20,15 @@ RUN = {'repository': {'full_name': release.REPOSITORY}, 'head_repository': {'ful
        'event': 'push', 'status': 'completed', 'conclusion': 'success'}
 
 
+def baseline_record():
+    pin = release.GPUI_UPGRADE_BASELINE
+    return {k: pin[k] for k in ('id', 'name', 'size')} | {
+        'state': 'uploaded', 'digest': 'sha256:' + pin['sha256'],
+        'url': f'https://api.github.com/repos/{release.REPOSITORY}/releases/assets/{pin["id"]}',
+        'browser_download_url': f'https://github.com/{release.REPOSITORY}/releases/download/beta/{pin["name"]}',
+    }
+
+
 class FakeGitHub:
     def __init__(self, fail=None, existing=True):
         self.fail = fail
@@ -53,7 +62,7 @@ class FakeGitHub:
         return self.current
 
     def assets(self, rid):
-        return [self.record(name) for name in self.files]
+        return [baseline_record()] + [self.record(name) for name in self.files]
 
     def record(self, name):
         asset_id = self.ids[name]
@@ -103,9 +112,9 @@ def archives(path, manifest_sha=SHA, versions=None):
                  root + 'BUILD.json': json.dumps({'repository': release.REPOSITORY, 'sha': manifest_sha, 'platform': platform,
                                                  'ci_run': '12', 'build_run': '34',
                                                  **((versions or {}).get(platform) or {
-                                                     'version_scheme': 'cargo-legacy', 'runtime_version': '1.2.3',
-                                                     'package_version': '1.2.3', 'version_timestamp': None,
-                                                     'binary_version': 'xenterm 1.2.3'})}).encode()}
+                                                     'version_scheme': 'xt-v1', 'runtime_version': 'xt-beta-aaaaaaa-T1792060000',
+                                                     'package_version': '1.2.3', 'version_timestamp': 1792060000,
+                                                     'binary_version': 'xenterm xt-beta-aaaaaaa-T1792060000'})}).encode()}
         output = path / (release.prefix(SHA) + platform + suffix)
         if suffix == '.zip':
             with zipfile.ZipFile(output, 'w') as archive:
@@ -115,6 +124,23 @@ def archives(path, manifest_sha=SHA, versions=None):
                 for name, data in files.items():
                     item = tarfile.TarInfo(name); item.size = len(data)
                     archive.addfile(item, io.BytesIO(data))
+
+
+    # Structural MSI/receipt fixtures test admission only, never native install.
+    name = release.prefix(SHA) + 'windows-x86_64.msi'
+    msi = path / name
+    msi.write_bytes(bytes.fromhex('d0cf11e0a1b11ae1') + b'unit fixture, not runnable')
+    with zipfile.ZipFile(path / (release.prefix(SHA) + 'windows-x86_64.zip')) as archive:
+        root = release.prefix(SHA) + 'windows-x86_64/'
+        info = json.loads(archive.read(root + 'BUILD.json'))
+        receipt = dict(product='XenTerm-Next GPUI', source_sha=manifest_sha,
+                       runtime_version=info['runtime_version'], package_version=info['package_version'],
+                       build_time_utc=release.datetime.fromtimestamp(info['version_timestamp'], release.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.0000000Z'),
+                       installer_version=release.installer_version(info), upgrade_test_fixture=False,
+                       sha256=release.digest(msi),
+                       payload=[dict(path=n[len(root):], sha256=release.hashlib.sha256(archive.read(n)).hexdigest())
+                                for n in archive.namelist()])
+    (path / (name + '.json')).write_text(json.dumps(receipt))
 
 
 class ReleaseSelectionTests(unittest.TestCase):
@@ -205,11 +231,74 @@ class GateTests(unittest.TestCase):
 
 
 class AssetTests(unittest.TestCase):
+    def test_msi_source_hash_and_payload_are_bound(self):
+        import json
+        for field in ('product', 'source_sha', 'runtime_version', 'package_version', 'build_time_utc', 'sha256', 'payload', 'upgrade_test_fixture', 'installer_version'):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp); archives(path)
+                receipt = next(path.glob('*.msi.json'))
+                info = json.loads(receipt.read_text())
+                info[field] = [] if field == 'payload' else True if field == 'upgrade_test_fixture' else 'wrong'
+                receipt.write_text(json.dumps(info))
+                with self.assertRaises(RuntimeError):
+                    release.prepare_assets(path, SHA, '12', '34')
+
+    def test_receipt_types_duplicates_and_missing_fields_fail_before_writes(self):
+        import json
+        mutations = [lambda d: d.update(upgrade_test_fixture=0),
+                     lambda d: d.update(upgrade_test_fixture=None),
+                     lambda d: d.pop('build_time_utc'),
+                     lambda d: d.update(extra='unreviewed'),
+                     lambda d: d['payload'].append(d['payload'][0]),
+                     lambda d: d['payload'][0].update(path=[]),
+                     lambda d: d['payload'][0].update(sha256=0)]
+        for mutation in mutations:
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp); archives(path); api = FakeGitHub()
+                receipt = next(path.glob('*.msi.json')); info = json.loads(receipt.read_text())
+                mutation(info); receipt.write_text(json.dumps(info))
+                with self.assertRaises(RuntimeError): release.publish(api, path, SHA, '12', '34')
+                self.assertEqual(api.events, [])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp); archives(path); api = FakeGitHub()
+            receipt = next(path.glob('*.msi.json'))
+            # Last-key-wins parsing would otherwise admit this valid receipt.
+            receipt.write_text(receipt.read_text().replace('"product": "XenTerm-Next GPUI"',
+                '"product": "wrong", "product": "XenTerm-Next GPUI"'))
+            with self.assertRaisesRegex(RuntimeError, 'Duplicate installer receipt key'):
+                release.publish(api, path, SHA, '12', '34')
+            self.assertEqual(api.events, [])
+
+        for content in ('{"product":1,"product":2}', '[]', ' ' * (1024 * 1024 + 1)):
+            with self.subTest(content=content[:50]), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp); archives(path); api = FakeGitHub()
+                next(path.glob('*.msi.json')).write_text(content)
+                with self.assertRaises(RuntimeError): release.publish(api, path, SHA, '12', '34')
+                self.assertEqual(api.events, [])
+
+    def test_packaging_diagnostics_are_not_release_inputs(self):
+        import shutil
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); dist = root / 'dist'; dist.mkdir(); archives(dist)
+            debug = dist / (release.prefix(SHA) + 'windows-x86_64.wixpdb')
+            debug.write_bytes(b'WiX debug evidence, not a release asset')
+            with self.assertRaisesRegex(RuntimeError, 'three platform archives'):
+                release.prepare_assets(dist, SHA, '12', '34')
+            stage = root / 'stage'; stage.mkdir()
+            for platform, extension in release.PLATFORMS.items():
+                names = [release.prefix(SHA) + platform + extension]
+                if platform == 'windows-x86_64':
+                    names += [release.prefix(SHA) + platform + '.msi', release.prefix(SHA) + platform + '.msi.json']
+                for name in names: shutil.copyfile(dist / name, stage / name)
+            self.assertEqual(len(release.prepare_assets(stage, SHA, '12', '34')), 7)
+            self.assertFalse(any(stage.glob('*.wixpdb')))
+            self.assertEqual(debug.read_bytes(), b'WiX debug evidence, not a release asset')
+
     def test_required_platform_set_and_checksums(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp); archives(path)
             hashes = release.prepare_assets(path, SHA, '12', '34')
-            self.assertEqual(len(hashes), 5)
+            self.assertEqual(len(hashes), 7)
             sums = (path / (release.prefix(SHA) + 'SHA256SUMS')).read_text(encoding='utf-8')
             for file in path.iterdir():
                 self.assertEqual(hashes[file.name], release.digest(file))
@@ -322,6 +411,13 @@ class AssetTests(unittest.TestCase):
             next(path.glob('*.zip')).write_bytes(b'not a zip')
             with self.assertRaises(Exception): release.prepare_assets(path, SHA, '12', '34')
 
+    def test_cleanup_never_nominates_pinned_baseline(self):
+        pin = baseline_record()
+        renamed = pin | {'name': release.prefix(OLD) + 'windows-x86_64.zip'}
+        self.assertEqual(release.obsolete_assets([pin, renamed], set()), [])
+        named_only = {'name': pin['name']}
+        self.assertEqual(release.obsolete_assets([named_only], set()), [])
+
     def test_cleanup_recognizes_only_owned_names(self):
         own = release.prefix(OLD) + 'windows-x86_64.zip'
         current = release.prefix(SHA) + 'linux-x86_64.tar.gz'
@@ -332,6 +428,36 @@ class AssetTests(unittest.TestCase):
 
 
 class PublisherTests(unittest.TestCase):
+    def test_baseline_missing_or_changed_blocks_before_any_write(self):
+        for change in ('missing', 'id', 'digest', 'size', 'state', 'duplicate'):
+            class BadBaseline(FakeGitHub):
+                def assets(self, rid):
+                    entries = super().assets(rid)
+                    if change == 'missing': return entries[1:]
+                    if change == 'duplicate': return entries + [entries[0]]
+                    entries[0] = entries[0] | {change: 1 if change in ('id', 'size') else 'wrong'}
+                    return entries
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp); archives(path); api = BadBaseline()
+                with self.assertRaisesRegex(RuntimeError, 'baseline'):
+                    release.publish(api, path, SHA, '12', '34')
+                self.assertNotIn('upload', api.events)
+                self.assertNotIn('move_tag', api.events)
+                self.assertFalse(any(e.startswith(('PATCH:', 'DELETE:')) for e in api.events))
+
+    def test_baseline_removed_during_upload_blocks_promotion(self):
+        class DisappearingBaseline(FakeGitHub):
+            def assets(self, rid):
+                entries = super().assets(rid)
+                return entries[1:] if 'upload' in self.events else entries
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp); archives(path); api = DisappearingBaseline()
+            with self.assertRaisesRegex(RuntimeError, 'baseline'):
+                release.publish(api, path, SHA, '12', '34')
+            self.assertIn('upload', api.events)
+            self.assertNotIn('move_tag', api.events)
+            self.assertFalse(any(e.startswith(('PATCH:', 'DELETE:')) for e in api.events))
+
     def test_upload_ids_work_when_lists_never_show_new_assets(self):
         class StaleList(FakeGitHub):
             def assets(self, rid):
@@ -341,9 +467,9 @@ class PublisherTests(unittest.TestCase):
             path = Path(tmp); archives(path); api = StaleList()
             release.publish(api, path, SHA, '12', '34')
             self.assertEqual(api.ref, SHA)
-            self.assertEqual(api.events.count('upload'), 5)
-            self.assertEqual(api.events.count('asset'), 10)
-            self.assertEqual(api.events.count('verify'), 10)
+            self.assertEqual(api.events.count('upload'), 7)
+            self.assertEqual(api.events.count('asset'), 14)
+            self.assertEqual(api.events.count('verify'), 14)
 
     def test_asset_response_and_readback_identity_must_match(self):
         bad_fields = {'id': [True, 0, 999], 'name': ['wrong'], 'size': [-1],
@@ -385,12 +511,12 @@ class PublisherTests(unittest.TestCase):
         class ChangedAsset(FakeGitHub):
             def asset(self, asset_id):
                 result = super().asset(asset_id)
-                return result | {'size': 0} if self.events.count('verify') == 5 else result
+                return result | {'size': 0} if self.events.count('verify') == 7 else result
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp); archives(path); api = ChangedAsset()
             with self.assertRaisesRegex(RuntimeError, 'identity mismatch'):
                 release.publish(api, path, SHA, '12', '34')
-            self.assertEqual(api.events.count('upload'), 5)
+            self.assertEqual(api.events.count('upload'), 7)
             self.assertEqual(api.ref, OLD)
             self.assertIn(release.prefix(OLD) + 'windows-x86_64.zip', api.files)
 
@@ -457,7 +583,7 @@ class PublisherTests(unittest.TestCase):
             class Changed(FakeGitHub):
                 def asset(self, asset_id):
                     result = super().asset(asset_id)
-                    if self.events.count('verify') == 5:
+                    if self.events.count('verify') == 7:
                         if failure == '404': raise RuntimeError('HTTP 404')
                         data = self.files[result['name']]
                         self.files[result['name']] = bytes([data[0] ^ 1]) + data[1:]
@@ -602,7 +728,7 @@ class PublisherTests(unittest.TestCase):
             self.assertEqual(api.files['manual.txt'], b'keep')
             self.assertEqual(api.files[flutter], b'other channel')
             self.assertEqual(api.files[release.prefix(OLD) + 'windows-x86_64.zip'], b'old')
-            self.assertEqual(len(api.files), 8)
+            self.assertEqual(len(api.files), 10)
             self.assertIn('GPUI', api.current['name'])
             self.assertIn('不替换 Flutter 版本', api.current['body'])
             self.assertGreater(api.events.index('move_tag'), max(i for i, event in enumerate(api.events) if event == 'verify'))
