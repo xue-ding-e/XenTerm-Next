@@ -65,6 +65,10 @@ class _ForwardsScreenState extends State<ForwardsScreen> {
   List<Host> _sshHosts = const [];
   List<RuntimeTunnel> _tunnels = const [];
   Timer? _tunnelPoll;
+  bool _pollingTunnels = false;
+  bool _pollTunnelsAgain = false;
+  int _tunnelSourceEpoch = 0;
+  String? _tunnelError;
   bool _loading = true;
   String? _error;
   String? _notice;
@@ -84,6 +88,20 @@ class _ForwardsScreenState extends State<ForwardsScreen> {
     // while the window itself is animating (resize/zoom/minimize) so it never
     // competes with the compositor for the frame budget.
     _startTunnelPoll();
+    unawaited(_pollTunnels());
+  }
+
+  @override
+  void didUpdateWidget(covariant ForwardsScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.loadTunnels != oldWidget.loadTunnels) {
+      // A replaced bridge/session source cannot be overwritten by its older
+      // in-flight response, even when the new source reuses runtime row ids.
+      _tunnelSourceEpoch++;
+      _tunnels = const [];
+      _tunnelError = null;
+      unawaited(_pollTunnels());
+    }
   }
 
   void _onWindowActivity() {
@@ -106,13 +124,40 @@ class _ForwardsScreenState extends State<ForwardsScreen> {
   }
 
   Future<void> _pollTunnels() async {
+    if (!mounted || !windowActivity.isIdle) return;
+    if (_pollingTunnels) {
+      // Coalesce timer ticks while the native bridge is slow. Once it returns,
+      // fetch the latest state rather than overlap requests or miss the last tick.
+      _pollTunnelsAgain = true;
+      return;
+    }
+    _pollingTunnels = true;
+    final epoch = _tunnelSourceEpoch;
+    var failed = false;
     try {
       final tunnels =
           await (widget.loadTunnels ?? loadRuntimeTunnelsFromCore)();
-      if (!mounted) return;
-      setState(() => _tunnels = tunnels);
+      if (!mounted || epoch != _tunnelSourceEpoch) return;
+      setState(() {
+        _tunnels = tunnels;
+        _tunnelError = null;
+      });
     } catch (_) {
-      // A dead bridge must not spam the screen; the next tick retries.
+      failed = true;
+      if (mounted && epoch == _tunnelSourceEpoch) {
+        setState(() {
+          _tunnelError = 'Tunnel status unavailable; showing last known state.';
+        });
+      }
+    } finally {
+      _pollingTunnels = false;
+      final again = _pollTunnelsAgain;
+      _pollTunnelsAgain = false;
+      // A failed read waits for a later timer tick; it must not spin in a catch
+      // loop. Replacing the source is a fresh request, not an error retry.
+      if (mounted && again && (!failed || epoch != _tunnelSourceEpoch)) {
+        unawaited(_pollTunnels());
+      }
     }
   }
 
@@ -120,6 +165,8 @@ class _ForwardsScreenState extends State<ForwardsScreen> {
   void dispose() {
     windowActivity.idle.removeListener(_onWindowActivity);
     _tunnelPoll?.cancel();
+    _tunnelSourceEpoch++;
+    _pollTunnelsAgain = false;
     _search.dispose();
     super.dispose();
   }
@@ -419,11 +466,20 @@ class _ForwardsScreenState extends State<ForwardsScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        if (_tunnelError != null)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Text(
+              AppLanguage.tr(context, _tunnelError!),
+              key: const ValueKey('runtime-tunnel-stale'),
+              style: TextStyle(color: XtColors.danger(context)),
+            ),
+          ),
         if (_tunnels.isNotEmpty) ...[
           Row(
             children: [
               Text(
-                AppLanguage.tr(context, 'Active tunnels'),
+                AppLanguage.tr(context, 'Runtime tunnels'),
                 style: theme.typography.semiBold.copyWith(
                   fontSize: 15,
                   color: XtColors.textPrimary(context),
@@ -431,7 +487,12 @@ class _ForwardsScreenState extends State<ForwardsScreen> {
               ),
               const SizedBox(width: 8),
               Text(
-                '${_tunnels.length}',
+                _tunnelError == null
+                    ? AppLanguage.tr(context, '{count} active', {
+                        'count': '${_tunnels.where((tunnel) => tunnel.active).length}',
+                      })
+                    : AppLanguage.tr(context, 'Status unavailable'),
+                key: const ValueKey('runtime-tunnel-active-count'),
                 style: TextStyle(
                   fontSize: 12,
                   color: XtColors.textTertiary(context),
@@ -442,6 +503,7 @@ class _ForwardsScreenState extends State<ForwardsScreen> {
           const SizedBox(height: 8),
           for (final tunnel in _tunnels)
             Padding(
+              key: ValueKey('runtime-tunnel-${tunnel.sessionHandle}-${tunnel.id}'),
               padding: const EdgeInsets.only(bottom: 8),
               child: _TunnelCard(tunnel: tunnel),
             ),
@@ -1014,61 +1076,66 @@ class _TunnelCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final target = tunnel.kind == 'dynamic'
+        ? 'SOCKS5'
+        : '${tunnel.host}:${tunnel.hostPort}';
     final color = tunnel.active
         ? XtColors.accent(context)
         : XtColors.danger(context);
     return XtCard(
       padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
       radius: XtRadius.field,
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Container(
-            width: 8,
-            height: 8,
-            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  tunnel.name.isEmpty
-                      ? AppLanguage.tr(context, '{kind} tunnel', {
-                          'kind': _ForwardsScreenState.kindLabel(
-                            context,
-                            tunnel.kind,
-                          ),
-                        })
-                      : tunnel.name,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.typography.medium.copyWith(
-                    fontSize: 13,
-                    color: XtColors.textPrimary(context),
-                  ),
+          Row(
+            children: [
+              Container(
+                width: 8,
+                height: 8,
+                decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      tunnel.name.isEmpty
+                          ? AppLanguage.tr(context, '{kind} tunnel', {
+                              'kind': _ForwardsScreenState.kindLabel(context, tunnel.kind),
+                            })
+                          : tunnel.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.typography.medium.copyWith(
+                        fontSize: 13,
+                        color: XtColors.textPrimary(context),
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '${tunnel.bindAddr}:${tunnel.bindPort} → $target',
+                      style: TextStyle(
+                        fontFamily: 'Consolas',
+                        fontFamilyFallback: const ['Menlo', 'Courier New'],
+                        fontSize: 11,
+                        color: XtColors.textTertiary(context),
+                      ),
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 2),
-                Text(
-                  '${tunnel.bindAddr}:${tunnel.bindPort} → '
-                  '${tunnel.host}:${tunnel.hostPort}',
-                  style: TextStyle(
-                    fontFamily: 'Consolas',
-                    fontFamilyFallback: const ['Menlo', 'Courier New'],
-                    fontSize: 11,
-                    color: XtColors.textTertiary(context),
-                  ),
-                ),
-              ],
-            ),
+              ),
+            ],
           ),
-          const SizedBox(width: 10),
+          const SizedBox(height: 6),
+          // Bind/transport diagnostics can be long. A full-width wrapped line
+          // preserves the actual error instead of overflowing a trailing Row.
           Text(
             tunnel.status,
-            style: TextStyle(
-              fontSize: 11,
-              color: XtColors.textTertiary(context),
-            ),
+            key: ValueKey('runtime-tunnel-status-${tunnel.sessionHandle}-${tunnel.id}'),
+            softWrap: true,
+            style: TextStyle(fontSize: 11, color: XtColors.textTertiary(context)),
           ),
         ],
       ),

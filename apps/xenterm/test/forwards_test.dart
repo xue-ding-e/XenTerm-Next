@@ -40,6 +40,7 @@ void main() {
       _app(
         ForwardsScreen(
           loadForwards: () async => rules,
+          loadTunnels: () async => const [],
           loadHosts: () async => const [_host],
           deleteForward: ({required sessionId, required index}) async {
             deleted = '$sessionId/$index';
@@ -76,6 +77,7 @@ void main() {
       _app(
         ForwardsScreen(
           loadForwards: () async => rules,
+          loadTunnels: () async => const [],
           loadHosts: () async => const [_host],
           saveForward:
               ({
