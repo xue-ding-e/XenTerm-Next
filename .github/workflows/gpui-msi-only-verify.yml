@@ -1,0 +1,248 @@
+# Control-only workflow: product SHA is fixed and verified separately.
+# No release calls, write token, user-machine access, or substituted payload.
+name: Read-only fixed-source GPUI MSI acceptance
+'on':
+  push:
+    branches:
+    - validation/gpui-msi-only-20261102
+    paths:
+    - .github/workflows/gpui-msi-only-verify.yml
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: gpui-msi-only-${{ github.repository }}
+  cancel-in-progress: false
+jobs:
+  source-proof:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    outputs:
+      product_sha: ${{ steps.prove.outputs.product_sha }}
+    steps:
+    - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
+      id: prove
+      with:
+        script: |
+          const owner = 'xue-ding-e', repo = 'XenTerm-Next';
+          const repository = `${owner}/${repo}`;
+          const oldRunId = 41371125729;
+          const oldSha = 'eff1a5697f0618cd6b4d73a4938859e267643a77';
+          const productSha = '381ac573bf0bca127e28dd17bd36f979cd16824b';
+          const productTree = '075006e3112863336f1d8b9f78257a6a3b48004d';
+          const oldTree = 'aa340676b39d82c0bfe879881434764f26ac91af';
+          const oldBranch = 'feature/next-gpui-msi-validation-20261102';
+          const controlBranch = 'validation/gpui-msi-only-20261102';
+          const requireTrue = (condition, message) => { if (!condition) throw new Error(message); };
+          requireTrue(context.repo.owner === owner && context.repo.repo === repo &&
+            context.eventName === 'push' && context.ref === `refs/heads/${controlBranch}`,
+            'Wrong repository, event or control ref');
+          const {data: control} = await github.rest.git.getRef({owner, repo, ref:`heads/${controlBranch}`});
+          requireTrue(control.object.sha === context.sha, 'Control ref moved; do not run a stale controller');
+          const {data: run} = await github.rest.actions.getWorkflowRun({owner, repo, run_id:oldRunId});
+          requireTrue(run.id === oldRunId && run.repository.full_name === repository &&
+            run.head_repository.full_name === repository && run.head_sha === oldSha &&
+            run.head_branch === oldBranch && run.path === '.github/workflows/ci.yml' &&
+            run.event === 'push' && run.run_attempt === 1 && run.status === 'completed' &&
+            run.conclusion === 'failure', 'Prior CI identity/state differs from the reviewed run');
+          const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRunAttempt,
+            {owner, repo, run_id:oldRunId, attempt_number:1, per_page:100});
+          const successfulNames = [
+            'Linux desktop', 'macOS desktop', 'Windows desktop',
+            'macos-14 migration CLI regression', 'windows-latest migration CLI regression',
+            'ubuntu-22.04 migration CLI regression', 'Headless MCP regression',
+            'Rust 1.88 Linux headless regression', 'Windows SSH command stack',
+            'Linux installer check', 'macOS PKG choices and payload',
+          ];
+          const msiName = 'Windows MSI install upgrade uninstall';
+          const names = new Map(jobs.map(job => [job.name, job]));
+          requireTrue(names.size === jobs.length && jobs.length === 13, 'Unexpected or duplicate prior jobs');
+          for (const job of jobs) {
+            requireTrue(job.run_id === oldRunId && job.run_attempt === 1 && job.head_sha === oldSha && job.status === 'completed',
+              'Prior job source or terminal state mismatch');
+          }
+          for (const name of successfulNames) requireTrue(names.get(name)?.conclusion === 'success', `Required prior job not successful: ${name}`);
+          requireTrue(names.get('next-beta-dry-run')?.conclusion === 'skipped', 'Unexpected prior dry-run publication job');
+          const msi = names.get(msiName);
+          requireTrue(msi?.conclusion === 'failure', 'Prior MSI failure differs');
+          const steps = new Map(msi.steps.map(step => [step.name, step]));
+          requireTrue(steps.size === msi.steps.length, 'Duplicate prior MSI steps');
+          const versionStep = 'Bind installer test runtime to this exact source';
+          const artifactStep = 'Keep real GPUI MSI and lifecycle evidence (not a release)';
+          requireTrue(steps.get(versionStep)?.conclusion === 'failure', 'Prior failure is not the reviewed Bash version binding failure');
+          requireTrue(steps.get('Verify upstream installer mechanism fixture (not product acceptance)')?.conclusion === 'success',
+            'Prior upstream mechanism fixture did not pass');
+          const realSteps = [
+            'Build real GPUI release payload (locked, static Microsoft runtime)',
+            'Reject unpackaged Microsoft runtime dependencies in actual PE',
+            'Package actual executable and original licenses',
+            'Verify real old-to-current GPUI MSI lifecycle',
+          ];
+          for (const name of realSteps) requireTrue(steps.get(name)?.conclusion === 'skipped', `Prior real product stage unexpectedly ran: ${name}`);
+          // The reviewed run's always-upload step also failed because version binding
+          // stopped before any product artifact existed. This is an explicit dependent
+          // failure, not permission to reuse another installer/build failure.
+          const failures = msi.steps.filter(s => s.conclusion === 'failure').map(s => s.name).sort();
+          requireTrue(JSON.stringify(failures) === JSON.stringify([versionStep, artifactStep].sort()), 'Unexpected prior MSI failing steps');
+          requireTrue(msi.steps.every(s => ['success','skipped','failure'].includes(s.conclusion)), 'Prior MSI cancelled or incomplete step');
+          const {data: oldCommit} = await github.rest.git.getCommit({owner, repo, commit_sha:oldSha});
+          const {data: product} = await github.rest.git.getCommit({owner, repo, commit_sha:productSha});
+          requireTrue(oldCommit.tree.sha === oldTree && product.tree.sha === productTree &&
+            product.parents.length === 1 && product.parents[0].sha === oldSha,
+            'Fixed product source/tree/linear parent differs');
+          for (const identity of [product.author, product.committer]) requireTrue(identity.name === 'Qing Liang' &&
+            identity.email === '106448173+xue-ding-e@users.noreply.github.com', 'Unexpected product commit attribution');
+          async function treeEntries(sha) {
+            const {data} = await github.rest.git.getTree({owner, repo, tree_sha:sha, recursive:'true'});
+            requireTrue(data.truncated === false, 'Cannot prove full source equivalence from a truncated tree');
+            const entries = new Map(data.tree.filter(e => e.type !== 'tree').map(e => [e.path, `${e.mode}:${e.type}:${e.sha}`]));
+            requireTrue(entries.size === data.tree.filter(e => e.type !== 'tree').length, 'Duplicate tree paths');
+            return {entries, all:new Map(data.tree.map(e => [e.path, e]))};
+          }
+          const before = await treeEntries(oldTree), after = await treeEntries(productTree);
+          const paths = new Set([...before.entries.keys(), ...after.entries.keys()]);
+          const changed = [...paths].filter(path => before.entries.get(path) !== after.entries.get(path)).sort();
+          const allowed = ['scripts/packaging_version.py', 'tests/test_packaging_version.py'];
+          requireTrue(JSON.stringify(changed) === JSON.stringify(allowed), 'Product changes exceed the two reviewed packaging-only files');
+          for (const path of allowed) requireTrue(before.all.get(path)?.type === 'blob' && after.all.get(path)?.type === 'blob' &&
+            before.all.get(path)?.mode === '100644' && after.all.get(path)?.mode === '100644', 'Packaging fix must replace regular source files');
+          const protectedPaths = ['src', 'build.rs', 'Cargo.toml', 'Cargo.lock', 'assets', 'wix',
+            'scripts/package_next_gpui_msi.ps1', 'scripts/prepare_next_gpui_msi.py',
+            'scripts/test_next_gpui_msi_e2e.ps1', 'scripts/next_beta.py', 'scripts/next_beta_package.py',
+            'scripts/install-wix.ps1', '.github/workflows/ci.yml'];
+          for (const path of protectedPaths) requireTrue(before.all.get(path)?.sha &&
+            before.all.get(path).sha === after.all.get(path)?.sha && before.all.get(path).mode === after.all.get(path)?.mode,
+            `Protected application/installer source changed: ${path}`);
+          // Re-read the fixed attempt's complete job set, including the exact failed
+          // step conclusions, before the final run/ref race checks. Never use latest.
+          const finalJobs = await github.paginate(github.rest.actions.listJobsForWorkflowRunAttempt,
+            {owner, repo, run_id:oldRunId, attempt_number:1, per_page:100});
+          function jobProof(entries) {
+            return entries.map(job => ({id:job.id,name:job.name,run_id:job.run_id,run_attempt:job.run_attempt,
+              head_sha:job.head_sha,status:job.status,conclusion:job.conclusion,
+              steps:(job.steps || []).map(step => ({name:step.name,number:step.number,status:step.status,conclusion:step.conclusion}))}))
+              .sort((a,b) => a.name.localeCompare(b.name));
+          }
+          requireTrue(JSON.stringify(jobProof(finalJobs)) === JSON.stringify(jobProof(jobs)), 'Prior attempt jobs changed during proof');
+          // Catch a rerun or controller movement between the initial reads and proof.
+          const {data: finalRun} = await github.rest.actions.getWorkflowRun({owner, repo, run_id:oldRunId});
+          requireTrue(finalRun.id === oldRunId && finalRun.head_sha === oldSha && finalRun.run_attempt === 1 &&
+            finalRun.status === 'completed' && finalRun.conclusion === 'failure', 'Prior CI attempt changed during proof');
+          const {data: finalControl} = await github.rest.git.getRef({owner, repo, ref:`heads/${controlBranch}`});
+          requireTrue(finalControl.object.sha === context.sha, 'Controller moved during source proof');
+          const proof = {
+            repository, control_sha:context.sha, product_sha:productSha, product_tree:productTree,
+            reused_run:oldRunId, reused_attempt:1, reused_source:oldSha, reused_tree:oldTree,
+            successful_jobs:successfulNames.map(name => ({name,id:names.get(name).id,conclusion:'success'})),
+            reviewed_failed_step:versionStep, dependent_missing_artifact_failure:artifactStep,
+            changed_files:changed.map(path => ({path,before:before.all.get(path).sha,after:after.all.get(path).sha})),
+            protected_paths:protectedPaths.map(path => ({path,sha:after.all.get(path).sha})),
+            limitation:'Prior run proves unchanged source regressions only. New product version, release build, PE dependencies and real MSI lifecycle must all run successfully now.',
+          };
+          require('fs').writeFileSync('gpui-msi-source-proof.json', JSON.stringify(proof,null,2)+'\n');
+          core.setOutput('product_sha', productSha);
+          core.info(`Admitted exact packaging-fixed source ${productSha}; real MSI acceptance is still required.`);
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: gpui-msi-source-proof
+        path: gpui-msi-source-proof.json
+        if-no-files-found: error
+        retention-days: 7
+  real-windows-msi:
+    needs: source-proof
+    runs-on: windows-latest
+    timeout-minutes: 110
+    env:
+      SOURCE_SHA: ${{ needs.source-proof.outputs.product_sha }}
+      CI_RUN_ID: ${{ github.run_id }}
+      TARGET: x86_64-pc-windows-msvc
+      XENTERM_PACKAGE_PLATFORM: windows-x86_64
+      RUSTFLAGS: -C target-feature=+crt-static
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ needs.source-proof.outputs.product_sha }}
+        persist-credentials: false
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - name: Prepare pinned portable WiX toolset
+      timeout-minutes: 5
+      shell: pwsh
+      run: |
+        $wix = & ./scripts/install-wix.ps1
+        "GPUI_WIX_BIN=$wix" >> $env:GITHUB_ENV
+    - uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: x64
+    - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249
+      with:
+        targets: x86_64-pc-windows-msvc
+    - name: Bind installer test runtime to this exact source
+      id: gpui-version
+      timeout-minutes: 2
+      shell: pwsh
+      run: python scripts/packaging_version.py . --source-sha $env:SOURCE_SHA --github-output $env:GITHUB_OUTPUT
+    - name: Build real GPUI release payload (locked, static Microsoft runtime)
+      timeout-minutes: 70
+      env:
+        XT_VERSION: ${{ steps.gpui-version.outputs.xt_version }}
+        XENTERM_VERSION_METADATA: ${{ steps.gpui-version.outputs.version_metadata }}
+      run: cargo build --locked --release --target x86_64-pc-windows-msvc --jobs 2
+    - name: Reject unpackaged Microsoft runtime dependencies in actual PE
+      timeout-minutes: 2
+      shell: pwsh
+      run: |
+        $deps = & dumpbin /DEPENDENTS "target/$env:TARGET/release/xenterm.exe"
+        if ($LASTEXITCODE -ne 0) { throw 'dumpbin failed' }
+        $deps | Out-Host
+        if (($deps -join "`n") -match '(?i)(VCRUNTIME|MSVCP|CONCRT)\d+[^\s]*\.dll') {
+          throw 'Portable EXE still needs unpackaged Microsoft C++ runtime DLLs'
+        }
+    - name: Package actual executable and original licenses
+      timeout-minutes: 3
+      env:
+        XT_VERSION: ${{ steps.gpui-version.outputs.xt_version }}
+        XENTERM_VERSION_METADATA: ${{ steps.gpui-version.outputs.version_metadata }}
+      run: python scripts/next_beta_package.py
+    - name: Verify real old-to-current GPUI MSI lifecycle
+      timeout-minutes: 25
+      shell: pwsh
+      run: |
+        $stem = "XenTerm-Next-beta-$env:SOURCE_SHA-windows-x86_64"
+        $bundle = Join-Path $pwd "next-stage/$stem"
+        $wix = $env:GPUI_WIX_BIN
+        $msi = Join-Path $pwd "dist/$stem.msi"
+        ./scripts/package_next_gpui_msi.ps1 -BundleDir $bundle -SourceSha $env:SOURCE_SHA -WixBin $wix -Output $msi
+        # A fixed real prior beta, never relabeled as this build. This tests
+        # actual old-source -> current-source payload replacement as well as
+        # the MSI transaction. Hash-check before extraction or execution.
+        # One reviewed retention pin is shared with publisher/cleanup guards.
+        $pinText = & python -c "import json,sys; sys.path.insert(0,'scripts'); from next_beta import GPUI_UPGRADE_BASELINE; print(json.dumps(GPUI_UPGRADE_BASELINE))"
+        if ($LASTEXITCODE -ne 0) { throw 'Could not load retained GPUI baseline pin' }
+        $pin = $pinText | ConvertFrom-Json
+        $oldSha = $pin.source_sha
+        $oldStem = "XenTerm-Next-beta-$oldSha-windows-x86_64"
+        $oldZip = Join-Path $env:RUNNER_TEMP 'gpui-real-prior.zip'
+        Invoke-WebRequest "https://github.com/xue-ding-e/XenTerm-Next/releases/download/beta/$($pin.name)" -OutFile $oldZip
+        if ((Get-Item -LiteralPath $oldZip).Length -ne $pin.size) { throw 'Retained GPUI baseline size mismatch' }
+        if ((Get-FileHash $oldZip -Algorithm SHA256).Hash -ine $pin.sha256) { throw 'Prior real GPUI archive hash mismatch' }
+        $oldRoot = Join-Path $env:RUNNER_TEMP 'gpui-real-prior'
+        Expand-Archive -LiteralPath $oldZip -DestinationPath $oldRoot
+        $previous = Join-Path $env:RUNNER_TEMP 'gpui-real-prior.msi'
+        ./scripts/package_next_gpui_msi.ps1 -BundleDir "$oldRoot/$oldStem" -SourceSha $oldSha -WixBin $wix -Output $previous
+        $same = Join-Path $env:RUNNER_TEMP 'gpui-equal-build-fixture.msi'
+        ./scripts/package_next_gpui_msi.ps1 -BundleDir $bundle -SourceSha $env:SOURCE_SHA -WixBin $wix -Output $same
+        ./scripts/test_next_gpui_msi_e2e.ps1 -Msi $msi -PreviousMsi $previous -SameVersionMsi $same -OutputDir "$env:RUNNER_TEMP/gpui-installer-evidence"
+    - name: Keep real GPUI MSI and lifecycle evidence (not a release)
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: gpui-msi-only-${{ needs.source-proof.outputs.product_sha }}
+        path: |
+          dist/*
+          ${{ runner.temp }}/gpui-real-prior.msi*
+          ${{ runner.temp }}/gpui-equal-build-fixture.msi*
+          ${{ runner.temp }}/gpui-installer-evidence
+        if-no-files-found: error
+        retention-days: 7
