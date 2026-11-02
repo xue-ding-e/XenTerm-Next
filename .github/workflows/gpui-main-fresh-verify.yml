@@ -1,0 +1,229 @@
+name: Fresh main GPUI MSI artifact validation
+'on':
+  push:
+    branches:
+    - validation/gpui-main-fresh-20261102
+    paths:
+    - .github/workflows/gpui-main-fresh-verify.yml
+permissions:
+  contents: read
+concurrency:
+  group: gpui-msi-only-${{ github.repository }}
+  cancel-in-progress: false
+jobs:
+  source-proof:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+    - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
+      with:
+        script: "const owner='xue-ding-e',repo='XenTerm-Next';\nconst base=\"5ea9c21a594006c32ab32d3268121d463d89a975\",source=\"\
+          6a6c59f0364f1f15f037c10611b1c57055e2534f\",chain=[{\"sha\": \"c7d47e05ef776be240b1c43cfdc243d8d0acc36e\", \"tree\"\
+          : \"c9fd6291847f93fd493a48cda0e1c983a1dffd2e\", \"parent\": \"5ea9c21a594006c32ab32d3268121d463d89a975\"}, {\"sha\"\
+          : \"7f59be4a22a750db69fa6e822f99fd150e04b642\", \"tree\": \"0c37cdcb68589394f99daeee6cd67baa139f74ad\", \"parent\"\
+          : \"c7d47e05ef776be240b1c43cfdc243d8d0acc36e\"}, {\"sha\": \"6a6c59f0364f1f15f037c10611b1c57055e2534f\", \"tree\"\
+          : \"3eadbc203833528ef85a5439448986fe85d78253\", \"parent\": \"7f59be4a22a750db69fa6e822f99fd150e04b642\"}],allowed={\"\
+          scripts/gpui_msi_coexistence_sentinels.ps1\": \"fdf3a3c342e47992a8d93902c50e116371e8c14d\", \"scripts/gpui_msi_gui_observation.ps1\"\
+          : \"2869264c05f8f8d6cd6bd2527017f9b9809216ed\", \"scripts/gpui_msi_profile_evidence.py\": \"660af1211e4f61ef66581307fe0a5db69af1243e\"\
+          , \"scripts/gpui_msi_registration_evidence.ps1\": \"eea0acab2afa68c8f8e2627618017f0e0b62d49d\", \"scripts/initialize_gpui_test_profile.ps1\"\
+          : \"3906617a53fab2c0dee0efa0c56eb9ea4ef622c9\", \"scripts/install-wix.ps1\": \"b9d5c3f6f5d82e0e9434a6eb7d2c8e7096fd1565\"\
+          , \"scripts/package_next_gpui_msi.ps1\": \"068dc9bf02148ed44c2e603589f0b67d2e98e45b\", \"scripts/packaging_version.py\"\
+          : \"e99d110b5c271b63f9ec5aa89ecebfea5d88a907\", \"scripts/prepare_next_gpui_msi.py\": \"88102f833e73e66e4c76ae6f08b43a351bf6fcc7\"\
+          , \"scripts/test_next_gpui_msi_e2e.ps1\": \"1342976af42d8d3b8801fe582bdd7956766b5d3e\", \"tests/fixtures/gpui-heat-component-group.wxs\"\
+          : \"f2acdf988236605995e477abd153a42d133f8426\", \"tests/test_gpui_gui_observation.ps1\": \"ea98a17bb6e2e5002a407e308db458e73111167b\"\
+          , \"tests/test_gpui_initialization.ps1\": \"c50c8c35501ec0bd8caabe397fc1d93b905af9dc\", \"tests/test_gpui_msi_evidence.py\"\
+          : \"fc70dbd2b092f4432ca591b0aef310521cdcf9ad\", \"tests/test_gpui_msi_property.ps1\": \"c0a663cb8723efc78cb128a5eded91a8a449bb78\"\
+          , \"tests/test_gpui_native_environment.ps1\": \"ea92d230f007f3b235ece8fc78db57f18f1f74e9\", \"tests/test_gpui_profile_environment.ps1\"\
+          : \"59a2575f5473749816dd24be57470dcf87feb0e8\", \"tests/test_gpui_profile_evidence.py\": \"90dfafa722618abfc9bacd6c2d80c23a249a6754\"\
+          , \"tests/test_gpui_registration.ps1\": \"a560418caed507b369e7cbccb23cad6625e5dd72\", \"tests/test_next_gpui_msi.py\"\
+          : \"ad15bdf0514066ea6f8e9d96a98f5f89e29953d5\", \"tests/test_packaging_version.py\": \"43ef2badd368820d4a921b8d76924cd6a1098c21\"\
+          , \"wix/next-gpui.wxs\": \"53da276ab599cc89b15dbf60e043bff201fbfef7\"};\nconst branch='validation/gpui-main-fresh-20261102',ownPath='.github/workflows/gpui-main-fresh-verify.yml';\n\
+          function requireThat(ok,msg){if(!ok)throw new Error(msg);}\nrequireThat(context.eventName==='push' && context.repo.owner===owner\
+          \ && context.repo.repo===repo && context.ref==='refs/heads/'+branch,'Wrong event scope');\nconst ref=await github.rest.git.getRef({owner,repo,ref:'heads/'+branch});\n\
+          requireThat(ref.data.object.sha===context.sha && context.payload.after===context.sha && !context.payload.deleted,'Stale\
+          \ event');\nconst main=await github.rest.git.getRef({owner,repo,ref:'heads/main'});\nrequireThat(main.data.object.sha===base,'Main\
+          \ changed; re-review required');\nconst control=(await github.rest.git.getCommit({owner,repo,commit_sha:context.sha})).data;\n\
+          requireThat(control.parents.length===1 && control.parents[0].sha===base,'Controller must only descend from verified\
+          \ main');\nconst delta=(await github.rest.repos.compareCommitsWithBasehead({owner,repo,basehead:base+'...'+context.sha})).data;\n\
+          requireThat(delta.commits.length===1 && delta.files.length===1 && delta.files[0].filename===ownPath && delta.files[0].status==='added','Unexpected\
+          \ control changes');\nfor(const c of chain){const actual=(await github.rest.git.getCommit({owner,repo,commit_sha:c.sha})).data;\n\
+          \ requireThat(actual.sha===c.sha && actual.tree.sha===c.tree && actual.parents.length===1 && actual.parents[0].sha===c.parent,'Wrong\
+          \ source chain');\n requireThat(actual.author.name==='Qing Liang' && actual.author.email==='106448173+xue-ding-e@users.noreply.github.com'\
+          \ && actual.committer.name==='Qing Liang','Unexpected source attribution');}\nconst a=(await github.rest.git.getTree({owner,repo,tree_sha:base,recursive:'1'})).data;\n\
+          const b=(await github.rest.git.getTree({owner,repo,tree_sha:source,recursive:'1'})).data;\nrequireThat(!a.truncated&&!b.truncated,'Truncated\
+          \ trees');\nconst old=new Map(a.tree.filter(x=>x.type!=='tree').map(x=>[x.path,x]));\nconst now=new Map(b.tree.filter(x=>x.type!=='tree').map(x=>[x.path,x]));\n\
+          const changed=[];for(const[path,item]of now){const before=old.get(path);if(!before||before.sha!==item.sha||before.mode!==item.mode)changed.push(path);}\n\
+          requireThat([...old.keys()].every(path=>now.has(path)),'Source deletion');\nrequireThat(changed.length===Object.keys(allowed).length\
+          \ && changed.every(path=>Object.hasOwn(allowed,path)),'Source scope changed');\nfor(const[path,sha]of Object.entries(allowed)){const\
+          \ item=now.get(path);requireThat(item&&item.type==='blob'&&item.mode==='100644'&&item.sha===sha,'Source blob mismatch:\
+          \ '+path);}\ncore.info('Verified current main, three linear installer commits, exact 22-file delta, and artifact-only\
+          \ controller.');\n"
+  fresh-windows:
+    name: Windows MSI install upgrade uninstall
+    runs-on: windows-latest
+    timeout-minutes: 120
+    env:
+      SOURCE_SHA: 6a6c59f0364f1f15f037c10611b1c57055e2534f
+      CI_RUN_ID: ${{ github.run_id }}
+      TARGET: x86_64-pc-windows-msvc
+      XENTERM_PACKAGE_PLATFORM: windows-x86_64
+      RUSTFLAGS: -C target-feature=+crt-static
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: 6a6c59f0364f1f15f037c10611b1c57055e2534f
+        persist-credentials: false
+    - name: Verify exact product checkout
+      shell: pwsh
+      timeout-minutes: 1
+      run: 'if ((git rev-parse HEAD).Trim() -ne ''6a6c59f0364f1f15f037c10611b1c57055e2534f'') { throw ''Wrong source checkout''
+        }
+
+        if ($LASTEXITCODE -ne 0) { throw ''Cannot verify source checkout'' }'
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - name: Verify synthetic profile preservation contracts
+      timeout-minutes: 2
+      shell: pwsh
+      run: 'python tests/test_packaging_version.py
+
+        if ($LASTEXITCODE -ne 0) { throw "Version contracts failed" }
+
+        python tests/test_gpui_profile_evidence.py
+
+        if ($LASTEXITCODE -ne 0) { throw ''Synthetic profile contracts failed'' }
+
+        python tests/test_next_gpui_msi.py
+
+        if ($LASTEXITCODE -ne 0) { throw ''Heat directory and packaging contracts failed'' }
+
+        ./tests/test_gpui_msi_property.ps1
+
+        ./tests/test_gpui_registration.ps1 -Script ./scripts/gpui_msi_registration_evidence.ps1
+
+        ./tests/test_gpui_initialization.ps1 -Script ./scripts/initialize_gpui_test_profile.ps1
+
+        ./tests/test_gpui_gui_observation.ps1 -Script ./scripts/gpui_msi_gui_observation.ps1 -LifecycleScript ./scripts/test_next_gpui_msi_e2e.ps1
+
+        ./tests/test_gpui_profile_environment.ps1 -Script ./scripts/package_next_gpui_msi.ps1
+
+        '
+    - run: python tests/windows_installer_test.py
+    - name: Prepare pinned portable WiX toolset
+      timeout-minutes: 5
+      shell: pwsh
+      run: '$wix = & ./scripts/install-wix.ps1
+
+        "GPUI_WIX_BIN=$wix" >> $env:GITHUB_ENV
+
+        '
+    - uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: x64
+    - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249
+      with:
+        targets: x86_64-pc-windows-msvc
+    - name: Bind installer test runtime to this exact source
+      id: gpui-version
+      timeout-minutes: 2
+      shell: pwsh
+      run: python scripts/packaging_version.py . --source-sha $env:SOURCE_SHA --github-output $env:GITHUB_OUTPUT
+    - name: Build real GPUI release payload (locked, static Microsoft runtime)
+      timeout-minutes: 70
+      env:
+        XT_VERSION: ${{ steps.gpui-version.outputs.xt_version }}
+        XENTERM_VERSION_METADATA: ${{ steps.gpui-version.outputs.version_metadata }}
+      run: cargo build --locked --release --target x86_64-pc-windows-msvc --jobs 2
+    - name: Reject unpackaged Microsoft runtime dependencies in actual PE
+      timeout-minutes: 2
+      shell: pwsh
+      run: "$deps = & dumpbin /DEPENDENTS \"target/$env:TARGET/release/xenterm.exe\"\nif ($LASTEXITCODE -ne 0) { throw 'dumpbin\
+        \ failed' }\n$deps | Out-Host\nif (($deps -join \"`n\") -match '(?i)(VCRUNTIME|MSVCP|CONCRT)\\d+[^\\s]*\\.dll') {\n\
+        \  throw 'Portable EXE still needs unpackaged Microsoft C++ runtime DLLs'\n}\n"
+    - name: Package actual executable and original licenses
+      timeout-minutes: 3
+      env:
+        XT_VERSION: ${{ steps.gpui-version.outputs.xt_version }}
+        XENTERM_VERSION_METADATA: ${{ steps.gpui-version.outputs.version_metadata }}
+      run: python scripts/next_beta_package.py
+    - name: Verify real old-to-current GPUI MSI lifecycle
+      timeout-minutes: 25
+      shell: pwsh
+      run: '$stem = "XenTerm-Next-beta-$env:SOURCE_SHA-windows-x86_64"
+
+        $bundle = Join-Path $pwd "next-stage/$stem"
+
+        $wix = $env:GPUI_WIX_BIN
+
+        $msi = Join-Path $pwd "dist/$stem.msi"
+
+        ./scripts/package_next_gpui_msi.ps1 -BundleDir $bundle -SourceSha $env:SOURCE_SHA -WixBin $wix -Output $msi -EvidenceDir
+        "$env:RUNNER_TEMP/gpui-packaging-evidence"
+
+        # A fixed real prior beta, never relabeled as this build. This tests
+
+        # actual old-source -> current-source payload replacement as well as
+
+        # the MSI transaction. Hash-check before extraction or execution.
+
+        # Artifact-only validation pin; no publisher import or release operation.
+
+        $pin = ''{"source_sha":"8819e2ec132760047209e9dcff7341c5f8a15f94","name":"XenTerm-Next-beta-8819e2ec132760047209e9dcff7341c5f8a15f94-windows-x86_64.zip","size":43825978,"sha256":"ab9aaab43cc4b7feeb5b8e6852f359a5dcafa04f35f2957d6344c28858029cad"}''
+        | ConvertFrom-Json
+
+        $oldSha = $pin.source_sha
+
+        $oldStem = "XenTerm-Next-beta-$oldSha-windows-x86_64"
+
+        $oldZip = Join-Path $env:RUNNER_TEMP ''gpui-real-prior.zip''
+
+        Invoke-WebRequest "https://github.com/xue-ding-e/XenTerm-Next/releases/download/beta/$($pin.name)" -OutFile $oldZip
+
+        if ((Get-Item -LiteralPath $oldZip).Length -ne $pin.size) { throw ''Retained GPUI baseline size mismatch'' }
+
+        if ((Get-FileHash $oldZip -Algorithm SHA256).Hash -ine $pin.sha256) { throw ''Prior real GPUI archive hash mismatch''
+        }
+
+        $oldRoot = Join-Path $env:RUNNER_TEMP ''gpui-real-prior''
+
+        Expand-Archive -LiteralPath $oldZip -DestinationPath $oldRoot
+
+        $previous = Join-Path $env:RUNNER_TEMP ''gpui-real-prior.msi''
+
+        New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/gpui-installer-evidence" -Force | Out-Null
+
+        ./tests/test_gpui_native_environment.ps1 -Exe "$oldRoot/$oldStem/xenterm.exe" -PackagingScript ./scripts/package_next_gpui_msi.ps1
+        -Output "$env:RUNNER_TEMP/gpui-installer-evidence/native-environment.json"
+
+        ./scripts/package_next_gpui_msi.ps1 -BundleDir "$oldRoot/$oldStem" -SourceSha $oldSha -WixBin $wix -Output $previous
+        -EvidenceDir "$env:RUNNER_TEMP/gpui-packaging-evidence"
+
+        $same = Join-Path $env:RUNNER_TEMP ''gpui-equal-build-fixture.msi''
+
+        ./scripts/package_next_gpui_msi.ps1 -BundleDir $bundle -SourceSha $env:SOURCE_SHA -WixBin $wix -Output $same -EvidenceDir
+        "$env:RUNNER_TEMP/gpui-packaging-evidence"
+
+        ./tests/test_gpui_msi_property.ps1 -MsiPaths @($msi,$previous,$same)
+
+        ./scripts/test_next_gpui_msi_e2e.ps1 -Msi $msi -PreviousMsi $previous -SameVersionMsi $same -OutputDir "$env:RUNNER_TEMP/gpui-installer-evidence"
+
+        '
+    - name: Keep real GPUI MSI and lifecycle evidence (not a release)
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: gpui-fresh-main-6a6c59f0364f1f15f037c10611b1c57055e2534f
+        path: 'dist/*
+
+          ${{ runner.temp }}/gpui-real-prior.msi*
+
+          ${{ runner.temp }}/gpui-equal-build-fixture.msi*
+
+          ${{ runner.temp }}/gpui-installer-evidence
+
+
+          ${{ runner.temp }}/gpui-packaging-evidence'
+        if-no-files-found: error
+        retention-days: 7
+    needs: source-proof
