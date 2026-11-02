@@ -1,4 +1,4 @@
-name: Build XenTerm Next portable artifacts
+name: Build XenTerm Next desktop artifacts
 
 # Read-only reusable packaging. No release/tag API, write token or secrets.
 on:
@@ -42,9 +42,10 @@ jobs:
   build:
     needs: prepare
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 120 || 90 }}
     strategy:
-      fail-fast: false
+      # Publication needs all platforms; stop queued builds after a known failure.
+      fail-fast: true
       # Release packaging shares the same one-heavy-runner budget as CI.
       max-parallel: 1
       matrix:
@@ -67,6 +68,29 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
+      - name: Verify synthetic profile preservation contracts
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          python tests/test_packaging_version.py
+          if ($LASTEXITCODE -ne 0) { throw "Version contracts failed" }
+          python tests/test_gpui_profile_evidence.py
+          if ($LASTEXITCODE -ne 0) { throw 'Synthetic profile contracts failed' }
+          python tests/test_next_gpui_msi.py
+          if ($LASTEXITCODE -ne 0) { throw 'Heat directory and packaging contracts failed' }
+          ./tests/test_gpui_msi_property.ps1
+          ./tests/test_gpui_registration.ps1 -Script ./scripts/gpui_msi_registration_evidence.ps1
+          ./tests/test_gpui_initialization.ps1 -Script ./scripts/initialize_gpui_test_profile.ps1
+          ./tests/test_gpui_gui_observation.ps1 -Script ./scripts/gpui_msi_gui_observation.ps1 -LifecycleScript ./scripts/test_next_gpui_msi_e2e.ps1
+          ./tests/test_gpui_profile_environment.ps1 -Script ./scripts/package_next_gpui_msi.ps1
+        if: runner.os == 'Windows'
+      - name: Prepare pinned portable WiX toolset
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $wix = & ./scripts/install-wix.ps1
+          "GPUI_WIX_BIN=$wix" >> $env:GITHUB_ENV
+        if: runner.os == 'Windows'
       - name: Install Linux GUI build dependencies
         if: runner.os == 'Linux'
         run: |
@@ -88,6 +112,8 @@ jobs:
         shell: pwsh
         run: '"RUSTFLAGS=-C target-feature=+crt-static" >> $env:GITHUB_ENV'
       - name: Build locked release
+        # Windows must leave time for native MSI acceptance and always evidence.
+        timeout-minutes: ${{ matrix.os == 'windows-latest' && 70 || 90 }}
         run: cargo build --locked --release --target ${{ matrix.target }} --jobs 2
       - name: Reject unpackaged Microsoft runtime dependencies
         if: runner.os == 'Windows'
@@ -101,10 +127,61 @@ jobs:
           }
       - name: Package and verify binary version
         run: python3 scripts/next_beta_package.py
+      - name: Build and verify real GPUI MSI from this exact release bundle
+        timeout-minutes: 25
+        shell: pwsh
+        run: |
+          $stem = "XenTerm-Next-beta-$env:SOURCE_SHA-windows-x86_64"
+          $bundle = Join-Path $pwd "next-stage/$stem"
+          $wix = $env:GPUI_WIX_BIN
+          $msi = Join-Path $pwd "dist/$stem.msi"
+          ./scripts/package_next_gpui_msi.ps1 -BundleDir $bundle -SourceSha $env:SOURCE_SHA -WixBin $wix -Output $msi -EvidenceDir "$env:RUNNER_TEMP/gpui-packaging-evidence"
+          # A fixed real prior beta, never relabeled as this build. This tests
+          # actual old-source -> current-source payload replacement as well as
+          # the MSI transaction. Hash-check before extraction or execution.
+          # Shared reviewed retention pin; never delete or replace this old baseline.
+          $pinText = & python -c "import json,sys; sys.path.insert(0,'scripts'); from next_beta import GPUI_UPGRADE_BASELINE; print(json.dumps(GPUI_UPGRADE_BASELINE))"
+          if ($LASTEXITCODE -ne 0) { throw 'Could not load retained GPUI baseline pin' }
+          $pin = $pinText | ConvertFrom-Json
+          $oldSha = $pin.source_sha
+          $oldStem = "XenTerm-Next-beta-$oldSha-windows-x86_64"
+          $oldZip = Join-Path $env:RUNNER_TEMP 'gpui-real-prior.zip'
+          Invoke-WebRequest "https://github.com/xue-ding-e/XenTerm-Next/releases/download/beta/$($pin.name)" -OutFile $oldZip
+          if ((Get-Item -LiteralPath $oldZip).Length -ne $pin.size) { throw 'Retained GPUI baseline size mismatch' }
+          if ((Get-FileHash $oldZip -Algorithm SHA256).Hash -ine $pin.sha256) { throw 'Prior real GPUI archive hash mismatch' }
+          $oldRoot = Join-Path $env:RUNNER_TEMP 'gpui-real-prior'
+          Expand-Archive -LiteralPath $oldZip -DestinationPath $oldRoot
+          $previous = Join-Path $env:RUNNER_TEMP 'gpui-real-prior.msi'
+          New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/gpui-installer-evidence" -Force | Out-Null
+          ./tests/test_gpui_native_environment.ps1 -Exe "$oldRoot/$oldStem/xenterm.exe" -PackagingScript ./scripts/package_next_gpui_msi.ps1 -Output "$env:RUNNER_TEMP/gpui-installer-evidence/native-environment.json"
+          ./scripts/package_next_gpui_msi.ps1 -BundleDir "$oldRoot/$oldStem" -SourceSha $oldSha -WixBin $wix -Output $previous -EvidenceDir "$env:RUNNER_TEMP/gpui-packaging-evidence"
+          $same = Join-Path $env:RUNNER_TEMP 'gpui-equal-build-fixture.msi'
+          ./scripts/package_next_gpui_msi.ps1 -BundleDir $bundle -SourceSha $env:SOURCE_SHA -WixBin $wix -Output $same -EvidenceDir "$env:RUNNER_TEMP/gpui-packaging-evidence"
+          ./tests/test_gpui_msi_property.ps1 -MsiPaths @($msi,$previous,$same)
+          ./scripts/test_next_gpui_msi_e2e.ps1 -Msi $msi -PreviousMsi $previous -SameVersionMsi $same -OutputDir "$env:RUNNER_TEMP/gpui-installer-evidence"
+        if: runner.os == 'Windows'
+      - name: Keep real Windows installer lifecycle evidence
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: gpui-installer-evidence
+          path: |-
+            ${{ runner.temp }}/gpui-installer-evidence
+            ${{ runner.temp }}/gpui-packaging-evidence
+            ${{ runner.temp }}/gpui-real-prior.msi*
+            ${{ runner.temp }}/gpui-equal-build-fixture.msi*
+            dist/*.wixpdb
+          if-no-files-found: error
+          retention-days: 7
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: next-${{ matrix.platform }}
-          path: dist/*
+          # Only final deliverables enter the publisher; WiX PDBs stay diagnostic.
+          path: |
+            dist/XenTerm-Next-beta-${{ inputs.source_sha }}-${{ matrix.platform }}.zip
+            dist/XenTerm-Next-beta-${{ inputs.source_sha }}-${{ matrix.platform }}.tar.gz
+            dist/XenTerm-Next-beta-${{ inputs.source_sha }}-${{ matrix.platform }}.msi
+            dist/XenTerm-Next-beta-${{ inputs.source_sha }}-${{ matrix.platform }}.msi.json
           if-no-files-found: error
           retention-days: 7
 

@@ -10,9 +10,9 @@ name: CI
 
 on:
   push:
-    paths: ["Cargo.toml", "Cargo.lock", "build.rs", "scripts/version.sh", "tests/version_metadata_test.py", "tests/version_build_test.py", "tests/sftp_interaction*.py", "src/**", "tests/*_e2e.py", "tests/tls_proxy_fixture.py", "assets/install-linux.sh", "tests/install_linux_test.py", "wix/**", "packaging/macos/**", "tests/windows_installer*", "tests/macos_installer*", "tests/release_workflow_test.py", ".github/workflows/ci.yml", ".github/workflows/release.yml", ".github/workflows/next-beta.yml", ".github/workflows/next-beta-build.yml", "scripts/next_beta*.py", "scripts/packaging_version.py", "tests/test_packaging_version.py", "tests/next_beta*.py"]
+    paths: ["Cargo.toml", "Cargo.lock", "build.rs", "scripts/version.sh", "tests/version_metadata_test.py", "tests/version_build_test.py", "tests/sftp_interaction*.py", "src/**", "tests/*_e2e.py", "tests/tls_proxy_fixture.py", "assets/install-linux.sh", "tests/install_linux_test.py", "wix/**", "packaging/macos/**", "tests/windows_installer*", "tests/macos_installer*", "tests/release_workflow_test.py", ".github/workflows/ci.yml", ".github/workflows/release.yml", ".github/workflows/next-beta.yml", ".github/workflows/next-beta-build.yml", "scripts/next_beta*.py", "scripts/packaging_version.py", "tests/test_packaging_version.py", "tests/next_beta*.py", "scripts/*next_gpui_msi*", "scripts/install-wix.ps1", "scripts/gpui_msi_*", "scripts/initialize_gpui_test_profile.ps1", "tests/test_next_gpui_msi.py", "tests/test_gpui*", "tests/fixtures/gpui-heat-component-group.wxs"]
   pull_request:
-    paths: ["Cargo.toml", "Cargo.lock", "build.rs", "scripts/version.sh", "tests/version_metadata_test.py", "tests/version_build_test.py", "tests/sftp_interaction*.py", "src/**", "tests/*_e2e.py", "tests/tls_proxy_fixture.py", "assets/install-linux.sh", "tests/install_linux_test.py", "wix/**", "packaging/macos/**", "tests/windows_installer*", "tests/macos_installer*", "tests/release_workflow_test.py", ".github/workflows/ci.yml", ".github/workflows/release.yml", ".github/workflows/next-beta.yml", ".github/workflows/next-beta-build.yml", "scripts/next_beta*.py", "scripts/packaging_version.py", "tests/test_packaging_version.py", "tests/next_beta*.py"]
+    paths: ["Cargo.toml", "Cargo.lock", "build.rs", "scripts/version.sh", "tests/version_metadata_test.py", "tests/version_build_test.py", "tests/sftp_interaction*.py", "src/**", "tests/*_e2e.py", "tests/tls_proxy_fixture.py", "assets/install-linux.sh", "tests/install_linux_test.py", "wix/**", "packaging/macos/**", "tests/windows_installer*", "tests/macos_installer*", "tests/release_workflow_test.py", ".github/workflows/ci.yml", ".github/workflows/release.yml", ".github/workflows/next-beta.yml", ".github/workflows/next-beta-build.yml", "scripts/next_beta*.py", "scripts/packaging_version.py", "tests/test_packaging_version.py", "tests/next_beta*.py", "scripts/*next_gpui_msi*", "scripts/install-wix.ps1", "scripts/gpui_msi_*", "scripts/initialize_gpui_test_profile.ps1", "tests/test_next_gpui_msi.py", "tests/test_gpui*", "tests/fixtures/gpui-heat-component-group.wxs"]
   workflow_dispatch:
 
 permissions:
@@ -306,37 +306,144 @@ jobs:
         run: bash -n assets/install-linux.sh
       - name: Run isolated installer regressions
         run: /usr/bin/python3 tests/install_linux_test.py
+      - name: Verify GPUI MSI and rolling-beta wiring contracts
+        run: |
+          python3 tests/test_next_gpui_msi.py
+          python3 tests/test_gpui_profile_evidence.py
+          python3 tests/test_gpui_msi_workflow.py
 
   installer-windows:
     name: Windows MSI install upgrade uninstall
+    runs-on: windows-latest
+    timeout-minutes: 120
+    env:
+      SOURCE_SHA: ${{ github.sha }}
+      CI_RUN_ID: ${{ github.run_id }}
+      TARGET: x86_64-pc-windows-msvc
+      XENTERM_PACKAGE_PLATFORM: windows-x86_64
+      RUSTFLAGS: -C target-feature=+crt-static
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - name: Verify synthetic profile preservation contracts
+      timeout-minutes: 2
+      shell: pwsh
+      run: |
+        python tests/test_packaging_version.py
+        if ($LASTEXITCODE -ne 0) { throw "Version contracts failed" }
+        python tests/test_gpui_profile_evidence.py
+        if ($LASTEXITCODE -ne 0) { throw 'Synthetic profile contracts failed' }
+        python tests/test_next_gpui_msi.py
+        if ($LASTEXITCODE -ne 0) { throw 'Heat directory and packaging contracts failed' }
+        ./tests/test_gpui_msi_property.ps1
+        ./tests/test_gpui_registration.ps1 -Script ./scripts/gpui_msi_registration_evidence.ps1
+        ./tests/test_gpui_initialization.ps1 -Script ./scripts/initialize_gpui_test_profile.ps1
+        ./tests/test_gpui_gui_observation.ps1 -Script ./scripts/gpui_msi_gui_observation.ps1 -LifecycleScript ./scripts/test_next_gpui_msi_e2e.ps1
+        ./tests/test_gpui_profile_environment.ps1 -Script ./scripts/package_next_gpui_msi.ps1
+    - run: python tests/windows_installer_test.py
+    - name: Prepare pinned portable WiX toolset
+      timeout-minutes: 5
+      shell: pwsh
+      run: |
+        $wix = & ./scripts/install-wix.ps1
+        "GPUI_WIX_BIN=$wix" >> $env:GITHUB_ENV
+    - uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: x64
+    - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249
+      with:
+        targets: x86_64-pc-windows-msvc
+    - name: Verify upstream installer mechanism fixture (not product acceptance)
+      timeout-minutes: 10
+      shell: pwsh
+      run: ./tests/windows_installer_e2e.ps1 -WixBin $env:GPUI_WIX_BIN
+    - name: Upload installer diagnostic logs
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: windows-msi-diagnostics
+        path: ${{ runner.temp }}/xenterm-msi-*/msi-*.log
+    - name: Bind installer test runtime to this exact source
+      id: gpui-version
+      timeout-minutes: 2
+      shell: pwsh
+      run: python scripts/packaging_version.py . --source-sha $env:SOURCE_SHA --github-output $env:GITHUB_OUTPUT
+    # Reserve setup and evidence time within the unchanged 120-minute job.
+    - name: Build real GPUI release payload (locked, static Microsoft runtime)
+      timeout-minutes: 60
+      env:
+        XT_VERSION: ${{ steps.gpui-version.outputs.xt_version }}
+        XENTERM_VERSION_METADATA: ${{ steps.gpui-version.outputs.version_metadata }}
+      run: cargo build --locked --release --target x86_64-pc-windows-msvc --jobs 2
+    - name: Reject unpackaged Microsoft runtime dependencies in actual PE
+      timeout-minutes: 2
+      shell: pwsh
+      run: |
+        $deps = & dumpbin /DEPENDENTS "target/$env:TARGET/release/xenterm.exe"
+        if ($LASTEXITCODE -ne 0) { throw 'dumpbin failed' }
+        $deps | Out-Host
+        if (($deps -join "`n") -match '(?i)(VCRUNTIME|MSVCP|CONCRT)\d+[^\s]*\.dll') {
+          throw 'Portable EXE still needs unpackaged Microsoft C++ runtime DLLs'
+        }
+    - name: Package actual executable and original licenses
+      timeout-minutes: 3
+      env:
+        XT_VERSION: ${{ steps.gpui-version.outputs.xt_version }}
+        XENTERM_VERSION_METADATA: ${{ steps.gpui-version.outputs.version_metadata }}
+      run: python scripts/next_beta_package.py
+    - name: Verify real old-to-current GPUI MSI lifecycle
+      timeout-minutes: 25
+      shell: pwsh
+      run: |
+        $stem = "XenTerm-Next-beta-$env:SOURCE_SHA-windows-x86_64"
+        $bundle = Join-Path $pwd "next-stage/$stem"
+        $wix = $env:GPUI_WIX_BIN
+        $msi = Join-Path $pwd "dist/$stem.msi"
+        ./scripts/package_next_gpui_msi.ps1 -BundleDir $bundle -SourceSha $env:SOURCE_SHA -WixBin $wix -Output $msi -EvidenceDir "$env:RUNNER_TEMP/gpui-packaging-evidence"
+        # A fixed real prior beta, never relabeled as this build. This tests
+        # actual old-source -> current-source payload replacement as well as
+        # the MSI transaction. Hash-check before extraction or execution.
+        # Shared reviewed retention pin; never delete or replace this old baseline.
+        $pinText = & python -c "import json,sys; sys.path.insert(0,'scripts'); from next_beta import GPUI_UPGRADE_BASELINE; print(json.dumps(GPUI_UPGRADE_BASELINE))"
+        if ($LASTEXITCODE -ne 0) { throw 'Could not load retained GPUI baseline pin' }
+        $pin = $pinText | ConvertFrom-Json
+        $oldSha = $pin.source_sha
+        $oldStem = "XenTerm-Next-beta-$oldSha-windows-x86_64"
+        $oldZip = Join-Path $env:RUNNER_TEMP 'gpui-real-prior.zip'
+        Invoke-WebRequest "https://github.com/xue-ding-e/XenTerm-Next/releases/download/beta/$($pin.name)" -OutFile $oldZip
+        if ((Get-Item -LiteralPath $oldZip).Length -ne $pin.size) { throw 'Retained GPUI baseline size mismatch' }
+        if ((Get-FileHash $oldZip -Algorithm SHA256).Hash -ine $pin.sha256) { throw 'Prior real GPUI archive hash mismatch' }
+        $oldRoot = Join-Path $env:RUNNER_TEMP 'gpui-real-prior'
+        Expand-Archive -LiteralPath $oldZip -DestinationPath $oldRoot
+        $previous = Join-Path $env:RUNNER_TEMP 'gpui-real-prior.msi'
+        New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/gpui-installer-evidence" -Force | Out-Null
+        ./tests/test_gpui_native_environment.ps1 -Exe "$oldRoot/$oldStem/xenterm.exe" -PackagingScript ./scripts/package_next_gpui_msi.ps1 -Output "$env:RUNNER_TEMP/gpui-installer-evidence/native-environment.json"
+        ./scripts/package_next_gpui_msi.ps1 -BundleDir "$oldRoot/$oldStem" -SourceSha $oldSha -WixBin $wix -Output $previous -EvidenceDir "$env:RUNNER_TEMP/gpui-packaging-evidence"
+        $same = Join-Path $env:RUNNER_TEMP 'gpui-equal-build-fixture.msi'
+        ./scripts/package_next_gpui_msi.ps1 -BundleDir $bundle -SourceSha $env:SOURCE_SHA -WixBin $wix -Output $same -EvidenceDir "$env:RUNNER_TEMP/gpui-packaging-evidence"
+        ./tests/test_gpui_msi_property.ps1 -MsiPaths @($msi,$previous,$same)
+        ./scripts/test_next_gpui_msi_e2e.ps1 -Msi $msi -PreviousMsi $previous -SameVersionMsi $same -OutputDir "$env:RUNNER_TEMP/gpui-installer-evidence"
+    - name: Keep real GPUI MSI and lifecycle evidence (not a release)
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: gpui-msi-validation-${{ github.sha }}
+        path: |-
+          dist/*
+          ${{ runner.temp }}/gpui-real-prior.msi*
+          ${{ runner.temp }}/gpui-equal-build-fixture.msi*
+          ${{ runner.temp }}/gpui-installer-evidence
+
+          ${{ runner.temp }}/gpui-packaging-evidence
+        if-no-files-found: error
+        retention-days: 7
     needs: installer
     if: ${{ !cancelled() }}
-    runs-on: windows-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - run: python tests/windows_installer_test.py
-      - name: Install official WiX 3 toolset
-        shell: pwsh
-        run: |
-          $wix = "${env:ProgramFiles(x86)}\WiX Toolset v3.14\bin\candle.exe"
-          if (-not (Test-Path $wix)) { choco install wixtoolset -y --no-progress }
-          if (-not (Test-Path $wix)) { throw 'WiX 3.14 candle.exe is required' }
-      - uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
-      - name: Verify isolated MSI lifecycle
-        shell: pwsh
-        run: ./tests/windows_installer_e2e.ps1
-      - name: Upload installer diagnostic logs
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-msi-diagnostics
-          path: ${{ runner.temp }}/xenterm-msi-*/msi-*.log
 
   installer-macos:
     name: macOS PKG choices and payload
