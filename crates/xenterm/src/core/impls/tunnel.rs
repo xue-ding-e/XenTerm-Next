@@ -15,6 +15,29 @@
 
 use crate::config::PortForward;
 
+/// Runtime identity within one SSH session. A display name is not a new listener.
+/// Keep the destination in the key: sharing a bind port never authorizes reusing
+/// a tunnel to a different service (or one owned by another session/process).
+pub type RuntimeKey = (String, String, u16, String, u16);
+
+pub fn runtime_key(forward: &PortForward) -> RuntimeKey {
+    let bind = forward.bind_addr.trim();
+    let bind = bind.strip_prefix('[').and_then(|bind| bind.strip_suffix(']')).unwrap_or(bind);
+    let bind = if bind.is_empty() { "127.0.0.1" } else { bind };
+    let bind = bind.parse::<std::net::IpAddr>()
+        .map(|address| address.to_string()).unwrap_or_else(|_| bind.to_string());
+    let dynamic = forward.kind == "dynamic";
+    (forward.kind.clone(), bind, forward.bind_port,
+        if dynamic { String::new() } else { forward.host.trim().to_string() },
+        if dynamic { 0 } else { forward.host_port })
+}
+
+/// Stable, unambiguous key for runtime-only rows; saved rows keep their config id.
+pub fn runtime_id(forward: &PortForward) -> String {
+    format!("runtime-{:?}", runtime_key(forward))
+}
+
+
 /// One row of the tunnel form, as it is being typed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TunnelDraft {
@@ -218,5 +241,31 @@ mod tests {
         let (bind, target) = describe(&dynamic[0]);
         assert_eq!(bind, "127.0.0.1:1080");
         assert_eq!(target, "SOCKS5");
+    }
+}
+
+#[cfg(test)]
+mod runtime_key_tests {
+    use super::*;
+
+    #[test]
+    fn identity_ignores_labels_but_preserves_destinations_and_bind_scope() {
+        let mut first = PortForward { kind: "local".into(), bind_addr: "127.0.0.1".into(),
+            bind_port: 41080, host: "a.invalid".into(), host_port: 80, ..Default::default() };
+        let mut second = first.clone();
+        second.name = "another display label".into();
+        second.bind_addr = String::new();
+        assert_eq!(runtime_key(&first), runtime_key(&second));
+        second.host = "b.invalid".into();
+        assert_ne!(runtime_key(&first), runtime_key(&second));
+        second = first.clone();
+        second.kind = "remote".into();
+        assert_ne!(runtime_key(&first), runtime_key(&second));
+        first.bind_addr = "[::1]".into();
+        second = first.clone();
+        second.bind_addr = "0:0:0:0:0:0:0:1".into();
+        assert_eq!(runtime_key(&first), runtime_key(&second));
+        second.bind_addr = "[[::1]]".into();
+        assert_ne!(runtime_key(&first), runtime_key(&second));
     }
 }

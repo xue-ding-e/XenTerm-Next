@@ -430,7 +430,20 @@ pub struct RuntimeTunnelInfo {
     pub host: String,
     pub host_port: u16,
     pub active: bool,
+    /// Starting/stopping is not readiness. Controls wait for the next revision.
+    pub busy: bool,
+    pub revision: u64,
     pub status: String,
+}
+
+impl RuntimeTunnelInfo {
+    pub fn forward(&self) -> PortForward {
+        PortForward {
+            kind: self.kind.clone(), name: self.name.clone(),
+            bind_addr: self.bind_addr.clone(), bind_port: self.bind_port,
+            host: self.host.clone(), host_port: self.host_port,
+        }
+    }
 }
 
 // --- The route a tab's events travel over -------------------------------------

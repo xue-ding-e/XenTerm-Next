@@ -971,7 +971,7 @@ pub fn spawn_session(
 
 struct RuntimeForward {
     info: RuntimeTunnelInfo,
-    task: Option<JoinHandle<()>>,
+    task: Option<crate::tunnel::ListenerTask>,
 }
 
 fn normalized_bind_addr(f: &PortForward) -> String {
@@ -995,6 +995,17 @@ fn tunnel_label(f: &PortForward) -> String {
     }
 }
 
+// Monotonic across SSH reconnections as well as operations. A panel may miss
+// the old session's final snapshot while polling; the new session must still
+// acknowledge it with a strictly newer revision, not reset the counter to one.
+fn next_tunnel_revision() -> u64 {
+    static REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    // Refuse an impossible lifetime overflow rather than wrap to an old ack.
+    REVISION.fetch_update(std::sync::atomic::Ordering::Relaxed,
+        std::sync::atomic::Ordering::Relaxed, |value| value.checked_add(1))
+        .expect("tunnel revision exhausted")
+}
+
 fn tunnel_info(id: String, f: &PortForward, active: bool, status: &str) -> RuntimeTunnelInfo {
     RuntimeTunnelInfo {
         id,
@@ -1005,6 +1016,8 @@ fn tunnel_info(id: String, f: &PortForward, active: bool, status: &str) -> Runti
         host: f.host.trim().to_string(),
         host_port: f.host_port,
         active,
+        busy: false,
+        revision: next_tunnel_revision(),
         status: status.to_string(),
     }
 }
@@ -1018,31 +1031,248 @@ fn emit_tunnel_update(
     let _ = events.send(SessionEvent::TunnelUpdate(rows));
 }
 
-fn start_runtime_forward(
-    handle: Arc<Handle<ClientHandler>>,
-    id: String,
+/// Ensure one row per complete rule, retaining its id through failure/stop/retry.
+/// The map belongs to one SSH session; a listener in another map/process is never
+/// adopted. In particular, bind failure is an error, not evidence of readiness.
+async fn ensure_runtime_forward<F, Fut>(
+    forwards: &mut std::collections::HashMap<String, RuntimeForward>,
+    requested_id: String,
     forward: PortForward,
     events: &UnboundedSender<SessionEvent>,
-) -> RuntimeForward {
-    let info = tunnel_info(id, &forward, true, t("运行中", "running"));
-    let task = match forward.kind.as_str() {
-        "local" => Some(crate::tunnel::spawn_local(
-            handle,
-            info.bind_addr.clone(),
-            info.bind_port,
-            info.host.clone(),
-            info.host_port,
-            events.clone(),
-        )),
-        "dynamic" => Some(crate::tunnel::spawn_dynamic(
-            handle,
-            info.bind_addr.clone(),
-            info.bind_port,
-            events.clone(),
-        )),
-        _ => None,
+    start: F,
+) where
+    F: FnOnce(PortForward) -> Fut,
+    Fut: std::future::Future<Output = std::io::Result<crate::tunnel::ListenerTask>>,
+{
+    let key = crate::core::tunnel::runtime_key(&forward);
+    let id = forwards.iter().find_map(|(id, row)| {
+        (crate::core::tunnel::runtime_key(&row.info.forward()) == key).then(|| id.clone())
+    }).unwrap_or(requested_id);
+    if let Some(row) = forwards.get(&id) {
+        if crate::core::tunnel::runtime_key(&row.info.forward()) != key {
+            let _ = events.send(SessionEvent::Output("\r\n[xenterm] tunnel id belongs to a different rule\r\n".into()));
+            return;
+        }
+        if row.info.active || row.info.busy { return; }
+    }
+    let mut info = tunnel_info(id.clone(), &forward, false, t("启动中", "starting"));
+    info.busy = true;
+    forwards.insert(id.clone(), RuntimeForward { info, task: None });
+    emit_tunnel_update(forwards, events);
+    // Different rules sharing the endpoint must not replace the existing owner.
+    // Wildcards/aliases and owners outside this session are left to the OS bind.
+    let conflict = forwards.iter().any(|(other_id, row)| {
+        let other = crate::core::tunnel::runtime_key(&row.info.forward());
+        other_id != &id && (row.info.active || row.info.busy)
+            && other.0 != "remote" && other.1 == key.1 && other.2 == key.2
+    });
+    let result = if conflict {
+        Err(std::io::Error::new(std::io::ErrorKind::AddrInUse,
+            t("监听端口已由此会话的另一个隧道使用", "listen port is owned by another tunnel in this session")))
+    } else {
+        start(forward).await
     };
-    RuntimeForward { info, task }
+    let row = forwards.get_mut(&id).expect("starting row remains in this session");
+    row.info.busy = false;
+    match result {
+        Ok(task) => {
+            row.task = Some(task);
+            row.info.active = true;
+            row.info.status = t("运行中", "running").into();
+        }
+        Err(error) => {
+            row.info.status = format!("{}: {error}", t("启动失败", "failed to start"));
+            let _ = events.send(SessionEvent::Output(format!("\r\n[xenterm] {}: {}\r\n", row.info.name, row.info.status)));
+        }
+    }
+    emit_tunnel_update(forwards, events);
+}
+
+async fn stop_runtime_forward(
+    forwards: &mut std::collections::HashMap<String, RuntimeForward>,
+    id: &str,
+    events: &UnboundedSender<SessionEvent>,
+) {
+    let Some(row) = forwards.get_mut(id) else { return; };
+    // Remote forwards require a server cancel acknowledgement, not a local
+    // boolean flip. Until that command exists, never pretend they stopped.
+    if row.info.kind == "remote" || row.info.busy || !row.info.active { return; }
+    row.info.busy = true;
+    row.info.revision = next_tunnel_revision();
+    row.info.status = t("停止中", "stopping").into();
+    let task = row.task.take();
+    emit_tunnel_update(forwards, events);
+    let result = match task { Some(task) => task.stop().await, None => Ok(()) };
+    let row = forwards.get_mut(id).expect("stopping row remains in this session");
+    row.info.active = false;
+    row.info.busy = false;
+    row.info.status = match result {
+        Ok(()) => t("已停止", "stopped").into(),
+        Err(error) => format!("{}: {error}", t("隧道已退出", "tunnel exited")),
+    };
+    emit_tunnel_update(forwards, events);
+}
+
+/// Listener/transport failures after readiness also update the same row.
+async fn reap_runtime_forwards(
+    forwards: &mut std::collections::HashMap<String, RuntimeForward>,
+    events: &UnboundedSender<SessionEvent>,
+) {
+    let ended: Vec<_> = forwards.iter().filter_map(|(id, row)| {
+        row.task.as_ref().filter(|task| task.is_finished()).map(|_| id.clone())
+    }).collect();
+    for id in ended { stop_runtime_forward(forwards, &id, events).await; }
+}
+
+#[cfg(test)]
+mod runtime_tunnel_tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::io::{Error, ErrorKind};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::oneshot;
+
+    fn rule(kind: &str, host: &str) -> PortForward {
+        PortForward { kind: kind.into(), name: "synthetic".into(),
+            bind_addr: "127.0.0.1".into(), bind_port: 41080,
+            host: host.into(), host_port: if kind == "dynamic" { 0 } else { 8080 } }
+    }
+
+    fn pending_task() -> crate::tunnel::ListenerTask {
+        crate::tunnel::ListenerTask::spawn(|stopped| async move {
+            let _ = stopped.await;
+            Ok(())
+        })
+    }
+
+    #[tokio::test]
+    async fn repeated_start_stop_reuses_one_row_and_one_owner() {
+        let (events, _) = mpsc::unbounded_channel();
+        let mut rows = HashMap::new();
+        let starts = AtomicUsize::new(0);
+        for round in 0..20 {
+            for click in 0..3 {
+                let mut forward = rule("dynamic", "");
+                forward.name = format!("renamed-{click}");
+                ensure_runtime_forward(&mut rows, format!("request-{round}-{click}"), forward, &events, |_| async {
+                    starts.fetch_add(1, Ordering::SeqCst);
+                    Ok(pending_task())
+                }).await;
+            }
+            assert_eq!(rows.len(), 1);
+            let row = &rows["request-0-0"];
+            assert!(row.info.active && !row.info.busy);
+            assert_eq!(starts.load(Ordering::SeqCst), round + 1);
+            stop_runtime_forward(&mut rows, "request-0-0", &events).await;
+            assert!(!rows["request-0-0"].info.active);
+            assert!(rows["request-0-0"].task.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_bind_is_one_retryable_row_not_running() {
+        let (events, _) = mpsc::unbounded_channel();
+        let mut rows = HashMap::new();
+        let mut previous_revision = 0;
+        for attempt in 0..5 {
+            ensure_runtime_forward(&mut rows, format!("attempt-{attempt}"), rule("dynamic", ""), &events, |_| async {
+                Err(Error::new(ErrorKind::AddrInUse, "synthetic external owner"))
+            }).await;
+            assert_eq!(rows.len(), 1);
+            let row = &rows["attempt-0"];
+            assert!(!row.info.active && !row.info.busy);
+            assert!(row.info.status.contains("synthetic external owner"));
+            assert!(row.info.revision > previous_revision);
+            previous_revision = row.info.revision;
+        }
+        ensure_runtime_forward(&mut rows, "retry".into(), rule("dynamic", ""), &events,
+            |_| async { Ok(pending_task()) }).await;
+        assert!(rows["attempt-0"].info.active);
+        assert_eq!(rows.len(), 1);
+        stop_runtime_forward(&mut rows, "attempt-0", &events).await;
+    }
+
+    #[tokio::test]
+    async fn different_destination_conflicts_without_replacing_owner() {
+        let (events, _) = mpsc::unbounded_channel();
+        let mut rows = HashMap::new();
+        ensure_runtime_forward(&mut rows, "original".into(), rule("local", "a.invalid"), &events,
+            |_| async { Ok(pending_task()) }).await;
+        for attempt in 0..5 {
+            ensure_runtime_forward(&mut rows, format!("conflict-{attempt}"), rule("local", "b.invalid"), &events,
+                |_| async { panic!("must not replace the original listener") }).await;
+        }
+        assert_eq!(rows.len(), 2, "one original and one retryable failed rule");
+        assert!(rows["original"].info.active);
+        assert!(!rows["conflict-0"].info.active);
+        ensure_runtime_forward(&mut rows, "original".into(), rule("dynamic", ""), &events,
+            |_| async { panic!("an id collision cannot detach the original task") }).await;
+        assert!(rows["original"].info.active);
+        assert_eq!(rows["original"].info.host, "a.invalid");
+        stop_runtime_forward(&mut rows, "original", &events).await;
+    }
+
+    #[tokio::test]
+    async fn readiness_and_stop_wait_for_acknowledgement() {
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            let (events, mut updates) = mpsc::unbounded_channel();
+            let (ready, wait_ready) = oneshot::channel();
+            let (drained, wait_drained) = oneshot::channel();
+            let mut rows = HashMap::new();
+            let start = ensure_runtime_forward(&mut rows, "stable".into(), rule("dynamic", ""), &events,
+                |_| async {
+                    wait_ready.await.unwrap();
+                    Ok(crate::tunnel::ListenerTask::spawn(|stopped| async move {
+                        let _ = stopped.await;
+                        wait_drained.await.unwrap();
+                        Ok(())
+                    }))
+                });
+            let observe = async {
+                let Some(SessionEvent::TunnelUpdate(rows)) = updates.recv().await else { panic!("starting update") };
+                assert!(!rows[0].active && rows[0].busy);
+                assert!(updates.try_recv().is_err(), "not running before bind ack");
+                ready.send(()).unwrap();
+            };
+            tokio::join!(start, observe);
+            let Some(SessionEvent::TunnelUpdate(running)) = updates.recv().await else { panic!("running update") };
+            assert!(running[0].active && !running[0].busy);
+            let stop = stop_runtime_forward(&mut rows, "stable", &events);
+            let observe = async {
+                let Some(SessionEvent::TunnelUpdate(rows)) = updates.recv().await else { panic!("stopping update") };
+                assert!(rows[0].active && rows[0].busy);
+                assert!(updates.try_recv().is_err(), "not stopped before client drain");
+                drained.send(()).unwrap();
+            };
+            tokio::join!(stop, observe);
+            let Some(SessionEvent::TunnelUpdate(stopped)) = updates.recv().await else { panic!("stopped update") };
+            assert!(!stopped[0].active && !stopped[0].busy);
+            assert_eq!(stopped[0].id, "stable");
+        }).await.expect("lifecycle acknowledgements must complete");
+    }
+
+    #[test]
+    fn a_reconnected_session_does_not_reset_runtime_revisions() {
+        let forward = rule("dynamic", "");
+        let before = tunnel_info("config-0".into(), &forward, false, "stopped");
+        let after = tunnel_info("config-0".into(), &forward, false, "starting");
+        assert!(after.revision > before.revision);
+    }
+
+    #[tokio::test]
+    async fn a_listener_failure_after_readiness_updates_the_existing_row() {
+        let (events, _) = mpsc::unbounded_channel();
+        let mut rows = HashMap::new();
+        ensure_runtime_forward(&mut rows, "stable".into(), rule("dynamic", ""), &events,
+            |_| async { Ok(crate::tunnel::ListenerTask::spawn(|_| async {
+                Err(Error::new(ErrorKind::ConnectionAborted, "synthetic disconnect"))
+            })) }).await;
+        tokio::task::yield_now().await;
+        reap_runtime_forwards(&mut rows, &events).await;
+        assert_eq!(rows.len(), 1);
+        assert!(!rows["stable"].info.active);
+        assert!(rows["stable"].info.status.contains("synthetic disconnect"));
+    }
 }
 
 /// Open an SSH transport to the session's host (directly or via a SOCKS5 / HTTP
@@ -1822,10 +2052,8 @@ async fn run_session(
         match f.kind.as_str() {
             "local" | "dynamic" => {
                 let id = format!("config-{idx}");
-                runtime_forwards.insert(
-                    id.clone(),
-                    start_runtime_forward(handle.clone(), id, f.clone(), &events),
-                );
+                ensure_runtime_forward(&mut runtime_forwards, id, f.clone(), &events,
+                    |forward| crate::tunnel::start_forward(handle.clone(), forward, events.clone())).await;
             }
             _ => {}
         }
@@ -1838,8 +2066,12 @@ async fn run_session(
     let mut trigger_engine = TriggerEngine::new(&session.triggers);
 
     // --- Main pump ------------------------------------------------------
+    let mut tunnel_health = tokio::time::interval(std::time::Duration::from_millis(200));
     loop {
         tokio::select! {
+            _ = tunnel_health.tick() => {
+                reap_runtime_forwards(&mut runtime_forwards, &events).await;
+            }
             _ = async {
                 match auxiliary_deadline {
                     Some(deadline) => tokio::time::sleep_until(deadline).await,
@@ -1950,11 +2182,9 @@ async fn run_session(
                     }
                     Some(SessionCommand::AddTunnel { id, forward }) => {
                         if forward.kind == "local" || forward.kind == "dynamic" {
-                            runtime_forwards.insert(
-                                id.clone(),
-                                start_runtime_forward(handle.clone(), id, forward, &events),
-                            );
-                            emit_tunnel_update(&runtime_forwards, &events);
+                            reap_runtime_forwards(&mut runtime_forwards, &events).await;
+                            ensure_runtime_forward(&mut runtime_forwards, id, forward, &events,
+                                |forward| crate::tunnel::start_forward(handle.clone(), forward, events.clone())).await;
                         } else {
                             let _ = events.send(SessionEvent::Output(format!(
                                 "\r\n[xenterm] {}\r\n",
@@ -1963,14 +2193,7 @@ async fn run_session(
                         }
                     }
                     Some(SessionCommand::StopTunnel(id)) => {
-                        if let Some(f) = runtime_forwards.get_mut(&id) {
-                            if let Some(task) = f.task.take() {
-                                task.abort();
-                            }
-                            f.info.active = false;
-                            f.info.status = t("已停止", "stopped").to_string();
-                            emit_tunnel_update(&runtime_forwards, &events);
-                        }
+                        stop_runtime_forward(&mut runtime_forwards, &id, &events).await;
                     }
                     Some(SessionCommand::KillProcess { pid, root_password, reply }) => {
                         let exec_handle = handle.clone();
@@ -2354,11 +2577,16 @@ async fn run_session(
 
     // Tear down any port-forward listeners (#56); -R forwards die with the
     // session's disconnect below.
-    for f in runtime_forwards.into_values() {
-        if let Some(task) = f.task {
-            task.abort();
+    for f in runtime_forwards.values_mut() {
+        if let Some(task) = f.task.take() {
+            let _ = task.stop().await;
         }
+        f.info.active = false;
+        f.info.busy = false;
+        f.info.revision = next_tunnel_revision();
+        f.info.status = t("会话已断开", "session disconnected").into();
     }
+    emit_tunnel_update(&runtime_forwards, &events);
 
     let _ = handle
         .disconnect(Disconnect::ByApplication, "bye", "")

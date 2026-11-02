@@ -129,6 +129,69 @@ pub struct TerminalSession {
     tunnels: Mutex<Vec<RuntimeTunnelInfo>>,
 }
 
+fn mark_tunnels_disconnected(rows: &mut [RuntimeTunnelInfo], reason: &str) {
+    for row in rows {
+        if row.active || row.busy {
+            row.active = false;
+            row.busy = false;
+            row.status = format!("{}: {reason}", crate::i18n::t("会话已断开", "session disconnected"));
+        }
+    }
+}
+
+fn runtime_tunnels_json(tunnels: &[RuntimeTunnelInfo]) -> String {
+    let rows: Vec<Value> = tunnels
+        .iter()
+        .map(|t| {
+            json!({
+                "id": t.id,
+                "name": t.name,
+                "kind": t.kind,
+                "bindAddr": t.bind_addr,
+                "bindPort": t.bind_port,
+                "host": t.host,
+                "hostPort": t.host_port,
+                "active": t.active,
+                "status": t.status,
+            })
+        })
+        .collect();
+    serde_json::to_string(&rows).unwrap_or_else(|_| "[]".into())
+}
+
+#[cfg(test)]
+mod runtime_tunnel_bridge_tests {
+    use super::*;
+
+    #[test]
+    fn closed_settles_live_rows_and_keeps_failure_details_in_the_existing_json_contract() {
+        let row = RuntimeTunnelInfo { id: "synthetic-rule".into(), name: "synthetic".into(),
+            kind: "dynamic".into(), bind_addr: "127.0.0.1".into(), bind_port: 41080,
+            host: String::new(), host_port: 0, active: true, busy: false, revision: 1,
+            status: "running".into() };
+        let mut starting = row.clone();
+        starting.id = "synthetic-starting".into();
+        starting.active = false;
+        starting.busy = true;
+        let mut failed = row.clone();
+        failed.id = "synthetic-failed".into();
+        failed.active = false;
+        failed.status = "failed: synthetic address already in use".into();
+        let mut rows = vec![row, starting, failed];
+        mark_tunnels_disconnected(&mut rows, "synthetic transport closed");
+        assert!(rows.iter().all(|row| !row.active && !row.busy));
+        let decoded: Vec<Value> = serde_json::from_str(&runtime_tunnels_json(&rows)).unwrap();
+        assert_eq!(decoded[0]["active"], false);
+        assert!(decoded[0]["status"].as_str().unwrap().contains("synthetic transport closed"));
+        assert_eq!(decoded[1]["active"], false);
+        assert_eq!(decoded[2]["status"], "failed: synthetic address already in use");
+        // busy/revision remain core bookkeeping; Dart still receives the same
+        // explicit fields and reads diagnostics from its existing status field.
+        assert!(decoded.iter().all(|row| row.get("busy").is_none() && row.get("revision").is_none()));
+        assert_eq!(decoded[0]["bindPort"], 41080);
+    }
+}
+
 fn local_os_name() -> &'static str {
     if cfg!(target_os = "windows") {
         "windows"
@@ -338,6 +401,13 @@ impl TerminalSession {
                             pump.version.fetch_add(1, Ordering::SeqCst);
                         }
                         SessionEvent::Closed(reason) => {
+                            // A transport error may report Closed before the SSH
+                            // worker's cleanup snapshot. This pump exits here, so
+                            // settle cached rows before the readonly Flutter card
+                            // can keep showing the old listener as running.
+                            if let Ok(mut rows) = pump.tunnels.lock() {
+                                mark_tunnels_disconnected(&mut rows, &reason);
+                            }
                             if let Ok(mut slot) = pump.closed.lock() {
                                 *slot = Some(reason.clone());
                             }
@@ -586,23 +656,7 @@ impl TerminalSession {
             .lock()
             .map(|slot| slot.clone())
             .unwrap_or_default();
-        let rows: Vec<Value> = tunnels
-            .iter()
-            .map(|t| {
-                json!({
-                    "id": t.id,
-                    "name": t.name,
-                    "kind": t.kind,
-                    "bindAddr": t.bind_addr,
-                    "bindPort": t.bind_port,
-                    "host": t.host,
-                    "hostPort": t.host_port,
-                    "active": t.active,
-                    "status": t.status,
-                })
-            })
-            .collect();
-        serde_json::to_string(&rows).unwrap_or_else(|_| "[]".into())
+        runtime_tunnels_json(&tunnels)
     }
 
     pub fn send_input(&self, bytes: &[u8]) {
