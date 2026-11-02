@@ -30,6 +30,49 @@ class PackagingVersion(unittest.TestCase):
         (self.root / 'scripts').mkdir()
         shutil.copyfile(ROOT / 'scripts/version.sh', self.root / 'scripts/version.sh')
 
+    def test_windows_bash_selection_excludes_wsl_launchers(self):
+        env = {'SystemRoot': r'C:\Windows',
+               'Path': r'C:\Windows\System32;C:\Windows\SysNative;C:\Windows\SysWOW64;C:\Program Files\Git\bin'}
+        with patch.object(version.os.path, 'isfile', return_value=True), \
+             patch.object(version.os.path, 'realpath', side_effect=lambda p: p):
+            self.assertEqual(version.find_bash(env, windows=True), r'C:\Program Files\Git\bin\bash.exe')
+            env['Path'] = r'C:\Windows\System32;C:\Windows\SysNative;C:\Windows\SysWOW64'
+            with self.assertRaisesRegex(FileNotFoundError, 'No Git Bash'):
+                version.find_bash(env, windows=True)
+            env['XT_BASH'] = r'D:\Portable Git\bin\bash.exe'
+            self.assertEqual(version.find_bash(env, windows=True), env['XT_BASH'])
+
+    def test_windows_bash_selection_rejects_system_alias(self):
+        env = {'PATH': r'C:\alias;D:\Git\bin'}
+        def canonical(path):
+            return r'C:\Windows\System32\bash.exe' if path == r'C:\alias\bash.exe' else path
+        with patch.object(version.os.path, 'isfile', return_value=True), \
+             patch.object(version.os.path, 'realpath', side_effect=canonical):
+            self.assertEqual(version.find_bash(env, windows=True), r'D:\Git\bin\bash.exe')
+        with patch.object(version.os.path, 'isfile', return_value=False):
+            with self.assertRaises(FileNotFoundError):
+                version.find_bash(env, windows=True)
+
+    def test_non_windows_bash_override_and_default(self):
+        self.assertEqual(version.find_bash({}, windows=False), 'bash')
+        self.assertEqual(version.find_bash({'XT_BASH': '/bin/bash'}, windows=False), '/bin/bash')
+
+    def test_resolver_uses_relative_script_and_posix_metadata_path(self):
+        self.modern()
+        real_output = subprocess.check_output
+        commands = []
+        def invoke(args, **kwargs):
+            commands.append((args, kwargs))
+            return real_output(args, **kwargs)
+        with patch.object(version, 'verify_source'), \
+             patch.object(version.subprocess, 'check_output', side_effect=invoke):
+            version.resolve_version(self.root, SHA)
+        args, kwargs = commands[0]
+        self.assertEqual(args[1], 'scripts/version.sh')
+        self.assertEqual(kwargs['cwd'], self.root.resolve())
+        self.assertNotIn('\\', kwargs['env']['XT_VERSION_JSON'])
+        self.assertEqual(kwargs['timeout'], 30)
+
     def test_product_sha_checked_instead_of_tooling(self):
         with patch.object(version.subprocess, 'check_output', return_value=SHA) as command:
             version.verify_source(self.root, SHA)

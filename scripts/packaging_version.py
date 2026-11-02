@@ -6,6 +6,7 @@ once; builds and archive admission use that exact value, without another clock.
 """
 import argparse
 import json
+import ntpath
 import os
 from pathlib import Path
 import re
@@ -123,6 +124,30 @@ def validate_manifest_version(manifest, source_sha, expected=None):
     return details
 
 
+def find_bash(environ, *, windows=None):
+    """Match build.rs: never let Windows CreateProcess select the WSL launcher."""
+    windows = os.name == 'nt' if windows is None else windows
+    env = {k.upper(): v for k, v in environ.items()} if windows else environ
+    if env.get('XT_BASH'):
+        return env['XT_BASH']
+    if not windows:
+        return 'bash'
+    root = env.get('SYSTEMROOT', r'C:\Windows')
+    system_dirs = [ntpath.normcase(os.path.realpath(ntpath.join(root, name)))
+                   for name in ('System32', 'SysNative', 'SysWOW64')]
+    for directory in env.get('PATH', '').split(';'):
+        if not directory:
+            continue
+        candidate = ntpath.abspath(ntpath.join(directory, 'bash.exe'))
+        if not os.path.isfile(candidate):
+            continue
+        canonical = ntpath.normcase(os.path.realpath(candidate))
+        if any(canonical.startswith(system.rstrip('\\') + '\\') for system in system_dirs):
+            continue
+        return candidate
+    raise FileNotFoundError('No Git Bash on PATH outside Windows system directories; set XT_BASH explicitly')
+
+
 def resolve_version(root, source_sha, *, stable_tag=None, environ=None):
     """Resolve once with trusted product identity and an explicit release context.
 
@@ -146,8 +171,9 @@ def resolve_version(root, source_sha, *, stable_tag=None, environ=None):
                GITHUB_REF_NAME=stable_tag or 'beta')
     # Resolver JSON belongs to this temporary invocation, not the product tree.
     with tempfile.TemporaryDirectory() as directory:
-        env['XT_VERSION_JSON'] = str(Path(directory) / 'version.json')
-        runtime = subprocess.check_output(['bash', str(root / 'scripts/version.sh')],
+        # Git Bash consumes forward-slash paths, not native backslash spellings.
+        env['XT_VERSION_JSON'] = (Path(directory) / 'version.json').as_posix()
+        runtime = subprocess.check_output([find_bash(env), 'scripts/version.sh'],
                                           cwd=root, env=env, text=True, encoding='utf-8', timeout=30).strip()
         resolved = json.loads(Path(env['XT_VERSION_JSON']).read_text(encoding='utf-8'))
     if resolved.get('version') != runtime:
