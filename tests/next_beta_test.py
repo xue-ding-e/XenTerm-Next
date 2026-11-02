@@ -20,6 +20,15 @@ RUN = {'repository': {'full_name': release.REPOSITORY}, 'head_repository': {'ful
        'event': 'push', 'status': 'completed', 'conclusion': 'success'}
 
 
+def baseline_record():
+    pin = release.GPUI_UPGRADE_BASELINE
+    return {k: pin[k] for k in ('id', 'name', 'size')} | {
+        'state': 'uploaded', 'digest': 'sha256:' + pin['sha256'],
+        'url': f'https://api.github.com/repos/{release.REPOSITORY}/releases/assets/{pin["id"]}',
+        'browser_download_url': f'https://github.com/{release.REPOSITORY}/releases/download/beta/{pin["name"]}',
+    }
+
+
 class FakeGitHub:
     def __init__(self, fail=None, existing=True):
         self.fail = fail
@@ -53,7 +62,7 @@ class FakeGitHub:
         return self.current
 
     def assets(self, rid):
-        return [self.record(name) for name in self.files]
+        return [baseline_record()] + [self.record(name) for name in self.files]
 
     def record(self, name):
         asset_id = self.ids[name]
@@ -350,6 +359,13 @@ class AssetTests(unittest.TestCase):
             next(path.glob('*.zip')).write_bytes(b'not a zip')
             with self.assertRaises(Exception): release.prepare_assets(path, SHA, '12', '34')
 
+    def test_cleanup_never_nominates_pinned_baseline(self):
+        pin = baseline_record()
+        renamed = pin | {'name': release.prefix(OLD) + 'windows-x86_64.zip'}
+        self.assertEqual(release.obsolete_assets([pin, renamed], set()), [])
+        named_only = {'name': pin['name']}
+        self.assertEqual(release.obsolete_assets([named_only], set()), [])
+
     def test_cleanup_recognizes_only_owned_names(self):
         own = release.prefix(OLD) + 'windows-x86_64.zip'
         current = release.prefix(SHA) + 'linux-x86_64.tar.gz'
@@ -360,6 +376,36 @@ class AssetTests(unittest.TestCase):
 
 
 class PublisherTests(unittest.TestCase):
+    def test_baseline_missing_or_changed_blocks_before_any_write(self):
+        for change in ('missing', 'id', 'digest', 'size', 'state', 'duplicate'):
+            class BadBaseline(FakeGitHub):
+                def assets(self, rid):
+                    entries = super().assets(rid)
+                    if change == 'missing': return entries[1:]
+                    if change == 'duplicate': return entries + [entries[0]]
+                    entries[0] = entries[0] | {change: 1 if change in ('id', 'size') else 'wrong'}
+                    return entries
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp); archives(path); api = BadBaseline()
+                with self.assertRaisesRegex(RuntimeError, 'baseline'):
+                    release.publish(api, path, SHA, '12', '34')
+                self.assertNotIn('upload', api.events)
+                self.assertNotIn('move_tag', api.events)
+                self.assertFalse(any(e.startswith(('PATCH:', 'DELETE:')) for e in api.events))
+
+    def test_baseline_removed_during_upload_blocks_promotion(self):
+        class DisappearingBaseline(FakeGitHub):
+            def assets(self, rid):
+                entries = super().assets(rid)
+                return entries[1:] if 'upload' in self.events else entries
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp); archives(path); api = DisappearingBaseline()
+            with self.assertRaisesRegex(RuntimeError, 'baseline'):
+                release.publish(api, path, SHA, '12', '34')
+            self.assertIn('upload', api.events)
+            self.assertNotIn('move_tag', api.events)
+            self.assertFalse(any(e.startswith(('PATCH:', 'DELETE:')) for e in api.events))
+
     def test_upload_ids_work_when_lists_never_show_new_assets(self):
         class StaleList(FakeGitHub):
             def assets(self, rid):

@@ -113,11 +113,16 @@ jobs:
           # A fixed real prior beta, never relabeled as this build. This tests
           # actual old-source -> current-source payload replacement as well as
           # the MSI transaction. Hash-check before extraction or execution.
-          $oldSha = '8819e2ec132760047209e9dcff7341c5f8a15f94'
+          # One reviewed retention pin is shared with publisher/cleanup guards.
+          $pinText = & python -c "import json,sys; sys.path.insert(0,'scripts'); from next_beta import GPUI_UPGRADE_BASELINE; print(json.dumps(GPUI_UPGRADE_BASELINE))"
+          if ($LASTEXITCODE -ne 0) { throw 'Could not load retained GPUI baseline pin' }
+          $pin = $pinText | ConvertFrom-Json
+          $oldSha = $pin.source_sha
           $oldStem = "XenTerm-Next-beta-$oldSha-windows-x86_64"
           $oldZip = Join-Path $env:RUNNER_TEMP 'gpui-real-prior.zip'
-          Invoke-WebRequest "https://github.com/xue-ding-e/XenTerm-Next/releases/download/beta/$oldStem.zip" -OutFile $oldZip
-          if ((Get-FileHash $oldZip -Algorithm SHA256).Hash -ine 'ab9aaab43cc4b7feeb5b8e6852f359a5dcafa04f35f2957d6344c28858029cad') { throw 'Prior real GPUI archive hash mismatch' }
+          Invoke-WebRequest "https://github.com/xue-ding-e/XenTerm-Next/releases/download/beta/$($pin.name)" -OutFile $oldZip
+          if ((Get-Item -LiteralPath $oldZip).Length -ne $pin.size) { throw 'Retained GPUI baseline size mismatch' }
+          if ((Get-FileHash $oldZip -Algorithm SHA256).Hash -ine $pin.sha256) { throw 'Prior real GPUI archive hash mismatch' }
           $oldRoot = Join-Path $env:RUNNER_TEMP 'gpui-real-prior'
           Expand-Archive -LiteralPath $oldZip -DestinationPath $oldRoot
           $previous = Join-Path $env:RUNNER_TEMP 'gpui-real-prior.msi'
