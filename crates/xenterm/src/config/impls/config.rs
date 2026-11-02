@@ -84,6 +84,19 @@ pub(crate) struct SessionCredentialRollbackFailed;
 #[error("configuration changed since it was loaded; keep pending edits and reload before saving")]
 pub(crate) struct ConfigurationChanged;
 
+/// A partial update of the non-secret preferences exposed by desktop settings.
+/// Omitted fields retain their exact cached representation.
+#[derive(Default)]
+pub struct SettingsUpdate {
+    pub session_logs: Option<bool>,
+    pub cursor_style: Option<String>,
+    pub line_spacing: Option<f32>,
+    pub padding: Option<bool>,
+    pub bold: Option<bool>,
+    pub sftp_follow_cd: Option<bool>,
+    pub download_dir: Option<String>,
+}
+
 // ── Data directory resolution (portable-first, #141) ──────────────────────────
 //
 // All user data — sessions.db, secret.key, known_hosts, error.log — lives in
@@ -2476,6 +2489,61 @@ CREATE TABLE IF NOT EXISTS command_history (seq INTEGER PRIMARY KEY AUTOINCREMEN
 
     // ── Saving ────────────────────────────────────────────────────────────
 
+    /// Apply one settings request and retain it only after persistence succeeds.
+    /// `&mut self` excludes concurrent cache setters; the save lock also orders
+    /// queued snapshots. Never release either boundary between apply and rollback.
+    /// Failure preserves prior pending edits and the persistence error/uncertainty
+    /// state; it does not reload disk or claim a failed commit was compensated.
+    pub fn update_settings_and_save(&mut self, update: SettingsUpdate) -> Result<()> {
+        let _ordered = Self::save_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // Capture raw fields, not normalized getters (legacy values must survive).
+        let previous = (
+            self.cache.session_logs,
+            self.cache.terminal_cursor_style.clone(),
+            self.cache.terminal_line_spacing,
+            self.cache.terminal_padding,
+            self.cache.terminal_bold,
+            self.cache.sftp_no_follow_cd,
+            self.cache.download_dir.clone(),
+        );
+        if let Some(value) = update.session_logs {
+            self.set_session_logs(value);
+        }
+        if let Some(value) = update.cursor_style {
+            self.set_terminal_cursor_style(value);
+        }
+        if let Some(value) = update.line_spacing {
+            self.set_terminal_line_spacing(value);
+        }
+        if let Some(value) = update.padding {
+            self.set_terminal_padding(value);
+        }
+        if let Some(value) = update.bold {
+            self.set_terminal_bold(value);
+        }
+        if let Some(value) = update.sftp_follow_cd {
+            self.set_sftp_follow_cd(value);
+        }
+        if let Some(value) = update.download_dir {
+            self.set_download_dir(value);
+        }
+        let result = self.save_impl_locked(None, self.keyring_enabled);
+        if result.is_err() {
+            (
+                self.cache.session_logs,
+                self.cache.terminal_cursor_style,
+                self.cache.terminal_line_spacing,
+                self.cache.terminal_padding,
+                self.cache.terminal_bold,
+                self.cache.sftp_no_follow_cd,
+                self.cache.download_dir,
+            ) = previous;
+        }
+        result
+    }
+
     pub fn save(&self) -> Result<()> {
         self.save_impl(None, self.keyring_enabled)
     }
@@ -4519,3 +4587,7 @@ mod issue98_layout_tests {
         assert_eq!(store.session_list_width(), 240.0);
     }
 }
+
+#[cfg(test)]
+#[path = "settings_update_tests.rs"]
+mod settings_update_tests;

@@ -1421,28 +1421,27 @@ pub extern "C" fn xenterm_settings_set(json: *const c_char) -> *mut c_char {
             serde_json::from_str(&raw).map_err(|e| format!("invalid payload: {e}"))?;
         let store = store()?;
         let mut store = store.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(enabled) = value.get("session_logs").and_then(|v| v.as_bool()) {
-            store.set_session_logs(enabled);
-        }
-        if let Some(style) = value.get("cursor_style").and_then(|v| v.as_str()) {
-            store.set_terminal_cursor_style(style.to_string());
-        }
-        if let Some(spacing) = value.get("line_spacing").and_then(|v| v.as_f64()) {
-            store.set_terminal_line_spacing(spacing as f32);
-        }
-        if let Some(padding) = value.get("padding").and_then(|v| v.as_bool()) {
-            store.set_terminal_padding(padding);
-        }
-        if let Some(bold) = value.get("bold").and_then(|v| v.as_bool()) {
-            store.set_terminal_bold(bold);
-        }
-        if let Some(follow) = value.get("sftp_follow_cd").and_then(|v| v.as_bool()) {
-            store.set_sftp_follow_cd(follow);
-        }
-        if let Some(dir) = value.get("download_dir").and_then(|v| v.as_str()) {
-            store.set_download_dir(dir.to_string());
-        }
-        store.save().map_err(|e| format!("save failed: {e}"))?;
+        let update = xenterm::config::SettingsUpdate {
+            session_logs: value.get("session_logs").and_then(|v| v.as_bool()),
+            cursor_style: value
+                .get("cursor_style")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            line_spacing: value
+                .get("line_spacing")
+                .and_then(|v| v.as_f64())
+                .map(|v| v as f32),
+            padding: value.get("padding").and_then(|v| v.as_bool()),
+            bold: value.get("bold").and_then(|v| v.as_bool()),
+            sftp_follow_cd: value.get("sftp_follow_cd").and_then(|v| v.as_bool()),
+            download_dir: value
+                .get("download_dir")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+        };
+        store
+            .update_settings_and_save(update)
+            .map_err(|e| format!("save failed: {e}"))?;
         Ok(())
     })();
     match result {
