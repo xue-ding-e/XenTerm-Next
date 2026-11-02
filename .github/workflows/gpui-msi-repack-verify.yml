@@ -143,7 +143,11 @@ jobs:
           core.info(`Admitted exact packaging-fixed source ${productSha}; real MSI acceptance is still required.`);
 
           // Payload provenance is distinct from packaging code provenance.
-          const packagingSha = '5b08e48742c8a83978845e5a3f134473bce17d7b';
+          const packagingSha = 'da0ff66ee66c2a266d99a98582f3560c156f7340';
+          const initializationSha = '5b08e48742c8a83978845e5a3f134473bce17d7b';
+          const initializationTree = '223cf5ff6c6833883b06af13045ee2ad652aadda';
+          const environmentSha = 'c4a05e8985b23b67cdc6c351af8268cb0e2df655';
+          const environmentTree = 'baa69f4649e228ef60c5930985a0c94f77390453';
           const registrationSha = '6de8b1c33159e6e026be015fd4b22541b9f2fcb4';
           const registrationTree = 'd69819c8859adae09296723c444d43150cce18a5';
           const scalarSha = '0d60b91691ce082137db3e3f995ef6fc8c783b83';
@@ -158,7 +162,7 @@ jobs:
           const lifecycleTree = 'd60294de8f6afd9f432acbaf7a072f6273606bfc';
           const evidenceSha = 'd9f2cf0587069ec944150a6292e458e9a5c17b5f';
           const evidenceTree = '0d8cbb5039b7f50de865329867001f97770c82f9';
-          const packagingTree = '223cf5ff6c6833883b06af13045ee2ad652aadda';
+          const packagingTree = '17ad2240165fdc0058ae007eea5f49cf28655fdc';
           const guidSha = '111427ca5c08d39468bffe2e161d6598e93c7404';
           const guidTree = '39473a6c199de239daeec7b28c5e8ec7ae21459f';
           const payloadRunId = 41378802968;
@@ -170,8 +174,12 @@ jobs:
           ];
           const changes = {
             'tests/fixtures/gpui-heat-component-group.wxs':'f2acdf988236605995e477abd153a42d133f8426',
-            'scripts/test_next_gpui_msi_e2e.ps1':'48ec02f7862ec5a5ac1ded7e07745dbc8c1a272a',
-          'scripts/initialize_gpui_test_profile.ps1':'3906617a53fab2c0dee0efa0c56eb9ea4ef622c9',
+            'scripts/test_next_gpui_msi_e2e.ps1':'1342976af42d8d3b8801fe582bdd7956766b5d3e',
+          'scripts/gpui_msi_gui_observation.ps1':'2869264c05f8f8d6cd6bd2527017f9b9809216ed',
+           'tests/test_gpui_gui_observation.ps1':'ea98a17bb6e2e5002a407e308db458e73111167b',
+           'tests/test_gpui_profile_environment.ps1':'59a2575f5473749816dd24be57470dcf87feb0e8',
+           'tests/test_gpui_native_environment.ps1':'ea92d230f007f3b235ece8fc78db57f18f1f74e9',
+           'scripts/initialize_gpui_test_profile.ps1':'3906617a53fab2c0dee0efa0c56eb9ea4ef622c9',
            'tests/test_gpui_initialization.ps1':'c50c8c35501ec0bd8caabe397fc1d93b905af9dc',
            'scripts/gpui_msi_registration_evidence.ps1':'eea0acab2afa68c8f8e2627618017f0e0b62d49d',
            'tests/test_gpui_registration.ps1':'a560418caed507b369e7cbccb23cad6625e5dd72',
@@ -181,10 +189,10 @@ jobs:
             'tests/test_gpui_profile_evidence.py':'90dfafa722618abfc9bacd6c2d80c23a249a6754',
             'scripts/prepare_next_gpui_msi.py':'88102f833e73e66e4c76ae6f08b43a351bf6fcc7',
             'tests/test_next_gpui_msi.py':'ad15bdf0514066ea6f8e9d96a98f5f89e29953d5',
-            'scripts/package_next_gpui_msi.ps1':'ca57b67d6bb3bf94661fe4bda92bac845924d2a3',
+            'scripts/package_next_gpui_msi.ps1':'068dc9bf02148ed44c2e603589f0b67d2e98e45b',
             'tests/test_gpui_msi_evidence.py':'fc70dbd2b092f4432ca591b0aef310521cdcf9ad',
           };
-          for (const [sha,tree,parent] of [[guidSha,guidTree,productSha],[evidenceSha,evidenceTree,guidSha],[lifecycleSha,lifecycleTree,evidenceSha],[fixtureSha,fixtureTree,lifecycleSha],[heatSha,heatTree,fixtureSha],[encodingSha,encodingTree,heatSha],[scalarSha,scalarTree,encodingSha],[registrationSha,registrationTree,scalarSha],[packagingSha,packagingTree,registrationSha]]) {
+          for (const [sha,tree,parent] of [[guidSha,guidTree,productSha],[evidenceSha,evidenceTree,guidSha],[lifecycleSha,lifecycleTree,evidenceSha],[fixtureSha,fixtureTree,lifecycleSha],[heatSha,heatTree,fixtureSha],[encodingSha,encodingTree,heatSha],[scalarSha,scalarTree,encodingSha],[registrationSha,registrationTree,scalarSha],[initializationSha,initializationTree,registrationSha],[environmentSha,environmentTree,initializationSha],[packagingSha,packagingTree,environmentSha]]) {
             const {data:c} = await github.rest.git.getCommit({owner,repo,commit_sha:sha});
             requireTrue(c.tree.sha === tree && c.parents.length === 1 && c.parents[0].sha === parent,'Packaging chain changed');
             for (const identity of [c.author,c.committer]) requireTrue(identity.name === 'Qing Liang' && identity.email === '106448173+xue-ding-e@users.noreply.github.com','Unexpected packaging author');
@@ -192,7 +200,7 @@ jobs:
           const packaging = await treeEntries(packagingTree);
           const delta = [...new Set([...after.entries.keys(),...packaging.entries.keys()])]
             .filter(p => after.entries.get(p) !== packaging.entries.get(p)).sort();
-          requireTrue(JSON.stringify(delta) === JSON.stringify(Object.keys(changes).sort()),'Packaging changes exceed reviewed fourteen files');
+          requireTrue(JSON.stringify(delta) === JSON.stringify(Object.keys(changes).sort()),'Packaging changes exceed reviewed eighteen files');
           for (const [path,sha] of Object.entries(changes)) requireTrue(packaging.entries.get(path) === `100644:blob:${sha}`,'Reviewed packaging blob differs');
           async function payloadRunProof() {
             const {data:r} = await github.rest.actions.getWorkflowRun({owner,repo,run_id:payloadRunId});
@@ -265,6 +273,8 @@ jobs:
         ./tests/test_gpui_msi_property.ps1
         ./tests/test_gpui_registration.ps1 -Script ./scripts/gpui_msi_registration_evidence.ps1
         ./tests/test_gpui_initialization.ps1 -Script ./scripts/initialize_gpui_test_profile.ps1
+        ./tests/test_gpui_gui_observation.ps1 -Script ./scripts/gpui_msi_gui_observation.ps1 -LifecycleScript ./scripts/test_next_gpui_msi_e2e.ps1
+        ./tests/test_gpui_profile_environment.ps1 -Script ./scripts/package_next_gpui_msi.ps1
     - name: Prepare pinned portable WiX toolset
       timeout-minutes: 5
       shell: pwsh
@@ -382,6 +392,8 @@ jobs:
         $oldRoot = Join-Path $env:RUNNER_TEMP 'gpui-real-prior'
         Expand-Archive -LiteralPath $oldZip -DestinationPath $oldRoot
         $previous = Join-Path $env:RUNNER_TEMP 'gpui-real-prior.msi'
+        New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/gpui-installer-evidence" -Force | Out-Null
+        ./tests/test_gpui_native_environment.ps1 -Exe "$oldRoot/$oldStem/xenterm.exe" -PackagingScript ./scripts/package_next_gpui_msi.ps1 -Output "$env:RUNNER_TEMP/gpui-installer-evidence/native-environment.json"
         ./scripts/package_next_gpui_msi.ps1 -BundleDir "$oldRoot/$oldStem" -SourceSha $oldSha -WixBin $wix -Output $previous -EvidenceDir "$env:RUNNER_TEMP/gpui-packaging-evidence"
         $same = Join-Path $env:RUNNER_TEMP 'gpui-equal-build-fixture.msi'
         ./scripts/package_next_gpui_msi.ps1 -BundleDir $bundle -SourceSha $env:SOURCE_SHA -WixBin $wix -Output $same -EvidenceDir "$env:RUNNER_TEMP/gpui-packaging-evidence"
