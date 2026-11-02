@@ -1,0 +1,171 @@
+name: Read-only retained GPUI MSI COM identity diagnostic
+'on':
+  push:
+    branches:
+    - validation/gpui-msi-repack-20261102
+    paths:
+    - .github/workflows/gpui-msi-identity-probe.yml
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: gpui-msi-only-${{ github.repository }}
+  cancel-in-progress: false
+jobs:
+  identity:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+    - name: Verify exact failed run and download retained MSI evidence
+      timeout-minutes: 4
+      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
+      with:
+        script: |
+          const fs = require('fs'), path = require('path'), crypto = require('crypto');
+          const owner='xue-ding-e', repo='XenTerm-Next', branch='validation/gpui-msi-repack-20261102';
+          const prior='f49681380d753a6828be67006e5e910507b1d0fb', source='488f001949613327150abb8f74b464278604df69';
+          const need=(v,m)=>{if(!v)throw new Error(m);};
+          need(context.repo.owner===owner && context.repo.repo===repo && context.eventName==='push' && context.ref===`refs/heads/${branch}` && context.payload.before===prior, 'Wrong event/ref/before');
+          const {data:ref}=await github.rest.git.getRef({owner,repo,ref:`heads/${branch}`});
+          need(ref.object.sha===context.sha,'Stale controller');
+          const {data:commit}=await github.rest.git.getCommit({owner,repo,commit_sha:context.sha});
+          need(commit.parents.length===1 && commit.parents[0].sha===prior,'Wrong controller parent');
+          for(const who of [commit.author,commit.committer]) need(who.name==='Qing Liang' && who.email==='106448173+xue-ding-e@users.noreply.github.com','Wrong attribution');
+          const {data:diff}=await github.rest.repos.compareCommits({owner,repo,base:prior,head:context.sha});
+          need(diff.files.length===1 && diff.files[0].filename==='.github/workflows/gpui-msi-identity-probe.yml' && diff.files[0].status==='added','Controller must only add this diagnostic workflow');
+          const {data:src}=await github.rest.git.getCommit({owner,repo,commit_sha:source});
+          need(src.tree.sha==='3d819d32b4520fc1e77abbbb7c3c91da97f928c1' && src.parents.length===1 && src.parents[0].sha==='39679fcfc151f6e334d7855c5ec2d795b7144de1','Wrong packaging source');
+          const {data:run}=await github.rest.actions.getWorkflowRun({owner,repo,run_id:41496312163});
+          need(run.head_sha===prior && run.head_branch===branch && run.run_attempt===1 && run.event==='push' && run.repository.full_name===`${owner}/${repo}` && run.head_repository.full_name===`${owner}/${repo}` && run.path==='.github/workflows/gpui-msi-repack-verify.yml' && run.status==='completed' && run.conclusion==='failure','Wrong retained run');
+          const jobs=await github.paginate(github.rest.actions.listJobsForWorkflowRunAttempt,{owner,repo,run_id:run.id,attempt_number:1,per_page:100});
+          need(jobs.length===2 && jobs.every(j=>j.status==='completed' && j.head_sha===prior),'Wrong prior jobs');
+          need(jobs.find(j=>j.name==='source-proof')?.conclusion==='success','Prior proof failed');
+          const native=jobs.find(j=>j.name==='real-windows-msi');
+          need(native?.conclusion==='failure','Wrong native state');
+          need(JSON.stringify(native.steps.filter(s=>s.conclusion==='failure').map(s=>s.name))===JSON.stringify(['Verify real old-to-current GPUI MSI lifecycle']),'Unexpected prior failing steps');
+          for(const name of ['Verify synthetic profile preservation contracts','Verify exact archive and payload identity before safe extraction','Reject unpackaged Microsoft runtime dependencies in actual PE','Keep real GPUI MSI and lifecycle evidence (not a release)']) need(native.steps.find(s=>s.name===name)?.conclusion==='success','Missing prior evidence');
+          const args={owner,repo,artifact_id:13165869155};
+          const {data:meta}=await github.rest.actions.getArtifact(args);
+          const digest='fd719f8e59a1691a7860fc821e8b9d9fef038ee8fd0aaa6812d9b03fe2cb92d4';
+          need(!meta.expired && meta.size_in_bytes===115589238 && meta.digest===`sha256:${digest}` && meta.name===`gpui-msi-repack-${source}` && meta.workflow_run.id===run.id && meta.workflow_run.head_sha===prior,'Wrong retained artifact');
+          const {data}=await github.rest.actions.downloadArtifact({...args,archive_format:'zip'});
+          const bytes=Buffer.from(data);
+          need(bytes.length===115589238 && crypto.createHash('sha256').update(bytes).digest('hex')===digest,'Artifact bytes differ');
+          const dir=path.join(process.env.RUNNER_TEMP,'gpui-identity-probe');
+          fs.mkdirSync(dir);
+          fs.writeFileSync(path.join(dir,'input.zip'),bytes,{flag:'wx'});
+    - name: Extract only three hash-pinned MSI databases
+      timeout-minutes: 2
+      shell: python
+      run: |
+        import hashlib, os, zipfile, stat
+        from pathlib import Path
+        root=Path(os.environ['RUNNER_TEMP'])/'gpui-identity-probe'
+        raw=(root/'input.zip').read_bytes()
+        assert len(raw)==115589238 and hashlib.sha256(raw).hexdigest()=='fd719f8e59a1691a7860fc821e8b9d9fef038ee8fd0aaa6812d9b03fe2cb92d4'
+        expected={'XenTerm-Next/XenTerm-Next/dist/XenTerm-Next-beta-381ac573bf0bca127e28dd17bd36f979cd16824b-windows-x86_64.msi': 'b97c2cd1e6450e229a53b3fe2ec07280376dfb3c9156ffb2741e82e3c755a3ff', '_temp/gpui-equal-build-fixture.msi': '7c7f7877cf7cd90d78089b8bed283c44d8d47ff577fab1eafc553949217340aa', '_temp/gpui-real-prior.msi': 'ee45c6162411ce1441db53dccfb615b501f8438b604c2664334ceb4a8b144322'}
+        with zipfile.ZipFile(root/'input.zip') as z:
+            names=z.namelist()
+            for i,(name,digest) in enumerate(expected.items()):
+                assert names.count(name)==1
+                e=z.getinfo(name)
+                assert not e.is_dir() and not e.flag_bits & 1 and not stat.S_ISLNK(e.external_attr >> 16)
+                assert 0 < e.file_size < 100000000
+                data=z.read(e)
+                assert hashlib.sha256(data).hexdigest()==digest
+                with (root/f'input-{i}.msi').open('xb') as f: f.write(data)
+        # No other ZIP entry is extracted; no source/executable is run.
+    - name: Observe COM return values without installation
+      timeout-minutes: 2
+      shell: pwsh
+      run: |
+        $root = Join-Path $env:RUNNER_TEMP 'gpui-identity-probe'
+        & {
+        # Read-only diagnostic: never installs or launches an MSI or its payload.
+        [CmdletBinding()]
+        param(
+         [Parameter(Mandatory=$true)][string[]]$MsiPaths,
+         [Parameter(Mandatory=$true)][string]$Output
+        )
+        Set-StrictMode -Version Latest
+        $ErrorActionPreference = 'Stop'
+        if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted') {
+         throw 'Identity diagnostic requires a disposable GitHub-hosted runner'
+        }
+        $resolvedPaths = @($MsiPaths | ForEach-Object { (Resolve-Path -LiteralPath $_).Path })
+        if ($resolvedPaths.Count -ne 3 -or @($resolvedPaths | Sort-Object -Unique).Count -ne 3) { throw 'Exactly three distinct MSI inputs required' }
+        $outputPath = [IO.Path]::GetFullPath($Output)
+        if ((Test-Path -LiteralPath $outputPath) -or $outputPath -in $resolvedPaths) { throw 'Output must be a new file distinct from all inputs' }
+        $installer = New-Object -ComObject WindowsInstaller.Installer
+        # Same success-stream operations as the failing 488f reader; cleanup emits nothing.
+        function Original-MsiProperty([string]$Path, [string]$Name) {
+         $db = $null; $view = $null; $record = $null; $closed = $false
+         try {
+          $db = $installer.OpenDatabase($Path, 0)
+          $view = $db.OpenView("SELECT ``Value`` FROM ``Property`` WHERE ``Property``='$Name'")
+          $view.Execute()
+          $record = $view.Fetch()
+          if ($null -eq $record) { return '' }
+          $value = $record.StringData(1)
+          $view.Close()
+          $closed = $true
+          return $value
+         } finally {
+          try { if ($null -ne $view -and -not $closed) { [void]$view.Close() } }
+          finally {
+           foreach ($com in @($record,$view,$db)) {
+            if ($null -ne $com -and [Runtime.InteropServices.Marshal]::IsComObject($com)) { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($com) }
+           }
+          }
+         }
+        }
+        function Describe($Value) {
+         if ($null -eq $Value) { return @{type='<null>'; value=$null} }
+         return @{type=$Value.GetType().FullName; value=[string]$Value}
+        }
+        $results = @()
+        try {
+         foreach ($resolved in $resolvedPaths) {
+          $properties = @()
+          foreach ($name in @('UpgradeCode','ALLUSERS','ProductCode','ProductVersion','ProductName')) {
+           $original = @(Original-MsiProperty $resolved $name)
+           $db = $null; $view = $null; $record = $null
+           try {
+            $db = $installer.OpenDatabase($resolved, 0)
+            $view = $db.OpenView("SELECT ``Value`` FROM ``Property`` WHERE ``Property``='$name'")
+            $executeResult = @($view.Execute())
+            $record = $view.Fetch()
+            $present = $null -ne $record
+            $raw = if ($present) { $record.StringData(1) } else { $null }
+            $closeResult = @($view.Close())
+            $properties += @{name=$name; original_count=$original.Count; original_values=@($original | ForEach-Object { Describe $_ }); row_present=$present; direct_value=(Describe $raw); execute_values=@($executeResult | ForEach-Object { Describe $_ }); close_values=@($closeResult | ForEach-Object { Describe $_ })}
+           } finally {
+            foreach ($com in @($record,$view,$db)) {
+             if ($null -ne $com -and [Runtime.InteropServices.Marshal]::IsComObject($com)) { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($com) }
+            }
+           }
+          }
+          $results += @{path=$resolved; sha256=(Get-FileHash -LiteralPath $resolved -Algorithm SHA256).Hash.ToLowerInvariant(); properties=$properties}
+         }
+         $json = $results | ConvertTo-Json -Depth 10
+         $stream = [IO.File]::Open($outputPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+         try {
+          $bytes = [Text.UTF8Encoding]::new($false).GetBytes($json)
+          $stream.Write($bytes, 0, $bytes.Length)
+         } finally { $stream.Dispose() }
+        } finally {
+         [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($installer)
+        }
+
+        } -MsiPaths @((Join-Path $root 'input-0.msi'),(Join-Path $root 'input-1.msi'),(Join-Path $root 'input-2.msi')) -Output (Join-Path $root 'identity.json')
+        if ((Get-FileHash -LiteralPath (Join-Path $root 'input-0.msi') -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'b97c2cd1e6450e229a53b3fe2ec07280376dfb3c9156ffb2741e82e3c755a3ff') { throw 'Read-only probe changed an MSI' }
+        if ((Get-FileHash -LiteralPath (Join-Path $root 'input-1.msi') -Algorithm SHA256).Hash.ToLowerInvariant() -ne '7c7f7877cf7cd90d78089b8bed283c44d8d47ff577fab1eafc553949217340aa') { throw 'Read-only probe changed an MSI' }
+        if ((Get-FileHash -LiteralPath (Join-Path $root 'input-2.msi') -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'ee45c6162411ce1441db53dccfb615b501f8438b604c2664334ceb4a8b144322') { throw 'Read-only probe changed an MSI' }
+    - name: Keep COM observations only (not installers or release)
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: gpui-msi-com-identity
+        path: ${{ runner.temp }}/gpui-identity-probe/identity.json
+        if-no-files-found: warn
+        retention-days: 7
