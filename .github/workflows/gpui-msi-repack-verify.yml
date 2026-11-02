@@ -143,14 +143,16 @@ jobs:
           core.info(`Admitted exact packaging-fixed source ${productSha}; real MSI acceptance is still required.`);
 
           // Payload provenance is distinct from packaging code provenance.
-          const packagingSha = '39679fcfc151f6e334d7855c5ec2d795b7144de1';
+          const packagingSha = '488f001949613327150abb8f74b464278604df69';
+          const heatSha = '39679fcfc151f6e334d7855c5ec2d795b7144de1';
+          const heatTree = '4620c68378f6bd03c3be9346d20eb4ffb6edcb98';
           const fixtureSha = 'a6754f41478e2770d5fc5abf4288228575078afb';
           const fixtureTree = 'bd81cce43c370ecbfe707e55192a9f538b541a6b';
           const lifecycleSha = '745d70be39701c37c7692c3ded8eec99419f95f2';
           const lifecycleTree = 'd60294de8f6afd9f432acbaf7a072f6273606bfc';
           const evidenceSha = 'd9f2cf0587069ec944150a6292e458e9a5c17b5f';
           const evidenceTree = '0d8cbb5039b7f50de865329867001f97770c82f9';
-          const packagingTree = '4620c68378f6bd03c3be9346d20eb4ffb6edcb98';
+          const packagingTree = '3d819d32b4520fc1e77abbbb7c3c91da97f928c1';
           const guidSha = '111427ca5c08d39468bffe2e161d6598e93c7404';
           const guidTree = '39473a6c199de239daeec7b28c5e8ec7ae21459f';
           const payloadRunId = 41378802968;
@@ -167,11 +169,11 @@ jobs:
             'scripts/gpui_msi_profile_evidence.py':'1fca29d1c507a174f04fb8e10afc4b010c6f5d75',
             'tests/test_gpui_profile_evidence.py':'e360a62def017916393495a40023ada4e2d3658a',
             'scripts/prepare_next_gpui_msi.py':'88102f833e73e66e4c76ae6f08b43a351bf6fcc7',
-            'tests/test_next_gpui_msi.py':'f19ff0a4810ca1351fe21dd06b6336027d7f05fd',
+            'tests/test_next_gpui_msi.py':'ad15bdf0514066ea6f8e9d96a98f5f89e29953d5',
             'scripts/package_next_gpui_msi.ps1':'ca57b67d6bb3bf94661fe4bda92bac845924d2a3',
             'tests/test_gpui_msi_evidence.py':'fc70dbd2b092f4432ca591b0aef310521cdcf9ad',
           };
-          for (const [sha,tree,parent] of [[guidSha,guidTree,productSha],[evidenceSha,evidenceTree,guidSha],[lifecycleSha,lifecycleTree,evidenceSha],[fixtureSha,fixtureTree,lifecycleSha],[packagingSha,packagingTree,fixtureSha]]) {
+          for (const [sha,tree,parent] of [[guidSha,guidTree,productSha],[evidenceSha,evidenceTree,guidSha],[lifecycleSha,lifecycleTree,evidenceSha],[fixtureSha,fixtureTree,lifecycleSha],[heatSha,heatTree,fixtureSha],[packagingSha,packagingTree,heatSha]]) {
             const {data:c} = await github.rest.git.getCommit({owner,repo,commit_sha:sha});
             requireTrue(c.tree.sha === tree && c.parents.length === 1 && c.parents[0].sha === parent,'Packaging chain changed');
             for (const identity of [c.author,c.committer]) requireTrue(identity.name === 'Qing Liang' && identity.email === '106448173+xue-ding-e@users.noreply.github.com','Unexpected packaging author');
