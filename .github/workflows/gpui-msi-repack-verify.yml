@@ -1,0 +1,368 @@
+name: Read-only pinned-payload GPUI MSI repair acceptance
+'on':
+  push:
+    branches:
+    - validation/gpui-msi-repack-20261102
+    paths:
+    - .github/workflows/gpui-msi-repack-verify.yml
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: gpui-msi-only-${{ github.repository }}
+  cancel-in-progress: false
+jobs:
+  source-proof:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    outputs:
+      product_sha: ${{ steps.prove.outputs.product_sha }}
+      packaging_sha: ${{ steps.prove.outputs.packaging_sha }}
+    steps:
+    - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
+      id: prove
+      with:
+        script: |
+          const owner = 'xue-ding-e', repo = 'XenTerm-Next';
+          const repository = `${owner}/${repo}`;
+          const oldRunId = 41371125729;
+          const oldSha = 'eff1a5697f0618cd6b4d73a4938859e267643a77';
+          const productSha = '381ac573bf0bca127e28dd17bd36f979cd16824b';
+          const productTree = '075006e3112863336f1d8b9f78257a6a3b48004d';
+          const oldTree = 'aa340676b39d82c0bfe879881434764f26ac91af';
+          const oldBranch = 'feature/next-gpui-msi-validation-20261102';
+          const controlBranch = 'validation/gpui-msi-repack-20261102';
+          const requireTrue = (condition, message) => { if (!condition) throw new Error(message); };
+          requireTrue(context.repo.owner === owner && context.repo.repo === repo &&
+            context.eventName === 'push' && context.ref === `refs/heads/${controlBranch}`,
+            'Wrong repository, event or control ref');
+          const {data: control} = await github.rest.git.getRef({owner, repo, ref:`heads/${controlBranch}`});
+          requireTrue(control.object.sha === context.sha, 'Control ref moved; do not run a stale controller');
+          const {data: run} = await github.rest.actions.getWorkflowRun({owner, repo, run_id:oldRunId});
+          requireTrue(run.id === oldRunId && run.repository.full_name === repository &&
+            run.head_repository.full_name === repository && run.head_sha === oldSha &&
+            run.head_branch === oldBranch && run.path === '.github/workflows/ci.yml' &&
+            run.event === 'push' && run.run_attempt === 1 && run.status === 'completed' &&
+            run.conclusion === 'failure', 'Prior CI identity/state differs from the reviewed run');
+          const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRunAttempt,
+            {owner, repo, run_id:oldRunId, attempt_number:1, per_page:100});
+          const successfulNames = [
+            'Linux desktop', 'macOS desktop', 'Windows desktop',
+            'macos-14 migration CLI regression', 'windows-latest migration CLI regression',
+            'ubuntu-22.04 migration CLI regression', 'Headless MCP regression',
+            'Rust 1.88 Linux headless regression', 'Windows SSH command stack',
+            'Linux installer check', 'macOS PKG choices and payload',
+          ];
+          const msiName = 'Windows MSI install upgrade uninstall';
+          const names = new Map(jobs.map(job => [job.name, job]));
+          requireTrue(names.size === jobs.length && jobs.length === 13, 'Unexpected or duplicate prior jobs');
+          for (const job of jobs) {
+            requireTrue(job.run_id === oldRunId && job.run_attempt === 1 && job.head_sha === oldSha && job.status === 'completed',
+              'Prior job source or terminal state mismatch');
+          }
+          for (const name of successfulNames) requireTrue(names.get(name)?.conclusion === 'success', `Required prior job not successful: ${name}`);
+          requireTrue(names.get('next-beta-dry-run')?.conclusion === 'skipped', 'Unexpected prior dry-run publication job');
+          const msi = names.get(msiName);
+          requireTrue(msi?.conclusion === 'failure', 'Prior MSI failure differs');
+          const steps = new Map(msi.steps.map(step => [step.name, step]));
+          requireTrue(steps.size === msi.steps.length, 'Duplicate prior MSI steps');
+          const versionStep = 'Bind installer test runtime to this exact source';
+          const artifactStep = 'Keep real GPUI MSI and lifecycle evidence (not a release)';
+          requireTrue(steps.get(versionStep)?.conclusion === 'failure', 'Prior failure is not the reviewed Bash version binding failure');
+          requireTrue(steps.get('Verify upstream installer mechanism fixture (not product acceptance)')?.conclusion === 'success',
+            'Prior upstream mechanism fixture did not pass');
+          const realSteps = [
+            'Build real GPUI release payload (locked, static Microsoft runtime)',
+            'Reject unpackaged Microsoft runtime dependencies in actual PE',
+            'Package actual executable and original licenses',
+            'Verify real old-to-current GPUI MSI lifecycle',
+          ];
+          for (const name of realSteps) requireTrue(steps.get(name)?.conclusion === 'skipped', `Prior real product stage unexpectedly ran: ${name}`);
+          // The reviewed run's always-upload step also failed because version binding
+          // stopped before any product artifact existed. This is an explicit dependent
+          // failure, not permission to reuse another installer/build failure.
+          const failures = msi.steps.filter(s => s.conclusion === 'failure').map(s => s.name).sort();
+          requireTrue(JSON.stringify(failures) === JSON.stringify([versionStep, artifactStep].sort()), 'Unexpected prior MSI failing steps');
+          requireTrue(msi.steps.every(s => ['success','skipped','failure'].includes(s.conclusion)), 'Prior MSI cancelled or incomplete step');
+          const {data: oldCommit} = await github.rest.git.getCommit({owner, repo, commit_sha:oldSha});
+          const {data: product} = await github.rest.git.getCommit({owner, repo, commit_sha:productSha});
+          requireTrue(oldCommit.tree.sha === oldTree && product.tree.sha === productTree &&
+            product.parents.length === 1 && product.parents[0].sha === oldSha,
+            'Fixed product source/tree/linear parent differs');
+          for (const identity of [product.author, product.committer]) requireTrue(identity.name === 'Qing Liang' &&
+            identity.email === '106448173+xue-ding-e@users.noreply.github.com', 'Unexpected product commit attribution');
+          async function treeEntries(sha) {
+            const {data} = await github.rest.git.getTree({owner, repo, tree_sha:sha, recursive:'true'});
+            requireTrue(data.truncated === false, 'Cannot prove full source equivalence from a truncated tree');
+            const entries = new Map(data.tree.filter(e => e.type !== 'tree').map(e => [e.path, `${e.mode}:${e.type}:${e.sha}`]));
+            requireTrue(entries.size === data.tree.filter(e => e.type !== 'tree').length, 'Duplicate tree paths');
+            return {entries, all:new Map(data.tree.map(e => [e.path, e]))};
+          }
+          const before = await treeEntries(oldTree), after = await treeEntries(productTree);
+          const paths = new Set([...before.entries.keys(), ...after.entries.keys()]);
+          const changed = [...paths].filter(path => before.entries.get(path) !== after.entries.get(path)).sort();
+          const allowed = ['scripts/packaging_version.py', 'tests/test_packaging_version.py'];
+          requireTrue(JSON.stringify(changed) === JSON.stringify(allowed), 'Product changes exceed the two reviewed packaging-only files');
+          for (const path of allowed) requireTrue(before.all.get(path)?.type === 'blob' && after.all.get(path)?.type === 'blob' &&
+            before.all.get(path)?.mode === '100644' && after.all.get(path)?.mode === '100644', 'Packaging fix must replace regular source files');
+          const protectedPaths = ['src', 'build.rs', 'Cargo.toml', 'Cargo.lock', 'assets', 'wix',
+            'scripts/package_next_gpui_msi.ps1', 'scripts/prepare_next_gpui_msi.py',
+            'scripts/test_next_gpui_msi_e2e.ps1', 'scripts/next_beta.py', 'scripts/next_beta_package.py',
+            'scripts/install-wix.ps1', '.github/workflows/ci.yml'];
+          for (const path of protectedPaths) requireTrue(before.all.get(path)?.sha &&
+            before.all.get(path).sha === after.all.get(path)?.sha && before.all.get(path).mode === after.all.get(path)?.mode,
+            `Protected application/installer source changed: ${path}`);
+          // Re-read the fixed attempt's complete job set, including the exact failed
+          // step conclusions, before the final run/ref race checks. Never use latest.
+          const finalJobs = await github.paginate(github.rest.actions.listJobsForWorkflowRunAttempt,
+            {owner, repo, run_id:oldRunId, attempt_number:1, per_page:100});
+          function jobProof(entries) {
+            return entries.map(job => ({id:job.id,name:job.name,run_id:job.run_id,run_attempt:job.run_attempt,
+              head_sha:job.head_sha,status:job.status,conclusion:job.conclusion,
+              steps:(job.steps || []).map(step => ({name:step.name,number:step.number,status:step.status,conclusion:step.conclusion}))}))
+              .sort((a,b) => a.name.localeCompare(b.name));
+          }
+          requireTrue(JSON.stringify(jobProof(finalJobs)) === JSON.stringify(jobProof(jobs)), 'Prior attempt jobs changed during proof');
+          // Catch a rerun or controller movement between the initial reads and proof.
+          const {data: finalRun} = await github.rest.actions.getWorkflowRun({owner, repo, run_id:oldRunId});
+          requireTrue(finalRun.id === oldRunId && finalRun.head_sha === oldSha && finalRun.run_attempt === 1 &&
+            finalRun.status === 'completed' && finalRun.conclusion === 'failure', 'Prior CI attempt changed during proof');
+          const {data: finalControl} = await github.rest.git.getRef({owner, repo, ref:`heads/${controlBranch}`});
+          requireTrue(finalControl.object.sha === context.sha, 'Controller moved during source proof');
+          const proof = {
+            repository, control_sha:context.sha, product_sha:productSha, product_tree:productTree,
+            reused_run:oldRunId, reused_attempt:1, reused_source:oldSha, reused_tree:oldTree,
+            successful_jobs:successfulNames.map(name => ({name,id:names.get(name).id,conclusion:'success'})),
+            reviewed_failed_step:versionStep, dependent_missing_artifact_failure:artifactStep,
+            changed_files:changed.map(path => ({path,before:before.all.get(path).sha,after:after.all.get(path).sha})),
+            protected_paths:protectedPaths.map(path => ({path,sha:after.all.get(path).sha})),
+            limitation:'Prior run proves unchanged source regressions only. New product version, release build, PE dependencies and real MSI lifecycle must all run successfully now.',
+          };
+          require('fs').writeFileSync('gpui-msi-source-proof.json', JSON.stringify(proof,null,2)+'\n');
+          core.setOutput('product_sha', productSha);
+          core.info(`Admitted exact packaging-fixed source ${productSha}; real MSI acceptance is still required.`);
+
+          // Payload provenance is distinct from packaging code provenance.
+          const packagingSha = 'd9f2cf0587069ec944150a6292e458e9a5c17b5f';
+          const packagingTree = '0d8cbb5039b7f50de865329867001f97770c82f9';
+          const guidSha = '111427ca5c08d39468bffe2e161d6598e93c7404';
+          const guidTree = '39473a6c199de239daeec7b28c5e8ec7ae21459f';
+          const payloadRunId = 41378802968;
+          const payloadControl = '3ae2af9a17aaa4632c3812be10bf3f697744bc1a';
+          const payloadBranch = 'validation/gpui-msi-only-20261102';
+          const artifacts = [
+            {id:13113451512,name:'gpui-msi-only-' + productSha,size:43626865,sha256:'f65560dcfe762d88afd017e265066e4a137601bdfbc9403bf9f849728aa8ba7e'},
+            {id:13112690284,name:'gpui-msi-source-proof',size:1552,sha256:'3d1ff356a9c90a0ad85148a1df6f2dbe8b499a95a2c3ab00a780926afca561e8'},
+          ];
+          const changes = {
+            'scripts/prepare_next_gpui_msi.py':'9b26dd8f2c57aea229912fa63c1c70c3ad4f5d02',
+            'tests/test_next_gpui_msi.py':'9be9a11990c544622f8a7645b208b092c485018f',
+            'scripts/package_next_gpui_msi.ps1':'ca57b67d6bb3bf94661fe4bda92bac845924d2a3',
+            'tests/test_gpui_msi_evidence.py':'fc70dbd2b092f4432ca591b0aef310521cdcf9ad',
+          };
+          for (const [sha,tree,parent] of [[guidSha,guidTree,productSha],[packagingSha,packagingTree,guidSha]]) {
+            const {data:c} = await github.rest.git.getCommit({owner,repo,commit_sha:sha});
+            requireTrue(c.tree.sha === tree && c.parents.length === 1 && c.parents[0].sha === parent,'Packaging chain changed');
+            for (const identity of [c.author,c.committer]) requireTrue(identity.name === 'Qing Liang' && identity.email === '106448173+xue-ding-e@users.noreply.github.com','Unexpected packaging author');
+          }
+          const packaging = await treeEntries(packagingTree);
+          const delta = [...new Set([...after.entries.keys(),...packaging.entries.keys()])]
+            .filter(p => after.entries.get(p) !== packaging.entries.get(p)).sort();
+          requireTrue(JSON.stringify(delta) === JSON.stringify(Object.keys(changes).sort()),'Packaging changes exceed reviewed four files');
+          for (const [path,sha] of Object.entries(changes)) requireTrue(packaging.entries.get(path) === `100644:blob:${sha}`,'Reviewed packaging blob differs');
+          async function payloadRunProof() {
+            const {data:r} = await github.rest.actions.getWorkflowRun({owner,repo,run_id:payloadRunId});
+            requireTrue(r.id === payloadRunId && r.repository.full_name === repository && r.head_repository.full_name === repository &&
+              r.head_sha === payloadControl && r.head_branch === payloadBranch && r.path === '.github/workflows/gpui-msi-only-verify.yml' &&
+              r.event === 'push' && r.run_attempt === 1 && r.status === 'completed' && r.conclusion === 'failure','Payload run identity changed');
+            const js = await github.paginate(github.rest.actions.listJobsForWorkflowRunAttempt,{owner,repo,run_id:payloadRunId,attempt_number:1,per_page:100});
+            requireTrue(js.length === 2 && new Set(js.map(j=>j.name)).size === 2,'Unexpected payload jobs');
+            for (const j of js) requireTrue(j.run_id === payloadRunId && j.run_attempt === 1 && j.head_sha === payloadControl && j.status === 'completed','Payload job identity changed');
+            const source = js.find(j=>j.name === 'source-proof'), native = js.find(j=>j.name === 'real-windows-msi');
+            requireTrue(source?.conclusion === 'success' && source.steps.every(s=>s.conclusion === 'success'),'Payload source proof failed');
+            requireTrue(native?.conclusion === 'failure','Unexpected payload native result');
+            const ss = new Map(native.steps.map(s=>[s.name,s]));
+            requireTrue(ss.size === native.steps.length,'Duplicate payload steps');
+            for (const name of ['Bind installer test runtime to this exact source','Build real GPUI release payload (locked, static Microsoft runtime)',
+              'Reject unpackaged Microsoft runtime dependencies in actual PE','Package actual executable and original licenses',
+              'Keep real GPUI MSI and lifecycle evidence (not a release)']) requireTrue(ss.get(name)?.conclusion === 'success',`Payload proof missing ${name}`);
+            requireTrue(JSON.stringify(native.steps.filter(s=>s.conclusion !== 'success').map(s=>[s.name,s.conclusion])) ===
+              JSON.stringify([['Verify real old-to-current GPUI MSI lifecycle','failure'],['Post Run actions/setup-python@v5','skipped']]),'Unexpected native payload failure');
+            return jobProof(js);
+          }
+          const payloadJobs = await payloadRunProof();
+          const {data: payloadCommit} = await github.rest.git.getCommit({owner,repo,commit_sha:payloadControl});
+          requireTrue(payloadCommit.tree.sha === '527f6ba4be0c68d5621942fab41d7ba08576de35' && payloadCommit.parents.length === 1 &&
+            payloadCommit.parents[0].sha === '5ea9c21a594006c32ab32d3268121d463d89a975','Payload controller tree differs');
+          for (const expected of artifacts) {
+            const {data:a} = await github.rest.actions.getArtifact({owner,repo,artifact_id:expected.id});
+            requireTrue(a.id === expected.id && a.name === expected.name && !a.expired && a.size_in_bytes === expected.size &&
+              a.digest === `sha256:${expected.sha256}` && a.workflow_run.id === payloadRunId && a.workflow_run.head_sha === payloadControl &&
+              a.workflow_run.repository_id === 1418449265 && a.workflow_run.head_repository_id === 1418449265,'Fixed artifact metadata mismatch');
+          }
+          requireTrue(JSON.stringify(await payloadRunProof()) === JSON.stringify(payloadJobs),'Payload attempt changed during proof');
+          const {data: finalPayloadRun} = await github.rest.actions.getWorkflowRun({owner,repo,run_id:payloadRunId});
+          requireTrue(finalPayloadRun.run_attempt === 1 && finalPayloadRun.head_sha === payloadControl && finalPayloadRun.status === 'completed' && finalPayloadRun.conclusion === 'failure','Payload run rerun during proof');
+          const {data: repackControl} = await github.rest.git.getRef({owner,repo,ref:`heads/${controlBranch}`});
+          requireTrue(repackControl.object.sha === context.sha,'Repack controller moved');
+          Object.assign(proof,{packaging_sha:packagingSha,packaging_tree:packagingTree,payload_run:payloadRunId,payload_attempt:1,payload_jobs:payloadJobs,artifacts,
+            limitation:'Packaging repair only. Reuses exact genuine source 381 payload; not a release from packaging source. All native MSI and GUI lifecycle gates must pass; final release requires final-source rebuild.'});
+          require('fs').writeFileSync('gpui-msi-source-proof.json',JSON.stringify(proof,null,2)+'\n');
+          core.setOutput('packaging_sha',packagingSha);
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: gpui-msi-source-proof
+        path: gpui-msi-source-proof.json
+        if-no-files-found: error
+        retention-days: 7
+  real-windows-msi:
+    needs: source-proof
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      SOURCE_SHA: ${{ needs.source-proof.outputs.product_sha }}
+      PACKAGING_SHA: ${{ needs.source-proof.outputs.packaging_sha }}
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ needs.source-proof.outputs.packaging_sha }}
+        persist-credentials: false
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - name: Prepare pinned portable WiX toolset
+      timeout-minutes: 5
+      shell: pwsh
+      run: |
+        $wix = & ./scripts/install-wix.ps1
+        "GPUI_WIX_BIN=$wix" >> $env:GITHUB_ENV
+    - uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: x64
+    - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249
+      with:
+        targets: x86_64-pc-windows-msvc
+    - name: Download exact attested genuine payload artifacts
+      timeout-minutes: 5
+      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
+      with:
+        script: |-
+          const fs = require('fs'), path = require('path'), crypto = require('crypto');
+          const dir = path.join(process.env.RUNNER_TEMP,'gpui-pinned-payload');
+          fs.mkdirSync(dir); // Never reuse an existing download directory.
+          for (const [id,size,sha] of [[13113451512,43626865,'f65560dcfe762d88afd017e265066e4a137601bdfbc9403bf9f849728aa8ba7e'],[13112690284,1552,'3d1ff356a9c90a0ad85148a1df6f2dbe8b499a95a2c3ab00a780926afca561e8']]) {
+           const args={owner:'xue-ding-e',repo:'XenTerm-Next',artifact_id:id};
+           const {data:meta}=await github.rest.actions.getArtifact(args);
+           if(meta.expired || meta.size_in_bytes!==size || meta.digest!==`sha256:${sha}` || meta.workflow_run.id!==41378802968) throw new Error('Artifact no longer matches attestation');
+           const {data}=await github.rest.actions.downloadArtifact({...args,archive_format:'zip'});
+           const bytes=Buffer.from(data);
+           if(bytes.length!==size || crypto.createHash('sha256').update(bytes).digest('hex')!==sha) throw new Error('Artifact bytes differ');
+           fs.writeFileSync(path.join(dir,`${id}.zip`),bytes,{flag:'wx'});
+          }
+    - name: Verify exact archive and payload identity before safe extraction
+      timeout-minutes: 3
+      shell: python
+      run: |
+        import hashlib, io, json, os, re, stat, zipfile
+        from pathlib import Path
+        source = '381ac573bf0bca127e28dd17bd36f979cd16824b'
+        stem = f'XenTerm-Next-beta-{source}-windows-x86_64'
+        archive = Path(os.environ['RUNNER_TEMP']) / 'gpui-pinned-payload' / '13113451512.zip'
+        raw = archive.read_bytes()
+        assert len(raw) == 43626865 and hashlib.sha256(raw).hexdigest() == 'f65560dcfe762d88afd017e265066e4a137601bdfbc9403bf9f849728aa8ba7e'
+        def safe_entries(z):
+            seen = set()
+            for e in z.infolist():
+                parts = e.filename.split('/')
+                assert not e.is_dir() and not e.flag_bits & 1 and not stat.S_ISLNK(e.external_attr >> 16)
+                assert all(re.fullmatch(r'[A-Za-z0-9_.-]+', p) and p not in ('.','..') and not p.endswith('.') for p in parts)
+                assert e.filename.lower() not in seen
+                seen.add(e.filename.lower())
+            return z.infolist()
+        with zipfile.ZipFile(io.BytesIO(raw)) as outer:
+            entries = safe_entries(outer)
+            assert [e.filename for e in entries] == [f'XenTerm-Next/XenTerm-Next/dist/{stem}.zip']
+            payload = outer.read(entries[0])
+        assert hashlib.sha256(payload).hexdigest() == '35a67c85b4cdafd1572ab3f18943d46c54316652c5a3ce593b0944c17d42a129'
+        with zipfile.ZipFile(io.BytesIO(payload)) as z:
+            entries = safe_entries(z)
+            relative = ['BUILD.json','LICENSE','THIRD_PARTY_NOTICES.md','XenTerm-Next.txt','xenterm.exe','licenses/HeroGPUI-APACHE-2.0','licenses/HeroGPUI-NOTICE']
+            assert sorted(e.filename for e in entries) == sorted(f'{stem}/{p}' for p in relative)
+            manifest = json.loads(z.read(f'{stem}/BUILD.json'))
+            assert manifest['repository'] == 'xue-ding-e/XenTerm-Next' and manifest['sha'] == source
+            assert manifest['runtime_version'] == 'xt-beta-381ac57-T1793587150' and manifest['version_timestamp'] == 1793587150
+            assert manifest['ci_run'] == '41378802968' and manifest['build_run'] == '41378802968'
+            assert manifest['binary_version'] == 'xenterm xt-beta-381ac57-T1793587150'
+            stage = Path('next-stage')
+            assert not stage.exists()
+            stage.mkdir()
+            hashes = {}
+            for entry in entries:
+                content = z.read(entry)
+                dest = stage / entry.filename
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(content)
+                hashes[entry.filename] = hashlib.sha256(content).hexdigest()
+        proof_raw = (archive.parent / '13112690284.zip').read_bytes()
+        assert len(proof_raw) == 1552 and hashlib.sha256(proof_raw).hexdigest() == '3d1ff356a9c90a0ad85148a1df6f2dbe8b499a95a2c3ab00a780926afca561e8'
+        with zipfile.ZipFile(io.BytesIO(proof_raw)) as z:
+            assert [e.filename for e in safe_entries(z)] == ['gpui-msi-source-proof.json']
+            original = json.loads(z.read('gpui-msi-source-proof.json'))
+            assert original['control_sha'] == '3ae2af9a17aaa4632c3812be10bf3f697744bc1a'
+            assert original['product_sha'] == source and original['product_tree'] == '075006e3112863336f1d8b9f78257a6a3b48004d'
+            assert original['reused_run'] == 41371125729 and original['reused_attempt'] == 1
+        Path('gpui-payload-attestation.json').write_text(json.dumps(dict(payload_source=source,packaging_source=os.environ['PACKAGING_SHA'],payload_run=41378802968,payload_attempt=1,files=hashes,limitation='Packaging-only validation; final release requires final-source rebuild.'),indent=2))
+    - name: Reject unpackaged Microsoft runtime dependencies in actual PE
+      timeout-minutes: 2
+      shell: pwsh
+      run: |
+        $deps = & dumpbin /DEPENDENTS "next-stage/XenTerm-Next-beta-$env:SOURCE_SHA-windows-x86_64/xenterm.exe"
+        if ($LASTEXITCODE -ne 0) { throw 'dumpbin failed' }
+        $deps | Out-Host
+        if (($deps -join "`n") -match '(?i)(VCRUNTIME|MSVCP|CONCRT)\d+[^\s]*\.dll') {
+          throw 'Portable EXE still needs unpackaged Microsoft C++ runtime DLLs'
+        }
+    - name: Verify real old-to-current GPUI MSI lifecycle
+      timeout-minutes: 25
+      shell: pwsh
+      run: |
+        $stem = "XenTerm-Next-beta-$env:SOURCE_SHA-windows-x86_64"
+        $bundle = Join-Path $pwd "next-stage/$stem"
+        $wix = $env:GPUI_WIX_BIN
+        $msi = Join-Path $pwd "dist/$stem.msi"
+        ./scripts/package_next_gpui_msi.ps1 -BundleDir $bundle -SourceSha $env:SOURCE_SHA -WixBin $wix -Output $msi -EvidenceDir "$env:RUNNER_TEMP/gpui-packaging-evidence"
+        # A fixed real prior beta, never relabeled as this build. This tests
+        # actual old-source -> current-source payload replacement as well as
+        # the MSI transaction. Hash-check before extraction or execution.
+        # One reviewed retention pin is shared with publisher/cleanup guards.
+        $pinText = & python -c "import json,sys; sys.path.insert(0,'scripts'); from next_beta import GPUI_UPGRADE_BASELINE; print(json.dumps(GPUI_UPGRADE_BASELINE))"
+        if ($LASTEXITCODE -ne 0) { throw 'Could not load retained GPUI baseline pin' }
+        $pin = $pinText | ConvertFrom-Json
+        $oldSha = $pin.source_sha
+        $oldStem = "XenTerm-Next-beta-$oldSha-windows-x86_64"
+        $oldZip = Join-Path $env:RUNNER_TEMP 'gpui-real-prior.zip'
+        Invoke-WebRequest "https://github.com/xue-ding-e/XenTerm-Next/releases/download/beta/$($pin.name)" -OutFile $oldZip
+        if ((Get-Item -LiteralPath $oldZip).Length -ne $pin.size) { throw 'Retained GPUI baseline size mismatch' }
+        if ((Get-FileHash $oldZip -Algorithm SHA256).Hash -ine $pin.sha256) { throw 'Prior real GPUI archive hash mismatch' }
+        $oldRoot = Join-Path $env:RUNNER_TEMP 'gpui-real-prior'
+        Expand-Archive -LiteralPath $oldZip -DestinationPath $oldRoot
+        $previous = Join-Path $env:RUNNER_TEMP 'gpui-real-prior.msi'
+        ./scripts/package_next_gpui_msi.ps1 -BundleDir "$oldRoot/$oldStem" -SourceSha $oldSha -WixBin $wix -Output $previous -EvidenceDir "$env:RUNNER_TEMP/gpui-packaging-evidence"
+        $same = Join-Path $env:RUNNER_TEMP 'gpui-equal-build-fixture.msi'
+        ./scripts/package_next_gpui_msi.ps1 -BundleDir $bundle -SourceSha $env:SOURCE_SHA -WixBin $wix -Output $same -EvidenceDir "$env:RUNNER_TEMP/gpui-packaging-evidence"
+        ./scripts/test_next_gpui_msi_e2e.ps1 -Msi $msi -PreviousMsi $previous -SameVersionMsi $same -OutputDir "$env:RUNNER_TEMP/gpui-installer-evidence"
+    - name: Keep real GPUI MSI and lifecycle evidence (not a release)
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: gpui-msi-repack-${{ needs.source-proof.outputs.packaging_sha }}
+        path: |-
+          dist/*
+          ${{ runner.temp }}/gpui-real-prior.msi*
+          ${{ runner.temp }}/gpui-equal-build-fixture.msi*
+          ${{ runner.temp }}/gpui-installer-evidence
+
+          ${{ runner.temp }}/gpui-packaging-evidence
+          gpui-payload-attestation.json
+        if-no-files-found: error
+        retention-days: 7
