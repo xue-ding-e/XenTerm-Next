@@ -84,7 +84,6 @@ const Map<String, String> zhScreens = <String, String>{
   'Loading port forwards…': '正在加载端口转发…',
   'Active tunnels': '活动隧道',
   'Runtime tunnels': '隧道运行状态',
-  '{count} active': '{count} 个运行中',
   'Status unavailable': '状态暂不可用',
   'Tunnel status unavailable; showing last known state.':
       '暂时无法获取隧道状态，以下为最后已知状态。',

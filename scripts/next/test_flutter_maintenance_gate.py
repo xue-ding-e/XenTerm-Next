@@ -82,6 +82,12 @@ class MaintenanceGateTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 gate.verify_inventory("\n".join(inventory.splitlines()[1:]), tests)
 
+    def test_active_count_translation_reuses_the_existing_terminal_entry(self):
+        root = Path(__file__).resolve().parents[2] / "apps/xenterm/lib/l10n"
+        self.assertNotIn("'{count} active':", (root / "zh_screens.dart").read_text(encoding="utf-8"))
+        self.assertIn("'{count} active': '{count} 个进行中'", (root / "zh_terminal.dart").read_text(encoding="utf-8"))
+        self.assertIn("...zhTerminal,", (root / "app_language.dart").read_text(encoding="utf-8"))
+
     def test_validation_ref_has_one_readonly_artifact_workflow(self):
         root = Path(__file__).resolve().parents[2]
         workflows = root / ".github/workflows"
