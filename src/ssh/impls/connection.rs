@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context as _, Result};
 use futures::task::AtomicWaker;
+use futures::FutureExt;
 use russh::client::{self, Handle, Handler};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::watch;
@@ -21,6 +22,9 @@ use tokio::sync::watch;
 #[derive(Default)]
 struct TransportGroup {
     cancelled: bool,
+    owned_producers: usize,
+    owned_connections: usize,
+    owned_tasks: Vec<futures::future::Shared<futures::future::BoxFuture<'static, CleanupOutcome>>>,
     streams: Vec<Weak<CancelState>>,
     active_streams: usize,
     drained: Arc<tokio::sync::Notify>,
@@ -69,17 +73,47 @@ impl DrainingTransportScope {
     /// cancellation signal. Do not call while still owning a Handle/stream.
     /// No timeout is reported as success: an outer bounded caller may instead
     /// retain its stopping entry and return an explicit cleanup-pending error.
-    pub(crate) async fn drain(&self) {
+    pub(crate) async fn drain(&self) -> Result<()> {
         self.cancel();
+        // Completed connect workers may register a session-cleanup task. Keep
+        // joining newly registered tasks before declaring the scope drained.
+        // Shared futures retain JoinHandles across a cancelled/timeout drain.
+        let mut joined = 0;
+        let mut confirmed = true;
+        let notify = self.group.lock().unwrap_or_else(|e| e.into_inner()).drained.clone();
+        loop {
+            let changed = notify.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            let (tasks, producers) = {
+                let group = self.group.lock().unwrap_or_else(|e| e.into_inner());
+                (group.owned_tasks[joined..].to_vec(), group.owned_producers)
+            };
+            if tasks.is_empty() {
+                if producers == 0 { break; }
+                changed.await;
+                continue;
+            }
+            joined += tasks.len();
+            for task in tasks { confirmed &= task.await == CleanupOutcome::Complete; }
+        }
         let notify = self.group.lock().unwrap_or_else(|e| e.into_inner()).drained.clone();
         loop {
             let changed = notify.notified();
             tokio::pin!(changed);
             // Register before checking the count to avoid a lost final drop.
             changed.as_mut().enable();
-            if self.group.lock().unwrap_or_else(|e| e.into_inner()).active_streams == 0 { return; }
+            if self.group.lock().unwrap_or_else(|e| e.into_inner()).active_streams == 0 {
+                anyhow::ensure!(confirmed, "cleanup_unconfirmed: SSH background task failed");
+                return Ok(());
+            }
             changed.await;
         }
+    }
+
+    pub(crate) async fn drain_until(&self, deadline: tokio::time::Instant) -> Result<()> {
+        tokio::time::timeout_at(deadline, self.drain()).await
+            .map_err(|_| anyhow!("cleanup_unconfirmed: SSH cleanup deadline expired"))?
     }
 }
 
@@ -236,6 +270,7 @@ where
 #[derive(Default)]
 struct CancelState {
     cancelled: AtomicBool,
+    changed: tokio::sync::Notify,
     reader: AtomicWaker,
     writer: AtomicWaker,
 }
@@ -243,6 +278,7 @@ struct CancelState {
 impl CancelState {
     fn cancel(&self) {
         self.cancelled.store(true, Ordering::Release);
+        self.changed.notify_waiters();
         self.reader.wake();
         self.writer.wake();
     }
@@ -507,7 +543,7 @@ mod draining_transport_tests {
         let mut byte = [0];
         assert!(stream.read(&mut byte).await.is_err());
         drop(stream); drop(guard);
-        tokio::time::timeout(Duration::from_secs(1), scope.drain()).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(1), scope.drain()).await.unwrap().unwrap();
         assert_eq!(tokio::time::timeout(Duration::from_secs(1), peer.read(&mut byte)).await.unwrap().unwrap(), 0);
     }
 
@@ -522,6 +558,300 @@ mod draining_transport_tests {
         drop(one); drop(guard_one);
         assert!(tokio::time::timeout(Duration::from_millis(20), scope.drain()).await.is_err());
         drop(two); drop(guard_two);
-        tokio::time::timeout(Duration::from_secs(1), scope.drain()).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(1), scope.drain()).await.unwrap().unwrap();
     }
+}
+
+/// Normalized join evidence only. Never cache arbitrary error text (which may
+/// contain remote-controlled data) in the scope's shared result futures.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CleanupOutcome { Complete, Unconfirmed }
+
+fn session_join_outcome(result: std::result::Result<(), russh::Error>) -> CleanupOutcome {
+    match result {
+        Err(russh::Error::Join(_)) => CleanupOutcome::Unconfirmed,
+        // Handle::Future was actually awaited: normal disconnect/I/O/protocol
+        // errors still prove that task terminated. A Join failure does not.
+        _ => CleanupOutcome::Complete,
+    }
+}
+
+fn track_owned_task(group: &mut TransportGroup, task: tokio::task::JoinHandle<CleanupOutcome>) {
+    group.owned_tasks.push(task.map(|result| result.unwrap_or(CleanupOutcome::Unconfirmed)).boxed().shared());
+}
+
+struct OwnedProducer(Arc<Mutex<TransportGroup>>);
+impl Drop for OwnedProducer {
+    fn drop(&mut self) {
+        let mut group = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        group.owned_producers -= 1;
+        group.drained.notify_waiters();
+    }
+}
+
+/// Never exposes or transfers the raw russh Handle. The scope owns the cleanup
+/// actor before this guard can be published. Dropping a queued, claimed or
+/// active guard all cancel the same actor; successful oneshot send is NOT an
+/// ownership-transfer acknowledgement.
+pub(crate) struct ManagedSshConnection<H: Handler<Error = russh::Error> + Send + 'static> {
+    slot: Arc<tokio::sync::Mutex<Option<Handle<H>>>>,
+    cancellation: Arc<CancelState>,
+}
+
+impl<H: Handler<Error = russh::Error> + Send + 'static> ManagedSshConnection<H> {
+    // Narrow operations borrow the controlled handle; no public take/DerefMut
+    // escape hatch can drop a raw handle between claim and owner registration.
+    pub(crate) async fn authenticate_password(&self, user: &str, password: &str)
+        -> Result<client::AuthResult> {
+        anyhow::ensure!(!self.cancellation.cancelled.load(Ordering::Acquire), "SSH connection is closing");
+        let mut slot = self.slot.lock().await;
+        anyhow::ensure!(!self.cancellation.cancelled.load(Ordering::Acquire), "SSH connection is closing");
+        let handle = slot.as_mut().ok_or_else(|| anyhow!("SSH connection is closed"))?;
+        Ok(handle.authenticate_password(user, password).await?)
+    }
+}
+
+impl<H: Handler<Error = russh::Error> + Send + 'static> Drop for ManagedSshConnection<H> {
+    fn drop(&mut self) { self.cancellation.cancel(); }
+}
+
+struct PendingManagedConnection<H: Handler<Error = russh::Error> + Send + 'static> {
+    receiver: tokio::sync::oneshot::Receiver<std::result::Result<ManagedSshConnection<H>, CleanupOutcome>>,
+    cancellation: Option<Arc<CancelState>>,
+}
+
+impl<H: Handler<Error = russh::Error> + Send + 'static> PendingManagedConnection<H> {
+    async fn receive(mut self) -> Result<ManagedSshConnection<H>> {
+        let guard = (&mut self.receiver).await.context("controlled SSH connection task ended")?
+            .map_err(|_| anyhow!("controlled SSH handshake failed"))?;
+        // There is no await between receiving the guard and disarming this
+        // pending cancellation. If this future is dropped afterwards, the
+        // returned guard itself still cancels the registered cleanup actor.
+        self.cancellation.take();
+        Ok(guard)
+    }
+}
+
+impl<H: Handler<Error = russh::Error> + Send + 'static> Drop for PendingManagedConnection<H> {
+    fn drop(&mut self) {
+        if let Some(state) = &self.cancellation { state.cancel(); }
+    }
+}
+
+impl DrainingTransportScope {
+    async fn begin_connection<H, S>(&self, config: Arc<client::Config>, stream: S, handler: H)
+        -> Result<PendingManagedConnection<H>>
+    where
+        H: HandshakeHandler + Handler<Error = russh::Error> + Send + 'static,
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        let producer = {
+            let mut group = self.group.lock().unwrap_or_else(|e| e.into_inner());
+            anyhow::ensure!(!group.cancelled, "SSH owner is cancelled");
+            anyhow::ensure!(group.owned_connections < 32, "SSH owned connection limit reached");
+            group.owned_connections += 1;
+            group.owned_producers += 1;
+            OwnedProducer(self.group.clone())
+        };
+        let (stream, mut temporary_guard) = self.run(async { CancelStream::new(stream) }).await;
+        let state = temporary_guard.0.take().expect("new stream cancellation state");
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let owned_group = self.group.clone();
+        let owned_state = state.clone();
+        {
+            let mut group = self.group.lock().unwrap_or_else(|e| e.into_inner());
+            anyhow::ensure!(!group.cancelled, "SSH owner is cancelled");
+            // The producer reservation bounded the number of connections;
+            // each contributes at most one connect and one session task.
+            let task = tokio::spawn(async move {
+                let result = client::connect_stream(config, stream, handler).await;
+                let handle = match result {
+                    Ok(handle) => handle,
+                    Err(error) => {
+                        let outcome = if matches!(&error, russh::Error::Join(_)) {
+                            CleanupOutcome::Unconfirmed
+                        } else { CleanupOutcome::Complete };
+                        let _ = sender.send(Err(outcome));
+                        return outcome;
+                    }
+                };
+                let slot = Arc::new(tokio::sync::Mutex::new(Some(handle)));
+                let cleanup_slot = slot.clone();
+                let cleanup_state = owned_state.clone();
+                let cleanup = tokio::spawn(async move {
+                    loop {
+                        let cancelled = cleanup_state.changed.notified();
+                        tokio::pin!(cancelled);
+                        cancelled.as_mut().enable();
+                        if cleanup_state.cancelled.load(Ordering::Acquire) { break; }
+                        cancelled.await;
+                    }
+                    let mut slot = cleanup_slot.lock().await;
+                    match slot.take() {
+                        Some(handle) => session_join_outcome(handle.await),
+                        None => CleanupOutcome::Unconfirmed,
+                    }
+                });
+                // Register cleanup before publication, so both enqueue and
+                // claim cancellation windows remain scope-owned and joinable.
+                track_owned_task(&mut owned_group.lock().unwrap_or_else(|e| e.into_inner()), cleanup);
+                let guard = ManagedSshConnection { slot, cancellation: owned_state };
+                let _ = sender.send(Ok(guard)); // failed send drops the guard
+                CleanupOutcome::Complete
+            });
+            track_owned_task(&mut group, task);
+        }
+        drop(producer);
+        Ok(PendingManagedConnection { receiver, cancellation: Some(state) })
+    }
+
+    /// New explicit API; existing callers returning raw Handle stay unchanged.
+    /// Broker adapters must adopt this owned type before claiming joinable
+    /// cancellation. A timeout drops PendingManagedConnection, not raw Handle.
+    pub(crate) async fn connect_owned<H, S>(&self, config: Arc<client::Config>, stream: S, handler: H)
+        -> Result<ManagedSshConnection<H>>
+    where
+        H: HandshakeHandler + Handler<Error = russh::Error> + Send + 'static,
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        let pending = self.begin_connection(config, stream, handler).await?;
+        tokio::time::timeout(SSH_NETWORK_TIMEOUT, pending.receive()).await
+            .map_err(|_| anyhow!("controlled SSH handshake timed out"))?
+    }
+}
+
+#[cfg(test)]
+mod managed_connection_tests {
+    use super::*;
+    use russh::keys::{PrivateKey, PublicKey, ssh_key::private::Ed25519Keypair};
+
+    struct FixtureServer;
+    impl russh::server::Handler for FixtureServer { type Error = russh::Error; }
+    struct FixtureClient { wait: HostKeyWait, key: PublicKey, panic_on_key: bool }
+    impl Handler for FixtureClient {
+        type Error = russh::Error;
+        async fn check_server_key(&mut self, key: &PublicKey) -> std::result::Result<bool, Self::Error> {
+            assert!(!self.panic_on_key, "synthetic handler panic");
+            Ok(key.key_data() == self.key.key_data())
+        }
+    }
+    impl HandshakeHandler for FixtureClient {
+        fn host_key_wait(&self) -> &HostKeyWait { &self.wait }
+    }
+
+    #[tokio::test]
+    async fn fixture_key_pin_ignores_comments_but_rejects_other_key_material() {
+        let expected = PrivateKey::new(Ed25519Keypair::from_seed(&[31; 32]).into(), "managed fixture").unwrap();
+        let other = PrivateKey::new(Ed25519Keypair::from_seed(&[33; 32]).into(), "managed fixture").unwrap();
+        let wire_key = PublicKey::new(expected.public_key().key_data().clone(), "");
+        let mut handler = FixtureClient { wait: HostKeyWait::default(), key: expected.public_key().clone(), panic_on_key: false };
+        assert!(handler.check_server_key(&wire_key).await.unwrap());
+        assert!(!handler.check_server_key(other.public_key()).await.unwrap());
+    }
+
+    async fn fixture(scope: &DrainingTransportScope, panic_on_key: bool)
+        -> (PendingManagedConnection<FixtureClient>, tokio::task::JoinHandle<std::result::Result<(), russh::Error>>) {
+        let key = PrivateKey::new(Ed25519Keypair::from_seed(&[31; 32]).into(), "managed fixture").unwrap();
+        let expected = key.public_key().clone();
+        let config = Arc::new(russh::server::Config { keys: vec![key], ..Default::default() });
+        let (client, server) = tokio::io::duplex(65536);
+        let server = tokio::spawn(async move {
+            let session = russh::server::run_stream(config, server, FixtureServer).await?;
+            session.await
+        });
+        let pending = scope.begin_connection(Arc::new(client::Config::default()), client,
+            FixtureClient { wait: HostKeyWait::default(), key: expected, panic_on_key }).await.unwrap();
+        (pending, server)
+    }
+
+    async fn finish_server(server: tokio::task::JoinHandle<std::result::Result<(), russh::Error>>) {
+        // Transport disconnect is expected, but the server task itself must
+        // complete; timeout/panic is not accepted as cleanup evidence.
+        let transport_result = tokio::time::timeout(Duration::from_secs(3), server).await.unwrap().unwrap();
+        assert!(!matches!(transport_result, Err(russh::Error::Join(_))), "server transport task failed to join");
+    }
+
+    #[tokio::test]
+    async fn successful_enqueue_then_unpolled_receiver_drop_joins_session() {
+        let scope = DrainingTransportScope::new();
+        let (pending, server) = fixture(&scope, false).await;
+        let published = scope.group.lock().unwrap().owned_tasks[0].clone();
+        assert!(tokio::time::timeout(Duration::from_secs(3), published).await.unwrap() == CleanupOutcome::Complete);
+        // Completion of the publishing worker is the deterministic barrier:
+        // a successful KEX Handle is queued, and receiver has never been polled.
+        assert_eq!(scope.group.lock().unwrap().owned_tasks.len(), 2);
+        drop(pending);
+        scope.drain_until(tokio::time::Instant::now() + Duration::from_secs(3)).await.unwrap();
+        finish_server(server).await;
+    }
+
+    #[tokio::test]
+    async fn successful_claim_then_drop_before_owner_registration_joins_session() {
+        let scope = DrainingTransportScope::new();
+        let (pending, server) = fixture(&scope, false).await;
+        let claimed = tokio::time::timeout(Duration::from_secs(3), pending.receive()).await.unwrap().unwrap();
+        // No owner registry has received this guard. Its drop still cancels
+        // the cleanup actor registered before it crossed the channel boundary.
+        drop(claimed);
+        scope.drain_until(tokio::time::Instant::now() + Duration::from_secs(3)).await.unwrap();
+        finish_server(server).await;
+    }
+
+    #[tokio::test]
+    async fn real_russh_handler_panic_is_not_a_clean_shutdown() {
+        let scope = DrainingTransportScope::new();
+        let (pending, server) = fixture(&scope, true).await;
+        assert!(tokio::time::timeout(Duration::from_secs(3), pending.receive()).await.unwrap().is_err());
+        for _ in 0..2 {
+            let error = scope.drain_until(tokio::time::Instant::now() + Duration::from_secs(3)).await.unwrap_err();
+            assert!(error.to_string().contains("cleanup_unconfirmed"));
+            assert!(!error.to_string().contains("synthetic handler panic"));
+        }
+        finish_server(server).await;
+    }
+
+    #[tokio::test]
+    async fn bounded_drain_can_retry_without_detaching_its_owned_tasks() {
+        let scope = DrainingTransportScope::new();
+        let (pending, server) = fixture(&scope, false).await;
+        let claimed = tokio::time::timeout(Duration::from_secs(3), pending.receive()).await.unwrap().unwrap();
+        let held = claimed.slot.lock().await;
+        let error = scope.drain_until(tokio::time::Instant::now() + Duration::from_millis(10)).await.unwrap_err();
+        assert!(error.to_string().contains("cleanup_unconfirmed"));
+        drop(held); drop(claimed);
+        scope.drain_until(tokio::time::Instant::now() + Duration::from_secs(3)).await.unwrap();
+        finish_server(server).await;
+    }
+    #[tokio::test]
+    async fn cancelled_pending_kex_retains_worker_until_internal_join_and_peer_close() {
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+        let scope = DrainingTransportScope::new();
+        let key = PrivateKey::new(Ed25519Keypair::from_seed(&[32; 32]).into(), "fixture").unwrap();
+        let (stream, peer) = tokio::io::duplex(65536);
+        let pending = scope.begin_connection(Arc::new(client::Config::default()), stream,
+            FixtureClient { wait: HostKeyWait::default(), key: key.public_key().clone(), panic_on_key: false }).await.unwrap();
+        let mut peer = BufReader::new(peer);
+        tokio::time::timeout(Duration::from_secs(3), async {
+            let mut banner = String::new(); peer.read_line(&mut banner).await.unwrap();
+            assert!(banner.starts_with("SSH-2.0-"));
+            peer.write_all(b"SSH-2.0-stalled-fixture\r\n").await.unwrap();
+            let mut bytes = [0; 65536]; assert!(peer.read(&mut bytes).await.unwrap() > 0);
+            drop(pending);
+            scope.drain_until(tokio::time::Instant::now() + Duration::from_secs(2)).await.unwrap();
+            loop { match peer.read(&mut bytes).await { Ok(0) | Err(_) => break, Ok(_) => {} } }
+        }).await.unwrap();
+        assert_eq!(scope.group.lock().unwrap().active_streams, 0);
+    }
+
+    #[tokio::test]
+    async fn drain_does_not_complete_during_registered_producer_gap() {
+        let scope = DrainingTransportScope::new();
+        scope.group.lock().unwrap().owned_producers += 1;
+        let producer = OwnedProducer(scope.group.clone());
+        assert!(scope.drain_until(tokio::time::Instant::now() + Duration::from_millis(10)).await.is_err());
+        drop(producer);
+        scope.drain_until(tokio::time::Instant::now() + Duration::from_secs(1)).await.unwrap();
+        assert!(scope.group.lock().unwrap().cancelled);
+    }
+
 }
