@@ -7,3 +7,5 @@ mod protocol;
 mod registry;
 mod snapshot;
 mod runtime;
+
+mod coordinator;

@@ -6,20 +6,20 @@ use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use uuid::Uuid;
 
-type Connection = u64;
+pub(super) type Connection = u64;
 
 /// Constructed by an internal adapter bootstrap after OS peer verification,
 /// never deserialized from a request. OS identity alone does not attest which
 /// program a same-user process is running.
 #[derive(Clone, Copy)]
-enum AdapterMode { LocalSaved, HttpIngress }
+pub(super) enum AdapterMode { LocalSaved, HttpIngress }
 
-struct TrustedAdapterRegistration {
-    mode: AdapterMode,
+pub(super) struct TrustedAdapterRegistration {
+    pub(super) mode: AdapterMode,
     // A digest of the server-resolved saved authorization policy, NOT a
     // client-provided owner ID. Profile identity belongs to the broker itself.
-    saved_policy: [u8; 32],
-    authorization_generation: u64,
+    pub(super) saved_policy: [u8; 32],
+    pub(super) authorization_generation: u64,
 }
 
 struct AuthorizationCycle {
@@ -78,7 +78,7 @@ impl Registry {
     /// A revoked generation remains a tombstone after every listener drains.
     /// Merely reconnecting, acquiring or choosing a higher route generation
     /// cannot authorize anything. Old connections retain their original cycle.
-    fn authorize_domain(&mut self, policy: [u8; 32], generation: u64) -> Result<(), Error> {
+    pub(super) fn authorize_domain(&mut self, policy: [u8; 32], generation: u64) -> Result<(), Error> {
         if let Some(previous) = self.authorizations.get(&policy) {
             if !previous.revoked || generation <= previous.generation { return Err(Error::Revoked); }
         } else if self.authorizations.len() >= 128 { return Err(Error::Busy); }
@@ -93,7 +93,7 @@ impl Registry {
 
     /// Private until a verified OS IPC bootstrap is implemented. No production
     /// caller can register unverified wire input as local authority.
-    fn connect(&mut self, registration: TrustedAdapterRegistration) -> Result<Connection, Error> {
+    pub(super) fn connect(&mut self, registration: TrustedAdapterRegistration) -> Result<Connection, Error> {
         if self.exiting { return Err(Error::Stopping); }
         if self.connections.len() >= 128 { return Err(Error::Busy); }
         if matches!(registration.mode, AdapterMode::LocalSaved)
@@ -204,7 +204,7 @@ impl Registry {
     /// Trusted policy evaluation revokes a cycle independently of resource
     /// existence. In particular, the last listener draining does not remove
     /// the ability to revoke an otherwise idle authorized connection.
-    fn revoke_domain(&mut self, policy: [u8; 32], generation: u64) -> Result<Vec<String>, Error> {
+    pub(super) fn revoke_domain(&mut self, policy: [u8; 32], generation: u64) -> Result<Vec<String>, Error> {
         let cycle = self.authorizations.get_mut(&policy).ok_or(Error::NotFound)?;
         if cycle.generation != generation { return Err(Error::Revoked); }
         cycle.revoked = true;
@@ -249,6 +249,23 @@ impl Registry {
         Ok(self.listeners.iter().map(|(id, value)| (id.clone(), value.state, value.leases.len())).collect())
     }
 
+    pub(super) fn has_connection(&self, connection: Connection) -> bool { self.connections.contains_key(&connection) }
+    pub(super) fn epoch(&self) -> &str { &self.epoch }
+    pub(super) fn is_stopping(&self, listener: &str) -> bool {
+        self.listeners.get(listener).is_some_and(|value| value.state == State::Stopping)
+    }
+    pub(super) fn live(&self, listener: &str) -> bool {
+        self.listeners.get(listener).is_some_and(|value|
+            matches!(value.state, State::Pending | State::Running | State::ConfigurationStale)
+                && self.cycle_live(&value.policy, value.route.permission_generation)
+                && !value.leases.is_empty())
+    }
+    pub(super) fn stop(&mut self, listener: &str) -> Result<(), Error> {
+        let value = self.listeners.get_mut(listener).ok_or(Error::NotFound)?;
+        value.state = State::Stopping;
+        Ok(())
+    }
+
     /// Same serialized transition as connect. Once exiting is chosen, later
     /// connections are rejected instead of racing a new acquisition with exit.
     pub fn begin_idle_exit(&mut self) -> bool {
@@ -261,7 +278,7 @@ impl Registry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn connect(registry: &mut Registry) -> Connection {
+    pub(super) fn connect(registry: &mut Registry) -> Connection {
         if !registry.authorizations.contains_key(&[1; 32]) {
             registry.authorize_domain([1; 32], 3).unwrap();
         }

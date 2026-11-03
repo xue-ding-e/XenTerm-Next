@@ -71,6 +71,7 @@ impl ResolvedRouteSnapshot {
     pub fn permission_generation(&self) -> u64 { self.permission_generation }
     pub fn fingerprint(&self) -> [u8; 32] { self.fingerprint }
     pub fn rule_index(&self) -> usize { self.index }
+    pub fn session_id(&self) -> &str { &self.session.id }
 
     pub fn bind_address(&self) -> Result<std::net::SocketAddr> {
         super::super::owner::loopback_bind(&self.session.forwards[self.index])
