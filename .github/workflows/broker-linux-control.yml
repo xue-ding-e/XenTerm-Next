@@ -1,0 +1,89 @@
+# Fixed-source, control-only validation. No product branch or release workflow.
+# After approval, pair with reviewed maintenance/broker-gate/{run-gate.mjs,required-tests.json}.
+name: Broker fixed-source Linux core gate
+on:
+  push:
+    branches: [validation/broker-native-20261103]
+permissions:
+  contents: read
+concurrency:
+  group: next-product-heavy
+  cancel-in-progress: false
+jobs:
+  core:
+    if: github.repository == 'xue-ding-e/XenTerm-Next' && github.ref == 'refs/heads/validation/broker-native-20261103'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - name: Checkout reviewed control files
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # official v4 resolved 2026-11-02
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Check controller invariants without product execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          node control/maintenance/broker-gate/run-gate.mjs --self-test
+          node control/maintenance/broker-gate/control-tests.mjs
+      - name: Checkout fixed candidate, not default branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: xue-ding-e/XenTerm-Next
+          ref: 495f000b69856384732f7281c3b544bef783a755
+          path: source
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Install fixed Rust toolchain
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # official action resolved 2026-11-02
+        with:
+          toolchain: 1.99.1
+      - name: Verify source and capture toolchain evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/evidence"
+          test "$(git -C source rev-parse HEAD)" = 495f000b69856384732f7281c3b544bef783a755
+          test "$(git -C source rev-parse 'HEAD^{tree}')" = 28d03b69c667d3dbda4ad241d6e856e193be3790
+          {
+            git -C source show -s --format=fuller HEAD
+            git -C source rev-parse 'HEAD^{tree}'
+            sha256sum source/Cargo.lock
+            rustc --version --verbose
+            cargo --version
+            node --version
+            python3 --version
+          } > evidence/source-and-toolchain.txt
+      - name: Prepare existing isolated-environment factory dependencies
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/broker-control-python"
+          "$RUNNER_TEMP/broker-control-python/bin/python3" -m pip install paramiko cryptography > evidence/python-setup.stdout 2> evidence/python-setup.stderr
+          "$RUNNER_TEMP/broker-control-python/bin/python3" -m pip freeze > evidence/python-versions.txt
+      - name: Compile fixed headless tests within first-round budget
+        id: compile
+        timeout-minutes: 26
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$RUNNER_TEMP/broker-control-python/bin:$PATH"
+          node control/maintenance/broker-gate/run-gate.mjs "$GITHUB_WORKSPACE/source" "$GITHUB_WORKSPACE/evidence" "$GITHUB_WORKSPACE/control/maintenance/broker-gate/required-tests.json" --compile
+      - name: Validate actual binary inventory and run exactly 52 tests
+        timeout-minutes: 17
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$RUNNER_TEMP/broker-control-python/bin:$PATH"
+          node control/maintenance/broker-gate/run-gate.mjs "$GITHUB_WORKSPACE/source" "$GITHUB_WORKSPACE/evidence" "$GITHUB_WORKSPACE/control/maintenance/broker-gate/required-tests.json"
+      - name: Preserve evidence even on compile failure or budget expiry
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # official v4 resolved 2026-11-02
+        with:
+          name: broker-linux-core-${{ github.sha }}-${{ github.run_id }}
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 7

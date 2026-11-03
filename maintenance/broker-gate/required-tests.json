@@ -1,0 +1,79 @@
+{
+  "status": "source inventory only; names must be verified against compiled --list before execution",
+  "groups": {
+    "tunnel::broker::protocol::tests": [
+      "tunnel::broker::protocol::tests::lost_acquire_reply_replays_without_a_second_acquire",
+      "tunnel::broker::protocol::tests::all_wire_methods_reject_unknown_and_duplicate_fields",
+      "tunnel::broker::protocol::tests::pending_payload_conflict_and_full_queue_do_not_advance_high_water",
+      "tunnel::broker::protocol::tests::oversized_frame_is_rejected_before_reading_its_body"
+    ],
+    "tunnel::broker::registry::tests": [
+      "tunnel::broker::registry::tests::independent_connections_share_listener_not_release_authority",
+      "tunnel::broker::registry::tests::last_release_reserves_bind_until_drain_and_blocks_late_ready",
+      "tunnel::broker::registry::tests::http_registration_never_falls_back_to_local",
+      "tunnel::broker::registry::tests::stale_route_and_security_revocation_cannot_gain_new_leases",
+      "tunnel::broker::registry::tests::different_policy_cannot_share_bind_and_epoch_cannot_be_replayed",
+      "tunnel::broker::registry::tests::accepted_connection_prevents_idle_exit_and_exit_prevents_accept",
+      "tunnel::broker::registry::tests::cancellation_barrier_does_not_cancel_another_connections_ready",
+      "tunnel::broker::registry::tests::revoke_between_authentication_and_ready_prevents_publication",
+      "tunnel::broker::registry::tests::changing_saved_bind_cannot_bypass_existing_rule_revision",
+      "tunnel::broker::registry::tests::revoked_cycle_cannot_resurrect_after_drain_or_by_reconnecting",
+      "tunnel::broker::registry::tests::domain_revocation_stops_all_its_rules_but_not_an_unrelated_domain",
+      "tunnel::broker::registry::tests::domain_can_be_revoked_without_ever_having_a_listener",
+      "tunnel::broker::registry::tests::domain_revocation_after_ordinary_drain_still_invalidates_idle_connections",
+      "tunnel::broker::registry::tests::trusted_pending_domain_revocation_blocks_ready_and_preserves_other_domain",
+      "tunnel::broker::registry::tests::bounded_authorization_tombstones_fail_closed_without_eviction"
+    ],
+    "tunnel::broker::snapshot::tests": [
+      "tunnel::broker::snapshot::tests::opened_key_and_trust_replacement_cannot_mix_digest_and_authentication"
+    ],
+    "ssh::frozen_auth::tests": [
+      "ssh::frozen_auth::tests::frozen_key_and_verifier_do_not_follow_later_path_or_trust_changes",
+      "ssh::frozen_auth::tests::missing_frozen_key_does_not_fall_back_to_saved_path"
+    ],
+    "ssh::proxy::frozen_proxy_tests": [
+      "ssh::proxy::frozen_proxy_tests::explicit_direct_never_falls_back_to_new_environment",
+      "ssh::proxy::frozen_proxy_tests::effective_proxy_identity_and_connection_use_same_captured_value"
+    ],
+    "ssh::connection::draining_transport_tests": [
+      "ssh::connection::draining_transport_tests::drain_waits_for_actual_socket_drop_not_just_cancellation",
+      "ssh::connection::draining_transport_tests::drain_waits_for_every_nested_transport_and_already_cancelled_scope"
+    ],
+    "ssh::connection::managed_connection_tests": [
+      "ssh::connection::managed_connection_tests::owned_open_actor_panic_is_sticky_normalized_cleanup_failure",
+      "ssh::connection::managed_connection_tests::abandoned_open_late_confirmation_preserves_another_active_echo",
+      "ssh::connection::managed_connection_tests::stalled_open_deadline_closes_unhealthy_transport_and_joins_actors",
+      "ssh::connection::managed_connection_tests::managed_open_budget_includes_waiting_for_exclusive_auth_slot",
+      "ssh::connection::managed_connection_tests::fixture_key_pin_ignores_comments_but_rejects_other_key_material",
+      "ssh::connection::managed_connection_tests::successful_enqueue_then_unpolled_receiver_drop_joins_session",
+      "ssh::connection::managed_connection_tests::successful_claim_then_drop_before_owner_registration_joins_session",
+      "ssh::connection::managed_connection_tests::real_russh_handler_panic_is_not_a_clean_shutdown",
+      "ssh::connection::managed_connection_tests::bounded_drain_can_retry_without_detaching_its_owned_tasks",
+      "ssh::connection::managed_connection_tests::cancelled_pending_kex_retains_worker_until_internal_join_and_peer_close",
+      "ssh::connection::managed_connection_tests::drain_does_not_complete_during_registered_producer_gap"
+    ],
+    "tunnel::broker::runtime::tests": [
+      "tunnel::broker::runtime::tests::managed_three_node_socks_relay_drains_clients_listener_and_all_hops",
+      "tunnel::broker::runtime::tests::managed_startup_cancel_during_last_hop_auth_drains_preceding_hops",
+      "tunnel::broker::runtime::tests::coordinator_revocation_between_auth_and_activation_never_accepts",
+      "tunnel::broker::runtime::tests::coordinator_concurrent_ensure_shares_one_route_and_independent_leases",
+      "tunnel::broker::runtime::tests::coordinator_last_release_timeout_keeps_bind_reserved_until_confirmed_drain",
+      "tunnel::broker::runtime::tests::coordinator_repeated_disconnect_waits_for_original_pending_drains",
+      "tunnel::broker::runtime::tests::coordinator_physical_drain_does_not_publish_before_lifecycle_join",
+      "tunnel::broker::runtime::tests::coordinator_last_hop_hostkey_failure_automatically_drains_without_release",
+      "tunnel::broker::runtime::tests::coordinator_server_disconnect_automatically_drains_without_release"
+    ],
+    "tunnel::broker::coordinator::completion_tests": [
+      "tunnel::broker::coordinator::completion_tests::timed_out_disconnect_retains_proof_after_completion_fifo_eviction",
+      "tunnel::broker::coordinator::completion_tests::successful_worker_join_without_physical_cleanup_never_acknowledges_disconnect",
+      "tunnel::broker::coordinator::completion_tests::completed_pending_operations_retire_before_disconnect_capacity_check"
+    ],
+    "helper_and_existing_remote_forward": [
+      "tunnel::owner::tests::reuse_fingerprint_tracks_only_the_actual_outer_tcp_proxy",
+      "ssh::ssh::unmapped_forwarding_tests::shell_free_target_and_three_jumps_refuse_saved_remote_forward_channels",
+      "ssh::ssh::unmapped_forwarding_tests::mapped_channel_splices_and_releases_connection_count"
+    ]
+  },
+  "source_commit": "495f000b69856384732f7281c3b544bef783a755",
+  "source_tree": "28d03b69c667d3dbda4ad241d6e856e193be3790"
+}
