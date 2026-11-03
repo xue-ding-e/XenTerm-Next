@@ -75,9 +75,8 @@ use gpui_kit::{
     Animation, AnimationExt as _, AnyElement, Entity, SharedString, Task, Window,
 };
 
-/// How long a save may stay unanswered before the button gives up being busy.
-/// Same covenant as the SFTP panel's listing timeout: it exists for the reply
-/// that is never coming, and is generous toward the one that is merely slow.
+/// After this interval explain the wait, but never treat elapsed time as a
+/// completion or permit another write while the original is still in flight.
 const SAVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// What the viewer asks the shell to do.
@@ -128,12 +127,13 @@ pub(crate) struct FileViewerView {
     text: Entity<TextareaState>,
     /// What went wrong last time, if anything, in the worker's own words.
     error: Option<String>,
-    /// When the current save went out, which turns the Save button into a
-    /// busy one. A timestamp like the SFTP panel's listing spinner: the write's
-    /// completion comes back as a session status message this view never hears,
-    /// so a write that dies silently would otherwise leave the button busy
-    /// forever. The timeout bounds that.
+    /// A slow save remains in flight until its own worker receipt arrives.
     saving_since: Option<std::time::Instant>,
+    /// Monotonic editor-local request identity; stale receipts cannot finish a newer save.
+    save_revision: u64,
+    /// Last acknowledged snapshot, not the possibly newer text still being edited.
+    saved_content: String,
+    save_task: Option<Task<()>>,
     save_target: Option<FileSaveTarget>,
     /// Save failures leave the draft visible; read failures still occupy the body.
     save_error: Option<String>,
@@ -162,7 +162,7 @@ impl FileViewerView {
                 .placeholder(crate::i18n::t("空文件", "This file is empty"))
         });
         text.update(cx, |state, cx| {
-            state.set_value(SharedString::from(content), window, cx);
+            state.set_value(SharedString::from(content.clone()), window, cx);
         });
         Self {
             path,
@@ -173,6 +173,9 @@ impl FileViewerView {
             text,
             error: (!error.is_empty()).then_some(error),
             saving_since: None,
+            save_revision: 0,
+            saved_content: content,
+            save_task: None,
             save_target: None,
             save_error: None,
             pending: None,
@@ -199,14 +202,49 @@ impl FileViewerView {
         self.pending.take()
     }
 
-    /// Whether a save is still genuinely in flight. The write's answer arrives
-    /// as a session status message somewhere else, so this reads the clock
-    /// rather than an acknowledgment — long enough for a big file over a slow
-    /// link, short enough that a lost write does not spin all day.
+    /// Attach the receipt only after Shell has validated the original source
+    /// connection. The task holds a weak view, so it cannot revive a closed file.
+    pub(crate) fn await_save(
+        &mut self,
+        snapshot: String,
+        receipt: tokio::sync::oneshot::Receiver<Result<(), String>>,
+        cx: &mut Context<Self>,
+    ) {
+        let revision = self.save_revision;
+        self.save_task = Some(cx.spawn(async move |this, cx| {
+            let result = receipt.await.unwrap_or_else(|_| Err(crate::i18n::t(
+                "保存连接已中断，结果未知。草稿已保留，请核对远端文件后再重试。",
+                "The save connection ended; the result is unknown. Your draft is preserved. Check the remote file before retrying.",
+            ).into()));
+            let _ = this.update(cx, |this, cx| {
+                this.finish_save(revision, snapshot, result, cx);
+            });
+        }));
+    }
+
+    fn finish_save(
+        &mut self,
+        revision: u64,
+        snapshot: String,
+        result: Result<(), String>,
+        cx: &mut Context<Self>,
+    ) {
+        if revision != self.save_revision || !self.is_saving() {
+            return;
+        }
+        self.saving_since = None;
+        match result {
+            Ok(()) => {
+                self.saved_content = snapshot;
+                self.save_error = None;
+            }
+            Err(error) => self.save_error = Some(error),
+        }
+        cx.notify();
+    }
+
     fn is_saving(&self) -> bool {
-        self.saving_since
-            .map(|since| since.elapsed() < SAVE_TIMEOUT)
-            .unwrap_or(false)
+        self.saving_since.is_some()
     }
 
     pub(crate) fn path(&self) -> &str {
@@ -240,14 +278,19 @@ impl FileViewerView {
                 .outline()
                 .disabled(saving)
                 .on_click(cx.listener(move |this, _, _, cx| {
+                    // Guard the action too, not only the rendered button: two
+                    // input events can arrive before the next disabled frame.
+                    if this.is_saving() {
+                        return;
+                    }
                     let content = this.text.read(cx).value().to_string();
                     this.save_error = None;
                     this.pending = Some(FileViewerAction::Save {
                         path: this.path.clone(),
                         content,
                     });
-                    // Clicked is busy: the write is someone else's to finish,
-                    // but the wait is this button's to show.
+                    // Busy ends only on this request's actual completion.
+                    this.save_revision += 1;
                     this.saving_since = Some(std::time::Instant::now());
                     cx.notify();
                 }));
@@ -346,6 +389,12 @@ impl Render for FileViewerView {
                         .child(SharedString::from(error.clone())),
                 )
             })
+            .when(self.saving_since.is_some_and(|since| since.elapsed() >= SAVE_TIMEOUT), |this| {
+                this.child(div().px_3().py_2().text_sm().child(crate::i18n::t(
+                    "仍在等待保存结果，请勿重复保存。",
+                    "Still waiting for the save result. Please do not save again.",
+                )))
+            })
             .child(body)
     }
 }
@@ -427,6 +476,93 @@ mod tests {
             path: "/synthetic/fixture.txt".into(),
             content: "unsaved draft\nsecond line".into(),
         }));
+    }
+
+    #[gpui_kit::gpui::test]
+    fn receipt_success_finishes_immediately_without_replacing_newer_edits(cx: &mut TestAppContext) {
+        let (viewer, cx) = open_fixture(cx, true, false, "original".into());
+        let save = cx.debug_bounds("file-viewer-save").unwrap();
+        cx.simulate_click(save.center(), Modifiers::default());
+        viewer.update(cx, |viewer, _| { viewer.take_action(); });
+        let (completion, receipt) = tokio::sync::oneshot::channel();
+        viewer.update(cx, |viewer, cx| viewer.await_save("original".into(), receipt, cx));
+        focus_text(&viewer, cx);
+        cx.simulate_keystrokes(&shortcut("a"));
+        cx.simulate_input("newer unsaved draft");
+        completion.send(Ok(())).unwrap();
+        draw(cx);
+        viewer.read_with(cx, |viewer, cx| {
+            assert!(!viewer.is_saving(), "actual success must not wait for 15 seconds");
+            assert_eq!(viewer.saved_content, "original", "acknowledge only the submitted snapshot");
+            assert_eq!(viewer.text.read(cx).value().to_string(), "newer unsaved draft");
+            assert!(viewer.save_error.is_none());
+        });
+    }
+
+    #[gpui_kit::gpui::test]
+    fn receipt_failure_keeps_draft_and_is_visible(cx: &mut TestAppContext) {
+        let (viewer, cx) = open_fixture(cx, true, false, "draft".into());
+        let save = cx.debug_bounds("file-viewer-save").unwrap();
+        cx.simulate_click(save.center(), Modifiers::default());
+        viewer.update(cx, |viewer, _| { viewer.take_action(); });
+        let (completion, receipt) = tokio::sync::oneshot::channel();
+        viewer.update(cx, |viewer, cx| viewer.await_save("draft".into(), receipt, cx));
+        completion.send(Err("fixture permission denied".into())).unwrap();
+        draw(cx);
+        viewer.read_with(cx, |viewer, cx| {
+            assert!(!viewer.is_saving());
+            assert_eq!(viewer.text.read(cx).value().to_string(), "draft");
+            assert_eq!(viewer.save_error.as_deref(), Some("fixture permission denied"));
+        });
+        assert!(cx.debug_bounds("file-viewer-save-error").is_some());
+    }
+
+    #[gpui_kit::gpui::test]
+    fn elapsed_timeout_does_not_acknowledge_or_queue_a_second_write(cx: &mut TestAppContext) {
+        let (viewer, cx) = open_fixture(cx, true, false, "draft".into());
+        let save = cx.debug_bounds("file-viewer-save").unwrap();
+        cx.simulate_click(save.center(), Modifiers::default());
+        viewer.update(cx, |viewer, cx| {
+            assert!(matches!(viewer.take_action(), Some(FileViewerAction::Save { .. })));
+            viewer.saving_since = Some(std::time::Instant::now() - SAVE_TIMEOUT - std::time::Duration::from_secs(1));
+            cx.notify();
+        });
+        draw(cx);
+        let save = cx.debug_bounds("file-viewer-save").unwrap();
+        cx.simulate_click(save.center(), Modifiers::default());
+        viewer.update(cx, |viewer, _| {
+            assert!(viewer.is_saving(), "elapsed time is not remote completion");
+            assert!(viewer.take_action().is_none(), "slow write must not allow another queued save");
+        });
+    }
+
+    #[gpui_kit::gpui::test]
+    fn disconnected_receipt_reports_unknown_instead_of_success(cx: &mut TestAppContext) {
+        let (viewer, cx) = open_fixture(cx, true, false, "draft".into());
+        let save = cx.debug_bounds("file-viewer-save").unwrap();
+        cx.simulate_click(save.center(), Modifiers::default());
+        viewer.update(cx, |viewer, _| { viewer.take_action(); });
+        let (completion, receipt) = tokio::sync::oneshot::channel();
+        viewer.update(cx, |viewer, cx| viewer.await_save("draft".into(), receipt, cx));
+        drop(completion);
+        draw(cx);
+        viewer.read_with(cx, |viewer, cx| {
+            assert!(!viewer.is_saving());
+            assert!(viewer.save_error.is_some());
+            assert_eq!(viewer.text.read(cx).value().to_string(), "draft");
+        });
+    }
+
+    #[gpui_kit::gpui::test]
+    fn stale_completion_cannot_finish_a_newer_request(cx: &mut TestAppContext) {
+        let (viewer, cx) = open_fixture(cx, true, false, "draft".into());
+        viewer.update(cx, |viewer, cx| {
+            viewer.save_revision = 2;
+            viewer.saving_since = Some(std::time::Instant::now());
+            viewer.finish_save(1, "old snapshot".into(), Ok(()), cx);
+            assert!(viewer.is_saving());
+            assert_eq!(viewer.saved_content, "draft");
+        });
     }
 
     #[gpui_kit::gpui::test]

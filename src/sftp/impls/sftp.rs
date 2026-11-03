@@ -1373,6 +1373,16 @@ async fn run_sftp(
                     error,
                 });
             }
+            SftpCommand::WriteTextWithReply { remote, content, completion } => {
+                // This receipt belongs only to the editor that issued this
+                // command, not whichever tab/file is active when it finishes.
+                let result = write_text_with_reply(&sftp, &remote, &content, completion).await;
+                let status = match result {
+                    Ok(()) => format!("{}: {}", t("已保存", "Saved"), base_name(&remote)),
+                    Err(e) => format!("{}: {e:#}", t("保存失败", "Save failed")),
+                };
+                let _ = events.send(SessionEvent::SftpStatus(status));
+            }
             SftpCommand::WriteText { remote, content } => {
                 let name = base_name(&remote);
                 match write_text_file(&sftp, &remote, &content).await {
@@ -1515,6 +1525,20 @@ async fn write_text_file(sftp: &SftpSession, remote: &str, content: &str) -> Res
     f.flush().await.context("flush remote file")?;
     f.shutdown().await.context("close remote file")?;
     Ok(())
+}
+
+/// Report the actual write result, including flush and CLOSE failures. Dropping
+/// the receiving editor never cancels a write already accepted by the worker.
+async fn write_text_with_reply(
+    sftp: &SftpSession,
+    remote: &str,
+    content: &str,
+    completion: tokio::sync::oneshot::Sender<Result<(), String>>,
+) -> Result<()> {
+    let result = write_text_file(sftp, remote, content).await;
+    let receipt = result.as_ref().map(|_| ()).map_err(|error| format!("{error:#}"));
+    let _ = completion.send(receipt);
+    result
 }
 
 /// File name component of a path.  Handles both remote (`/`) and local Windows
@@ -2645,6 +2669,7 @@ mod write_text_close_tests {
 
     #[derive(Clone, Copy)]
     enum Case {
+        CreateFailure,
         CloseFailure,
         CloseTimeout,
         Success,
@@ -2773,6 +2798,15 @@ mod write_text_close_tests {
         anyhow::ensure!(field(&mut p)? == PATH, "wrong path");
         anyhow::ensure!(number(&mut p)? == 0x1a, "expected WRITE|CREATE|TRUNCATE");
         anyhow::ensure!(number(&mut p)? == 0 && p.is_empty(), "unexpected attributes");
+        if matches!(case, Case::CreateFailure) {
+            status(&mut stream, id, true).await?;
+            closed.send(()).map_err(|_| anyhow::anyhow!("create barrier receiver dropped"))?;
+            return bounded("peer EOF after refused OPEN", async {
+                let mut byte = [0];
+                anyhow::ensure!(stream.read(&mut byte).await? == 0, "unexpected packet after refused OPEN");
+                Ok(())
+            }).await;
+        }
         let mut handle = vec![102];
         handle.extend_from_slice(&id.to_be_bytes());
         string(&mut handle, HANDLE);
@@ -2833,10 +2867,11 @@ mod write_text_close_tests {
             Ok(SftpSession::new_opts(TrackedStream(client, Some(drop_tx)), Some(2)).await?)
         })
         .await;
+        let (completion, receipt) = oneshot::channel();
         let result = match session.as_ref() {
             Ok(session) => bounded(
                 "production write",
-                write_text_file(session, "/fixture.txt", "fixture text"),
+                write_text_with_reply(session, "/fixture.txt", "fixture text", completion),
             )
             .await,
             Err(_) => Err(anyhow::anyhow!("client initialization failed")),
@@ -2883,7 +2918,25 @@ mod write_text_close_tests {
         joined.context("peer protocol/cleanup")?;
         barrier?;
         released?;
+        let acknowledged = bounded("editor receipt", async {
+            receipt.await.context("editor receipt missing")
+        }).await?;
+        anyhow::ensure!(
+            acknowledged == result.as_ref().map(|_| ()).map_err(|error| {
+                // bounded() adds one fixture-only context around the production result.
+                error.chain().skip(1).map(ToString::to_string).collect::<Vec<_>>().join(": ")
+            }),
+            "editor receipt did not match the actual write/CLOSE result",
+        );
         match case {
+            Case::CreateFailure => {
+                let error = format!("{:#}", result.expect_err("refused OPEN was reported as save success"));
+                anyhow::ensure!(
+                    error.contains("create remote /fixture.txt") && error.contains("fixture failure"),
+                    "wrong OPEN failure: {error}",
+                );
+                Ok(())
+            }
             Case::Success => result.context("successful CLOSE must succeed"),
             Case::CloseFailure => {
                 anyhow::ensure!(result.is_err(), "CLOSE failure was reported as save success");
@@ -2938,6 +2991,11 @@ mod write_text_close_tests {
                 Ok(())
             }
         }
+    }
+
+    #[tokio::test]
+    async fn create_failure_reaches_editor_receipt() -> Result<()> {
+        exercise(Case::CreateFailure).await
     }
 
     #[tokio::test]
