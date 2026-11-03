@@ -328,7 +328,7 @@ fn version_copy_is_exact_repeatable_and_independent_of_host_copy(cx: &mut TestAp
     let expected = format!("xenterm {}", crate::version::VERSION);
     for _ in 0..2 {
         let bounds = cx.debug_bounds("copy-app-version").expect("version copy control");
-        cx.simulate_click(bounds.center(), gpui_kit::gpui::Modifiers::default());
+        cx.simulate_click(bounds.center(), Default::default());
         draw(cx);
         assert_eq!(
             cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text())),
@@ -343,7 +343,7 @@ fn version_copy_is_exact_repeatable_and_independent_of_host_copy(cx: &mut TestAp
     view.update(cx, |view, cx| view.copy_host("192.0.2.10".into(), cx));
     draw(cx);
     let bounds = cx.debug_bounds("copy-app-version").unwrap();
-    cx.simulate_click(bounds.center(), gpui_kit::gpui::Modifiers::default());
+    cx.simulate_click(bounds.center(), Default::default());
     draw(cx);
     assert_eq!(
         cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text())),
@@ -356,7 +356,7 @@ fn version_copy_feedback_restarts_without_clearing_host_feedback(cx: &mut TestAp
     let (view, _, cx) = fixture(cx);
     let click_version = |cx: &mut VisualTestContext| {
         let bounds = cx.debug_bounds("copy-app-version").unwrap();
-        cx.simulate_click(bounds.center(), gpui_kit::gpui::Modifiers::default());
+        cx.simulate_click(bounds.center(), Default::default());
         draw(cx);
     };
     click_version(cx);
