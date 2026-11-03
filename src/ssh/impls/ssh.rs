@@ -1509,6 +1509,28 @@ where
     Ok(result)
 }
 
+/// Authenticate a shell-free owner using exactly the terminal's route and
+/// host-key/authentication implementation. No PTY, shell or monitor is opened.
+/// The owner must keep its automation cancellation guard alive until release.
+pub(crate) async fn open_forward_connection(
+    session: &Session,
+    jump: &[Session],
+) -> Result<(Handle<ClientHandler>, Vec<Handle<ClientHandler>>)> {
+    let (events, event_rx) = mpsc::unbounded_channel();
+    drop(event_rx); // Unattended unknown keys/missing credentials fail closed.
+    let config = ssh_client_config();
+    // This owner activates only the selected local SOCKS rule. Do not install
+    // mappings for unrelated saved remote forwards in the server-open handler.
+    let mut transport_session = session.clone();
+    transport_session.forwards.clear();
+    let (mut handle, mut jumps) = connect_ssh(&transport_session, jump, config.clone(), &events).await?;
+    match authenticate_session(&mut handle, &mut jumps, &transport_session, jump, config, &events).await? {
+        AuthResult::Success => Ok((handle, jumps)),
+        AuthResult::Cancelled => Err(anyhow!("forward authentication requires a saved credential and trusted host key")),
+        AuthResult::Failed => Err(anyhow!("forward authentication failed")),
+    }
+}
+
 async fn execute_command_inner(
     session: Session,
     jump: Vec<Session>,

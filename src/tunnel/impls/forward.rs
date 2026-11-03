@@ -120,21 +120,41 @@ pub fn spawn_dynamic(
             }
         };
         notice(&events, format!("-D {bind} (SOCKS5)"));
-        loop {
-            let (inbound, peer) = match listener.accept().await {
-                Ok(v) => v,
-                Err(_) => break,
-            };
-            let handle = handle.clone();
-            let ev = events.clone();
-            tokio::spawn(async move {
-                if let Err(e) = socks5_serve(&handle, inbound, peer).await {
-                    tracing::debug!("socks5 conn ended: {e}");
-                    let _ = ev; // notices for SOCKS are too noisy; keep to trace
-                }
-            });
+        if let Err(error) = run_dynamic(handle, listener).await {
+            tracing::debug!("dynamic listener stopped: {error}");
         }
     })
+}
+
+/// Shared dynamic-forward runtime for GUI sessions and unattended owners.
+/// The caller binds before reporting readiness. Dropping this future closes
+/// the listener AND all accepted SOCKS clients, not just future accepts.
+pub(crate) async fn run_dynamic(
+    handle: Arc<Handle<ClientHandler>>,
+    listener: TcpListener,
+) -> std::io::Result<()> {
+    let mut clients = tokio::task::JoinSet::new();
+    let mut health = tokio::time::interval(std::time::Duration::from_millis(200));
+    loop {
+        tokio::select! {
+            _ = health.tick() => {
+                if handle.is_closed() {
+                    return Err(std::io::Error::new(std::io::ErrorKind::ConnectionAborted,
+                        "SSH transport disconnected"));
+                }
+            }
+            client = listener.accept() => {
+                let (inbound, peer) = client?;
+                // Bound unauthenticated local SOCKS clients as well as SSH channels.
+                if clients.len() >= 128 { drop(inbound); continue; }
+                let handle = handle.clone();
+                clients.spawn(async move {
+                    let _ = socks5_serve(&handle, inbound, peer).await;
+                });
+            }
+            _ = clients.join_next(), if !clients.is_empty() => {}
+        }
+    }
 }
 
 /// Negotiate no-auth without consuming any bytes from the following request.

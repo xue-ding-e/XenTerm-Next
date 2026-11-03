@@ -21,6 +21,7 @@ pub(crate) fn run_stdio(allow_config_import: bool) -> Result<()> {
         .enable_all()
         .build()
         .context("create MCP runtime")?;
+    let owner = std::sync::Arc::new(crate::tunnel::ForwardOwner::unattended());
     let mut stdout = std::io::stdout().lock();
     loop {
         // `take` bounds the allocation `read_line` makes, so an oversized line
@@ -44,7 +45,7 @@ pub(crate) fn run_stdio(allow_config_import: bool) -> Result<()> {
             continue;
         }
         let response = match serde_json::from_str::<Value>(&line) {
-            Ok(request) => runtime.block_on(handle(request, allow_config_import)),
+            Ok(request) => runtime.block_on(crate::tunnel::with_forward_owner(owner.clone(), None, handle(request, allow_config_import))),
             Err(error) => Some(error_response(Value::Null, -32700, &error.to_string())),
         };
         if let Some(response) = response {

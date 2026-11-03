@@ -273,6 +273,8 @@ jobs:
       - run: python tests/migration_preview_e2e.py --exe target/debug/xenterm
       - run: python tests/ssh_jump_chain_e2e.py --exe target/debug/xenterm
       - run: python tests/ssh_proxy_e2e.py --exe target/debug/xenterm
+      - run: python tests/dynamic_tunnel_e2e.py --exe target/debug/xenterm
+      - run: python tests/dynamic_tunnel_http_e2e.py --exe target/debug/xenterm
       - run: python tests/ssh_stack_e2e.py --exe target/debug/xenterm
       - run: python tests/ssh_jump_chain_e2e.py --exe target/debug/xenterm --stage-timeouts
       - run: python tests/stdio_mcp_e2e.py --exe target/debug/xenterm
