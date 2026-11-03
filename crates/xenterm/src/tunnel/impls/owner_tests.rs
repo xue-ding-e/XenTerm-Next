@@ -412,7 +412,8 @@ fn cancelled_or_timed_out_key_load_is_joined_before_release_ack() {
                     forward_index: 0, proxy_url: "socks5h://127.0.0.1:1".into(),
                     state: "starting".into(), ownership: "synthetic-owner" },
                 identity: Mutex::new(None), proxy_url: Mutex::new(String::new()),
-                expires: None, state, stop, task: tokio::sync::Mutex::new(Some(task)),
+                expires: None, permission_probe: None, state, stop,
+                task: tokio::sync::Mutex::new(Some(task)),
                 completed: AtomicBool::new(false), unconfirmed: AtomicBool::new(false),
                 finished_at: Mutex::new(None),
             });
@@ -1045,10 +1046,11 @@ fn permission_profile_lock_must_not_stall_cancellation_timer() {
         let cancelled_while_locked = tokio::task::spawn_blocking(move || {
             let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
             attempting.send(()).unwrap();
+            let mut permissions = PermissionChecks::default();
             runtime.block_on(async {
                 let (stop, stopped) = watch::channel(false);
                 let (_shutdown, shutdown) = watch::channel(false);
-                let cancellation = cancelled(stopped, shutdown, true, None);
+                let cancellation = cancelled(stopped, shutdown, true, None, &mut permissions);
                 tokio::pin!(cancellation);
                 tokio::select! {
                     biased;
@@ -1061,7 +1063,10 @@ fn permission_profile_lock_must_not_stall_cancellation_timer() {
             // A send after the lock-holder timed out is intentionally an error:
             // the joined flag below proves whether cancellation preceded unlock.
             let _ = completed.send(());
-            holder.join().unwrap()
+            let cancelled_while_locked = holder.join().unwrap();
+            assert!(runtime.block_on(permissions.drain()));
+            assert!(permissions.job.is_none(), "permission read survived its owner's drain");
+            cancelled_while_locked
         }).await.unwrap();
         assert!(cancelled_while_locked,
             "profile permission I/O prevented cancellation while the profile lock was held");
@@ -1151,5 +1156,108 @@ fn permission_read_observes_other_process_revocation_not_cached_store() {
         assert_eq!(std::fs::read(marker).unwrap(), b"permission-revocation-committed");
         assert!(stale.mcp_enabled(), "control must retain the old in-memory snapshot");
         assert!(!permitted(true), "external revocation must not reuse an old GUI store snapshot");
+    });
+}
+
+async fn owner_waits_for_blocked_permission_read(close_owner: bool) {
+    save_permission_fixture(true);
+    let silent = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut session = saved_dynamic(0);
+    session.proxy = format!("http://{}", silent.local_addr().unwrap());
+    let probe = Arc::new(PermissionProbe::new());
+    let mut entered = probe.entered.subscribe();
+    let mut draining = probe.draining.subscribe();
+    let mut owner = ForwardOwner::unattended();
+    owner.permission_probe = Some(probe.clone());
+    let owner = Arc::new(owner);
+    let accepted = owner.begin(session.id.clone(), 0, None, move || {
+        PreparedForward::capture(session, vec![], 0, 1)
+    }).unwrap();
+    let (_transport, _) = tokio::time::timeout(Duration::from_secs(2), silent.accept()).await.unwrap().unwrap();
+    // This per-owner gate confirms the actual tracked blocking reader started.
+    // The separate real-profile-lock regression covers ConfigStore lock I/O.
+    tokio::time::timeout(Duration::from_secs(2), entered.wait_for(|entered| *entered)).await.unwrap().unwrap();
+    assert!(!*probe.gate.lock().unwrap());
+    let mut closing = if close_owner {
+        let owner = owner.clone();
+        Some(tokio::spawn(async move { owner.shutdown().await }))
+    } else {
+        assert_eq!(owner.request_release(&accepted.handle).unwrap().state, "stopping");
+        None
+    };
+    // Not merely a slow transport: the route operation has exited and the owner
+    // is specifically joining this still-gated permission reader.
+    tokio::time::timeout(Duration::from_secs(2), draining.wait_for(|draining| *draining)).await.unwrap().unwrap();
+    assert!(!*probe.gate.lock().unwrap());
+    if let Some(closing) = closing.as_mut() {
+        assert!(tokio::time::timeout(Duration::from_millis(150), closing).await.is_err(),
+            "shutdown acknowledged before its permission reader joined");
+    } else {
+        assert!(tokio::time::timeout(Duration::from_millis(150), owner.release(&accepted.handle)).await.is_err(),
+            "release acknowledged before its permission reader joined");
+    }
+    let entry = owner.entry(&accepted.handle).unwrap();
+    assert!(!entry.completed.load(Ordering::Acquire));
+    if close_owner {
+        // The background shutdown still owns the join lock while it drains.
+        // Never await that lock before opening the reader gate it depends on.
+        assert!(entry.task.try_lock().is_err(), "shutdown lost its pending join");
+    } else {
+        assert!(entry.task.lock().await.is_some(), "timed-out release lost the worker handle");
+    }
+    probe.open();
+    if let Some(closing) = closing { closing.await.unwrap().unwrap(); }
+    assert_eq!(owner.release(&accepted.handle).await.unwrap().state, "released");
+    assert!(entry.completed.load(Ordering::Acquire));
+    assert!(entry.task.lock().await.is_none());
+    owner.shutdown().await.unwrap();
+}
+
+#[test]
+fn owner_release_waits_for_blocked_permission_read() {
+    isolated("tunnel::owner::lifecycle_tests::owner_release_waits_for_blocked_permission_read", || async {
+        owner_waits_for_blocked_permission_read(false).await;
+    });
+}
+
+#[test]
+fn owner_shutdown_waits_for_blocked_permission_read() {
+    isolated("tunnel::owner::lifecycle_tests::owner_shutdown_waits_for_blocked_permission_read", || async {
+        owner_waits_for_blocked_permission_read(true).await;
+    });
+}
+
+#[test]
+fn operation_panic_drains_in_flight_permission_reader_without_clean_ack() {
+    isolated("tunnel::owner::lifecycle_tests::operation_panic_drains_in_flight_permission_reader_without_clean_ack", || async {
+        save_permission_fixture(true);
+        let session = saved_dynamic(0);
+        let mut probe = PermissionProbe::new();
+        probe.panic_operation = true;
+        let probe = Arc::new(probe);
+        let mut entered = probe.entered.subscribe();
+        let mut draining = probe.draining.subscribe();
+        let mut owner = ForwardOwner::unattended();
+        owner.permission_probe = Some(probe.clone());
+        let accepted = owner.begin(session.id.clone(), 0, None, move || {
+            PreparedForward::capture(session, vec![], 0, 1)
+        }).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), entered.wait_for(|entered| *entered)).await.unwrap().unwrap();
+        // The injected panic is inside run_with_permissions, not a direct call
+        // to tracker.drain. Reaching this signal proves run caught it and joined.
+        tokio::time::timeout(Duration::from_secs(2), draining.wait_for(|draining| *draining)).await.unwrap().unwrap();
+        assert!(!*probe.gate.lock().unwrap());
+        let entry = owner.entry(&accepted.handle).unwrap();
+        assert!(!entry.completed.load(Ordering::Acquire));
+        assert!(tokio::time::timeout(Duration::from_millis(150), owner.release(&accepted.handle)).await.is_err(),
+            "panic path acknowledged cleanup before its permission reader joined");
+        assert!(entry.task.lock().await.is_some());
+        probe.open();
+        let result = owner.release(&accepted.handle).await;
+        assert!(result.err().unwrap().to_string().contains("cleanup_unconfirmed"));
+        assert_eq!(owner.status(&accepted.handle).unwrap().state, "cleanup_unconfirmed");
+        assert!(!entry.completed.load(Ordering::Acquire), "operation panic became a clean ACK");
+        assert!(entry.unconfirmed.load(Ordering::Acquire));
+        assert!(entry.task.lock().await.is_none(), "permission drain did not finish the retained worker");
     });
 }

@@ -91,6 +91,8 @@ struct Entry {
     identity: Mutex<Option<ReuseIdentity>>,
     proxy_url: Mutex<String>,
     expires: Option<Instant>,
+    #[cfg(test)]
+    permission_probe: Option<Arc<PermissionProbe>>,
     state: watch::Receiver<&'static str>,
     stop: watch::Sender<bool>,
     // Retained across a timed-out or cancelled release; no early successful ACK.
@@ -207,6 +209,8 @@ pub(crate) struct ForwardOwner {
     closed: AtomicBool,
     shutdown: watch::Sender<bool>,
     enforce_permissions: bool,
+    #[cfg(test)]
+    permission_probe: Option<Arc<PermissionProbe>>,
     entries: Mutex<HashMap<String, Arc<Entry>>>,
 }
 impl ForwardOwner {
@@ -218,6 +222,8 @@ impl ForwardOwner {
             closed: AtomicBool::new(false),
             shutdown: watch::channel(false).0,
             enforce_permissions,
+            #[cfg(test)]
+            permission_probe: None,
             entries: Mutex::new(HashMap::new()),
         }
     }
@@ -403,6 +409,8 @@ impl ForwardOwner {
             identity: Mutex::new(None),
             proxy_url: Mutex::new(String::new()),
             expires,
+            #[cfg(test)]
+            permission_probe: self.permission_probe.clone(),
             state,
             stop,
             task: tokio::sync::Mutex::new(None),
@@ -528,7 +536,11 @@ async fn prepare_worker(
             permitted(enforce),
             "saved-credential dynamic forwarding is not authorized"
         );
-        prepare()
+        let prepared = prepare()?;
+        // Preparation may have waited on disk or a trusted service. Read the
+        // profile again in this same owned blocking job before listener setup.
+        // None is an authorization result, not a route/preparation failure.
+        Ok::<_, anyhow::Error>(if permitted(enforce) { Some(prepared) } else { None })
     });
     let cancellation = async {
         loop {
@@ -557,7 +569,11 @@ async fn prepare_worker(
         result = &mut job => result,
     };
     let prepared = match prepared {
-        Ok(Ok(prepared)) => prepared,
+        Ok(Ok(Some(prepared))) => prepared,
+        Ok(Ok(None)) => {
+            state.send_replace("permission_revoked");
+            return true;
+        }
         Ok(Err(_)) => {
             state.send_replace("failed");
             return true;
@@ -607,6 +623,8 @@ async fn prepare_worker(
             shutdown,
             enforce,
             expires,
+            #[cfg(test)]
+            entry.permission_probe.clone(),
         ),
     )
     .await
@@ -645,28 +663,116 @@ async fn owned_worker(
     });
     confirmed
 }
-async fn cancelled(
+/// A permission read remains owned even when its awaiting cancellation future
+/// is dropped. The enclosing worker must drain this slot before acknowledging
+/// cleanup. At most one blocking read exists, and each read reloads the profile.
+#[derive(Default)]
+struct PermissionChecks {
+    job: Option<JoinHandle<bool>>,
+    failed: bool,
+    #[cfg(test)]
+    probe: Option<Arc<PermissionProbe>>,
+}
+
+/// Per-owner test gate. No global hooks or replacement production permissions.
+#[cfg(test)]
+struct PermissionProbe {
+    entered: watch::Sender<bool>,
+    draining: watch::Sender<bool>,
+    gate: Mutex<bool>,
+    changed: std::sync::Condvar,
+    panic_operation: bool,
+}
+#[cfg(test)]
+impl PermissionProbe {
+    fn new() -> Self {
+        Self {
+            entered: watch::channel(false).0,
+            draining: watch::channel(false).0,
+            gate: Mutex::new(false),
+            changed: std::sync::Condvar::new(),
+            panic_operation: false,
+        }
+    }
+    fn wait(&self) {
+        let open = self.gate.lock().unwrap();
+        self.entered.send_replace(true);
+        // Bound a failed test without allowing the timeout to count as success.
+        let (open, _) = self.changed.wait_timeout_while(
+            open, Duration::from_secs(4), |open| !*open,
+        ).unwrap();
+        assert!(*open, "permission reader gate timed out");
+    }
+    fn open(&self) {
+        *self.gate.lock().unwrap() = true;
+        self.changed.notify_all();
+    }
+}
+impl PermissionChecks {
+    async fn read(&mut self, enforce: bool) -> bool {
+        if !enforce {
+            return true;
+        }
+        #[cfg(test)]
+        let probe = self.probe.clone();
+        let job = self.job.get_or_insert_with(|| tokio::task::spawn_blocking(move || {
+            #[cfg(test)]
+            if let Some(probe) = probe { probe.wait(); }
+            permitted(true)
+        }));
+        let result = job.await;
+        self.job.take();
+        self.failed |= result.is_err();
+        result.unwrap_or(false)
+    }
+    async fn drain(&mut self) -> bool {
+        if let Some(job) = self.job.as_mut() {
+            #[cfg(test)]
+            if let Some(probe) = &self.probe {
+                probe.draining.send_replace(true);
+            }
+            self.failed |= job.await.is_err();
+            self.job.take();
+        }
+        !self.failed
+    }
+}
+async fn cancellation_signal(
     mut stop: watch::Receiver<bool>,
     mut shutdown: watch::Receiver<bool>,
-    enforce: bool,
     expires: Option<Instant>,
 ) -> &'static str {
     loop {
-        if *stop.borrow() {
-            return "released";
-        }
-        if *shutdown.borrow() {
-            return "owner_closed";
-        }
-        if !permitted(enforce) {
-            return "permission_revoked";
-        }
-        if expires.is_some_and(|end| end <= Instant::now()) {
-            return "authorization_expired";
+        if let Some(reason) = preparation_cancel_reason(&stop, &shutdown, expires) {
+            return reason;
         }
         tokio::select! {
             _ = stop.changed() => {},
             _ = shutdown.changed() => {},
+            _ = tokio::time::sleep(Duration::from_millis(100)) => {},
+        }
+    }
+}
+async fn cancelled(
+    stop: watch::Receiver<bool>,
+    shutdown: watch::Receiver<bool>,
+    enforce: bool,
+    expires: Option<Instant>,
+    permissions: &mut PermissionChecks,
+) -> &'static str {
+    let signal = cancellation_signal(stop, shutdown, expires);
+    tokio::pin!(signal);
+    loop {
+        tokio::select! {
+            biased;
+            reason = &mut signal => return reason,
+            allowed = permissions.read(enforce) => {
+                if !allowed { return "permission_revoked"; }
+            },
+        }
+        tokio::select! {
+            biased;
+            reason = &mut signal => return reason,
             _ = tokio::time::sleep(Duration::from_millis(100)) => {},
         }
     }
@@ -680,9 +786,46 @@ async fn run(
     shutdown: watch::Receiver<bool>,
     enforce: bool,
     expires: Option<Instant>,
+    #[cfg(test)] probe: Option<Arc<PermissionProbe>>,
+) -> (&'static str, bool) {
+    let mut permissions = PermissionChecks::default();
+    #[cfg(test)]
+    { permissions.probe = probe; }
+    // Catch before dropping the tracker: even a panic must join permission I/O.
+    let outcome = std::panic::AssertUnwindSafe(run_with_permissions(
+        session, jumps, listener, state.clone(), stopped, shutdown, enforce,
+        expires, &mut permissions,
+    )).catch_unwind().await.unwrap_or(("cleanup_unconfirmed", false));
+    state.send_replace("stopping");
+    let drained = permissions.drain().await;
+    if drained { outcome } else { ("cleanup_unconfirmed", false) }
+}
+async fn run_with_permissions(
+    session: Session,
+    jumps: Vec<Session>,
+    listener: TcpListener,
+    state: watch::Sender<&'static str>,
+    stopped: watch::Receiver<bool>,
+    shutdown: watch::Receiver<bool>,
+    enforce: bool,
+    expires: Option<Instant>,
+    permissions: &mut PermissionChecks,
 ) -> (&'static str, bool) {
     crate::ssh::connection::with_automation_cancellation(async move {
-        let cancellation = cancelled(stopped, shutdown, enforce, expires);
+        #[cfg(test)]
+        if let Some(probe) = permissions.probe.clone().filter(|probe| probe.panic_operation) {
+            let mut entered = probe.entered.subscribe();
+            // Exercise the real enclosing run catch-and-drain path, with a
+            // cancellation future actively borrowing an in-flight reader.
+            let cancellation = cancelled(stopped.clone(), shutdown.clone(), enforce, expires, permissions);
+            tokio::pin!(cancellation);
+            tokio::select! {
+                biased;
+                reason = &mut cancellation => return (reason, true),
+                _ = entered.wait_for(|entered| *entered) => panic!("synthetic operation panic during permission read"),
+            }
+        }
+        let cancellation = cancelled(stopped, shutdown, enforce, expires, permissions);
         tokio::pin!(cancellation);
         let connection = tokio::select! {
             biased;
