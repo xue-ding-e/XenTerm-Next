@@ -24,14 +24,20 @@ jobs:
       CARGO_INCREMENTAL: '0'
       CARGO_PROFILE_DEV_DEBUG: '0'
       CARGO_PROFILE_TEST_DEBUG: '0'
-      CARGO_TARGET_DIR: ${{ runner.temp }}/gpui-color-target
-      XDG_CONFIG_HOME: ${{ runner.temp }}/gpui-color-config
-      XDG_DATA_HOME: ${{ runner.temp }}/gpui-color-data
-      XDG_RUNTIME_DIR: ${{ runner.temp }}/gpui-color-runtime
     defaults:
       run:
         shell: bash
     steps:
+      - name: Initialize isolated paths on the assigned runner
+        timeout-minutes: 1
+        # runner context is unavailable in jobs.<job_id>.env. GITHUB_ENV
+        # exports these same paths to subsequent steps after runner assignment.
+        run: |
+          set -euo pipefail
+          printf 'CARGO_TARGET_DIR=%s/gpui-color-target\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'XDG_CONFIG_HOME=%s/gpui-color-config\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'XDG_DATA_HOME=%s/gpui-color-data\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'XDG_RUNTIME_DIR=%s/gpui-color-runtime\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ github.sha }}
