@@ -151,6 +151,40 @@ jobs:
             sftp-transfer-test.log
           if-no-files-found: ignore
           retention-days: 14
+      # Linux runs the full suite below. Windows/macOS must execute the new
+      # editor/sidebar/history tests too, not only compile their test binary.
+      # SFTP receipt routing (including pending native close) runs in the
+      # existing SFTP step above. Zero-test success is not acceptable here.
+      - name: Test editor safety, version copy and history suggestions
+        if: runner.os != 'Linux'
+        shell: bash
+        timeout-minutes: 20
+        env:
+          XDG_CONFIG_HOME: ${{ runner.temp }}/xenterm-ux-config
+          XDG_DATA_HOME: ${{ runner.temp }}/xenterm-ux-data
+          XDG_RUNTIME_DIR: ${{ runner.temp }}/xenterm-ux-runtime
+        run: |
+          set -euo pipefail
+          filters=(
+            ui::sidebar::resource_tests
+            ui::file_viewer::tests
+            ui::shell::file_dialog_tests
+            core::history::suggestion_tests
+            history_suggestion
+          )
+          for filter in "${filters[@]}"; do
+            log="ux-${filter//::/-}.log"
+            cargo test --locked --target ${{ matrix.target }} --jobs 2 "$filter" -- --test-threads=1 2>&1 | tee "$log"
+            grep -E 'test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored;' "$log"
+          done
+      - name: Preserve desktop usability test evidence
+        if: always() && runner.os != 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-usability-${{ matrix.target }}
+          path: ux-*.log
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Test complete desktop regression suite on Linux
         if: runner.os == 'Linux'
         env:
