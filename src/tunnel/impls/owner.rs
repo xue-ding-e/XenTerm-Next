@@ -121,9 +121,10 @@ fn route_fingerprint(session: &Session, jumps: &[Session], index: usize) -> Resu
         id: &hop.id, host: &hop.host, port: hop.port, user: &hop.user, auth: hop.auth,
         password: &hop.password, private_key_path: &hop.private_key_path,
         private_key_inline: &hop.private_key_inline,
-        // Only the outer connection opens a TCP/proxy transport. Later hops
-        // run over direct-tcpip channels; their saved proxies are not consumed.
-        proxy: if i == 0 { &hop.proxy } else { "" },
+        // Jump chains are immediate-first: the last jump opens TCP/proxy.
+        // Without jumps, the target at index zero opens TCP. All other
+        // hops use direct-tcpip channels and do not consume saved proxies.
+        proxy: if i == jumps.len().saturating_sub(1) { &hop.proxy } else { "" },
     }).collect();
     let bytes = zeroize::Zeroizing::new(serde_json::to_vec(&(route, loopback_bind(rule)?))?);
     Ok(Sha256::digest(bytes.as_slice()).into())
@@ -309,6 +310,31 @@ mod tests {
         jumps[0].password = crate::config::Secret::default();
         jumps[0].host = "different-jump.invalid".into();
         assert_ne!(route_fingerprint(&session, &jumps, 0).unwrap(), original);
+    }
+
+    #[test]
+    fn reuse_fingerprint_tracks_only_the_actual_outer_tcp_proxy() {
+        for count in 0..=3 {
+            let mut session = fixture_session(1080);
+            let mut jumps: Vec<_> = (0..count).map(|_| Session::new_empty()).collect();
+            let original = route_fingerprint(&session, &jumps, 0).unwrap();
+            if let Some(outer) = jumps.last_mut() {
+                outer.proxy = "socks5://proxy-a.invalid:1080".into();
+            } else {
+                session.proxy = "socks5://proxy-a.invalid:1080".into();
+            }
+            let changed = route_fingerprint(&session, &jumps, 0).unwrap();
+            assert_ne!(changed, original, "outer proxy ignored with {count} jumps");
+            if count > 0 {
+                session.proxy = "socks5://ignored-target.invalid:1080".into();
+                for hop in jumps.iter_mut().take(count - 1) {
+                    hop.proxy = "socks5://ignored-inner.invalid:1080".into();
+                }
+                assert_eq!(route_fingerprint(&session, &jumps, 0).unwrap(), changed);
+                jumps.last_mut().unwrap().proxy = "socks5://proxy-b.invalid:1080".into();
+                assert_ne!(route_fingerprint(&session, &jumps, 0).unwrap(), changed);
+            }
+        }
     }
 
     // A synthetic HTTP proxy accepts TCP but withholds CONNECT completion.

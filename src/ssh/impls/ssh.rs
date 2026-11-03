@@ -1097,6 +1097,25 @@ fn start_runtime_forward(
     RuntimeForward { info, task }
 }
 
+fn remote_forward_targets(session: &Session) -> std::collections::HashMap<u32, (String, u16)> {
+    session.forwards.iter().filter(|rule| rule.kind == "remote")
+        .map(|rule| (rule.bind_port as u32, (rule.host.clone(), rule.host_port))).collect()
+}
+
+/// Unattended -D owns only its selected local listener. Neither the target nor
+/// any bastion has requested saved -R rules, so none may accept server-opened
+/// forwarded channels based on those unrelated saved rules.
+fn shell_free_route(session: &Session, jumps: &[Session]) -> (Session, Vec<Session>) {
+    let mut target = session.clone();
+    target.forwards.clear();
+    let jumps = jumps.iter().map(|jump| {
+        let mut jump = jump.clone();
+        jump.forwards.clear();
+        jump
+    }).collect();
+    (target, jumps)
+}
+
 /// Open an SSH transport to the session's host (directly or via a SOCKS5 / HTTP
 /// proxy) and return the russh handle, ready for authentication. Factored out so
 /// the keyboard-interactive fallback can reconnect on a *fresh* handle — russh
@@ -1111,12 +1130,7 @@ async fn connect_ssh(
     // Remote (-R) forwards are serviced inside the handler when the server opens
     // channels back, so it needs the bind-port → local-target map up front (the
     // handler is moved into `connect`) (#56).
-    let remote_forwards: std::collections::HashMap<u32, (String, u16)> = session
-        .forwards
-        .iter()
-        .filter(|f| f.kind == "remote")
-        .map(|f| (f.bind_port as u32, (f.host.clone(), f.host_port)))
-        .collect();
+    let remote_forwards = remote_forward_targets(session);
     let handler = ClientHandler {
         host: session.host.clone(),
         port: session.port,
@@ -1521,10 +1535,9 @@ pub(crate) async fn open_forward_connection(
     let config = ssh_client_config();
     // This owner activates only the selected local SOCKS rule. Do not install
     // mappings for unrelated saved remote forwards in the server-open handler.
-    let mut transport_session = session.clone();
-    transport_session.forwards.clear();
-    let (mut handle, mut jumps) = connect_ssh(&transport_session, jump, config.clone(), &events).await?;
-    match authenticate_session(&mut handle, &mut jumps, &transport_session, jump, config, &events).await? {
+    let (transport_session, transport_jumps) = shell_free_route(session, jump);
+    let (mut handle, mut jumps) = connect_ssh(&transport_session, &transport_jumps, config.clone(), &events).await?;
+    match authenticate_session(&mut handle, &mut jumps, &transport_session, &transport_jumps, config, &events).await? {
         AuthResult::Success => Ok((handle, jumps)),
         AuthResult::Cancelled => Err(anyhow!("forward authentication requires a saved credential and trusted host key")),
         AuthResult::Failed => Err(anyhow!("forward authentication failed")),
@@ -4360,6 +4373,11 @@ mod unmapped_forwarding_tests {
         }
 
         async fn with_target(initial_count: Option<usize>, target_port: Option<u16>) -> Result<Self> {
+            Self::with_map(initial_count, target_port.into_iter()
+                .map(|port| (FORWARDED_PORT, ("127.0.0.1".to_owned(), port))).collect()).await
+        }
+
+        async fn with_map(initial_count: Option<usize>, remote_forwards: std::collections::HashMap<u32, (String, u16)>) -> Result<Self> {
             // Public, deterministic test seed, never read from credential storage.
             let key = PrivateKey::new(
                 Ed25519Keypair::from_seed(&[7; 32]).into(),
@@ -4386,10 +4404,7 @@ mod unmapped_forwarding_tests {
                     host_key_wait: HostKeyWait::default(),
                     host: "forwarding-test.invalid".into(),
                     port: 22,
-                    remote_forwards: target_port
-                        .into_iter()
-                        .map(|port| (FORWARDED_PORT, ("127.0.0.1".to_owned(), port)))
-                        .collect(),
+                    remote_forwards,
                     events,
                     forwarded_open,
                 },
@@ -4504,6 +4519,37 @@ mod unmapped_forwarding_tests {
     #[tokio::test]
     async fn unmapped_channel_preserves_existing_counter() -> Result<()> {
         tokio::time::timeout(Duration::from_secs(45), unmapped_count_stays(Some(7))).await?
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn shell_free_target_and_three_jumps_refuse_saved_remote_forward_channels() -> Result<()> {
+        tokio::time::timeout(Duration::from_secs(45), async {
+            let target = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
+            let mut saved = Session::new_empty();
+            saved.forwards.push(crate::config::PortForward {
+                kind: "remote".into(), bind_port: FORWARDED_PORT as u16,
+                host: "127.0.0.1".into(), host_port: target.local_addr()?.port(),
+                ..Default::default()
+            });
+            // The interactive path retains its explicit -R mapping. The
+            // existing mapped-channel test verifies actual splicing unchanged.
+            anyhow::ensure!(remote_forward_targets(&saved).len() == 1, "GUI mapping was removed");
+            let (plain_target, plain_jumps) = shell_free_route(&saved, &[saved.clone(), saved.clone(), saved.clone()]);
+            for hop in std::iter::once(&plain_target).chain(plain_jumps.iter()) {
+                let mut fixture = Fixture::with_map(None, remote_forward_targets(hop)).await?;
+                let result: Result<()> = async {
+                    let (channel, snapshot) = fixture.open().await?;
+                    anyhow::ensure!(snapshot == (0, None), "shell-free hop accepted unrelated saved -R mapping");
+                    anyhow::ensure!(tokio::time::timeout(Duration::from_millis(100), target.accept()).await.is_err(),
+                        "shell-free hop dialed local saved -R target");
+                    bounded("rejected saved-rule channel close", channel.close()).await??;
+                    Ok(())
+                }.await;
+                let cleanup = fixture.shutdown().await;
+                finish_result(result, cleanup)?;
+            }
+            Ok(())
+        }).await?
     }
 
     // The production mapped path dials TcpStream, so only the local target uses
