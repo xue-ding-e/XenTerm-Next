@@ -1,0 +1,6 @@
+# Append only to the disposable gpui-base-0.7.1 validation Cargo.toml.
+# Existing dependencies already pin gpui-pre and gpui-pre-platform to =0.3.8
+# and provide serde_json. Do not create a new package or alter Cargo.lock.
+[[example]]
+name = "native_text_probe"
+path = "examples/native_text_probe.rs"

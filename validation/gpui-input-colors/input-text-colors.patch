@@ -1,0 +1,716 @@
+--- a/src/input/base/element.rs
++++ b/src/input/base/element.rs
+@@ -1,3 +1,4 @@
++// Modified 2026-11-03: prototype single-line foreground coloring and regressions.
+ use crate::input::{InputExtras as _, InputModeKind};
+ use gpui::Corners;
+ use gpui::Half;
+@@ -2129,6 +2130,16 @@
+         let text = &state.text;
+         let is_multi_line = state.is_multi_line();
+ 
++        // Plain inputs retain their native editing mode. Application styles
++        // only enter the same shaping path used by editor highlighting.
++        if state.is_single_line() && !state.masked {
++            if let Some(styles) = state.text_colors.as_ref().and_then(|styles| {
++                styles.visible(&state.text, visible_byte_range.clone())
++            }) {
++                return Some(styles);
++            }
++        }
++
+         let (mut highlighter, diagnostics) = match &state.mode {
+             LayoutMode::CodeEditor {
+                 highlighter,
+@@ -3569,6 +3580,63 @@
+         AppContext as _, Context, EntityInputHandler as _, Render, TestAppContext,
+         VisualTestContext, div,
+     };
++
++    struct StyledInputHarness(Entity<crate::input::InputState>);
++
++    impl Render for StyledInputHarness {
++        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
++            div().size_full().child(self.0.clone())
++        }
++    }
++
++    #[gpui::test]
++    fn single_line_styles_reach_render_path_and_suppress_stale_or_masked_text(cx: &mut TestAppContext) {
++        cx.update(crate::init);
++        let mut input = None;
++        let window = cx.open_window(size(px(240.), px(60.)), |window, cx| {
++            let state = cx.new(|cx| crate::input::InputState::new(window, cx).default_value("echo x"));
++            input = Some(state.clone());
++            StyledInputHarness(state)
++        });
++        let input = input.unwrap();
++        let mut cx = VisualTestContext::from_window(window.into(), cx);
++        cx.update(|window, cx| {
++            let color = gpui::black();
++            input.update(cx, |state, cx| {
++                assert!(state.set_text_colors("echo x", vec![(0..4, color)], cx));
++            });
++            let mut element = TextElement::new(input.clone());
++            let runs = element.highlight_lines(&[0], px(0.), 0..6, cx).unwrap();
++            assert_eq!(runs.iter().map(|(r, _)| r.clone()).collect::<Vec<_>>(), vec![0..4, 4..6]);
++            assert_eq!(runs[0].1.color, Some(color));
++            assert_eq!(runs[1].1.color, None);
++            window.draw(cx).clear(cx);
++            assert!(input.read(cx).last_layout.is_some());
++
++            input.update(cx, |state, cx| state.set_value("echo y", window, cx));
++            assert!(element.highlight_lines(&[0], px(0.), 0..6, cx).is_none());
++            // Edits release the snapshot; returning to an old value cannot revive it.
++            assert!(input.read(cx).text_colors.is_none());
++            input.update(cx, |state, cx| state.set_value("echo x", window, cx));
++            assert!(element.highlight_lines(&[0], px(0.), 0..6, cx).is_none());
++            input.update(cx, |state, cx| {
++                assert!(state.set_text_colors("echo x", vec![(0..4, color)], cx));
++                state.set_masked(true, window, cx);
++                assert!(state.text_colors.is_none());
++            });
++            assert!(element.highlight_lines(&[0], px(0.), 0..6, cx).is_none());
++            input.update(cx, |state, cx| {
++                assert!(!state.set_text_colors("echo x", vec![(0..4, color)], cx));
++                state.set_masked(false, window, cx);
++            });
++            assert!(element.highlight_lines(&[0], px(0.), 0..6, cx).is_none());
++            input.update(cx, |state, cx| {
++                assert!(state.set_text_colors("echo x", vec![(0..4, color)], cx));
++                state.clear_text_colors(cx);
++            });
++            assert!(element.highlight_lines(&[0], px(0.), 0..6, cx).is_none());
++        });
++    }
+ 
+     #[test]
+     fn line_number_column_stays_at_three_digits_then_grows_up_to_seven() {
+@@ -4362,6 +4430,35 @@
+     }
+ 
+     #[test]
++    fn application_styles_preserve_color_and_ime_underline_priority() {
++        let color = gpui::black();
++        let ime_underline = UnderlineStyle {
++            thickness: px(1.),
++            color: Some(color),
++            wavy: false,
++        };
++        let text = Rope::from_str("abcdef");
++        let styles = super::super::text_colors::TextColors::new(
++            "abcdef",
++            &text,
++            vec![(0..6, color)],
++        ).unwrap();
++        let runs = styles.visible(&text, 0..6).unwrap().into_iter().flat_map(|(range, style)| {
++            split_run_for_ime_underline(
++                TextStyle::default().highlight(style).to_run(range.len()),
++                range,
++                Some(2..4),
++                Some(ime_underline),
++            )
++        }).collect::<Vec<_>>();
++        assert_eq!(runs.iter().map(|r| r.len).collect::<Vec<_>>(), vec![2, 2, 2]);
++        assert!(runs.iter().all(|r| r.color == color));
++        assert_eq!(runs[0].underline, None);
++        assert_eq!(runs[1].underline, Some(ime_underline));
++        assert_eq!(runs[2].underline, None);
++    }
++
++    #[test]
+     fn test_split_runs_preserve_ime_underline_across_highlight_boundaries() {
+         let underline = UnderlineStyle {
+             thickness: px(1.),
+--- a/src/input/base/state.rs
++++ b/src/input/base/state.rs
+@@ -1,3 +1,4 @@
++// Modified 2026-11-03: prototype single-line foreground coloring and regressions.
+ //! A text input field that allows the user to enter text.
+ //!
+ //! Based on the `Input` example from the `gpui` crate.
+@@ -353,6 +354,7 @@
+     pub(super) focus_handle: FocusHandle,
+     pub(super) mode: LayoutMode,
+     pub(super) text: Rope,
++    pub(super) text_colors: Option<Box<super::text_colors::TextColors>>,
+     pub(super) display_map: DisplayMap,
+     pub(super) undo_manager: UndoManager,
+     pub(super) inline_tokens: Option<Box<super::inline_tokens::InlineTokenStore>>,
+@@ -662,6 +664,9 @@
+     /// switched on through [`crate::input::InputState`] anyway.
+     pub fn toggle_masked(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+         self.masked = !self.masked;
++        if self.masked {
++            self.text_colors = None;
++        }
+         cx.notify();
+     }
+ 
+@@ -715,6 +720,7 @@
+             extras: M::Extras::default(),
+             focus_handle: focus_handle.clone(),
+             text: "".into(),
++            text_colors: None,
+             display_map: DisplayMap::new(text_style.font(), window.rem_size(), None),
+             search_session: super::SearchSession::default(),
+             search_activation_revision: 0,
+@@ -1240,7 +1246,11 @@
+     /// Set the default value of the input field.
+     pub fn default_value(mut self, value: impl Into<SharedString>) -> Self {
+         let text: SharedString = value.into();
+-        self.text = Rope::from(self.normalize_input(&text).as_ref());
++        let new_text = Rope::from(self.normalize_input(&text).as_ref());
++        if self.text_colors.is_some() && self.text != new_text {
++            self.text_colors = None;
++        }
++        self.text = new_text;
+         if let Some(diagnostics) = self.mode.diagnostics_mut() {
+             diagnostics.reset(&self.text)
+         }
+@@ -3755,7 +3765,13 @@
+         for (range, new_text) in &sorted {
+             let old_text = self.text.clone();
+             self.mode.adjust_auto_closed_pair(range, new_text.len());
++            let old_text_colors = self.text_colors.take();
+             self.text.replace(range.clone(), new_text);
++            if old_text_colors.is_some() && !self.masked && self.text == old_text {
++                self.text_colors = old_text_colors;
++            } else {
++                drop(old_text_colors);
++            }
+ 
+             M::adjust_annotations(self, range, new_text.len());
+             recorded |= self.push_history(
+@@ -4098,6 +4114,8 @@
+         // Single-line path
+         let old_text = self.text.clone();
+         self.mode.adjust_auto_closed_pair(&range, new_text.len());
++        // Keep presentation only until validation decides whether this edit commits.
++        let old_text_colors = self.text_colors.take();
+         self.text.replace(range.clone(), new_text);
+ 
+         let mut new_offset = (range.start + new_text.len()).min(self.text.len());
+@@ -4119,12 +4137,14 @@
+                 && self.is_valid_input(&old_text.to_string(), cx)
+             {
+                 self.text = old_text;
++                self.text_colors = old_text_colors;
+                 return;
+             }
+ 
+             if !self.replaying_history && !self.mask_pattern.is_none() {
+                 let mask_text = self.mask_pattern.mask(&pending_text);
+                 mask_changed = mask_text.as_str() != pending_text;
++                self.text_colors = None;
+                 self.text = Rope::from(mask_text.as_str());
+                 let new_text_len =
+                     (new_text.len() + mask_text.len()).saturating_sub(pending_text.len());
+@@ -4132,6 +4152,11 @@
+             }
+         }
+ 
++        if old_text_colors.is_some() && !self.masked && self.text == old_text {
++            self.text_colors = old_text_colors;
++        } else {
++            drop(old_text_colors);
++        }
+         if mask_changed {
+             // Masking rewrites the whole document, so ranges recorded against
+             // the old text no longer point at anything.
+@@ -4260,6 +4285,8 @@
+         let auto_closed_pairs_before = self.mode.auto_closed_pairs().clone();
+         let old_text = self.text.clone();
+         self.mode.adjust_auto_closed_pair(&range, new_text.len());
++        // Keep presentation only until validation decides whether this edit commits.
++        let old_text_colors = self.text_colors.take();
+         self.text.replace(range.clone(), new_text);
+ 
+         if self.is_single_line() {
+@@ -4271,6 +4298,7 @@
+                 && self.is_valid_input(&old_text.to_string(), cx)
+             {
+                 self.text = old_text;
++                self.text_colors = old_text_colors;
+                 if starts_composition {
+                     self.undo_manager.commit_transaction();
+                 }
+@@ -4278,6 +4306,11 @@
+             }
+         }
+ 
++        if old_text_colors.is_some() && !self.masked && self.text == old_text {
++            self.text_colors = old_text_colors;
++        } else {
++            drop(old_text_colors);
++        }
+         M::adjust_annotations(self, &range, new_text.len());
+         if let Some(diagnostics) = self.mode.diagnostics_mut() {
+             diagnostics.reset(&self.text)
+@@ -5476,6 +5509,199 @@
+         }
+     }
+ 
++    #[gpui::test]
++    fn no_op_value_updates_keep_colors_but_away_and_back_drops_them(cx: &mut TestAppContext) {
++        let view = InputView::build(cx, |state| state.default_value("echo"));
++        let mut cx = VisualTestContext::from_window(view.window_handle.into(), cx);
++        cx.update(|window, cx| {
++            view.input.update(cx, |state, cx| {
++                assert!(state.set_text_colors("echo", vec![(0..4, gpui::black())], cx));
++                state.set_value("echo", window, cx);
++                assert!(state.text_colors.as_ref().unwrap().visible(&state.text, 0..4).is_some());
++                state.set_selected_range(4..4, cx);
++                state.replace_text_in_range(None, "", window, cx);
++                assert!(state.text_colors.is_some());
++                state.set_value("changed", window, cx);
++                assert!(state.text_colors.is_none());
++                state.set_value("echo", window, cx);
++                assert!(state.text_colors.is_none());
++            });
++        });
++    }
++
++    #[gpui::test]
++    fn rejected_pattern_and_validator_edits_keep_text_colors(cx: &mut TestAppContext) {
++        for use_pattern in [true, false] {
++            let view = InputView::build(cx, move |state| {
++                let state = state.default_value("12");
++                if use_pattern {
++                    state.pattern(regex::Regex::new("^[0-9]*$").unwrap())
++                } else {
++                    state.validate(|text, _| text.chars().all(|c| c.is_ascii_digit()))
++                }
++            });
++            let mut cx = VisualTestContext::from_window(view.window_handle.into(), cx);
++            let input = view.input;
++            cx.update(|window, cx| {
++                input.update(cx, |state, cx| {
++                    state.set_selected_range(2..2, cx);
++                    assert!(state.set_text_colors("12", vec![(0..2, gpui::black())], cx));
++                    let undo_count = state.undo_manager.undo_count();
++                    state.replace_text_in_range(None, "a", window, cx);
++                    assert_eq!(state.value(), "12");
++                    assert_eq!(state.selected_range(), 2..2);
++                    assert_eq!(state.undo_manager.undo_count(), undo_count);
++                    assert!(state.text_colors.as_ref().unwrap().visible(&state.text, 0..2).is_some());
++
++                    // Rejected composition startup restores text and presentation.
++                    state.replace_and_mark_text_in_range(None, "a", Some(1..1), window, cx);
++                    assert_eq!(state.value(), "12");
++                    assert!(state.ime_marked_range.is_none());
++                    assert!(state.text_colors.as_ref().unwrap().visible(&state.text, 0..2).is_some());
++
++                    state.replace_and_mark_text_in_range(None, "3", Some(1..1), window, cx);
++                    assert_eq!(state.value(), "123");
++                    assert!(state.text_colors.is_none());
++                    assert!(state.set_text_colors("123", vec![(0..3, gpui::black())], cx));
++                    let marked = state.ime_marked_range;
++                    let selected = state.selected_range();
++                    // A rejected update within composition also retains its old style.
++                    state.replace_and_mark_text_in_range(None, "a", Some(1..1), window, cx);
++                    assert_eq!(state.value(), "123");
++                    assert_eq!(state.ime_marked_range, marked);
++                    assert_eq!(state.selected_range(), selected);
++                    assert!(state.text_colors.as_ref().unwrap().visible(&state.text, 0..3).is_some());
++                    state.unmark_text(window, cx);
++                });
++            });
++        }
++    }
++
++    #[gpui::test]
++    fn text_colors_release_source_on_edits_undo_ime_and_masking(cx: &mut TestAppContext) {
++        let view = InputView::build(cx, |state| state.default_value("a"));
++        let mut cx = VisualTestContext::from_window(view.window_handle.into(), cx);
++        let input = view.input;
++        cx.update(|window, cx| {
++            input.update(cx, |state, cx| {
++                fn color_current(state: &mut crate::input::InputState, cx: &mut Context<crate::input::InputState>) {
++                    let source = state.value().to_string();
++                    let spans = if source.is_empty() { vec![] } else { vec![(0..source.len(), gpui::black())] };
++                    assert!(state.set_text_colors(&source, spans, cx));
++                    assert!(state.text_colors.is_some());
++                }
++                color_current(state, cx);
++                assert!(!state.set_text_colors("stale", vec![(0..1, gpui::black())], cx));
++                assert!(state.text_colors.is_none());
++                color_current(state, cx);
++                assert!(!state.set_text_colors("a", vec![(0..2, gpui::black())], cx));
++                assert!(state.text_colors.is_none());
++                color_current(state, cx);
++                state.set_selected_range(1..1, cx);
++                state.replace_text_in_range(None, "b", window, cx);
++                assert!(state.text_colors.is_none());
++                color_current(state, cx);
++                state.undo(&Undo, window, cx);
++                assert!(state.text_colors.is_none());
++                color_current(state, cx);
++                state.redo(&Redo, window, cx);
++                assert!(state.text_colors.is_none());
++                color_current(state, cx);
++                state.insert_clipboard(ClipboardItem::new_string("c".into()), window, cx);
++                assert!(state.text_colors.is_none());
++                color_current(state, cx);
++                state.replace_and_mark_text_in_range(None, "中", Some(1..1), window, cx);
++                assert!(state.text_colors.is_none());
++                state.unmark_text(window, cx);
++                color_current(state, cx);
++                state.replace_text_in_range(None, "文", window, cx);
++                assert!(state.text_colors.is_none());
++                color_current(state, cx);
++                state.set_value("a", window, cx);
++                assert!(state.text_colors.is_none());
++                color_current(state, cx);
++                state.set_masked(true, window, cx);
++                assert!(state.text_colors.is_none());
++                state.set_masked(false, window, cx);
++                assert!(state.text_colors.is_none());
++                color_current(state, cx);
++                state.toggle_masked(window, cx);
++                assert!(state.text_colors.is_none());
++                state.toggle_masked(window, cx);
++                assert!(state.text_colors.is_none());
++            });
++            // Builder paths also discard snapshots before moving the state.
++            let _builder_state = cx.new(|cx| {
++                let mut state = crate::input::InputState::new(window, cx).default_value("a");
++                assert!(state.set_text_colors("a", vec![(0..1, gpui::black())], cx));
++                let mut state = state.default_value("b");
++                assert!(state.text_colors.is_none());
++                assert!(state.set_text_colors("b", vec![(0..1, gpui::black())], cx));
++                let state = state.masked(true);
++                assert!(state.text_colors.is_none());
++                state
++            });
++        });
++    }
++
++    #[gpui::test]
++    fn styled_single_line_preserves_enter_paste_and_ime_contract(cx: &mut TestAppContext) {
++        let view = InputView::build(cx, |state| state.default_value("echo"));
++        let mut cx = VisualTestContext::from_window(view.window_handle.into(), cx);
++        let input = view.input;
++        let enters = Rc::new(std::cell::RefCell::new(Vec::new()));
++        let changes = Rc::new(std::cell::Cell::new(0));
++        let _subscription = cx.update(|_, cx| {
++            let enters = enters.clone();
++            let changes = changes.clone();
++            cx.subscribe(&input, move |_, event: &InputEvent, _| match event {
++                InputEvent::PressEnter { shift, .. } => enters.borrow_mut().push(*shift),
++                InputEvent::Change => changes.set(changes.get() + 1),
++                _ => {}
++            })
++        });
++        cx.update(|window, cx| {
++            input.update(cx, |state, cx| {
++                // Preserve the public associated-type contract as well as behavior.
++                let _: &() = &state.extras;
++                let selection = state.selected_range();
++                let undo_count = state.undo_manager.undo_count();
++                assert!(state.set_text_colors("echo", vec![(0..4, gpui::black())], cx));
++                assert!(state.is_single_line());
++                assert_eq!(state.selected_range(), selection);
++                assert_eq!(state.undo_manager.undo_count(), undo_count);
++                state.focus(window, cx);
++            });
++        });
++        assert_eq!(changes.get(), 0, "style updates must not emit text changes");
++        cx.simulate_keystrokes("enter");
++        cx.simulate_keystrokes("shift-enter");
++        assert_eq!(*enters.borrow(), vec![false, true]);
++        cx.update(|window, cx| {
++            input.update(cx, |state, cx| {
++                assert_eq!(state.value(), "echo", "neither Enter variant inserts a newline");
++                state.set_value("", window, cx);
++                assert!(state.set_text_colors("", vec![], cx));
++                state.insert_clipboard(ClipboardItem::new_string("a\r\nb\nc\rd".into()), window, cx);
++                assert_eq!(state.value(), "abcd");
++                state.set_value("你好 ", window, cx);
++                assert!(state.set_text_colors("你好 ", vec![(0..6, gpui::black())], cx));
++                state.set_selected_range(7..7, cx);
++                state.replace_and_mark_text_in_range(None, "s", Some(1..1), window, cx);
++                state.replace_and_mark_text_in_range(None, "sh", Some(2..2), window, cx);
++                assert_eq!(state.value(), "你好 sh");
++                assert_eq!(state.selected_range(), 9..9);
++                assert_eq!(state.ime_marked_range, Some((7..9).into()));
++                let marked = state.ime_marked_range;
++                assert!(state.set_text_colors("你好 sh", vec![(7..9, gpui::black())], cx));
++                assert_eq!(state.ime_marked_range, marked);
++                state.unmark_text(window, cx);
++                assert!(state.ime_marked_range.is_none());
++                assert_eq!(state.value(), "你好 sh");
++            });
++        });
++    }
++
+     /// The frame is laid out by the application, which should not have to
+     /// center a single line inside it.
+     #[gpui::test]
+@@ -10504,6 +10730,49 @@
+         Self::new_in_mode(window, cx)
+     }
+ 
++    /// Set application-owned foreground colors for the single-line input's text.
++    ///
++    /// `source` must exactly match the current value. Ranges are UTF-8 byte
++    /// offsets into `source`, ordered, nonempty, nonoverlapping, and on character
++    /// boundaries. Gaps retain the input's ordinary style. At most 4096 spans
++    /// and 64 KiB of source text are accepted to bound validation and painting.
++    ///
++    /// Returns `false` and clears previous styles for invalid or stale input,
++    /// or when the input is masked. Painting also checks the current text, so
++    /// edits never reuse styles computed for a different value. Applications
++    /// should recompute after changes and theme changes, including programmatic
++    /// value changes that do not emit `InputEvent::Change`. Actual text changes
++    /// and enabling masking drop the snapshot; a later edit back cannot revive
++    /// it. Rejected edits and operations ending with identical text preserve
++    /// the previous snapshot. No-op `set_value` therefore keeps its colors.
++    /// Colors do not modify
++    /// the text, selection, undo history, IME composition, or input events.
++    ///
++    /// Foreground boundaries can split font-shaping runs in the underlying
++    /// renderer. Ligatures and complex-script geometry require verification;
++    /// accepting only colors does not itself guarantee identical glyph widths.
++    pub fn set_text_colors(
++        &mut self,
++        source: &str,
++        spans: Vec<(std::ops::Range<usize>, gpui::Hsla)>,
++        cx: &mut Context<Self>,
++    ) -> bool {
++        self.text_colors = (!self.masked)
++            .then(|| super::text_colors::TextColors::new(source, &self.text, spans))
++            .flatten()
++            .map(Box::new);
++        let accepted = self.text_colors.is_some();
++        cx.notify();
++        accepted
++    }
++
++    /// Clear application-owned text colors without changing the input value.
++    pub fn clear_text_colors(&mut self, cx: &mut Context<Self>) {
++        if self.text_colors.take().is_some() {
++            cx.notify();
++        }
++    }
++
+     /// Set a custom step function of the [`super::NumberInput`].
+     ///
+     /// The `f` receives the current value and the [`StepAction`], and returns
+@@ -10526,12 +10795,18 @@
+     /// Set with password masked state.
+     pub fn masked(mut self, masked: bool) -> Self {
+         self.masked = masked;
++        if self.masked {
++            self.text_colors = None;
++        }
+         self
+     }
+ 
+     /// Set the password masked state of the input field.
+     pub fn set_masked(&mut self, masked: bool, _: &mut Window, cx: &mut Context<Self>) {
+         self.masked = masked;
++        if self.masked {
++            self.text_colors = None;
++        }
+         cx.notify();
+     }
+ 
+--- /dev/null
++++ b/src/input/base/text_colors.rs
+@@ -0,0 +1,179 @@
++// Modified 2026-11-03: prototype single-line foreground coloring and regressions.
++//! Bounded, application-owned foreground colors for ordinary single-line inputs.
++//!
++//! This is presentation only: editing remains owned by InputState. Keeping the
++//! exact source value prevents delayed highlighting from decorating newer text.
++use std::ops::Range;
++
++use gpui::{HighlightStyle, Hsla};
++use ropey::Rope;
++
++const MAX_SOURCE_BYTES: usize = 64 * 1024;
++const MAX_SPANS: usize = 4096;
++
++pub(super) struct TextColors {
++    source: String,
++    spans: Vec<(Range<usize>, Hsla)>,
++}
++
++impl TextColors {
++    pub(super) fn new(
++        source: &str,
++        current: &Rope,
++        spans: Vec<(Range<usize>, Hsla)>,
++    ) -> Option<Self> {
++        if source.len() > MAX_SOURCE_BYTES
++            || spans.len() > MAX_SPANS
++            || !same_text(source, current)
++        {
++            return None;
++        }
++        let mut previous_end = 0;
++        for (range, _) in &spans {
++            if range.start < previous_end
++                || range.start >= range.end
++                || range.end > source.len()
++                || !source.is_char_boundary(range.start)
++                || !source.is_char_boundary(range.end)
++            {
++                return None;
++            }
++            previous_end = range.end;
++        }
++        Some(Self {
++            source: source.to_owned(),
++            spans,
++        })
++    }
++
++    /// Supply complete ordered runs, including default styles in the gaps.
++    /// Invalid UTF-8 visibility boundaries are ignored rather than slicing a scalar.
++    pub(super) fn visible(
++        &self,
++        current: &Rope,
++        range: Range<usize>,
++    ) -> Option<Vec<(Range<usize>, HighlightStyle)>> {
++        if !same_text(&self.source, current)
++            || range.start >= range.end
++            || range.end > self.source.len()
++            || !self.source.is_char_boundary(range.start)
++            || !self.source.is_char_boundary(range.end)
++        {
++            return None;
++        }
++        let mut result = Vec::new();
++        let mut cursor = range.start;
++        for (span, color) in &self.spans {
++            let start = span.start.max(range.start);
++            let end = span.end.min(range.end);
++            if start >= end {
++                continue;
++            }
++            if cursor < start {
++                result.push((cursor..start, HighlightStyle::default()));
++            }
++            result.push((
++                start..end,
++                HighlightStyle {
++                    color: Some(*color),
++                    ..Default::default()
++                },
++            ));
++            cursor = end;
++        }
++        if cursor < range.end {
++            result.push((cursor..range.end, HighlightStyle::default()));
++        }
++        Some(result)
++    }
++}
++
++fn same_text(source: &str, current: &Rope) -> bool {
++    // Rope 2 uses byte offsets and byte length, as does the input renderer.
++    current.len() == source.len() && current.chars().eq(source.chars())
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn spans(ranges: &[Range<usize>]) -> Vec<(Range<usize>, Hsla)> {
++        ranges
++            .iter()
++            .cloned()
++            .map(|r| (r, gpui::black()))
++            .collect()
++    }
++
++    #[test]
++    fn accepts_utf8_boundaries_and_fills_visible_gaps() {
++        let text = Rope::from_str("é x 中文");
++        let styles = TextColors::new("é x 中文", &text, spans(&[0..2, 5..11])).unwrap();
++        let visible = styles.visible(&text, 2..8).unwrap();
++        assert_eq!(visible.into_iter().map(|(r, _)| r).collect::<Vec<_>>(), vec![2..5, 5..8]);
++        assert!(styles.visible(&text, 1..8).is_none());
++        assert!(styles.visible(&text, 0..12).is_none());
++    }
++
++    #[test]
++    fn foreground_colors_do_not_override_font_or_decoration_properties() {
++        let text = Rope::from_str("écho");
++        assert_eq!(text.len(), "écho".len());
++        let colors = TextColors::new("écho", &text, spans(&[0..5])).unwrap();
++        let runs = colors.visible(&text, 0..5).unwrap();
++        assert_eq!(runs[0].1, HighlightStyle {
++            color: Some(gpui::black()),
++            ..Default::default()
++        });
++    }
++
++    #[test]
++    fn rejects_invalid_ranges_without_sorting_or_clamping() {
++        let text = Rope::from_str("é xyz");
++        for invalid in [vec![0..1], vec![1..2], vec![0..7], vec![3..3], vec![4..3], vec![3..5, 2..3], vec![2..5, 4..6]] {
++            assert!(TextColors::new("é xyz", &text, spans(&invalid)).is_none());
++        }
++    }
++
++    #[test]
++    fn ignores_stale_same_length_and_changed_length_values() {
++        let original = Rope::from_str("echo x");
++        let styles = TextColors::new("echo x", &original, spans(&[0..4])).unwrap();
++        for changed in ["echo y", "echo longer"] {
++            let current = Rope::from_str(changed);
++            assert!(styles.visible(&current, 0..4).is_none());
++            assert!(TextColors::new("echo x", &current, spans(&[0..4])).is_none());
++        }
++    }
++
++    #[test]
++    fn maximum_size_snapshot_produces_bounded_complete_runs() {
++        let source = "a".repeat(MAX_SOURCE_BYTES);
++        let current = Rope::from_str(&source);
++        let ranges = (0..MAX_SPANS).map(|ix| (ix * 16)..(ix * 16 + 1)).collect::<Vec<_>>();
++        let colors = TextColors::new(&source, &current, spans(&ranges)).unwrap();
++        let started = std::time::Instant::now();
++        for _ in 0..100 {
++            let runs = colors.visible(&current, 0..MAX_SOURCE_BYTES).unwrap();
++            assert!(runs.len() <= MAX_SPANS * 2 + 1);
++            assert_eq!(runs.first().unwrap().0.start, 0);
++            assert_eq!(runs.last().unwrap().0.end, MAX_SOURCE_BYTES);
++            assert_eq!(runs.iter().map(|(range, _)| range.len()).sum::<usize>(), MAX_SOURCE_BYTES);
++            assert!(runs.windows(2).all(|pair| pair[0].0.end == pair[1].0.start));
++        }
++        eprintln!("100 maximum-size text-color projections: {:?}", started.elapsed());
++    }
++
++    #[test]
++    fn bounds_source_and_span_count_and_accepts_empty_styles() {
++        let source = "a".repeat(MAX_SOURCE_BYTES + 1);
++        assert!(TextColors::new(&source, &Rope::from_str(&source), vec![]).is_none());
++        let source = "a".repeat(MAX_SPANS + 1);
++        let ranges = (0..source.len()).map(|ix| ix..ix + 1).collect::<Vec<_>>();
++        assert!(TextColors::new(&source, &Rope::from_str(&source), spans(&ranges)).is_none());
++        assert!(TextColors::new("", &Rope::new(), vec![]).is_some());
++        let text = Rope::from_str("plain");
++        let styles = TextColors::new("plain", &text, vec![]).unwrap();
++        assert_eq!(styles.visible(&text, 0..5).unwrap()[0].0, 0..5);
++    }
++}
+--- a/src/input/mod.rs
++++ b/src/input/mod.rs
+@@ -1,3 +1,4 @@
++// Modified 2026-11-03: prototype single-line foreground coloring and regressions.
+ //! Text input: the shared editing engine and the three states built on it.
+ //!
+ //! Nothing here should be `pub` unless it is reachable from outside the crate.
+@@ -69,6 +70,8 @@
+ mod selection;
+ #[path = "base/state.rs"]
+ mod state;
++#[path = "base/text_colors.rs"]
++mod text_colors;
+ mod textarea;
+ #[path = "base/touch.rs"]
+ mod touch;

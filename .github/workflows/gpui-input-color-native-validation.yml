@@ -1,0 +1,137 @@
+# Exact isolated staging branch only. No PR trigger, release, product dependency edit,
+# cache sharing, credentials persistence, or write-enabled repository token.
+name: Isolated GPUI input color native validation
+'on':
+  push:
+    branches:
+      - ci/gpui-input-color-validation-20261103
+    paths:
+      - validation/gpui-input-colors/**
+      - .github/workflows/gpui-input-color-native-validation.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: gpui-input-color-native-validation
+  cancel-in-progress: false
+jobs:
+  native-geometry:
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.repository == 'xue-ding-e/XenTerm-Next' && github.ref == 'refs/heads/ci/gpui-input-color-validation-20261103'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_TARGET_DIR: ${{ runner.temp }}/gpui-color-target
+      XDG_CONFIG_HOME: ${{ runner.temp }}/gpui-color-config
+      XDG_DATA_HOME: ${{ runner.temp }}/gpui-color-data
+      XDG_RUNTIME_DIR: ${{ runner.temp }}/gpui-color-runtime
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Bind exact source and stage checksummed dependency
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          mkdir evidence
+          printf 'controller_sha=%s\nref=%s\n' "$GITHUB_SHA" "$GITHUB_REF" > evidence/controller.log
+          python3 validation/gpui-input-colors/stage.py "$RUNNER_TEMP/gpui-color-stage" > evidence/staging.log
+          sha256sum "$RUNNER_TEMP/gpui-color-stage/gpui-base-0.7.1/Cargo.lock" > evidence/lock.before
+      - name: Install Linux native text dependencies and fixed font families
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          sudo timeout 180s apt-get update
+          sudo timeout 360s apt-get install -y --no-install-recommends \
+            build-essential pkg-config cmake libfontconfig1-dev libfreetype6-dev \
+            libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libgl1-mesa-dev libegl1-mesa-dev libgtk-3-dev libudev-dev \
+            xvfb xauth x11-utils fonts-noto-core fonts-noto-cjk fonts-noto-color-emoji
+          mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_RUNTIME_DIR"
+          chmod 700 "$XDG_RUNTIME_DIR"
+          dpkg-query -W fonts-noto-core fonts-noto-cjk fonts-noto-color-emoji > evidence/font-packages.log
+          for family in 'Noto Sans' 'Noto Sans Arabic' 'Noto Sans Devanagari' 'Noto Sans CJK SC' 'Noto Color Emoji'; do
+            actual=$(fc-match -f '%{family}' "$family")
+            test "$actual" = "$family"
+            file=$(fc-match -f '%{file}' "$family")
+            printf '%s\n' "$family" >> evidence/fonts.log
+            sha256sum "$file" >> evidence/fonts.log
+          done
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: '1.99.1'
+          targets: x86_64-unknown-linux-gnu
+      - name: Compile only dependency library tests and native example, locked
+        timeout-minutes: 40
+        run: |
+          set -euo pipefail
+          ulimit -c 0
+          ulimit -v 6291456
+          ulimit -f 4194304
+          rustc -Vv > evidence/toolchain.log
+          helper="$GITHUB_WORKSPACE/validation/gpui-input-colors/run_bounded.py"
+          cd "$RUNNER_TEMP/gpui-color-stage/gpui-base-0.7.1"
+          python3 "$helper" 1800 "$GITHUB_WORKSPACE/evidence/compile-tests.log" cargo test --locked --lib --no-run --jobs 2
+          python3 "$helper" 540 "$GITHUB_WORKSPACE/evidence/compile-probe.log" cargo build --locked --example native_text_probe --jobs 2
+      - name: Run limited prototype regressions (GPUI test backend, not native proof)
+        timeout-minutes: 7
+        run: |
+          set -euo pipefail
+          helper="$GITHUB_WORKSPACE/validation/gpui-input-colors/run_bounded.py"
+          cd "$RUNNER_TEMP/gpui-color-stage/gpui-base-0.7.1"
+          filters=(
+            'input::text_colors::tests::'
+            'single_line_styles_reach_render_path_and_suppress_stale_or_masked_text'
+            'application_styles_preserve_color_and_ime_underline_priority'
+            'text_colors_release_source_on_edits_undo_ime_and_masking'
+            'styled_single_line_preserves_enter_paste_and_ime_contract'
+            'rejected_pattern_and_validator_edits_keep_text_colors'
+            'no_op_value_updates_keep_colors_but_away_and_back_drops_them'
+          )
+          for i in "${!filters[@]}"; do
+            log="$GITHUB_WORKSPACE/evidence/unit-$i.log"
+            python3 "$helper" 50 "$log" cargo test --locked --lib --jobs 2 "${filters[$i]}" -- --test-threads=1
+            count=1; if [ "$i" = 0 ]; then count=6; fi
+            grep -F "test result: ok. $count passed; 0 failed; 0 ignored;" "$log"
+          done
+      - name: Observe real native text geometry under isolated X11
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          ulimit -c 0
+          ulimit -v 6291456
+          unset WAYLAND_DISPLAY WAYLAND_SOCKET
+          export XDG_SESSION_TYPE=x11
+          python3 validation/gpui-input-colors/run_bounded.py 45 evidence/native-probe.log \
+            xvfb-run -a -s '-screen 0 1280x720x24 -nolisten tcp' bash -euo pipefail -c \
+            'xdpyinfo >/dev/null; exec "$CARGO_TARGET_DIR/debug/examples/native_text_probe"'
+          python3 validation/gpui-input-colors/qualify.py evidence/native-probe.log | tee evidence/qualification.log
+      - name: Verify lock unchanged and retain narrow evidence
+        if: always()
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          sha256sum --check evidence/lock.before
+          git diff --exit-code
+          # No build outputs, source archive, credentials, or user data uploaded.
+          du -sh "$CARGO_TARGET_DIR" 2>/dev/null || true
+      - name: Preserve native observations and failure diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: gpui-input-colors-${{ github.sha }}-${{ github.run_attempt }}
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 7
