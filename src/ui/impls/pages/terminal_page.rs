@@ -19,6 +19,7 @@ use gpui_kit::component::{
     input::{Input, InputEvent, InputState},
     menu::{ContextMenuExt, PopupMenuItem},
     popover::Popover,
+    tooltip::Tooltip,
     v_flex,
     ActiveTheme as _,
     Disableable as _,
@@ -249,6 +250,9 @@ pub(crate) struct TerminalPage {
     history: Entity<HistoryView>,
     /// The command bar's input, owned by the widget library.
     command: Entity<InputState>,
+    /// Suggestions never own keys or send bytes: they only recall local history.
+    command_focused: bool,
+    dismissed_suggestion_query: Option<String>,
     _command_subscription: Subscription,
     /// What the settings say the terminals look like, as of the last frame.
     appearance: TerminalSettings,
@@ -340,8 +344,17 @@ impl TerminalPage {
             &command,
             window,
             |this: &mut Self, _input, event: &InputEvent, window, cx| {
-                if let InputEvent::PressEnter { .. } = event {
-                    this.send_command(window, cx);
+                match event {
+                    InputEvent::PressEnter { .. } => this.send_command(window, cx),
+                    InputEvent::Focus => { this.command_focused = true; cx.notify(); }
+                    InputEvent::Blur => { this.command_focused = false; cx.notify(); }
+                    InputEvent::Change => {
+                        let query = this.command.read(cx).value().to_string();
+                        if this.dismissed_suggestion_query.as_ref() != Some(&query) {
+                            this.dismissed_suggestion_query = None;
+                        }
+                        cx.notify();
+                    }
                 }
             },
         );
@@ -399,6 +412,8 @@ impl TerminalPage {
             quick,
             history,
             command,
+            command_focused: false,
+            dismissed_suggestion_query: None,
             _command_subscription,
             appearance,
             sidebar,
@@ -680,6 +695,9 @@ impl TerminalPage {
     /// and the shell is told so it can point the detached windows and the
     /// session list's highlight at it.
     pub(crate) fn set_active_tab(&mut self, id: Option<String>, cx: &mut Context<Self>) {
+        if self.active_tab != id {
+            self.dismissed_suggestion_query = Some(self.command.read(cx).value().to_string());
+        }
         self.active_tab = id.clone();
         // The pane tree has its own notion of "which tab this leaf shows"; the
         // strip's active tab and the leaf's must agree or clicking a chip
@@ -896,13 +914,7 @@ impl TerminalPage {
         while let Some(action) = self.history.update(cx, |history, _| history.take_action()) {
             match action {
                 HistoryAction::Recall(command) => {
-                    let value = SharedString::from(command);
-                    self.command
-                        .update(cx, |input, cx| input.set_value(value, window, cx));
-                    // Focused, because the next thing the user does is edit or send it,
-                    // and both need the caret in the box. The popover closes itself: a
-                    // click inside it is a click outside the trigger.
-                    self.command.update(cx, |input, cx| input.focus(window, cx));
+                    self.recall_command(command, window, cx);
                 }
                 HistoryAction::Delete(index) => {
                     let mut store = self.state.store.borrow_mut();
@@ -1039,6 +1051,25 @@ impl TerminalPage {
             return;
         }
         cx.notify();
+    }
+
+    /// Shared with HistoryAction::Recall: accepting a suggestion is never submission.
+    fn recall_command(&mut self, command: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.dismissed_suggestion_query = Some(command.clone());
+        self.command.update(cx, |input, cx| {
+            input.set_value(SharedString::from(command), window, cx);
+            // Focused because the next step is editing or an explicit submission.
+            input.focus(window, cx);
+        });
+        cx.notify();
+    }
+
+    fn command_suggestions(&self, cx: &gpui_kit::App) -> Vec<crate::core::history::HistoryRow> {
+        let query = self.command.read(cx).value().to_string();
+        if !self.command_focused || self.dismissed_suggestion_query.as_ref() == Some(&query) {
+            return Vec::new();
+        }
+        crate::core::history::suggestions(self.state.store.borrow().command_history(), &query)
     }
 
     /// Send the command bar's text to the active session, then clear the bar.
@@ -1792,8 +1823,50 @@ impl TerminalPage {
         );
         let light = rgb(0xd4d4d4);
         let command = self.command.clone();
+        let suggestions = self.command_suggestions(cx);
         h_flex()
             .id("terminal-command-bar")
+            .relative()
+            .when(!suggestions.is_empty(), |bar| {
+                bar.child(
+                    v_flex()
+                        .id("command-history-suggestions")
+                        .absolute().bottom_full().left_0().right_0()
+                        .bg(background).border_1().border_color(rgba(0xffffff1f))
+                        .p_1().text_color(light)
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .child(h_flex().min_w_0()
+                            .child(div().flex_1().min_w_0().truncate().text_xs().px_2()
+                                .child(crate::i18n::t(
+                                    "历史建议 · 点击填入，不会执行",
+                                    "History suggestions · click to fill, not run",
+                                )))
+                            .child(Button::new("dismiss-command-suggestions")
+                                .icon(IconName::X).ghost().small().tab_stop(false)
+                                .tooltip(crate::i18n::t("关闭历史建议", "Dismiss history suggestions"))
+                                .accessibility_label(crate::i18n::t("关闭历史建议", "Dismiss history suggestions"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.dismissed_suggestion_query =
+                                        Some(this.command.read(cx).value().to_string());
+                                    cx.notify();
+                                }))))
+                        .children(suggestions.into_iter().map(|row| {
+                            let full = SharedString::from(row.command.clone());
+                            let recall = row.command.clone();
+                            div()
+                                .id(SharedString::from(format!("command-suggestion-{}", row.index)))
+                                .w_full().min_w_0().px_2().py_1().rounded_sm()
+                                .hover(|row| row.bg(rgba(0xffffff14)))
+                                .cursor_pointer()
+                                .tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.recall_command(recall.clone(), window, cx);
+                                }))
+                                .child(div().min_w_0().truncate().text_sm()
+                                    .child(SharedString::from(row.command)))
+                        })),
+                )
+            })
             .debug_selector(|| "terminal-command-bar".to_string())
             .w_full()
             .min_w_0()
@@ -2712,6 +2785,89 @@ mod close_focus_tests {
             }
         }
         data
+    }
+
+    #[gpui_kit::gpui::test]
+    fn history_suggestion_click_only_recalls_and_separate_enter_sends_once(cx: &mut TestAppContext) {
+        use gpui_kit::test::TestWindowExt as _;
+        let (fixture, cx) = fixture(cx, 1, true);
+        cx.update(|window, cx| {
+            fixture.page.update(cx, |page, cx| {
+                page.state.store.borrow_mut().push_command_history("echo suggested".into());
+                page.command.update(cx, |input, cx| input.focus(window, cx));
+            });
+        });
+        draw(cx);
+        cx.simulate_input("echo");
+        draw(cx);
+        assert!(received(&fixture, "tab-0").is_empty(), "typing must not reach the shell");
+        cx.update(|window, cx| window.click(SharedString::from("command-suggestion-0"), cx));
+        draw(cx);
+        cx.update(|_, cx| {
+            let page = fixture.page.read(cx);
+            assert_eq!(page.command.read(cx).value().to_string(), "echo suggested");
+            assert!(page.command_suggestions(cx).is_empty(), "recall closes the suggestions");
+        });
+        assert!(received(&fixture, "tab-0").is_empty(), "accepting must not execute");
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert_eq!(received(&fixture, "tab-0"), b"echo suggested\r");
+        assert!(received(&fixture, "tab-0").is_empty());
+    }
+
+    #[gpui_kit::gpui::test]
+    fn history_suggestions_explicit_close_preserves_text_until_query_changes(cx: &mut TestAppContext) {
+        use gpui_kit::test::TestWindowExt as _;
+        let (fixture, cx) = fixture(cx, 1, true);
+        cx.update(|window, cx| {
+            fixture.page.update(cx, |page, cx| {
+                page.state.store.borrow_mut().push_command_history("echo suggested".into());
+                page.command.update(cx, |input, cx| input.focus(window, cx));
+            });
+        });
+        draw(cx);
+        cx.simulate_input("echo");
+        draw(cx);
+        cx.update(|window, cx| window.click("dismiss-command-suggestions", cx));
+        draw(cx);
+        fixture.page.update(cx, |page, cx| {
+            assert_eq!(page.command.read(cx).value().to_string(), "echo");
+            assert!(page.command_suggestions(cx).is_empty());
+        });
+        assert!(received(&fixture, "tab-0").is_empty());
+        cx.simulate_input(" ");
+        draw(cx);
+        fixture.page.update(cx, |page, cx| assert_eq!(page.command_suggestions(cx).len(), 1));
+    }
+
+    #[gpui_kit::gpui::test]
+    fn history_suggestions_hide_after_blur_and_session_switch(cx: &mut TestAppContext) {
+        let (fixture, cx) = fixture(cx, 2, true);
+        cx.update(|window, cx| {
+            fixture.page.update(cx, |page, cx| {
+                page.state.store.borrow_mut().push_command_history("echo suggested".into());
+                page.command.update(cx, |input, cx| input.focus(window, cx));
+            });
+        });
+        draw(cx);
+        cx.simulate_input("echo");
+        draw(cx);
+        fixture.page.update(cx, |page, cx| assert_eq!(page.command_suggestions(cx).len(), 1));
+        cx.update(|window, cx| {
+            fixture.foreign_input.update(cx, |input, cx| input.focus(window, cx));
+        });
+        draw(cx);
+        fixture.page.update(cx, |page, cx| assert!(page.command_suggestions(cx).is_empty()));
+        cx.update(|window, cx| {
+            fixture.page.update(cx, |page, cx| {
+                page.command.update(cx, |input, cx| input.focus(window, cx));
+                page.set_active_tab(Some("tab-1".into()), cx);
+            });
+        });
+        draw(cx);
+        fixture.page.update(cx, |page, cx| assert!(page.command_suggestions(cx).is_empty()));
+        assert!(received(&fixture, "tab-0").is_empty());
+        assert!(received(&fixture, "tab-1").is_empty());
     }
 
     #[gpui_kit::gpui::test]

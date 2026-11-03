@@ -34,6 +34,28 @@ pub fn filtered(history: &[String], query: &str) -> Vec<HistoryRow> {
         .collect()
 }
 
+/// Local history suggestions, not claims about commands available on a server.
+/// Match the exact prefix (shells are case-sensitive), newest first. Bound both
+/// work and presentation; keep the original string intact for recall/copying.
+pub fn suggestions(history: &[String], query: &str) -> Vec<HistoryRow> {
+    const LIMIT: usize = 5;
+    if query.chars().take(513).count() > 512 || query.trim().is_empty() {
+        return Vec::new();
+    }
+    let mut seen = std::collections::HashSet::new();
+    history.iter().enumerate().rev().take(500)
+        .filter(|(_, command)| {
+            command.as_str() != query
+                && command.starts_with(query)
+                && command.chars().take(4097).count() <= 4096
+                && !command.chars().any(char::is_control)
+                && seen.insert(command.as_str())
+        })
+        .take(LIMIT)
+        .map(|(index, command)| HistoryRow { index, command: command.clone() })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -83,5 +105,42 @@ mod tests {
     #[test]
     fn nothing_matches_is_an_empty_list_rather_than_everything() {
         assert!(filtered(&history(), "no-such-command").is_empty());
+    }
+}
+
+#[cfg(test)]
+mod suggestion_tests {
+    use super::*;
+
+    #[test]
+    fn suggestions_are_recent_deduplicated_exact_prefixes() {
+        let history = ["git old", "git new", "git old", "Git other", "echo git", "git"]
+            .map(str::to_owned);
+        let rows = suggestions(&history, "git");
+        assert_eq!(rows.iter().map(|r| r.command.as_str()).collect::<Vec<_>>(),
+            ["git old", "git new"]);
+        assert_eq!(rows[0].index, 2);
+    }
+
+    #[test]
+    fn suggestions_preserve_unicode_and_spaces_without_byte_slicing() {
+        let command = "打印 文件😀 e\u{301}".to_owned();
+        assert_eq!(suggestions(&[command.clone()], "打印 文")[0].command, command);
+        assert!(suggestions(&[" echo hi".into()], "echo").is_empty());
+        assert!(suggestions(&["echo hi".into()], " ").is_empty());
+    }
+
+    #[test]
+    fn suggestions_are_bounded_and_reject_control_characters() {
+        let history = (0..20).map(|n| format!("echo {n}")).collect::<Vec<_>>();
+        let rows = suggestions(&history, "echo");
+        assert_eq!(rows.len(), 5);
+        assert_eq!(rows[0].command, "echo 19");
+        assert!(suggestions(&["echo\nunsafe".into(), "echo\u{1b}[31m".into()], "echo").is_empty());
+        assert!(suggestions(&["a".repeat(4097)], "a").is_empty());
+        assert!(suggestions(&["a".repeat(514)], &"a".repeat(513)).is_empty());
+        assert!(suggestions(&["界".repeat(1_000_000)], "界").is_empty());
+        assert!(suggestions(&[], &"界".repeat(1_000_000)).is_empty());
+        assert!(suggestions(&[], &"\u{3000}".repeat(1_000_000)).is_empty());
     }
 }
