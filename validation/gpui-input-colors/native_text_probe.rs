@@ -83,26 +83,32 @@ fn stress_probe(cx: &App, available: &[String]) -> Value {
 fn probe(cx: &mut App) -> Value {
     let system = WindowTextSystem::new(cx.text_system().clone());
     let available = system.all_font_names();
-    // Explicit families prevent silently treating an unavailable requested script font
-    // as coverage. A missing candidate produces a skipped case, never a pass.
-    let cases: &[(&str, &str, &[&str])] = &[
-        ("latin_ligature", "ffi", &["Noto Sans", "DejaVu Sans", "Liberation Sans"]),
-        ("latin_word", "office", &["Noto Sans", "DejaVu Sans", "Liberation Sans"]),
-        ("arabic", "سلام", &["Noto Sans Arabic", "Noto Naskh Arabic", "DejaVu Sans"]),
-        ("devanagari", "क्षि", &["Noto Sans Devanagari", "Noto Serif Devanagari"]),
-        ("combining", "e\u{301}cole", &["Noto Sans", "DejaVu Sans", "Liberation Sans"]),
-        ("cjk", "中文日本", &["Noto Sans CJK SC", "Noto Sans CJK JP", "WenQuanYi Zen Hei"]),
-        ("emoji", "👩\u{200d}💻🙂", &["Noto Color Emoji", "Noto Emoji"]),
+    // Model ordinary Input: one Latin-capable primary font for all text. Do not
+    // directly resolve script-only families or explicit fallback chains here:
+    // this pinned native loader removes faces without ASCII 'm'. Cosmic's
+    // automatic per-glyph fallback uses a different path. Listing a required
+    // installed family is a coverage prerequisite, not proof it shaped glyphs.
+    let primary_family = "Noto Sans";
+    let cases: &[(&str, &str, &str)] = &[
+        ("latin_ligature", "ffi", "Noto Sans"),
+        ("latin_word", "office", "Noto Sans"),
+        ("arabic", "سلام", "Noto Sans Arabic"),
+        ("devanagari", "क्षि", "Noto Sans Devanagari"),
+        ("combining", "e\u{301}cole", "Noto Sans"),
+        ("cjk", "中文日本", "Noto Sans CJK SC"),
+        ("emoji", "👩\u{200d}💻🙂", "Noto Color Emoji"),
     ];
     let mut results = Vec::new();
-    for &(name, text, candidates) in cases {
-        let Some(family) = candidates.iter().find(|candidate|
-            available.iter().any(|name| name == **candidate)) else {
+    for &(name, text, required_coverage_family) in cases {
+        if !available.iter().any(|name| name == primary_family)
+            || !available.iter().any(|name| name == required_coverage_family)
+        {
             results.push(json!({"case": name, "status": "skipped_missing_font",
-                "candidates": candidates}));
+                "requested_family": primary_family,
+                "required_coverage_family": required_coverage_family}));
             continue;
-        };
-        let base = TextRun { len: text.len(), font: font((*family).to_owned()),
+        }
+        let base = TextRun { len: text.len(), font: font(primary_family),
             color: gpui::black(), ..Default::default() };
         let plain = system.layout_line(text, px(20.0), &[base.clone()], None);
         let plain_snapshot = snapshot(&plain, text, &system);
@@ -138,10 +144,17 @@ fn probe(cx: &mut App) -> Value {
                 "fixed_x_hit_tests": hit_tests}));
         }
         results.push(json!({"case": name, "status": "observed", "text": text,
-            "requested_family": family, "font_size_px": 20,
+            "requested_family": primary_family,
+            "required_coverage_family": required_coverage_family,
+            "font_selection": "primary plus native automatic fallback; no explicit fallback list",
+            "plain_missing_glyph_count": plain.runs.iter().flat_map(|r| &r.glyphs)
+                .filter(|g| g.id.0 == 0).count(),
+            "plain_emoji_glyph_count": plain.runs.iter().flat_map(|r| &r.glyphs)
+                .filter(|g| g.is_emoji).count(),
+            "font_size_px": 20,
             "plain": plain_snapshot, "splits": splits}));
     }
-    json!({"schema": "gpui-native-color-runs-v1", "os": std::env::consts::OS,
+    json!({"schema": "gpui-native-color-runs-v2", "os": std::env::consts::OS,
         "arch": std::env::consts::ARCH, "gpui_pre_version": "0.3.8",
         "platform_entry": "gpui_platform::application() (native, non-test)",
         "note": "Observed layout only; no rendering, screenshot, Input interaction, grapheme or bidi correctness claim. Cached requested families may not identify fallback fonts. Glyph id 0 can indicate missing coverage.",
@@ -154,6 +167,10 @@ fn main() {
     gpui_platform::application().run(|cx: &mut App| {
         let result = probe(cx);
         println!("{}", result);
-        cx.quit();
+        // Linux calls this launch callback before calloop::run, which resets
+        // its stop flag. Enqueue quit for the foreground event loop instead.
+        cx.spawn(async |cx| {
+            cx.update(|cx| cx.quit());
+        }).detach();
     });
 }
