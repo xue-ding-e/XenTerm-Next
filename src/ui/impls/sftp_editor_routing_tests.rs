@@ -94,6 +94,7 @@ fn fixture(cx: &mut TestAppContext) -> (Fixture, &mut VisualTestContext) {
             }
         });
         shell = Some(view.clone());
+        install_main_window_close_guard(&view, window, cx);
         Root::new(view, window, cx)
     });
     let shell = shell.unwrap();
@@ -505,4 +506,22 @@ fn failed_read_reply_must_never_write_empty_content_back_to_the_remote_file(cx: 
         }
     }
     assert!(writes.is_empty(), "a failed read must not overwrite either remote with unverified/empty content: {writes:?}");
+}
+
+#[gpui_kit::gpui::test]
+fn native_window_close_waits_for_pending_save_receipt(cx: &mut TestAppContext) {
+    let (mut fixture, cx) = fixture(cx);
+    request_file(&mut fixture, true, cx);
+    reply_from_source(&fixture, true, cx);
+    edit_and_save(&fixture, cx);
+    let completion = match fixture.source_commands.try_recv().unwrap() {
+        crate::sftp::SftpCommand::WriteTextWithReply { completion, .. } => completion,
+        command => panic!("expected editor receipt command, got {command:?}"),
+    };
+    assert!(!cx.simulate_close(), "a pending remote write must not be silently abandoned");
+    settle(cx);
+    assert!(cx.debug_bounds("file-close-keep-editing").is_some());
+    completion.send(Ok(())).unwrap();
+    settle(cx);
+    assert!(cx.simulate_close(), "confirmed unchanged saved contents can close normally");
 }

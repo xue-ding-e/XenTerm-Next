@@ -362,6 +362,7 @@ fn open_main_window(
             shell.start_persistence_poll(cx);
             shell
         });
+        install_main_window_close_guard(&shell, window, cx);
         // `Root` has to be the window's first view. It is what the
         // component library's dialogs, sheets, notifications and tooltips
         // look up, and they panic rather than degrade when the window's
@@ -369,6 +370,23 @@ fn open_main_window(
         // adding it at the first overlay would cost finding that panic.
         cx.new(|cx| Root::new(shell, window, cx))
     })
+}
+
+/// Native window-close requests share the editor's explicit discard decision.
+/// Keep only a weak reference: an old window must not retain a Shell or close
+/// a later replacement. A discard closes the editor, never a deferred window;
+/// the user can then retry closing this window. App::quit/OS termination are
+/// separate platform paths and cannot be cancelled by this callback.
+fn install_main_window_close_guard(shell: &Entity<Shell>, window: &Window, cx: &gpui_kit::App) {
+    let shell = shell.downgrade();
+    window.on_window_should_close(cx, move |_, cx| {
+        let Some(shell) = shell.upgrade() else { return true };
+        shell.update(cx, |shell, cx| {
+            shell.open_file.as_ref().map_or(true, |viewer| {
+                viewer.update(cx, |viewer, cx| viewer.request_close(cx))
+            })
+        })
+    });
 }
 
 /// One note on the window's status line, with the bookkeeping its exit needs.
