@@ -1116,6 +1116,18 @@ fn shell_free_route(session: &Session, jumps: &[Session]) -> (Session, Vec<Sessi
     (target, jumps)
 }
 
+fn client_handler(session: &Session, events: &UnboundedSender<SessionEvent>) -> ClientHandler {
+    ClientHandler {
+        frozen_host_keys: crate::ssh::frozen_auth::trust(),
+        host: session.host.clone(),
+        port: session.port,
+        remote_forwards: remote_forward_targets(session),
+        events: events.clone(),
+        host_key_wait: HostKeyWait::default(),
+        forwarded_open: std::collections::HashMap::new(),
+    }
+}
+
 /// Open an SSH transport to the session's host (directly or via a SOCKS5 / HTTP
 /// proxy) and return the russh handle, ready for authentication. Factored out so
 /// the keyboard-interactive fallback can reconnect on a *fresh* handle — russh
@@ -1130,16 +1142,7 @@ async fn connect_ssh(
     // Remote (-R) forwards are serviced inside the handler when the server opens
     // channels back, so it needs the bind-port → local-target map up front (the
     // handler is moved into `connect`) (#56).
-    let remote_forwards = remote_forward_targets(session);
-    let handler = ClientHandler {
-        frozen_host_keys: crate::ssh::frozen_auth::trust(),
-        host: session.host.clone(),
-        port: session.port,
-        remote_forwards,
-        events: events.clone(),
-        host_key_wait: HostKeyWait::default(),
-        forwarded_open: std::collections::HashMap::new(),
-    };
+    let handler = client_handler(session, events);
     let addr = format!("{}:{}", session.host, session.port);
 
     // SSH jump host (bastion): connect + authenticate the jump session, then open
@@ -1176,6 +1179,14 @@ where
     H: HandshakeHandler + Send + 'static,
     H::Error: std::error::Error + Send + Sync + 'static,
 {
+    let stream = open_direct_stream(session, events).await?;
+    let stage = format!("SSH handshake to {}:{}", session.host, session.port);
+    let _ = events.send(SessionEvent::Status(stage.clone()));
+    connect_ssh_stream(config, stream, handler, &stage).await
+}
+
+async fn open_direct_stream(session: &Session, events: &UnboundedSender<SessionEvent>)
+    -> Result<tokio::net::TcpStream> {
     let addr = format!("{}:{}", session.host, session.port);
     let stream = match crate::ssh::proxy::for_connection(&session.proxy)? {
         Some(p) => {
@@ -1199,9 +1210,7 @@ where
             .await?
         }
     };
-    let stage = format!("SSH handshake to {addr}");
-    let _ = events.send(SessionEvent::Status(stage.clone()));
-    connect_ssh_stream(config, stream, handler, &stage).await
+    Ok(stream)
 }
 
 /// Outcome of authenticating an SSH session, so callers can distinguish a user
@@ -1210,6 +1219,42 @@ pub(crate) enum AuthResult {
     Success,
     Cancelled,
     Failed,
+}
+
+/// One authentication attempt shared by interactive and managed transports.
+/// Reconnection policy belongs to their owners; no raw Handle changes owner.
+pub(crate) async fn authenticate_once<H>(handle: &mut Handle<H>, session: &Session,
+    user: &str, password: &str, events: &UnboundedSender<SessionEvent>) -> Result<bool>
+where H: Handler + 'static, H::Error: std::error::Error + Send + Sync + 'static {
+    Ok(match session.auth {
+        AuthMethod::Password => network_stage(
+            &format!("password authentication at {}:{}", session.host, session.port),
+            handle.authenticate_password(user, password)).await?.success(),
+        AuthMethod::KeyboardInteractive => keyboard_interactive_auth(handle, user, password,
+            &session.id, &session.host, events).await.context("keyboard-interactive auth failed")?,
+        AuthMethod::Key => {
+            // An encrypted private key needs its passphrase; we reuse the
+            // session's password field for it (empty = unencrypted key) (#90).
+            let pass = password;
+            let keypair = match crate::ssh::frozen_auth::key(session) {
+                Some(frozen) => frozen?,
+                None => Arc::new(load_session_private_key_offthread(session, pass).await?),
+            };
+            // RSA keys must be signed with an explicit SHA-2 hash; every other
+            // key type carries its own algorithm, so no override is needed.
+            let hash = keypair.algorithm().is_rsa().then_some(HashAlg::Sha256);
+            let key_with_hash = PrivateKeyWithHashAlg::new(keypair, hash);
+            network_stage(
+                &format!(
+                    "public-key authentication at {}:{}",
+                    session.host, session.port
+                ),
+                handle.authenticate_publickey(user, key_with_hash),
+            )
+            .await?
+            .success()
+        }
+    })
 }
 
 /// Authenticate an already-connected SSH handle using the session's method,
@@ -1238,71 +1283,18 @@ pub(crate) async fn authenticate_session(
         session.port
     )));
 
-    let authed = match session.auth {
-        AuthMethod::Password => {
-            let mut ok = network_stage(
-                &format!(
-                    "password authentication at {}:{}",
-                    session.host, session.port
-                ),
-                handle.authenticate_password(&user, password.as_str()),
-            )
-            .await?
-            .success();
-            if !ok {
-                // russh can't switch auth methods on a handle whose first attempt
-                // already failed (it hangs), so reconnect on a fresh handle before
-                // trying keyboard-interactive (#86).
-                disconnect_ssh(handle, "authentication fallback").await;
-                let (h, jh) = Box::pin(connect_ssh(session, jump, config.clone(), events)).await?;
-                *handle = h;
-                *jump_handle = jh;
-                ok = keyboard_interactive_auth(
-                    handle,
-                    &user,
-                    password.as_str(),
-                    &session.id,
-                    &session.host,
-                    events,
-                )
-                .await
-                .context("keyboard-interactive auth failed")?;
-            }
-            ok
-        }
-        AuthMethod::KeyboardInteractive => keyboard_interactive_auth(
-            handle,
-            &user,
-            password.as_str(),
-            &session.id,
-            &session.host,
-            events,
-        )
-        .await
-        .context("keyboard-interactive auth failed")?,
-        AuthMethod::Key => {
-            // An encrypted private key needs its passphrase; we reuse the
-            // session's password field for it (empty = unencrypted key) (#90).
-            let pass = password.as_str();
-            let keypair = match crate::ssh::frozen_auth::key(session) {
-                Some(frozen) => frozen?,
-                None => Arc::new(load_session_private_key_offthread(session, pass).await?),
-            };
-            // RSA keys must be signed with an explicit SHA-2 hash; every other
-            // key type carries its own algorithm, so no override is needed.
-            let hash = keypair.algorithm().is_rsa().then_some(HashAlg::Sha256);
-            let key_with_hash = PrivateKeyWithHashAlg::new(keypair, hash);
-            network_stage(
-                &format!(
-                    "public-key authentication at {}:{}",
-                    session.host, session.port
-                ),
-                handle.authenticate_publickey(&user, key_with_hash),
-            )
-            .await?
-            .success()
-        }
-    };
+    let mut authed = authenticate_once(handle, session, &user, &password, events).await?;
+    if session.auth == AuthMethod::Password && !authed {
+        // russh can't switch auth methods on a handle whose first attempt
+        // already failed (it hangs), so reconnect on a *fresh* handle before
+        // trying keyboard-interactive (#86).
+        disconnect_ssh(handle, "authentication fallback").await;
+        let (h, jh) = Box::pin(connect_ssh(session, jump, config.clone(), events)).await?;
+        *handle = h;
+        *jump_handle = jh;
+        authed = keyboard_interactive_auth(handle, &user, password.as_str(),
+            &session.id, &session.host, events).await.context("keyboard-interactive auth failed")?;
+    }
 
     if authed {
         Ok(AuthResult::Success)
@@ -1546,6 +1538,57 @@ pub(crate) async fn open_forward_connection(
         AuthResult::Cancelled => Err(anyhow!("forward authentication requires a saved credential and trusted host key")),
         AuthResult::Failed => Err(anyhow!("forward authentication failed")),
     }
+}
+
+/// A complete managed route keeps every bastion guard alive, while each
+/// guard's raw Handle remains exclusively in its scope's cleanup actor.
+pub(crate) struct ManagedForwardRoute {
+    pub target: Arc<crate::ssh::connection::ManagedSshConnection<ClientHandler>>,
+    jumps: Vec<Arc<crate::ssh::connection::ManagedSshConnection<ClientHandler>>>,
+}
+impl ManagedForwardRoute {
+    pub(crate) fn is_closed(&self) -> bool {
+        self.target.is_closed() || self.jumps.iter().any(|hop| hop.is_closed())
+    }
+}
+
+pub(crate) async fn open_managed_forward_connection(session: &Session, jumps: &[Session],
+    scope: &crate::ssh::connection::DrainingTransportScope) -> Result<ManagedForwardRoute> {
+    anyhow::ensure!(crate::ssh::frozen_auth::trust().is_some(), "managed route requires frozen authentication");
+    let (events, receiver) = mpsc::unbounded_channel(); drop(receiver);
+    let (target, jumps) = shell_free_route(session, jumps);
+    let config = ssh_client_config();
+    let mut connected: Vec<Arc<crate::ssh::connection::ManagedSshConnection<ClientHandler>>> = Vec::new();
+    // Saved chains are immediate-first; actual transport creation is outermost
+    // bastion to innermost, then target. Only the first hop resolves TCP/proxy.
+    for hop in jumps.iter().rev().chain(std::iter::once(&target)) {
+        let connect = || async {
+            let handler = client_handler(hop, &events);
+            if let Some(previous) = connected.last() {
+                let channel = network_stage("managed jump channel",
+                    previous.channel_open_direct_tcpip(&hop.host, hop.port, "127.0.0.1", 0)).await?;
+                scope.connect_owned(config.clone(), channel.into_stream()?, handler).await
+            } else {
+                let stream = open_direct_stream(hop, &events).await?;
+                scope.connect_owned(config.clone(), stream, handler).await
+            }
+        };
+        let mut guard = connect().await?;
+        let mut accepted = guard.authenticate_saved(hop, &events).await?;
+        if !accepted && hop.auth == AuthMethod::Password {
+            // As on the existing path, retry keyboard-interactive on a fresh
+            // transport. The old guard drops into tracked cleanup, never into
+            // an unowned raw Handle or untracked background task.
+            drop(guard);
+            guard = connect().await?;
+            let mut fallback = hop.clone(); fallback.auth = AuthMethod::KeyboardInteractive;
+            accepted = guard.authenticate_saved(&fallback, &events).await?;
+        }
+        anyhow::ensure!(accepted, "saved managed SSH authentication failed");
+        connected.push(Arc::new(guard));
+    }
+    let target = connected.pop().ok_or_else(|| anyhow!("managed route has no target"))?;
+    Ok(ManagedForwardRoute { target, jumps: connected })
 }
 
 async fn execute_command_inner(

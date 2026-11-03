@@ -28,9 +28,19 @@ impl ResolvedRouteSnapshot {
     /// The trusted loader supplies a consistent ConfigStore route and open
     /// key/trust handles acquired under its read/identity checks. Parsing/KDF
     /// work belongs on spawn_blocking, not a Tokio I/O worker.
-    pub fn from_open_files(profile: File, mut session: Session, mut jumps: Vec<Session>,
-        index: usize, mut key_files: HashMap<String, File>, trust_file: File,
+    pub fn from_open_files(profile: File, session: Session, jumps: Vec<Session>,
+        index: usize, key_files: HashMap<String, File>, trust_file: File,
         permission_generation: u64) -> Result<Self> {
+        let effective_proxy = crate::ssh::proxy::ResolvedProxy::capture(&jumps.last().unwrap_or(&session).proxy)?;
+        Self::from_resolved_inputs(profile, session, jumps, index, key_files, trust_file,
+            permission_generation, effective_proxy)
+    }
+
+    /// Trusted loader entry point: the effective proxy must be resolved once
+    /// alongside the other inputs, never supplied by external tool arguments.
+    pub(super) fn from_resolved_inputs(profile: File, mut session: Session, mut jumps: Vec<Session>,
+        index: usize, mut key_files: HashMap<String, File>, trust_file: File,
+        permission_generation: u64, effective_proxy: crate::ssh::proxy::ResolvedProxy) -> Result<Self> {
         ensure!(profile.metadata()?.is_dir(), "profile handle is not a directory");
         let trust = read_text(trust_file, 4 * 1024 * 1024)?;
         let mut ids = std::collections::HashSet::new();
@@ -45,7 +55,6 @@ impl ResolvedRouteSnapshot {
             hop.private_key_path.clear();
         }
         ensure!(key_files.is_empty(), "unrelated key supplied to route snapshot");
-        let effective_proxy = crate::ssh::proxy::ResolvedProxy::capture(&jumps.last().unwrap_or(&session).proxy)?;
         let proxy_fingerprint = effective_proxy.fingerprint()?;
         let route = super::super::owner::route_fingerprint(&session, &jumps, index)?;
         let authentication = Arc::new(FrozenAuthentication::parse(
@@ -62,6 +71,16 @@ impl ResolvedRouteSnapshot {
     pub fn permission_generation(&self) -> u64 { self.permission_generation }
     pub fn fingerprint(&self) -> [u8; 32] { self.fingerprint }
     pub fn rule_index(&self) -> usize { self.index }
+
+    pub fn bind_address(&self) -> Result<std::net::SocketAddr> {
+        super::super::owner::loopback_bind(&self.session.forwards[self.index])
+    }
+
+    pub async fn connect_managed(&self, scope: &crate::ssh::connection::DrainingTransportScope)
+        -> Result<crate::ssh::ManagedForwardRoute> {
+        self.authentication.clone().run(crate::ssh::open_managed_forward_connection(
+            &self.session, &self.jumps, scope)).await
+    }
 
     /// Actual authentication consumes the parsed keys and captured verifier
     /// associated with this exact fingerprint, not a fresh ConfigStore read.

@@ -86,7 +86,7 @@ impl Default for ForwardOwner {
     }
 }
 
-fn loopback_bind(rule: &PortForward) -> Result<SocketAddr> {
+pub(super) fn loopback_bind(rule: &PortForward) -> Result<SocketAddr> {
     ensure!(rule.kind == "dynamic", "selected forward rule is not dynamic SOCKS5");
     let text = rule.bind_addr.trim().trim_start_matches('[').trim_end_matches(']');
     let address: IpAddr = match text {

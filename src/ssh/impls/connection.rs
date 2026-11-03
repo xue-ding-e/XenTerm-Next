@@ -589,22 +589,184 @@ impl Drop for OwnedProducer {
     }
 }
 
+// Per-session actors are bounded and retained across dropped caller futures.
+// Cleanup seals admission before joining them and taking the raw SSH handle.
+struct ManagedOpTasks {
+    accepting: bool,
+    failed: bool,
+    #[cfg(test)]
+    last_open_slot: Option<Weak<OpenedChannelSlot>>,
+    tasks: Vec<futures::future::Shared<futures::future::BoxFuture<'static, CleanupOutcome>>>,
+}
+impl Default for ManagedOpTasks {
+    fn default() -> Self { Self { accepting: true, failed: false, tasks: Vec::new(),
+        #[cfg(test)] last_open_slot: None,
+    } }
+}
+#[derive(Default)]
+struct OpenedChannelState {
+    channel: Option<russh::Channel<client::Msg>>,
+    abandoned: bool,
+    claimed: bool,
+}
+struct OpenedChannelSlot {
+    state: Mutex<OpenedChannelState>,
+    changed: tokio::sync::Notify,
+}
+/// Queued and claimed-but-not-consumed results both stay actor-owned. Only
+/// synchronous conversion to a stream transfers the channel to a client task.
+pub(crate) struct ManagedOpenedChannel { slot: Arc<OpenedChannelSlot> }
+impl ManagedOpenedChannel {
+    pub(crate) fn into_stream(self) -> std::result::Result<russh::ChannelStream<client::Msg>, russh::Error> {
+        let mut state = self.slot.state.lock().unwrap_or_else(|e| e.into_inner());
+        let channel = state.channel.take().ok_or(russh::Error::Disconnect)?;
+        state.claimed = true;
+        self.slot.changed.notify_one();
+        Ok(channel.into_stream())
+    }
+}
+impl Drop for ManagedOpenedChannel {
+    fn drop(&mut self) {
+        self.slot.state.lock().unwrap_or_else(|e| e.into_inner()).abandoned = true;
+        self.slot.changed.notify_one();
+    }
+}
+async fn wait_transport_cancelled(state: &CancelState) {
+    loop {
+        let changed = state.changed.notified();
+        tokio::pin!(changed); changed.as_mut().enable();
+        if state.cancelled.load(Ordering::Acquire) { return; }
+        changed.await;
+    }
+}
+
 /// Never exposes or transfers the raw russh Handle. The scope owns the cleanup
 /// actor before this guard can be published. Dropping a queued, claimed or
 /// active guard all cancel the same actor; successful oneshot send is NOT an
 /// ownership-transfer acknowledgement.
 pub(crate) struct ManagedSshConnection<H: Handler<Error = russh::Error> + Send + 'static> {
-    slot: Arc<tokio::sync::Mutex<Option<Handle<H>>>>,
+    slot: Arc<tokio::sync::RwLock<Option<Handle<H>>>>,
+    operations: Arc<Mutex<ManagedOpTasks>>,
     cancellation: Arc<CancelState>,
 }
 
 impl<H: Handler<Error = russh::Error> + Send + 'static> ManagedSshConnection<H> {
+    pub(crate) fn is_closed(&self) -> bool {
+        if self.cancellation.cancelled.load(Ordering::Acquire) { return true; }
+        match self.slot.try_read() {
+            Ok(slot) => slot.as_ref().is_none_or(Handle::is_closed),
+            Err(_) => false, // an in-flight bounded operation owns the lock
+        }
+    }
+
+    pub(crate) async fn authenticate_saved(&self, session: &crate::config::Session,
+        events: &tokio::sync::mpsc::UnboundedSender<crate::session::protocol::SessionEvent>) -> Result<bool> {
+        let mut slot = self.slot.write().await;
+        anyhow::ensure!(!self.cancellation.cancelled.load(Ordering::Acquire), "SSH connection is closing");
+        let handle = slot.as_mut().ok_or_else(|| anyhow!("SSH connection is closed"))?;
+        let (user, password) = crate::ssh::resolve_credentials(session, events).await
+            .ok_or_else(|| anyhow!("saved SSH credentials are unavailable"))?;
+        let password = zeroize::Zeroizing::new(password);
+        crate::ssh::authenticate_once(handle, session, &user, &password, events).await
+    }
+
+    pub(crate) async fn channel_open_direct_tcpip(&self, host: &str, port: u16,
+        origin: &str, origin_port: u16) -> std::result::Result<ManagedOpenedChannel, russh::Error> {
+        self.channel_open_with_budget(host, port, origin, origin_port, SSH_NETWORK_TIMEOUT).await
+    }
+
+    async fn channel_open_with_budget(&self, host: &str, port: u16,
+        origin: &str, origin_port: u16, budget: Duration)
+        -> std::result::Result<ManagedOpenedChannel, russh::Error> {
+        let deadline = tokio::time::Instant::now() + budget;
+        let slot = Arc::new(OpenedChannelSlot { state: Mutex::new(OpenedChannelState::default()),
+            changed: tokio::sync::Notify::new() });
+        let pending = ManagedOpenedChannel { slot: slot.clone() };
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let handle_slot = self.slot.clone();
+        let cancellation = self.cancellation.clone();
+        let host = host.to_owned(); let origin = origin.to_owned();
+        {
+            let mut operations = self.operations.lock().unwrap_or_else(|e| e.into_inner());
+            let mut failed = false;
+            operations.tasks.retain(|task| match task.clone().now_or_never() {
+                Some(result) => { failed |= result == CleanupOutcome::Unconfirmed; false }
+                None => true,
+            });
+            operations.failed |= failed;
+            if !operations.accepting || operations.failed || operations.tasks.len() >= 32
+                || cancellation.cancelled.load(Ordering::Acquire) {
+                return Err(russh::Error::Disconnect);
+            }
+            #[cfg(test)] { operations.last_open_slot = Some(Arc::downgrade(&slot)); }
+            let actor = tokio::spawn(async move {
+                // Read borrowing allows independent opens to proceed. Auth
+                // and final cleanup retain exclusive write ownership.
+                let open = async {
+                    let handle = handle_slot.read().await;
+                    let handle = handle.as_ref().ok_or(russh::Error::Disconnect)?;
+                    handle.channel_open_direct_tcpip(host, port as u32, origin, origin_port as u32).await
+                };
+                let channel = tokio::select! {
+                    biased;
+                    _ = wait_transport_cancelled(&cancellation) => return CleanupOutcome::Complete,
+                    result = tokio::time::timeout_at(deadline, open) => match result {
+                        Ok(Ok(channel)) => channel,
+                        Ok(Err(_)) => return CleanupOutcome::Complete,
+                        Err(_) => { cancellation.cancel(); return CleanupOutcome::Complete; }
+                    }
+                };
+                slot.state.lock().unwrap_or_else(|e| e.into_inner()).channel = Some(channel);
+                let _ = sender.send(()); // a notification, never a raw Channel
+                loop {
+                    let changed = slot.changed.notified();
+                    tokio::pin!(changed); changed.as_mut().enable();
+                    let abandoned = {
+                        let state = slot.state.lock().unwrap_or_else(|e| e.into_inner());
+                        if state.claimed { return CleanupOutcome::Complete; }
+                        state.abandoned
+                    };
+                    if abandoned { break; }
+                    tokio::select! {
+                        _ = changed => {},
+                        _ = wait_transport_cancelled(&cancellation) => break,
+                        _ = tokio::time::sleep_until(deadline) => {
+                            // No acknowledgement by the handoff deadline.
+                            // Treat as abandoned, not as transport failure.
+                            break;
+                        }
+                    }
+                }
+                let channel = slot.state.lock().unwrap_or_else(|e| e.into_inner()).channel.take();
+                if let Some(mut channel) = channel {
+                    let close = async {
+                        channel.close().await?;
+                        while let Some(message) = channel.wait().await {
+                            if matches!(message, russh::ChannelMsg::Close) { break; }
+                        }
+                        Ok::<(), russh::Error>(())
+                    };
+                    tokio::select! {
+                        _ = wait_transport_cancelled(&cancellation) => {},
+                        result = tokio::time::timeout(SSH_NETWORK_TIMEOUT, close) => {
+                            if !matches!(result, Ok(Ok(()))) { cancellation.cancel(); }
+                        }
+                    }
+                }
+                CleanupOutcome::Complete
+            });
+            operations.tasks.push(actor.map(|result| result.unwrap_or(CleanupOutcome::Unconfirmed)).boxed().shared());
+        }
+        receiver.await.map_err(|_| russh::Error::Disconnect)?;
+        Ok(pending)
+    }
+
     // Narrow operations borrow the controlled handle; no public take/DerefMut
     // escape hatch can drop a raw handle between claim and owner registration.
     pub(crate) async fn authenticate_password(&self, user: &str, password: &str)
         -> Result<client::AuthResult> {
         anyhow::ensure!(!self.cancellation.cancelled.load(Ordering::Acquire), "SSH connection is closing");
-        let mut slot = self.slot.lock().await;
+        let mut slot = self.slot.write().await;
         anyhow::ensure!(!self.cancellation.cancelled.load(Ordering::Acquire), "SSH connection is closing");
         let handle = slot.as_mut().ok_or_else(|| anyhow!("SSH connection is closed"))?;
         Ok(handle.authenticate_password(user, password).await?)
@@ -675,7 +837,9 @@ impl DrainingTransportScope {
                         return outcome;
                     }
                 };
-                let slot = Arc::new(tokio::sync::Mutex::new(Some(handle)));
+                let slot = Arc::new(tokio::sync::RwLock::new(Some(handle)));
+                let operations = Arc::new(Mutex::new(ManagedOpTasks::default()));
+                let cleanup_operations = operations.clone();
                 let cleanup_slot = slot.clone();
                 let cleanup_state = owned_state.clone();
                 let cleanup = tokio::spawn(async move {
@@ -686,16 +850,23 @@ impl DrainingTransportScope {
                         if cleanup_state.cancelled.load(Ordering::Acquire) { break; }
                         cancelled.await;
                     }
-                    let mut slot = cleanup_slot.lock().await;
-                    match slot.take() {
+                    let (tasks, mut failed) = {
+                        let mut operations = cleanup_operations.lock().unwrap_or_else(|e| e.into_inner());
+                        operations.accepting = false;
+                        (operations.tasks.clone(), operations.failed)
+                    };
+                    for task in tasks { failed |= task.await == CleanupOutcome::Unconfirmed; }
+                    let mut slot = cleanup_slot.write().await;
+                    let outcome = match slot.take() {
                         Some(handle) => session_join_outcome(handle.await),
                         None => CleanupOutcome::Unconfirmed,
-                    }
+                    };
+                    if failed { CleanupOutcome::Unconfirmed } else { outcome }
                 });
                 // Register cleanup before publication, so both enqueue and
                 // claim cancellation windows remain scope-owned and joinable.
                 track_owned_task(&mut owned_group.lock().unwrap_or_else(|e| e.into_inner()), cleanup);
-                let guard = ManagedSshConnection { slot, cancellation: owned_state };
+                let guard = ManagedSshConnection { slot, operations, cancellation: owned_state };
                 let _ = sender.send(Ok(guard)); // failed send drops the guard
                 CleanupOutcome::Complete
             });
@@ -737,6 +908,220 @@ mod managed_connection_tests {
     }
     impl HandshakeHandler for FixtureClient {
         fn host_key_wait(&self) -> &HostKeyWait { &self.wait }
+    }
+
+    struct OpenFixtureServer {
+        entered: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+        closed: Arc<tokio::sync::Notify>,
+        clients: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
+    }
+    impl russh::server::Handler for OpenFixtureServer {
+        type Error = russh::Error;
+        async fn auth_password(&mut self, user: &str, password: &str)
+            -> std::result::Result<russh::server::Auth, Self::Error> {
+            Ok(if user == "fixture" && password == "fixture-password" {
+                russh::server::Auth::Accept
+            } else { russh::server::Auth::reject() })
+        }
+        async fn channel_open_direct_tcpip(&mut self, channel: russh::Channel<russh::server::Msg>,
+            host: &str, _port: u32, _origin: &str, _origin_port: u32,
+            _session: &mut russh::server::Session) -> std::result::Result<bool, Self::Error> {
+            let paused = host == "paused.invalid";
+            if paused { self.entered.notify_one(); self.release.notified().await; }
+            let closed = self.closed.clone();
+            self.clients.lock().unwrap().push(tokio::spawn(async move {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut stream = channel.into_stream();
+                let mut bytes = [0; 32];
+                while let Ok(count) = stream.read(&mut bytes).await {
+                    if count == 0 { break; }
+                    if stream.write_all(&bytes[..count]).await.is_err() { break; }
+                }
+                if paused { closed.notify_one(); }
+            }));
+            Ok(true)
+        }
+    }
+
+    #[derive(Default)]
+    struct ReadyNotification(tokio::sync::Notify);
+    impl std::task::Wake for ReadyNotification {
+        fn wake(self: Arc<Self>) { self.0.notify_one(); }
+        fn wake_by_ref(self: &Arc<Self>) { self.0.notify_one(); }
+    }
+
+    async fn assert_open_actors_complete(managed: &ManagedSshConnection<FixtureClient>) {
+        let tasks = managed.operations.lock().unwrap().tasks.clone();
+        for task in tasks {
+            assert!(tokio::time::timeout(Duration::from_secs(3), task).await.unwrap() == CleanupOutcome::Complete);
+        }
+        assert!(!managed.cancellation.cancelled.load(Ordering::Acquire));
+    }
+
+    async fn unclaimed_notification_and_recycled_slots(managed: &ManagedSshConnection<FixtureClient>) {
+        // Poll exactly once to register the real receiver waker, then never
+        // poll again. That waker is reached only when the owned actor sends its
+        // ready notification (or drops the sender); transport health and the
+        // successful actor cleanup below distinguish success from failure.
+        for _ in 0..40 {
+            let mut request = Box::pin(managed.channel_open_direct_tcpip("echo.invalid", 23, "127.0.0.1", 5));
+            let notification = Arc::new(ReadyNotification::default());
+            let waker = std::task::Waker::from(notification.clone());
+            assert!(request.as_mut().poll(&mut Context::from_waker(&waker)).is_pending());
+            tokio::time::timeout(Duration::from_secs(3), notification.0.notified()).await.unwrap();
+            let slot = managed.operations.lock().unwrap().last_open_slot.as_ref().unwrap().upgrade().unwrap();
+            {
+                let state = slot.state.lock().unwrap();
+                assert!(state.channel.is_some());
+                assert!(!state.claimed && !state.abandoned);
+            }
+            drop(request); // successful notification queued, receiver unpolled
+            assert_open_actors_complete(managed).await;
+        }
+        assert!(managed.operations.lock().unwrap().tasks.len() <= 32);
+    }
+
+    async fn pending_open_capacity_recovers(managed: &ManagedSshConnection<FixtureClient>,
+        entered: &tokio::sync::Notify, release: &tokio::sync::Notify) {
+        assert_open_actors_complete(managed).await;
+        let mut requests = Vec::new();
+        let waker = futures::task::noop_waker();
+        for index in 0..32 {
+            let host = if index == 0 { "paused.invalid" } else { "echo.invalid" };
+            let mut request = Box::pin(managed.channel_open_direct_tcpip(host, 23, "127.0.0.1", 6));
+            assert!(request.as_mut().poll(&mut Context::from_waker(&waker)).is_pending());
+            requests.push(request);
+        }
+        entered.notified().await;
+        assert_eq!(managed.operations.lock().unwrap().tasks.len(), 32);
+        assert!(managed.channel_open_direct_tcpip("echo.invalid", 23, "127.0.0.1", 7).await.is_err());
+        assert!(!managed.is_closed()); // capacity rejection is not revocation
+        drop(requests);
+        release.notify_one();
+        assert_open_actors_complete(managed).await;
+        drop(managed.channel_open_direct_tcpip("echo.invalid", 23, "127.0.0.1", 8).await.unwrap());
+        assert_open_actors_complete(managed).await;
+    }
+
+    #[tokio::test]
+    async fn owned_open_actor_panic_is_sticky_normalized_cleanup_failure() {
+        let scope = DrainingTransportScope::new();
+        let (pending, server) = fixture(&scope, false).await;
+        let managed = tokio::time::timeout(Duration::from_secs(3), pending.receive()).await.unwrap().unwrap();
+        // Inject an actually panicking owned task into the operation ledger;
+        // this tests the ledger's normalized join failure and sticky pruning,
+        // not a fabricated russh network panic or a production trigger.
+        let actor: tokio::task::JoinHandle<CleanupOutcome> = tokio::spawn(async { panic!("fixture-private-panic-payload") });
+        let tracked = actor.map(|result| result.unwrap_or(CleanupOutcome::Unconfirmed)).boxed().shared();
+        managed.operations.lock().unwrap().tasks.push(tracked.clone());
+        assert!(tokio::time::timeout(Duration::from_secs(3), tracked).await.unwrap() == CleanupOutcome::Unconfirmed);
+        for _ in 0..2 {
+            assert!(managed.channel_open_direct_tcpip("fixture.invalid", 23, "127.0.0.1", 9).await.is_err());
+            assert!(managed.operations.lock().unwrap().failed);
+            let error = scope.drain_until(tokio::time::Instant::now() + Duration::from_secs(3)).await.unwrap_err();
+            assert!(error.to_string().contains("cleanup_unconfirmed"));
+            assert!(!error.to_string().contains("fixture-private-panic-payload"));
+        }
+        finish_server(server).await;
+    }
+
+    #[tokio::test]
+    async fn abandoned_open_late_confirmation_preserves_another_active_echo() {
+        exercise_managed_open(false).await;
+    }
+    #[tokio::test]
+    async fn stalled_open_deadline_closes_unhealthy_transport_and_joins_actors() {
+        exercise_managed_open(true).await;
+    }
+    async fn exercise_managed_open(expire: bool) {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let scope = DrainingTransportScope::new();
+            let key = PrivateKey::new(Ed25519Keypair::from_seed(&[35; 32]).into(), "open fixture").unwrap();
+            let expected = key.public_key().clone();
+            let entered = Arc::new(tokio::sync::Notify::new());
+            let release = Arc::new(tokio::sync::Notify::new());
+            let closed = Arc::new(tokio::sync::Notify::new());
+            let clients = Arc::new(Mutex::new(Vec::new()));
+            let (client, server_stream) = tokio::io::duplex(65536);
+            let handler = OpenFixtureServer { entered: entered.clone(), release: release.clone(),
+                closed: closed.clone(), clients: clients.clone() };
+            let server = tokio::spawn(async move {
+                russh::server::run_stream(Arc::new(russh::server::Config {
+                    keys: vec![key], ..Default::default()
+                }), server_stream, handler).await?.await
+            });
+            let managed = Arc::new(scope.connect_owned(Arc::new(client::Config::default()), client,
+                FixtureClient { wait: HostKeyWait::default(), key: expected, panic_on_key: false }).await.unwrap());
+            assert!(managed.authenticate_password("fixture", "fixture-password").await.unwrap().success());
+            let mut existing = managed.channel_open_direct_tcpip("echo.invalid", 23, "127.0.0.1", 1)
+                .await.unwrap().into_stream().unwrap();
+            existing.write_all(b"before").await.unwrap(); let mut echo = [0; 6];
+            existing.read_exact(&mut echo).await.unwrap(); assert_eq!(&echo, b"before");
+            let opening = managed.clone();
+            let budget = if expire { Duration::from_millis(200) } else { Duration::from_secs(5) };
+            let request = tokio::spawn(async move {
+                opening.channel_open_with_budget("paused.invalid", 23, "127.0.0.1", 2, budget).await
+            });
+            entered.notified().await;
+            if expire {
+                assert!(tokio::time::timeout(Duration::from_secs(2), request).await.unwrap().unwrap().is_err());
+                assert!(managed.is_closed());
+                // A subsequent open cannot remain stuck behind the first.
+                assert!(tokio::time::timeout(Duration::from_secs(1),
+                    managed.channel_open_direct_tcpip("echo.invalid", 23, "127.0.0.1", 3)).await.unwrap().is_err());
+                let mut byte = [0];
+                assert_eq!(existing.read(&mut byte).await.unwrap(), 0);
+            } else {
+                request.abort(); assert!(matches!(request.await, Err(error) if error.is_cancelled()));
+                assert!(!managed.is_closed());
+                release.notify_one();
+                // The abandoned A channel receives its late confirmation,
+                // then the owned actor closes it. B remains usable afterwards.
+                tokio::time::timeout(Duration::from_secs(2), closed.notified()).await.unwrap();
+                // Observe the owned actor's actual join result before any
+                // scope cancellation, not just the server worker's EOF.
+                assert_open_actors_complete(&managed).await;
+                existing.write_all(b"after!").await.unwrap();
+                existing.read_exact(&mut echo).await.unwrap(); assert_eq!(&echo, b"after!");
+                assert!(!managed.is_closed());
+                // Claimed-result abandonment before into_stream also closes
+                // only its own channel, never the reused transport.
+                drop(managed.channel_open_direct_tcpip("echo.invalid", 23, "127.0.0.1", 4).await.unwrap());
+                existing.write_all(b"again!").await.unwrap();
+                existing.read_exact(&mut echo).await.unwrap(); assert_eq!(&echo, b"again!");
+                assert_open_actors_complete(&managed).await;
+                unclaimed_notification_and_recycled_slots(&managed).await;
+                pending_open_capacity_recovers(&managed, &entered, &release).await;
+                existing.write_all(b"slots!").await.unwrap();
+                existing.read_exact(&mut echo).await.unwrap(); assert_eq!(&echo, b"slots!");
+            }
+            scope.drain_until(tokio::time::Instant::now() + Duration::from_secs(2)).await.unwrap();
+            assert_eq!(scope.group.lock().unwrap().active_streams, 0);
+            // In the expiry case the remote callback deliberately remains
+            // paused until now. ACK proves local task/transport cleanup, not
+            // control over remote callback execution.
+            if expire { release.notify_one(); }
+            finish_server(server).await;
+            let clients = std::mem::take(&mut *clients.lock().unwrap());
+            for client in clients { tokio::time::timeout(Duration::from_secs(2), client).await.unwrap().unwrap(); }
+        }).await.expect("managed open fixture exceeded deadline");
+    }
+
+    #[tokio::test]
+    async fn managed_open_budget_includes_waiting_for_exclusive_auth_slot() {
+        let scope = DrainingTransportScope::new();
+        let (pending, server) = fixture(&scope, false).await;
+        let managed = tokio::time::timeout(Duration::from_secs(3), pending.receive()).await.unwrap().unwrap();
+        let held = managed.slot.write().await;
+        let result = tokio::time::timeout(Duration::from_secs(1),
+            managed.channel_open_with_budget("fixture.invalid", 23, "127.0.0.1", 1, Duration::from_millis(50))).await.unwrap();
+        assert!(result.is_err());
+        assert!(managed.cancellation.cancelled.load(Ordering::Acquire));
+        drop(held);
+        scope.drain_until(tokio::time::Instant::now() + Duration::from_secs(3)).await.unwrap();
+        finish_server(server).await;
     }
 
     #[tokio::test]
@@ -815,7 +1200,7 @@ mod managed_connection_tests {
         let scope = DrainingTransportScope::new();
         let (pending, server) = fixture(&scope, false).await;
         let claimed = tokio::time::timeout(Duration::from_secs(3), pending.receive()).await.unwrap().unwrap();
-        let held = claimed.slot.lock().await;
+        let held = claimed.slot.write().await;
         let error = scope.drain_until(tokio::time::Instant::now() + Duration::from_millis(10)).await.unwrap_err();
         assert!(error.to_string().contains("cleanup_unconfirmed"));
         drop(held); drop(claimed);

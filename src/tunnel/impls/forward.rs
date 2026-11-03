@@ -126,6 +126,23 @@ pub fn spawn_dynamic(
     })
 }
 
+#[derive(Clone)]
+enum DynamicConnection {
+    Existing(Arc<Handle<ClientHandler>>),
+    Managed(Arc<crate::ssh::connection::ManagedSshConnection<ClientHandler>>),
+}
+impl DynamicConnection {
+    fn is_closed(&self) -> bool {
+        match self { Self::Existing(handle) => handle.is_closed(), Self::Managed(handle) => handle.is_closed() }
+    }
+    async fn open(&self, host: &str, port: u16, peer: SocketAddr) -> Result<russh::ChannelStream<Msg>, russh::Error> {
+        match self {
+            Self::Existing(handle) => open_direct(handle, host, port, peer).await.map(Channel::into_stream),
+            Self::Managed(handle) => handle.channel_open_direct_tcpip(host, port, &peer.ip().to_string(), peer.port()).await.and_then(|channel| channel.into_stream()),
+        }
+    }
+}
+
 /// Shared dynamic-forward runtime for GUI sessions and unattended owners.
 /// The caller binds before reporting readiness. Dropping this future closes
 /// the listener AND all accepted SOCKS clients, not just future accepts.
@@ -133,28 +150,51 @@ pub(crate) async fn run_dynamic(
     handle: Arc<Handle<ClientHandler>>,
     listener: TcpListener,
 ) -> std::io::Result<()> {
+    run_dynamic_inner(DynamicConnection::Existing(handle), listener, None, None).await
+}
+
+/// Managed mode shares the exact SOCKS parser/relay loop, but stops accepting
+/// cooperatively and joins all clients before returning to its owning registry.
+pub(crate) async fn run_dynamic_managed(route: Arc<crate::ssh::ManagedForwardRoute>, listener: TcpListener,
+    shutdown: tokio::sync::watch::Receiver<bool>, authorized: Arc<dyn Fn() -> bool + Send + Sync>) -> std::io::Result<()> {
+    let target = route.target.clone();
+    let live = Arc::new(move || authorized() && !route.is_closed());
+    run_dynamic_inner(DynamicConnection::Managed(target), listener, Some(shutdown), Some(live)).await
+}
+
+async fn run_dynamic_inner(handle: DynamicConnection, listener: TcpListener,
+    mut shutdown: Option<tokio::sync::watch::Receiver<bool>>,
+    live: Option<Arc<dyn Fn() -> bool + Send + Sync>>) -> std::io::Result<()> {
     let mut clients = tokio::task::JoinSet::new();
     let mut health = tokio::time::interval(std::time::Duration::from_millis(200));
-    loop {
+    let result = loop {
         tokio::select! {
+            _ = async {
+                match shutdown.as_mut() {
+                    Some(receiver) => { if !*receiver.borrow() { let _ = receiver.changed().await; } }
+                    None => std::future::pending::<()>().await,
+                }
+            } => break Ok(()),
             _ = health.tick() => {
-                if handle.is_closed() {
-                    return Err(std::io::Error::new(std::io::ErrorKind::ConnectionAborted,
-                        "SSH transport disconnected"));
+                if handle.is_closed() || live.as_ref().is_some_and(|check| !check()) {
+                    break Err(std::io::Error::new(std::io::ErrorKind::ConnectionAborted,
+                        "SSH transport or authorization ended"));
                 }
             }
             client = listener.accept() => {
-                let (inbound, peer) = client?;
+                let (inbound, peer) = match client { Ok(value) => value, Err(error) => break Err(error) };
                 // Bound unauthenticated local SOCKS clients as well as SSH channels.
                 if clients.len() >= 128 { drop(inbound); continue; }
                 let handle = handle.clone();
-                clients.spawn(async move {
-                    let _ = socks5_serve(&handle, inbound, peer).await;
-                });
+                clients.spawn(async move { let _ = socks5_serve(&handle, inbound, peer).await; });
             }
             _ = clients.join_next(), if !clients.is_empty() => {}
         }
-    }
+    };
+    drop(listener);
+    clients.abort_all();
+    while clients.join_next().await.is_some() {}
+    result
 }
 
 /// Negotiate no-auth without consuming any bytes from the following request.
@@ -183,7 +223,7 @@ where
 
 /// Handle one SOCKS5 client connection end-to-end.
 async fn socks5_serve(
-    handle: &Arc<Handle<ClientHandler>>,
+    handle: &DynamicConnection,
     mut inbound: TcpStream,
     peer: SocketAddr,
 ) -> std::io::Result<()> {
@@ -229,10 +269,9 @@ async fn socks5_serve(
     inbound.read_exact(&mut port).await?;
     let port = u16::from_be_bytes(port);
 
-    match open_direct(handle, &host, port, peer).await {
-        Ok(ch) => {
+    match handle.open(&host, port, peer).await {
+        Ok(mut stream) => {
             inbound.write_all(&socks_reply(0x00)).await?; // succeeded
-            let mut stream = ch.into_stream();
             let _ = copy_bidirectional(&mut inbound, &mut stream).await;
         }
         Err(_) => {
