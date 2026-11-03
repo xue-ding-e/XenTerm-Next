@@ -27,6 +27,8 @@ use gpui_kit::component::{
 };
 use gpui_kit::{div, prelude::*, px, rgb, rgba, Animation, AnimationExt as _, Context, Entity, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, SharedString, Subscription, Window};
 
+use gpui_kit::TestSupportExt as _;
+
 use std::time::Duration;
 
 use gpui_kit::assets::IconName;
@@ -1855,6 +1857,7 @@ impl TerminalPage {
                             let recall = row.command.clone();
                             div()
                                 .id(SharedString::from(format!("command-suggestion-{}", row.index)))
+                                .test_support()
                                 .w_full().min_w_0().px_2().py_1().rounded_sm()
                                 .hover(|row| row.bg(rgba(0xffffff14)))
                                 .cursor_pointer()
@@ -2824,7 +2827,17 @@ mod close_focus_tests {
         draw(cx);
         assert_history_input(&fixture, "echo", cx);
         assert!(received(&fixture, "tab-0").is_empty(), "typing must not reach the shell");
-        cx.update(|window, cx| window.click(SharedString::from("command-suggestion-0"), cx));
+        cx.update(|window, cx| {
+            let suggestions = fixture.page.read(cx).command_suggestions(cx);
+            assert_eq!(suggestions.len(), 1, "the rendered query must have one candidate");
+            assert_eq!(suggestions[0].index, 0);
+            assert_eq!(suggestions[0].command, "echo suggested");
+            let row = window.find(SharedString::from("command-suggestion-0"));
+            assert!(row.visible(), "the candidate must be visible: {row:?}");
+            assert!(row.bounds().size.width > px(0.0));
+            assert!(row.bounds().size.height > px(0.0));
+            window.click(SharedString::from("command-suggestion-0"), cx);
+        });
         draw(cx);
         cx.update(|_, cx| {
             let page = fixture.page.read(cx);
