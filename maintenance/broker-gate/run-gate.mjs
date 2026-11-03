@@ -5,10 +5,15 @@ import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import {performance} from 'node:perf_hooks';
-import {pathToFileURL} from 'node:url';
+import {pathToFileURL, fileURLToPath} from 'node:url';
 import {spawn} from 'node:child_process';
 
 function requireThat(value, message) { if (!value) throw new Error(message); }
+export function qualificationVersion(text, commit) {
+  requireThat(/^[0-9a-f]{40}$/.test(commit), 'invalid qualification source SHA');
+  requireThat(new RegExp(`^xt-dev-${commit.slice(0,7)}-T[0-9]{10}\\n?$`).test(text), 'version does not identify fixed qualification source');
+  return text.trim();
+}
 export function listing(text) {
   const counts = new Map();
   for (const line of text.split(/\r?\n/)) {
@@ -127,13 +132,27 @@ async function main() {
   const deadline = performance.now() + (mode === '--compile' ? 25 : 15)*60*1000;
   const remaining = cap => { checkpoint(); const left = deadline-performance.now(); requireThat(left > 0, 'total budget exhausted'); return Math.min(cap,left); };
   requireThat(sourceArg && evidenceArg && manifestArg, 'source, evidence and inventory arguments required');
-  const source = fs.realpathSync(sourceArg), evidence = path.resolve(evidenceArg);
+  const originalSource = fs.realpathSync(sourceArg), evidence = path.resolve(evidenceArg);
+  let source = originalSource;
   const manifest = JSON.parse(fs.readFileSync(manifestArg, 'utf8'));
   const required = Object.values(manifest.groups).flat();
+  const regression = 'ssh::connection::managed_connection_tests::abandoned_open_late_confirmation_preserves_another_active_echo';
+  requireThat(required.filter(name => name === regression).length === 1, 'missing unique close ACK regression');
+  required.splice(required.indexOf(regression), 1); required.unshift(regression);
   requireThat(required.length === 52, 'unexpected required test count');
   const git = async (...args) => (await captured('git', ['-C', source, ...args], {PATH:process.env.PATH}, remaining(10000))).trim();
   requireThat(await git('rev-parse','HEAD') === manifest.source_commit, 'candidate commit mismatch');
   requireThat(await git('rev-parse','HEAD^{tree}') === manifest.source_tree, 'candidate tree mismatch');
+  requireThat(await git('status','--porcelain') === '', 'original fixed checkout changed');
+  const helper = fileURLToPath(new URL('./prepare-backport.py', import.meta.url));
+  const prepare = async action => captured('python3', ['-B','-I',helper,action,originalSource,evidence], {PATH:process.env.PATH}, remaining(Infinity));
+  if (mode === '--compile') await prepare('prepare');
+  await prepare('verify');
+  const receipt = JSON.parse(fs.readFileSync(path.join(evidence,'backport-receipt.json'),'utf8'));
+  const work = fs.realpathSync(receipt.work_root);
+  requireThat(work.startsWith(os.tmpdir()+path.sep+'broker-russh675-'), 'unexpected prepared root');
+  source = fs.realpathSync(path.join(work,'source'));
+  const controlledTarget = path.join(work,'target');
   // Import and invoke the existing reviewed factory, rather than maintaining
   // a second allowlist. Python helper dependencies are prepared by control.
   const factory = `import sys, pathlib, os, json\nsys.path.insert(0,sys.argv[1])\nfrom ssh_proxy_e2e import isolated_environment\nprint(json.dumps(isolated_environment(pathlib.Path(sys.argv[2]),os.environ)))`;
@@ -150,24 +169,50 @@ async function main() {
   try {
     if (mode === '--compile') {
       const env = await environment('compile');
-      // Keep only official toolchain/cache locations. This is environment
-      // isolation, not a filesystem sandbox; cached files remain readable.
-      env.CARGO_HOME = path.join(os.homedir(), '.cargo');
+      // Fresh private Cargo home: no shared registry/cache file is modified.
+      // Toolchain remains the official pinned installation.
+      env.CARGO_HOME = path.join(work, 'cargo-home');
       env.RUSTUP_HOME = path.join(os.homedir(), '.rustup');
       env.RUSTUP_TOOLCHAIN = '1.99.1';
-      env.CARGO_TARGET_DIR = path.join(source, 'target/broker-control');
+      env.CARGO_TARGET_DIR = controlledTarget;
+      // Resolve with the original legal assembly script, not ambient CI values.
+      // Both invocations write version.json outside the immutable source copy.
+      const versionEnv = {...env, GITHUB_SHA:manifest.source_commit,
+        GITHUB_REF_TYPE:'branch', GITHUB_REF_NAME:'validation/broker-russh675-20261103',
+        XT_CHANNEL:'dev', XT_VERSION_JSON:path.join(evidence,'version-original.json')};
+      delete versionEnv.XT_VERSION;
+      const versionRun = await bounded('bash',[path.join(originalSource,'scripts/version.sh')],versionEnv,remaining(10000),path.join(evidence,'version.stdout'),path.join(evidence,'version.stderr'),originalSource);
+      requireThat(versionRun.exit === 0 && !versionRun.timedOut, 'fixed-source version resolution failed');
+      env.XT_VERSION = qualificationVersion(fs.readFileSync(path.join(evidence,'version.stdout'),'utf8'),manifest.source_commit);
+      env.XT_VERSION_JSON = path.join(evidence,'version-build.json');
+      fs.writeFileSync(path.join(evidence,'version-inputs.json'),JSON.stringify({source_commit:manifest.source_commit,script_sha256:await sha256(path.join(originalSource,'scripts/version.sh')),GITHUB_REF_TYPE:versionEnv.GITHUB_REF_TYPE,GITHUB_REF_NAME:versionEnv.GITHUB_REF_NAME,XT_CHANNEL:versionEnv.XT_CHANNEL,XT_VERSION:env.XT_VERSION},null,2)+'\n');
       const run = await bounded('cargo', ['+1.99.1','test','--locked','--no-default-features','--features','headless','--bin','xenterm','--jobs','2','--no-run','--message-format=json'], env, remaining(Infinity), path.join(evidence,'build-artifacts.jsonl'),path.join(evidence,'compile.stderr'),source);
       fs.writeFileSync(path.join(evidence,'compile-result.json'),JSON.stringify({...run,status:run.exit===0&&!run.timedOut?'compiled':'not_passed',budget_seconds:1500,automatic_budget_expansion:false},null,2)+'\n');
       requireThat(run.exit===0&&!run.timedOut,'compile failed or budget exhausted');
+      await prepare('verify');
+      const builtVersion = JSON.parse(fs.readFileSync(env.XT_VERSION_JSON,'utf8'));
+      requireThat(builtVersion.version === env.XT_VERSION && builtVersion.hash === manifest.source_commit.slice(0,7) && builtVersion.source === 'xt-version', 'compiled version provenance mismatch');
+      const records = fs.readFileSync(path.join(evidence,'build-artifacts.jsonl'),'utf8').split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line));
+      const dependencies = records.filter(row => row.reason === 'compiler-artifact' && row.target?.name === 'russh');
+      requireThat(dependencies.length === 1 && path.resolve(dependencies[0].manifest_path) === path.join(work,'russh-0.61.2','Cargo.toml'), 'compiled russh is not the isolated backport');
+      fs.writeFileSync(path.join(evidence,'actual-russh-artifact.json'), JSON.stringify(dependencies[0],null,2)+'\n');
+      const compiledExecutable = fs.realpathSync(artifact(records,source,controlledTarget));
+      requireThat(compiledExecutable.startsWith(controlledTarget+path.sep), 'compiled executable escaped controlled target');
+      fs.writeFileSync(path.join(evidence,'compiled-binary-identity.json'),JSON.stringify({source, target:controlledTarget, executable:compiledExecutable, executable_sha256:await sha256(compiledExecutable), source_commit:manifest.source_commit, temporary_lock_sha256:receipt.temporary_lock_sha256},null,2)+'\n');
       remaining(Infinity);
       return;
     }
-    const target = fs.realpathSync(path.join(source, 'target/broker-control'));
+    const target = fs.realpathSync(controlledTarget);
     const records = fs.readFileSync(path.join(evidence,'build-artifacts.jsonl'),'utf8').split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line));
     const executable = fs.realpathSync(artifact(records, source, target));
     requireThat(executable.startsWith(target + path.sep), 'real executable escaped controlled target');
+    const compiledIdentity = JSON.parse(fs.readFileSync(path.join(evidence,'compiled-binary-identity.json'),'utf8'));
+    requireThat(compiledIdentity.source === source && compiledIdentity.target === target
+      && compiledIdentity.executable === executable && compiledIdentity.executable_sha256 === await sha256(executable)
+      && compiledIdentity.source_commit === manifest.source_commit && compiledIdentity.temporary_lock_sha256 === receipt.temporary_lock_sha256,
+      'compiled binary identity drift between phases');
     const result = {source_commit:manifest.source_commit, source_tree:manifest.source_tree,
-      executable_sha256:await sha256(executable), required:required.length, tests:[], status:'running'};
+      qualification:'russh 0.61.2 + PR675 isolated path backport, NOT original locked dependency', temporary_lock_sha256:receipt.temporary_lock_sha256, modified_file_sha256:receipt.modified_file_sha256, executable_sha256:await sha256(executable), required:required.length, tests:[], status:'running'};
     const save = () => fs.writeFileSync(path.join(evidence,'test-results.json'), JSON.stringify(result,null,2)+'\n');
     save();
     try {
@@ -188,6 +233,7 @@ async function main() {
         requireThat(pass, `test failed or budget exceeded: ${name}`);
       }
       remaining(Infinity);
+      await prepare('verify');
       result.status='passed'; save();
     } catch (error) {
       result.status='not_passed'; result.error=String(error.message); save(); throw error;

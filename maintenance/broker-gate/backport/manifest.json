@@ -1,0 +1,14 @@
+{
+  "crate_version": "0.61.2",
+  "crate_sha256": "bbf893f64684e58da8a68d56a5e84d1cf0440226274c515770fe267707a7d0b0",
+  "upstream_pr": "https://github.com/Eugeny/russh/pull/675",
+  "upstream_commit": "6fc20b2803da7c77e5e89bd3afbf86c80d3cf3e5",
+  "original_file_sha256": "d8f4340413e22d654a522f93661fb211acf94fb6b250596034c172839ec1b4a7",
+  "patched_file_sha256": "ddf947c3dc679bbcfe01fa723c1c1f1f7956c3753510c26f24e89f15638d94f8",
+  "patch_sha256": "23d6181682b93aa7f49a8f38ce9443f3e495b2c8da556dc7e2b0bbad46fa88ef",
+  "candidate_only": true,
+  "runtime_validation": "not run",
+  "modified_file_with_notice_sha256": "330d8e6f81164d48b3556495da5de8a6914a9f5486de2fa781f344154d4a1bfb",
+  "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+  "qualification": "isolated path backport only; original lock not qualified"
+}

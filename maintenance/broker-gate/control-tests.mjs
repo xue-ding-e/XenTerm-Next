@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {spawn} from 'node:child_process';
-import {bounded, captured, liveGroup, exactPass} from './run-gate.mjs';
+import {bounded, captured, liveGroup, exactPass, qualificationVersion} from './run-gate.mjs';
 const root = fs.mkdtempSync(path.join(os.tmpdir(),'broker-control-selftest-'));
 const env = {PATH:process.env.PATH};
 // The descendant ignores TERM and closes inherited output, reproducing the old
@@ -22,6 +22,9 @@ else:
  sys.exit(int(sys.argv[2]) if sys.argv[2]!='timeout' else 0)
 `;
 try {
+ const source='495f000b69856384732f7281c3b544bef783a755';
+ assert.equal(qualificationVersion('xt-dev-495f000-T1793740000\n',source),'xt-dev-495f000-T1793740000');
+ for(const value of ['xt-dev-0000000-T1793740000','xt-beta-495f000-T1793740000','xt-v1.0.0','xt-dev-495f000-T1793740000\nextra','xt-dev-495f000-T123']) assert.throws(()=>qualificationVersion(value,source));
  const good='test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s\n';
  assert.equal(exactPass({exit:0,timedOut:false},good),true);
  for(const [run,text] of [[{exit:1},good],[{exit:0},good.replace('1 passed','0 passed')],[{exit:0},good+good],[{exit:0,timedOut:true},good],[{exit:0},'']]) assert.equal(exactPass(run,text),false);

@@ -1,9 +1,9 @@
 # Fixed-source, control-only validation. No product branch or release workflow.
 # After approval, pair with reviewed maintenance/broker-gate/{run-gate.mjs,required-tests.json}.
-name: Broker fixed-source Linux core gate
+name: Broker isolated russh PR675 qualification
 on:
   push:
-    branches: [validation/broker-native-20261103]
+    branches: [validation/broker-russh675-20261103]
 permissions:
   contents: read
 concurrency:
@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   core:
-    if: github.repository == 'xue-ding-e/XenTerm-Next' && github.ref == 'refs/heads/validation/broker-native-20261103'
+    if: github.repository == 'xue-ding-e/XenTerm-Next' && github.ref == 'refs/heads/validation/broker-russh675-20261103'
     runs-on: ubuntu-24.04
     timeout-minutes: 50
     steps:
@@ -28,6 +28,7 @@ jobs:
           set -euo pipefail
           node control/maintenance/broker-gate/run-gate.mjs --self-test
           node control/maintenance/broker-gate/control-tests.mjs
+          python3 -B -I control/maintenance/broker-gate/backport-tests.py
       - name: Checkout fixed candidate, not default branch
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -36,6 +37,13 @@ jobs:
           path: source
           persist-credentials: false
           fetch-depth: 1
+      - name: Capture exact controller identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          git -C control rev-parse HEAD > evidence/control-commit.txt
+          (cd control && find maintenance/broker-gate .github/workflows/broker-linux-control.yml -type f -print0 | sort -z | xargs -0 sha256sum) > evidence/control-sha256.txt
       - name: Install fixed Rust toolchain
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # official action resolved 2026-11-02
         with:
@@ -83,7 +91,7 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # official v4 resolved 2026-11-02
         with:
-          name: broker-linux-core-${{ github.sha }}-${{ github.run_id }}
+          name: broker-russh675-${{ github.sha }}-${{ github.run_id }}
           path: evidence/
           if-no-files-found: error
           retention-days: 7

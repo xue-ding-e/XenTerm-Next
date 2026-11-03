@@ -1,0 +1,13 @@
+{
+  "source_commit": "ff74d7332b717fe6caf56f63aa4decdcdfab8645",
+  "path": "LICENSE.txt",
+  "blob": "d645695673349e3947e8e5ae42332d0ac3164cd7",
+  "bytes": 11358,
+  "license": "Apache-2.0",
+  "crate_license_file_present": false,
+  "root_notice_present": false,
+  "modified_file_notice_required_before_distribution": true,
+  "original_copyright_headers": "preserve",
+  "backport_author": "Corey Leavitt",
+  "backport_pr": "https://github.com/Eugeny/russh/pull/675"
+}
