@@ -1132,6 +1132,7 @@ async fn connect_ssh(
     // handler is moved into `connect`) (#56).
     let remote_forwards = remote_forward_targets(session);
     let handler = ClientHandler {
+        frozen_host_keys: crate::ssh::frozen_auth::trust(),
         host: session.host.clone(),
         port: session.port,
         remote_forwards,
@@ -1176,7 +1177,7 @@ where
     H::Error: std::error::Error + Send + Sync + 'static,
 {
     let addr = format!("{}:{}", session.host, session.port);
-    let stream = match crate::ssh::proxy::resolve(&session.proxy)? {
+    let stream = match crate::ssh::proxy::for_connection(&session.proxy)? {
         Some(p) => {
             let _ = events.send(SessionEvent::Status(format!(
                 "{} {} → {}",
@@ -1283,11 +1284,14 @@ pub(crate) async fn authenticate_session(
             // An encrypted private key needs its passphrase; we reuse the
             // session's password field for it (empty = unencrypted key) (#90).
             let pass = password.as_str();
-            let keypair = load_session_private_key_offthread(session, pass).await?;
+            let keypair = match crate::ssh::frozen_auth::key(session) {
+                Some(frozen) => frozen?,
+                None => Arc::new(load_session_private_key_offthread(session, pass).await?),
+            };
             // RSA keys must be signed with an explicit SHA-2 hash; every other
             // key type carries its own algorithm, so no override is needed.
             let hash = keypair.algorithm().is_rsa().then_some(HashAlg::Sha256);
-            let key_with_hash = PrivateKeyWithHashAlg::new(Arc::new(keypair), hash);
+            let key_with_hash = PrivateKeyWithHashAlg::new(keypair, hash);
             network_stage(
                 &format!(
                     "public-key authentication at {}:{}",
@@ -3265,6 +3269,7 @@ async fn ask_mfa_prompt(
 /// Carries the remote-forward (-R) map so we can service channels the server
 /// opens back to us: server bind-port → local `(host, port)` target (#56).
 pub(crate) struct ClientHandler {
+    frozen_host_keys: Option<Arc<crate::ssh::known_hosts::HostKeySnapshot>>,
     host_key_wait: HostKeyWait,
     pub(crate) host: String,
     pub(crate) port: u16,
@@ -3404,6 +3409,9 @@ impl Handler for ClientHandler {
         &mut self,
         server_public_key: &PublicKey,
     ) -> Result<bool, Self::Error> {
+        if let Some(snapshot) = &self.frozen_host_keys {
+            return Ok(snapshot.accepts(&self.host, self.port, server_public_key));
+        }
         Ok(verify_host_key(
             &self.host,
             self.port,
@@ -4401,6 +4409,7 @@ mod unmapped_forwarding_tests {
                 callback_done,
                 disconnect_seen,
                 inner: ClientHandler {
+                    frozen_host_keys: None,
                     host_key_wait: HostKeyWait::default(),
                     host: "forwarding-test.invalid".into(),
                     port: 22,

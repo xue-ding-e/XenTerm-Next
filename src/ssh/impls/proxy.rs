@@ -20,6 +20,60 @@ use tokio::net::TcpStream;
 use super::structs::{ProxyConfig, ProxyKind};
 use crate::config::Secret;
 
+/// A frozen route distinguishes an intentionally direct TCP connection from
+/// an unresolved setting. ExplicitDirect MUST NOT fall through to environment
+/// lookup later, even if ALL_PROXY changes before authentication.
+#[derive(Clone)]
+pub(crate) enum ResolvedProxy {
+    ExplicitDirect,
+    Via(ProxyConfig),
+}
+
+impl ResolvedProxy {
+    pub(crate) fn capture(session_proxy: &str) -> Result<Self> {
+        Self::capture_with_env(session_proxy, |name| std::env::var(name).ok())
+    }
+
+    pub(crate) fn capture_with_env(session_proxy: &str, env: impl FnMut(&str) -> Option<String>) -> Result<Self> {
+        Ok(match resolve_with_env(session_proxy, env)? {
+            Some(config) => Self::Via(config),
+            None => Self::ExplicitDirect,
+        })
+    }
+
+    pub(crate) fn into_config(self) -> Option<ProxyConfig> {
+        match self { Self::ExplicitDirect => None, Self::Via(config) => Some(config) }
+    }
+
+    /// Internal identity only; never serialize this digest into status/logs.
+    pub(crate) fn fingerprint(&self) -> Result<[u8; 32]> {
+        use sha2::{Digest, Sha256};
+        let bytes = match self {
+            Self::ExplicitDirect => zeroize::Zeroizing::new(b"explicit-direct".to_vec()),
+            Self::Via(config) => {
+                let kind = match config.kind { ProxyKind::Socks5 => "socks5", ProxyKind::Http => "http", ProxyKind::Https => "https" };
+                zeroize::Zeroizing::new(serde_json::to_vec(&(kind, &config.host, config.port,
+                    config.auth.as_ref().map(|(user, password)| (user, password.as_str()))))?)
+            }
+        };
+        Ok(Sha256::digest(bytes.as_slice()).into())
+    }
+}
+
+/// The actual connection path uses this selector. A captured direct/proxy
+/// choice bypasses both the current session string and environment lookup.
+pub(crate) fn for_connection(session_proxy: &str) -> Result<Option<ProxyConfig>> {
+    select_for_connection(session_proxy, crate::ssh::frozen_auth::proxy(), |name| std::env::var(name).ok())
+}
+
+fn select_for_connection(session_proxy: &str, frozen: Option<ResolvedProxy>,
+    env: impl FnMut(&str) -> Option<String>) -> Result<Option<ProxyConfig>> {
+    match frozen {
+        Some(resolved) => Ok(resolved.into_config()),
+        None => resolve_with_env(session_proxy, env),
+    }
+}
+
 /// Resolve the proxy for a session: the explicit `session_proxy` string if set,
 /// otherwise the `ALL_PROXY` / `all_proxy` environment variable.  `Ok(None)`
 /// means a direct connection.  A proxy string that is set but unparseable is an
@@ -271,5 +325,35 @@ mod tests {
         assert_eq!(cfg.kind, ProxyKind::Https);
         let err = connect(&cfg, "target", 22).await.unwrap_err();
         assert!(err.to_string().contains("not supported"));
+    }
+}
+
+#[cfg(test)]
+mod frozen_proxy_tests {
+    use super::*;
+
+    #[test]
+    fn explicit_direct_never_falls_back_to_new_environment() {
+        let direct = ResolvedProxy::capture_with_env("", |_| None).unwrap();
+        assert!(select_for_connection("invalid-new-setting", Some(direct), |_| {
+            panic!("a frozen direct connection read environment")
+        }).unwrap().is_none());
+    }
+
+    #[test]
+    fn effective_proxy_identity_and_connection_use_same_captured_value() {
+        let before = ResolvedProxy::capture_with_env("", |name| {
+            (name == "ALL_PROXY").then(|| "socks5://fixture-user:fixture-pass@proxy-a.invalid:1080".into())
+        }).unwrap();
+        let after = ResolvedProxy::capture_with_env("", |name| {
+            (name == "ALL_PROXY").then(|| "socks5://proxy-b.invalid:1081".into())
+        }).unwrap();
+        assert_ne!(before.fingerprint().unwrap(), after.fingerprint().unwrap());
+        let used = select_for_connection("", Some(before), |_| {
+            panic!("a frozen proxy connection read environment")
+        }).unwrap().unwrap();
+        assert_eq!(used.host, "proxy-a.invalid");
+        assert_eq!(used.port, 1080);
+        assert_eq!(used.auth.unwrap().1.as_str(), "fixture-pass");
     }
 }

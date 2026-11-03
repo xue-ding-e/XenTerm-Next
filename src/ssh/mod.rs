@@ -18,3 +18,6 @@ mod structs;
 
 pub(crate) use ssh::*;
 pub(crate) use structs::*;
+
+#[path = "impls/frozen_auth.rs"]
+pub(crate) mod frozen_auth;

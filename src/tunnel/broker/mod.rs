@@ -5,3 +5,4 @@
 #![allow(dead_code)]
 mod protocol;
 mod registry;
+mod snapshot;

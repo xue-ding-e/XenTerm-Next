@@ -22,6 +22,8 @@ use tokio::sync::watch;
 struct TransportGroup {
     cancelled: bool,
     streams: Vec<Weak<CancelState>>,
+    active_streams: usize,
+    drained: Arc<tokio::sync::Notify>,
 }
 tokio::task_local! { static AUTOMATION_TRANSPORTS: Arc<Mutex<TransportGroup>>; }
 struct CancelGroupOnDrop(Arc<Mutex<TransportGroup>>);
@@ -39,6 +41,61 @@ pub(crate) async fn with_automation_cancellation<F: Future>(future: F) -> F::Out
     let group = Arc::new(Mutex::new(TransportGroup::default()));
     let _guard = CancelGroupOnDrop(group.clone());
     AUTOMATION_TRANSPORTS.scope(group, future).await
+}
+
+/// Explicit cancellation scope for owners that must ACK physical transport
+/// cleanup. The caller first joins its startup/client tasks, then drains this
+/// scope. Drop-only cancellation remains a best-effort fallback, not an ACK.
+pub(crate) struct DrainingTransportScope {
+    group: Arc<Mutex<TransportGroup>>,
+}
+
+impl DrainingTransportScope {
+    pub(crate) fn new() -> Self {
+        Self { group: Arc::new(Mutex::new(TransportGroup::default())) }
+    }
+
+    pub(crate) async fn run<F: Future>(&self, future: F) -> F::Output {
+        AUTOMATION_TRANSPORTS.scope(self.group.clone(), future).await
+    }
+
+    pub(crate) fn cancel(&self) {
+        let mut group = self.group.lock().unwrap_or_else(|e| e.into_inner());
+        group.cancelled = true;
+        for state in group.streams.iter().filter_map(Weak::upgrade) { state.cancel(); }
+    }
+
+    /// Wait for the actual underlying streams to drop, not just their task's
+    /// cancellation signal. Do not call while still owning a Handle/stream.
+    /// No timeout is reported as success: an outer bounded caller may instead
+    /// retain its stopping entry and return an explicit cleanup-pending error.
+    pub(crate) async fn drain(&self) {
+        self.cancel();
+        let notify = self.group.lock().unwrap_or_else(|e| e.into_inner()).drained.clone();
+        loop {
+            let changed = notify.notified();
+            tokio::pin!(changed);
+            // Register before checking the count to avoid a lost final drop.
+            changed.as_mut().enable();
+            if self.group.lock().unwrap_or_else(|e| e.into_inner()).active_streams == 0 { return; }
+            changed.await;
+        }
+    }
+}
+
+impl Drop for DrainingTransportScope {
+    fn drop(&mut self) { self.cancel(); }
+}
+
+/// Declared after CancelStream's inner stream so its destructor runs only
+/// after the OS socket/channel has actually been dropped (field drop order).
+struct TransportCompletion(Arc<Mutex<TransportGroup>>);
+impl Drop for TransportCompletion {
+    fn drop(&mut self) {
+        let mut group = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        group.active_streams -= 1;
+        group.drained.notify_waiters();
+    }
 }
 
 // Capture the task-local context before spawning; task locals do not inherit
@@ -204,22 +261,26 @@ impl Drop for CancelOnDrop {
 struct CancelStream<S> {
     inner: S,
     state: Arc<CancelState>,
+    _completion: Option<TransportCompletion>,
 }
 
 impl<S> CancelStream<S> {
     fn new(inner: S) -> (Self, CancelOnDrop) {
         let state = Arc::new(CancelState::default());
-        let _ = AUTOMATION_TRANSPORTS.try_with(|group| {
-            let mut group = group.lock().unwrap_or_else(|e| e.into_inner());
+        let completion = AUTOMATION_TRANSPORTS.try_with(|owner| {
+            let mut group = owner.lock().unwrap_or_else(|e| e.into_inner());
             if group.cancelled {
                 state.cancel();
             }
             group.streams.push(Arc::downgrade(&state));
-        });
+            group.active_streams += 1;
+            TransportCompletion(owner.clone())
+        }).ok();
         (
             Self {
                 inner,
                 state: state.clone(),
+                _completion: completion,
             },
             CancelOnDrop(Some(state)),
         )
@@ -426,5 +487,41 @@ mod automation_cancellation_tests {
         })
         .await;
         assert!(child.await.is_err());
+    }
+}
+
+#[cfg(test)]
+mod draining_transport_tests {
+    use super::*;
+    use tokio::io::AsyncReadExt;
+
+    #[tokio::test]
+    async fn drain_waits_for_actual_socket_drop_not_just_cancellation() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let stream = tokio::net::TcpStream::connect(listener.local_addr().unwrap()).await.unwrap();
+        let (mut peer, _) = listener.accept().await.unwrap();
+        let scope = DrainingTransportScope::new();
+        let (mut stream, guard) = scope.run(async { CancelStream::new(stream) }).await;
+        // Cancellation alone must not claim resources are already drained.
+        assert!(tokio::time::timeout(Duration::from_millis(20), scope.drain()).await.is_err());
+        let mut byte = [0];
+        assert!(stream.read(&mut byte).await.is_err());
+        drop(stream); drop(guard);
+        tokio::time::timeout(Duration::from_secs(1), scope.drain()).await.unwrap();
+        assert_eq!(tokio::time::timeout(Duration::from_secs(1), peer.read(&mut byte)).await.unwrap().unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn drain_waits_for_every_nested_transport_and_already_cancelled_scope() {
+        let scope = DrainingTransportScope::new();
+        let (a, _) = tokio::io::duplex(32);
+        let (b, _) = tokio::io::duplex(32);
+        let (one, guard_one) = scope.run(async { CancelStream::new(a) }).await;
+        scope.cancel();
+        let (two, guard_two) = scope.run(async { CancelStream::new(b) }).await;
+        drop(one); drop(guard_one);
+        assert!(tokio::time::timeout(Duration::from_millis(20), scope.drain()).await.is_err());
+        drop(two); drop(guard_two);
+        tokio::time::timeout(Duration::from_secs(1), scope.drain()).await.unwrap();
     }
 }

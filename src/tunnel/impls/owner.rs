@@ -115,7 +115,7 @@ struct RouteHop<'a> {
     proxy: &'a str,
 }
 
-fn route_fingerprint(session: &Session, jumps: &[Session], index: usize) -> Result<[u8; 32]> {
+pub(super) fn route_fingerprint(session: &Session, jumps: &[Session], index: usize) -> Result<[u8; 32]> {
     let rule = session.forwards.get(index).ok_or_else(|| anyhow!("saved forward rule not found"))?;
     let route: Vec<_> = jumps.iter().chain(std::iter::once(session)).enumerate().map(|(i, hop)| RouteHop {
         id: &hop.id, host: &hop.host, port: hop.port, user: &hop.user, auth: hop.auth,
