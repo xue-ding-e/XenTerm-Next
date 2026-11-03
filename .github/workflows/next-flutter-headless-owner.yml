@@ -1,0 +1,69 @@
+name: Next Flutter permission regressions (headless core only)
+
+on:
+  push:
+    branches: [validation/flutter-permission-regression-20261103]
+
+permissions:
+  contents: read
+
+# Share the existing product queue, not a second concurrent heavy build.
+# Queue rather than replace existing pending runs. Publication still requires a
+# queue audit because other workflows may retain GitHub's single-pending mode.
+concurrency:
+  group: next-product-heavy
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  core:
+    if: github.repository == 'xue-ding-e/XenTerm-Next' && github.ref == 'refs/heads/validation/flutter-permission-regression-20261103'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: '2'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: control
+          persist-credentials: false
+      - name: Validate immutable source binding before checking out source
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, re
+          source = json.load(open('control/scripts/next/headless_owner_candidate.json'))['source_sha']
+          if not re.fullmatch(r'[0-9a-f]{40}', source):
+              raise SystemExit('Draft is not bound to a reviewed source commit')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'sha={source}\n')
+          PY
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.source.outputs.sha }}
+          path: source
+          fetch-depth: 3
+          persist-credentials: false
+      - name: Check control tests and frozen source identity before setup
+        run: |
+          python3 -m unittest discover -s control/scripts/next -p 'test_headless_owner_gate.py'
+          python3 control/scripts/next/run_headless_owner_gate.py --source source --manifest control/scripts/next/headless_owner_candidate.json --logs evidence --verify-only
+      - uses: dtolnay/rust-toolchain@1.99.1
+      - name: Install only headless Linux build prerequisites
+        timeout-minutes: 5
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libudev-dev pkg-config
+      - name: Compile, run exact regressions serially, then the full headless core
+        timeout-minutes: 50
+        run: python3 control/scripts/next/run_headless_owner_gate.py --source source --manifest control/scripts/next/headless_owner_candidate.json --logs evidence
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: permission-regression-core-${{ steps.source.outputs.sha }}-${{ github.run_attempt }}
+          path: evidence/*
+          if-no-files-found: warn
+          retention-days: 14
+
