@@ -13,7 +13,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 PINS = {
     "gpui-base-0.7.1.crate": "3cf698677b253118459f552fe15513858c669d79a25837a94e480db2ae330050",
     "input-text-colors.patch": "7f6e8a5c88741e05455ad934f0ebd7f24149d1d40583e1f04fe6f885479868c4",
-    "native_text_probe.rs": "05154e09fdafa065a5de66c8faf321acb23696dc61829c3ec7671e32962fe038",
+    "native_text_probe.rs": "98d7f69c09537d7ca52a158c2d7ad5c3b623d9cf11504979180f05ba709df6c3",
     "example-manifest-stanza.toml": "787218d89ae02aed371d84a99bf10573aa13660e83ea25a453b93817ef6e2cc3",
     # Exact workspace fixture from the source commit recorded in .cargo_vcs_info.json:
     # https://github.com/longbridge/gpui-kit/blob/87d10ae5e1299d1be18670a37570c5402f952e34/README.md

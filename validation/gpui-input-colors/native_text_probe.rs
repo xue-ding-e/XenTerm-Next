@@ -80,6 +80,95 @@ fn stress_probe(cx: &App, available: &[String]) -> Value {
         "iterations": observations})
 }
 
+// Small command-shaped ASCII observations supplement, rather than replace, the
+// multilingual qualification and maximum-size stress. No frame-rate assertion.
+fn command_size_probe(cx: &App, available: &[String]) -> Value {
+    const FAMILY: &str = "Noto Sans";
+    if !available.iter().any(|name| name == FAMILY) {
+        return json!({"status": "skipped_missing_font", "requested_family": FAMILY});
+    }
+    let base = TextRun { len: 0, font: font(FAMILY),
+        color: gpui::black(), ..Default::default() };
+    let mut cases = Vec::with_capacity(4);
+    for (bytes, spans) in [(128_usize, 16_usize), (512, 64), (1024, 64), (2048, 128)] {
+        let stride = bytes / spans;
+        let mut colored = Vec::with_capacity(2 * spans + 1);
+        let mut cursor = 0;
+        for span in 0..spans {
+            let start = span * stride + stride / 2;
+            colored.push(TextRun { len: start - cursor, ..base.clone() });
+            colored.push(TextRun { len: 1, color: gpui::rgb(0xff0000).into(), ..base.clone() });
+            cursor = start + 1;
+        }
+        colored.push(TextRun { len: bytes - cursor, ..base.clone() });
+        assert!(colored.iter().all(|run| run.len > 0));
+        assert_eq!(colored.iter().map(|run| run.len).sum::<usize>(), bytes);
+        let control: Vec<_> = colored.iter().map(|run| TextRun {
+            color: base.color, ..run.clone()
+        }).collect();
+        let plain = vec![TextRun { len: bytes, ..base.clone() }];
+        let variants = [plain, control, colored];
+        let names = ["plain", "same_color_control", "colored"];
+        let mut iterations = Vec::with_capacity(3);
+        for iteration in 0..3 {
+            // Fixed harmless content only; no command is ever executed.
+            let mut text = "echo x --flag=1 ".repeat(bytes / 16);
+            assert_eq!(text.len(), bytes);
+            text.replace_range(0..1, ["0", "1", "2"][iteration]);
+            let mut measured = Vec::with_capacity(3);
+            let mut order = Vec::with_capacity(3);
+            for offset in 0..3 {
+                // Rotate order to avoid always favoring the same variant with
+                // warmed native caches. Each line-layout cache is fresh, but
+                // platform/font caches stay shared throughout the process.
+                let variant = (iteration + offset) % 3;
+                let system = WindowTextSystem::new(cx.text_system().clone());
+                let started = std::time::Instant::now();
+                let layout = system.layout_line(&text, px(20.0), &variants[variant], None);
+                let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+                measured.push((variant, elapsed_ms, layout));
+                order.push(names[variant]);
+            }
+            measured.sort_by_key(|(variant, _, _)| *variant);
+            let reference = &measured[0].2;
+            let equivalent = |other: &LineLayout| {
+                reference.width == other.width && reference.ascent == other.ascent
+                    && reference.descent == other.descent && reference.len == other.len
+                    && reference.runs.iter().flat_map(|r| r.glyphs.iter().map(move |g|
+                        (r.font_id, g.id, g.index, g.position.x, g.position.y, g.is_emoji)))
+                    .eq(other.runs.iter().flat_map(|r| r.glyphs.iter().map(move |g|
+                        (r.font_id, g.id, g.index, g.position.x, g.position.y, g.is_emoji))))
+                    && (0..=bytes).all(|index|
+                        reference.x_for_index(index) == other.x_for_index(index))
+                    && (-1..=17).all(|index| {
+                        let x = reference.width * (index as f32 / 16.0);
+                        reference.index_for_x(x) == other.index_for_x(x)
+                            && reference.closest_index_for_x(x) == other.closest_index_for_x(x)
+                    })
+            };
+            iterations.push(json!({"iteration": iteration, "measurement_order": order,
+                "control_geometry_matches_plain": equivalent(&measured[1].2),
+                "colored_geometry_matches_plain": equivalent(&measured[2].2),
+                "measurements": measured.iter().map(|(variant, elapsed_ms, layout)| json!({
+                    "variant": names[*variant], "input_runs": variants[*variant].len(),
+                    "layout_elapsed_ms": elapsed_ms, "width": f32::from(layout.width),
+                    "glyph_count": layout.runs.iter().map(|r| r.glyphs.len()).sum::<usize>(),
+                    "missing_glyph_count": layout.runs.iter().flat_map(|r| &r.glyphs)
+                        .filter(|g| g.id.0 == 0).count(),
+                })).collect::<Vec<_>>()
+            }));
+        }
+        cases.push(json!({"text_bytes": bytes, "colored_spans": spans,
+            "split_input_runs": variants[2].len(), "iterations": iterations}));
+    }
+    json!({"status": "observed", "requested_family": FAMILY, "font_size_px": 20,
+        "cache_scope": "fresh WindowTextSystem per measurement; platform/font caches shared",
+        "timing_scope": "layout_line only; excludes setup, counting and geometry comparisons",
+        "sample_limit": "4 sizes x 3 iterations x 3 variants = 36 layouts",
+        "verdict": "observations only; no performance threshold or frame-rate verdict",
+        "cases": cases})
+}
+
 fn probe(cx: &mut App) -> Value {
     let system = WindowTextSystem::new(cx.text_system().clone());
     let available = system.all_font_names();
@@ -158,7 +247,8 @@ fn probe(cx: &mut App) -> Value {
         "arch": std::env::consts::ARCH, "gpui_pre_version": "0.3.8",
         "platform_entry": "gpui_platform::application() (native, non-test)",
         "note": "Observed layout only; no rendering, screenshot, Input interaction, grapheme or bidi correctness claim. Cached requested families may not identify fallback fonts. Glyph id 0 can indicate missing coverage.",
-        "cases": results, "native_shaping_stress": stress_probe(cx, &available)})
+        "cases": results, "native_shaping_stress": stress_probe(cx, &available),
+        "command_size_shaping": command_size_probe(cx, &available)})
 }
 
 fn main() {

@@ -73,4 +73,65 @@ for item in stress["iterations"]:
     assert math.isfinite(item["layout_elapsed_ms"]) and item["layout_elapsed_ms"] >= 0
     assert math.isfinite(item["width"]) and item["width"] > 0
     assert item["glyph_count"] > 0
-print("Native Noto Sans primary with automatic fallback geometry qualification passed for seven cases; installed coverage families are prerequisites, not identified fallback faces. Bounded stress observed without performance threshold verdict. Does not qualify direct script/emoji font requests, pixels, actual Input editing/scrolling, bidi/grapheme correctness, other fonts or platforms.")
+# Additive bounded diagnostic; this does not change the seven-script gate above.
+from statistics import median
+
+command = report["command_size_shaping"]
+assert command["status"] == "observed" and command["requested_family"] == "Noto Sans"
+assert command["font_size_px"] == 20
+assert command["cache_scope"] == "fresh WindowTextSystem per measurement; platform/font caches shared"
+assert command["timing_scope"] == "layout_line only; excludes setup, counting and geometry comparisons"
+assert command["sample_limit"] == "4 sizes x 3 iterations x 3 variants = 36 layouts"
+expected_sizes = [(128, 16), (512, 64), (1024, 64), (2048, 128)]
+assert [(case["text_bytes"], case["colored_spans"]) for case in command["cases"]] == expected_sizes
+variants = ["plain", "same_color_control", "colored"]
+summaries = []
+
+def finite_number(value):
+    return type(value) in (int, float) and math.isfinite(value)
+
+def sample_summary(values):
+    return {"samples": len(values), "median_ms": median(values), "max_ms": max(values)}
+
+for case, (byte_count, span_count) in zip(command["cases"], expected_sizes):
+    assert type(case["text_bytes"]) is int and type(case["colored_spans"]) is int
+    assert type(case["split_input_runs"]) is int and case["split_input_runs"] == 2 * span_count + 1
+    assert [item["iteration"] for item in case["iterations"]] == [0, 1, 2]
+    samples = {variant: [] for variant in variants}
+    for item in case["iterations"]:
+        assert type(item["iteration"]) is int
+        iteration = item["iteration"]
+        assert item["measurement_order"] == variants[iteration:] + variants[:iteration]
+        assert item["control_geometry_matches_plain"] is True
+        assert item["colored_geometry_matches_plain"] is True
+        assert [measurement["variant"] for measurement in item["measurements"]] == variants
+        widths = []
+        for measurement in item["measurements"]:
+            variant = measurement["variant"]
+            expected_runs = 1 if variant == "plain" else 2 * span_count + 1
+            assert type(measurement["input_runs"]) is int and measurement["input_runs"] == expected_runs
+            elapsed = measurement["layout_elapsed_ms"]
+            assert finite_number(elapsed) and elapsed >= 0
+            assert finite_number(measurement["width"]) and measurement["width"] > 0
+            assert type(measurement["glyph_count"]) is int and measurement["glyph_count"] > 0
+            assert type(measurement["missing_glyph_count"]) is int and measurement["missing_glyph_count"] == 0
+            samples[variant].append(elapsed)
+            widths.append(measurement["width"])
+        assert widths[0] == widths[1] == widths[2]
+    paired = {}
+    for left, right in [("colored", "plain"), ("colored", "same_color_control"), ("same_color_control", "plain")]:
+        # Preserve negative noisy differences; never clamp them to suggest zero cost.
+        differences = [a - b for a, b in zip(samples[left], samples[right])]
+        paired[f"{left}_minus_{right}"] = sample_summary(differences)
+    summaries.append({"text_bytes": byte_count, "colored_spans": span_count,
+                      "absolute_layout_time": {name: sample_summary(values) for name, values in samples.items()},
+                      "paired_layout_time_differences": paired})
+print(json.dumps({
+    "schema": "gpui-command-shaping-summary-v1",
+    "coverage_and_geometry": "qualified for these fixed native observations",
+    "performance_verdict": "not assessed; no timing threshold is applied",
+    "sample_scope": "three samples per variant and size; medians/maxima only, not p95 or FPS",
+    "application_candidate_cap": {"text_bytes": 1024, "colored_words": 64},
+    "limitations": "Synthetic one-byte ASCII spans, not application tokenization or full Input frame latency. Platform/font caches shared. Direct script/emoji font requests remain unqualified.",
+    "cases": summaries,
+}, allow_nan=False))
