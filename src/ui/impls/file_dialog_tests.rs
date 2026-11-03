@@ -250,6 +250,99 @@ fn delayed_old_file_cleanup_never_clears_a_replacement_or_other_overlay(cx: &mut
     assert_closed(&shell, cx);
 }
 
+fn type_file_draft(cx: &mut VisualTestContext) {
+    let save = cx.debug_bounds("file-viewer-save").unwrap();
+    cx.simulate_click(gpui_kit::point(save.left() - px(120.), save.bottom() + px(60.)), Default::default());
+    draw(cx);
+    cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-a" } else { "ctrl-a" });
+    cx.simulate_input("unsaved synthetic draft");
+    settle(cx);
+}
+
+#[gpui_kit::gpui::test]
+fn dirty_file_vetoes_inner_outer_and_escape_close_until_explicit_discard(cx: &mut TestAppContext) {
+    let (shell, cx) = fixture(cx);
+    let viewer = open_file(&shell, cx, "dirty.txt", true);
+    type_file_draft(cx);
+    for route in ["inner", "outer", "escape"] {
+        match route {
+            "inner" => {
+                let close = cx.update(|window, _| window.find("file-viewer-close").bounds());
+                cx.simulate_click(close.center(), Default::default());
+            }
+            "outer" => {
+                let close = cx.update(|window, _| window.within("dialog").find("close").bounds());
+                cx.simulate_click(close.center(), Default::default());
+            }
+            _ => cx.simulate_keystrokes("escape"),
+        }
+        settle(cx);
+        assert_eq!(shell.read_with(cx, |shell, _| shell.open_file.as_ref().unwrap().entity_id()), viewer.entity_id());
+        let keep = cx.debug_bounds("file-close-keep-editing").expect("dirty close must ask");
+        cx.simulate_click(keep.center(), Default::default());
+        settle(cx);
+        assert_eq!(cx.update(|window, cx| window.focused_input(cx).unwrap().value(cx).to_string()), "unsaved synthetic draft");
+        assert!(viewer.update(cx, |viewer, _| viewer.take_action()).is_none(), "closing never auto-saves");
+    }
+    cx.simulate_keystrokes("escape");
+    settle(cx);
+    // Enter at the dialog level must not silently accept its default Confirm.
+    cx.update(|window, cx| window.dispatch_action(Box::new(gpui_kit::component::dialog::Confirm), cx));
+    settle(cx);
+    assert!(shell.read_with(cx, |shell, _| shell.open_file.is_some()));
+    let discard = cx.debug_bounds("file-close-discard").unwrap();
+    cx.simulate_click(discard.center(), Default::default());
+    assert_closed(&shell, cx);
+}
+
+#[gpui_kit::gpui::test]
+fn dirty_file_rejects_late_read_and_programmatic_overlay_replacement(cx: &mut TestAppContext) {
+    let (shell, cx) = fixture(cx);
+    let viewer = open_file(&shell, cx, "keep-draft.txt", true);
+    type_file_draft(cx);
+    let retained = open_file(&shell, cx, "late-read.txt", true);
+    assert_eq!(retained.entity_id(), viewer.entity_id());
+    assert!(cx.debug_bounds("file-close-keep-editing").is_some());
+    for overlay in ["quick-connect", "palette", "session-editor"] {
+        cx.update(|window, cx| shell.update(cx, |shell, cx| match overlay {
+            "quick-connect" => shell.open_quick_connect(window, cx),
+            "palette" => shell.open_command_palette(window, cx),
+            _ => shell.open_editor(None, window, cx),
+        }));
+        settle(cx);
+        assert_eq!(shell.read_with(cx, |shell, _| shell.open_file.as_ref().unwrap().entity_id()), viewer.entity_id());
+        assert!(shell.read_with(cx, |shell, _| matches!(shell.overlay, Overlay::File(_))));
+    }
+    let keep = cx.debug_bounds("file-close-keep-editing").unwrap();
+    cx.simulate_click(keep.center(), Default::default());
+    settle(cx);
+    assert_eq!(cx.update(|window, cx| window.focused_input(cx).unwrap().value(cx).to_string()), "unsaved synthetic draft");
+}
+
+#[gpui_kit::gpui::test]
+fn queued_file_close_never_pops_a_newer_auth_layer(cx: &mut TestAppContext) {
+    let (shell, cx) = fixture(cx);
+    let viewer = open_file(&shell, cx, "auth-covered.txt", true);
+    cx.update(|window, cx| {
+        viewer.update(cx, |viewer, cx| viewer.queue_close_for_test(cx));
+        // Synthetic auth-style layer: no credential request or SSH is used.
+        window.open_dialog(cx, |dialog, _, _| dialog.title("Synthetic authentication").child("fixture"));
+        shell.update(cx, |shell, cx| shell.drain_opened_file(window, cx));
+    });
+    settle(cx);
+    assert_eq!(shell.read_with(cx, |shell, _| shell.open_file.as_ref().unwrap().entity_id()), viewer.entity_id());
+    assert!(!cx.update(|window, cx| viewer.read(cx).owns_dialog_focus(window, cx)));
+    // Dismiss only the synthetic top layer. The retained file becomes active.
+    cx.simulate_keystrokes("escape");
+    settle(cx);
+    assert!(cx.update(|window, cx| window.has_active_dialog(cx)), "file layer must remain below auth");
+    assert!(cx.update(|window, cx| viewer.read(cx).owns_dialog_focus(window, cx)));
+    assert!(viewer.update(cx, |viewer, _| viewer.take_action()).is_none(), "covered close requires a fresh explicit retry");
+    let close = cx.update(|window, _| window.find("file-viewer-close").bounds());
+    cx.simulate_click(close.center(), Default::default());
+    assert_closed(&shell, cx);
+}
+
 // Exercise the real GUI export entry point without invoking a native dialog.
 // Both profile and destination are disposable synthetic directories. These
 // tests pin the deliberate no-overwrite policy even after a dialog picks a path.

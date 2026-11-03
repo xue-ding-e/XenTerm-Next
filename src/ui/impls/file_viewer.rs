@@ -72,7 +72,7 @@ use gpui_kit::{
     },
     div,
     prelude::*,
-    Animation, AnimationExt as _, AnyElement, Entity, SharedString, Task, Window,
+    Animation, AnimationExt as _, AnyElement, Entity, SharedString, Subscription, Task, Window,
 };
 
 /// After this interval explain the wait, but never treat elapsed time as a
@@ -134,6 +134,13 @@ pub(crate) struct FileViewerView {
     /// Last acknowledged snapshot, not the possibly newer text still being edited.
     saved_content: String,
     save_task: Option<Task<()>>,
+    /// Confirmation is inside the current editor; no draft is copied or hidden.
+    close_prompt: bool,
+    close_snapshot: Option<(String, u64)>,
+    replacement_blocked: bool,
+    covered_close: bool,
+    dialog_focus: Option<gpui_kit::FocusHandle>,
+    _text_subscription: Subscription,
     save_target: Option<FileSaveTarget>,
     /// Save failures leave the draft visible; read failures still occupy the body.
     save_error: Option<String>,
@@ -164,6 +171,7 @@ impl FileViewerView {
         text.update(cx, |state, cx| {
             state.set_value(SharedString::from(content.clone()), window, cx);
         });
+        let text_subscription = cx.observe(&text, |_, _, cx| cx.notify());
         Self {
             path,
             name,
@@ -176,6 +184,12 @@ impl FileViewerView {
             save_revision: 0,
             saved_content: content,
             save_task: None,
+            close_prompt: false,
+            close_snapshot: None,
+            replacement_blocked: false,
+            covered_close: false,
+            dialog_focus: None,
+            _text_subscription: text_subscription,
             save_target: None,
             save_error: None,
             pending: None,
@@ -245,6 +259,87 @@ impl FileViewerView {
 
     fn is_saving(&self) -> bool {
         self.saving_since.is_some()
+    }
+
+    pub(crate) fn set_dialog_focus(&mut self, focus: Option<gpui_kit::FocusHandle>) {
+        self.dialog_focus = focus;
+    }
+
+    /// The toolkit has no public remove-by-dialog-id API. Its own layer focus
+    /// scope is the conservative guard against popping a newer auth dialog.
+    pub(crate) fn owns_dialog_focus(&self, window: &Window, cx: &gpui_kit::App) -> bool {
+        self.dialog_focus.as_ref().is_some_and(|focus| focus.contains_focused(window, cx))
+    }
+
+    pub(crate) fn defer_covered_close(&mut self, cx: &mut Context<Self>) {
+        self.keep_editing(cx);
+        self.covered_close = true;
+        cx.notify();
+    }
+
+    fn is_dirty(&self, cx: &gpui_kit::App) -> bool {
+        self.editable && self.text.read(cx).value().as_ref() != self.saved_content.as_str()
+    }
+
+    /// All user dismissal routes must ask before dropping a draft or a receipt.
+    pub(crate) fn request_close(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.is_saving() || self.is_dirty(cx) {
+            self.close_prompt = true;
+            cx.notify();
+            false
+        } else {
+            true
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn queue_close_for_test(&mut self, cx: &mut Context<Self>) {
+        self.queue_close(cx);
+    }
+
+    fn queue_close(&mut self, cx: &mut Context<Self>) {
+        self.close_snapshot = Some((self.text.read(cx).value().to_string(), self.save_revision));
+        self.pending = Some(FileViewerAction::Close);
+        cx.notify();
+    }
+
+    /// A discard accepted for one snapshot cannot silently discard edits that
+    /// arrived before Shell drained it, or a save started in the meantime.
+    pub(crate) fn can_complete_close(&mut self, cx: &mut Context<Self>) -> bool {
+        let current = self.text.read(cx).value();
+        let unchanged = self.close_snapshot.take().is_some_and(|(snapshot, revision)| {
+            snapshot.as_str() == current.as_ref() && revision == self.save_revision
+        });
+        if !unchanged {
+            self.close_prompt = true;
+            cx.notify();
+        }
+        unchanged
+    }
+
+    fn keep_editing(&mut self, cx: &mut Context<Self>) {
+        self.close_prompt = false;
+        self.replacement_blocked = false;
+        self.covered_close = false;
+        self.close_snapshot = None;
+        // Cancel only a discard queued before this newer choice. A save is
+        // independent user intent and must not be swallowed by Keep editing.
+        if matches!(self.pending, Some(FileViewerAction::Close)) {
+            self.pending = None;
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn request_replacement(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.request_close(cx) {
+            true
+        } else {
+            // The competing navigation is rejected, not queued to run after a
+            // later close. Retrying must be a fresh, explicit user action.
+            self.replacement_blocked = true;
+            cx.notify();
+            false
+        }
     }
 
     pub(crate) fn path(&self) -> &str {
@@ -328,6 +423,9 @@ impl FileViewerView {
                     .truncate()
                     .child(SharedString::from(self.name.clone())),
             )
+            .when(self.is_dirty(cx), |this| {
+                this.child(div().text_xs().text_color(muted).child(crate::i18n::t("未保存", "Unsaved")))
+            })
             .when(!self.editable, |this| {
                 this.child(
                     div()
@@ -343,8 +441,9 @@ impl FileViewerView {
                     .small()
                     .ghost()
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.pending = Some(FileViewerAction::Close);
-                        cx.notify();
+                        if this.request_close(cx) {
+                            this.queue_close(cx);
+                        }
                     })),
             )
             .into_any_element()
@@ -377,6 +476,47 @@ impl Render for FileViewerView {
             .size_full()
             .bg(cx.theme().background)
             .child(self.header(cx))
+            .when(self.covered_close, |this| {
+                this.child(div().px_3().py_2().text_sm().child(crate::i18n::t(
+                    "请先处理上层对话框，然后重新关闭或打开文件；当前草稿已保留。",
+                    "Finish the dialog above this file, then try closing or opening it again. Your draft is preserved.",
+                )))
+            })
+            .when(self.replacement_blocked, |this| {
+                this.child(div().px_3().py_2().text_sm().child(crate::i18n::t(
+                    "文件有未保存内容或仍在保存，未打开其他窗口或文件。请先处理并关闭当前文件，然后重新打开。",
+                    "This file has unsaved changes or a pending save. The other window or file was not opened. Finish and close this file, then open it again.",
+                )))
+            })
+            .when(self.close_prompt, |this| {
+                this.child(v_flex().id("file-close-confirmation").px_3().py_2().gap_2()
+                    .child(crate::i18n::t("关闭将丢弃未保存的内容。是否继续编辑？", "Closing will discard unsaved changes. Keep editing?"))
+                    .when(self.is_saving(), |this| this.child(crate::i18n::t(
+                        "保存尚未结束；关闭不会取消远端写入，结果可能仍会改变。",
+                        "A save is still pending. Closing does not cancel the remote write; its result may still change.",
+                    )))
+                    .child(h_flex().gap_2()
+                        .child(Button::new("file-close-keep-editing")
+                            .debug_selector(|| "file-close-keep-editing".into())
+                            .label(crate::i18n::t("继续编辑", "Keep editing"))
+                            .small().outline()
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                use gpui_kit::gpui::Focusable as _;
+                                this.keep_editing(cx);
+                                window.focus(&this.text.read(cx).focus_handle(cx), cx);
+                                cx.notify();
+                            })))
+                        .child(Button::new("file-close-discard")
+                            .debug_selector(|| "file-close-discard".into())
+                            .label(crate::i18n::t("放弃并关闭", "Discard and close"))
+                            .small().ghost()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                // Only this explicit control bypasses the draft
+                                // guard. The action belongs to this exact entity.
+                                this.queue_close(cx);
+                            }))))
+                )
+            })
             .when_some(self.save_error.as_ref(), |this, error| {
                 this.child(
                     div()
@@ -495,6 +635,7 @@ mod tests {
             assert!(!viewer.is_saving(), "actual success must not wait for 15 seconds");
             assert_eq!(viewer.saved_content, "original", "acknowledge only the submitted snapshot");
             assert_eq!(viewer.text.read(cx).value().to_string(), "newer unsaved draft");
+            assert!(viewer.is_dirty(cx), "old save success cannot clean newer edits");
             assert!(viewer.save_error.is_none());
         });
     }
@@ -562,6 +703,32 @@ mod tests {
             viewer.finish_save(1, "old snapshot".into(), Ok(()), cx);
             assert!(viewer.is_saving());
             assert_eq!(viewer.saved_content, "draft");
+        });
+    }
+
+    #[gpui_kit::gpui::test]
+    fn keep_editing_revokes_queued_discard_but_not_a_queued_save(cx: &mut TestAppContext) {
+        let (viewer, cx) = open_fixture(cx, true, false, "draft".into());
+        viewer.update(cx, |viewer, cx| {
+            viewer.queue_close(cx);
+            viewer.keep_editing(cx);
+            assert!(viewer.take_action().is_none());
+            assert!(viewer.close_snapshot.is_none());
+            viewer.pending = Some(FileViewerAction::Save { path: viewer.path.clone(), content: "draft".into() });
+            viewer.keep_editing(cx);
+            assert!(matches!(viewer.take_action(), Some(FileViewerAction::Save { .. })));
+        });
+    }
+
+    #[gpui_kit::gpui::test]
+    fn discard_confirmation_cannot_drop_a_later_text_snapshot(cx: &mut TestAppContext) {
+        let (viewer, cx) = open_fixture(cx, true, false, "original".into());
+        viewer.update(cx, |viewer, cx| viewer.queue_close(cx));
+        focus_text(&viewer, cx);
+        cx.simulate_input("new edit after discard click");
+        viewer.update(cx, |viewer, cx| {
+            assert!(!viewer.can_complete_close(cx));
+            assert!(viewer.close_prompt);
         });
     }
 
@@ -822,6 +989,10 @@ mod tests {
         );
         let close = cx.update(|window, _| window.find("file-viewer-close").bounds());
         cx.simulate_click(close.center(), Modifiers::default());
+        assert!(viewer.update(cx, |viewer, _| viewer.take_action()).is_none());
+        draw(cx);
+        let discard = cx.debug_bounds("file-close-discard").unwrap();
+        cx.simulate_click(discard.center(), Modifiers::default());
         assert_eq!(
             viewer.update(cx, |viewer, _| viewer.take_action()),
             Some(FileViewerAction::Close)
@@ -835,6 +1006,10 @@ mod tests {
         cx.simulate_input("unsaved draft");
         let close = cx.update(|window, _| window.find("file-viewer-close").bounds());
         cx.simulate_click(close.center(), Modifiers::default());
+        assert!(viewer.update(cx, |viewer, _| viewer.take_action()).is_none());
+        draw(cx);
+        let discard = cx.debug_bounds("file-close-discard").unwrap();
+        cx.simulate_click(discard.center(), Modifiers::default());
         assert_eq!(
             viewer.update(cx, |viewer, _| viewer.take_action()),
             Some(FileViewerAction::Close)
