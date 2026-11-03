@@ -997,3 +997,159 @@ where
         std::thread::sleep(Duration::from_millis(25));
     }
 }
+
+// Regression candidates only: these tests have not yet been compiled or run.
+// The isolated helper above pins a temporary profile and clears inherited
+// credentials/proxy environment before any ConfigStore access.
+fn save_permission_fixture(allowed: bool) {
+    let root = std::env::var_os("XENTERM_SYNTHETIC_OWNER_CHILD")
+        .expect("permission fixture requires the isolated child");
+    assert!(crate::config::has_explicit_data_dir());
+    assert!(crate::config::data_dir().starts_with(std::path::Path::new(&root)));
+    // Explicit profiles disable native credential storage in ConfigStore::load;
+    // the new fixture contains no sessions and uses only its local secret.key.
+    let mut store = crate::config::ConfigStore::load().unwrap();
+    store.set_mcp_enabled(allowed);
+    store.set_mcp_use_saved_credentials(allowed);
+    store.set_mcp_allow_commands(allowed);
+    store.save().unwrap();
+}
+
+#[test]
+fn permission_profile_lock_must_not_stall_cancellation_timer() {
+    isolated("tunnel::owner::lifecycle_tests::permission_profile_lock_must_not_stall_cancellation_timer", || async {
+        save_permission_fixture(true);
+        // A separate OS thread releases the actual profile lock even if the
+        // current-thread executor is stalled: failure cannot strand the lock.
+        // No lockfile is deleted or replaced; the existing inode is preserved.
+        let path = crate::config::data_dir().join("sessions.db.profile-lock");
+        let (locked, ready) = std::sync::mpsc::channel();
+        let (attempting, attempt) = std::sync::mpsc::channel();
+        let (completed, completion) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let file = std::fs::OpenOptions::new().read(true).write(true).open(path).unwrap();
+            fs2::FileExt::lock_exclusive(&file).unwrap();
+            locked.send(()).unwrap();
+            attempt.recv_timeout(Duration::from_secs(5)).unwrap();
+            // Success requires cancellation to complete while this exact lock
+            // is still held. The timeout only bounds a broken implementation;
+            // elapsed wall time is not the correctness assertion.
+            let cancelled_while_locked = completion.recv_timeout(Duration::from_secs(4)).is_ok();
+            // Closing the handle releases the lock on Unix and Windows.
+            drop(file);
+            cancelled_while_locked
+        });
+        ready.recv_timeout(Duration::from_secs(2)).unwrap();
+        // Use a separate current-thread runtime, not nested block_on on the
+        // fixture runtime. Tokio timeouts cannot preempt synchronous polling.
+        let cancelled_while_locked = tokio::task::spawn_blocking(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+            attempting.send(()).unwrap();
+            runtime.block_on(async {
+                let (stop, stopped) = watch::channel(false);
+                let (_shutdown, shutdown) = watch::channel(false);
+                let cancellation = cancelled(stopped, shutdown, true, None);
+                tokio::pin!(cancellation);
+                tokio::select! {
+                    biased;
+                    reason = &mut cancellation => panic!("unexpected early cancellation: {reason}"),
+                    _ = tokio::time::sleep(Duration::from_millis(50)) => {},
+                }
+                stop.send_replace(true);
+                assert_eq!(cancellation.await, "released");
+            });
+            // A send after the lock-holder timed out is intentionally an error:
+            // the joined flag below proves whether cancellation preceded unlock.
+            let _ = completed.send(());
+            holder.join().unwrap()
+        }).await.unwrap();
+        assert!(cancelled_while_locked,
+            "profile permission I/O prevented cancellation while the profile lock was held");
+    });
+}
+
+#[test]
+fn revoked_permission_during_preparation_must_not_bind_late_route() {
+    isolated("tunnel::owner::lifecycle_tests::revoked_permission_during_preparation_must_not_bind_late_route", || async {
+        save_permission_fixture(true);
+        let owner = ForwardOwner::unattended();
+        let session = saved_dynamic(0);
+        let barrier = KeyLoadBarrier::new();
+        let gate = barrier.0.clone();
+        let (entered, ready) = oneshot::channel();
+        let accepted = owner.begin(session.id.clone(), 0, None, move || {
+            let prepared = PreparedForward::capture(session, vec![], 0, 1)?;
+            let _ = entered.send(());
+            let (open, changed) = &*gate;
+            let mut open = open.lock().unwrap();
+            while !*open { open = changed.wait(open).unwrap(); }
+            Ok(prepared)
+        }).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), ready).await.unwrap().unwrap();
+        // This save occurs strictly after initial admission, before the frozen
+        // route returns. A later SSH refusal does not prove no listener bound.
+        save_permission_fixture(false);
+        barrier.open();
+        wait_status(&owner, &accepted.handle, "permission_revoked").await;
+        let entry = owner.entry(&accepted.handle).unwrap();
+        assert!(entry.identity.lock().unwrap().is_none(), "revoked preparation reached listener setup");
+        assert!(entry.proxy_url.lock().unwrap().is_empty(), "revoked preparation bound a listener before SSH refusal");
+        owner.shutdown().await.unwrap();
+    });
+}
+
+#[test]
+fn external_permission_writer_fixture() {
+    // The helper is inert in ordinary full-suite execution. Only an already
+    // isolated parent may opt in; it supplies a private completion marker.
+    let Some(marker) = std::env::var_os("XENTERM_PERMISSION_WRITER_DONE") else { return; };
+    assert!(std::env::var_os("XENTERM_SYNTHETIC_OWNER_CHILD").is_some());
+    crate::config::configure_profile_from_env().unwrap();
+    assert_eq!(std::path::Path::new(&marker).parent(), Some(crate::config::data_dir().as_path()));
+    save_permission_fixture(false);
+    std::fs::write(marker, b"permission-revocation-committed").unwrap();
+}
+
+#[test]
+fn permission_read_observes_other_process_revocation_not_cached_store() {
+    isolated("tunnel::owner::lifecycle_tests::permission_read_observes_other_process_revocation_not_cached_store", || async {
+        save_permission_fixture(true);
+        let stale = crate::config::ConfigStore::load().unwrap();
+        assert!(permitted(true));
+        let marker = crate::config::data_dir().join("permission-writer-done");
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command.env_clear();
+        for name in ["PATH", "SYSTEMROOT", "WINDIR", "LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH",
+            "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME", "XDG_DATA_HOME",
+            "XDG_CACHE_HOME", "XDG_STATE_HOME", "TMP", "TEMP", "TMPDIR", "XENTERM_DATA_DIR",
+            "XENTERM_SYNTHETIC_OWNER_CHILD"] {
+            if let Some(value) = std::env::var_os(name) { command.env(name, value); }
+        }
+        command.env("XENTERM_PERMISSION_WRITER_DONE", &marker).args([
+            "--exact", "tunnel::owner::lifecycle_tests::external_permission_writer_fixture",
+            "--test-threads=1", "--nocapture",
+        ]);
+        // A cancelled fixture future or a wait error must not leave a writer
+        // running against its temporary profile after the parent has failed.
+        struct WriterChild(std::process::Child);
+        impl Drop for WriterChild {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut child = WriterChild(command.spawn().unwrap());
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let status = loop {
+            if let Some(status) = child.0.try_wait().unwrap() { break status; }
+            if std::time::Instant::now() >= deadline {
+                panic!("permission writer exceeded its deadline");
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        assert!(status.success());
+        assert_eq!(std::fs::read(marker).unwrap(), b"permission-revocation-committed");
+        assert!(stale.mcp_enabled(), "control must retain the old in-memory snapshot");
+        assert!(!permitted(true), "external revocation must not reuse an old GUI store snapshot");
+    });
+}
