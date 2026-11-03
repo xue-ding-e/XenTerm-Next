@@ -53,7 +53,7 @@ jobs:
           mkdir evidence
           printf 'controller_sha=%s\nref=%s\n' "$GITHUB_SHA" "$GITHUB_REF" > evidence/controller.log
           python3 validation/gpui-input-colors/stage.py "$RUNNER_TEMP/gpui-color-stage" > evidence/staging.log
-          sha256sum "$RUNNER_TEMP/gpui-color-stage/gpui-base-0.7.1/Cargo.lock" > evidence/lock.before
+          sha256sum "$RUNNER_TEMP/gpui-color-stage/workspace/crates/base/Cargo.lock" > evidence/lock.before
       - name: Install Linux native text dependencies and fixed font families
         timeout-minutes: 10
         run: |
@@ -88,7 +88,7 @@ jobs:
           ulimit -f 4194304
           rustc -Vv > evidence/toolchain.log
           helper="$GITHUB_WORKSPACE/validation/gpui-input-colors/run_bounded.py"
-          cd "$RUNNER_TEMP/gpui-color-stage/gpui-base-0.7.1"
+          cd "$RUNNER_TEMP/gpui-color-stage/workspace/crates/base"
           python3 "$helper" 1800 "$GITHUB_WORKSPACE/evidence/compile-tests.log" cargo test --locked --lib --no-run --jobs 2
           python3 "$helper" 540 "$GITHUB_WORKSPACE/evidence/compile-probe.log" cargo build --locked --example native_text_probe --jobs 2
       - name: Run limited prototype regressions (GPUI test backend, not native proof)
@@ -96,7 +96,7 @@ jobs:
         run: |
           set -euo pipefail
           helper="$GITHUB_WORKSPACE/validation/gpui-input-colors/run_bounded.py"
-          cd "$RUNNER_TEMP/gpui-color-stage/gpui-base-0.7.1"
+          cd "$RUNNER_TEMP/gpui-color-stage/workspace/crates/base"
           filters=(
             'input::text_colors::tests::'
             'single_line_styles_reach_render_path_and_suppress_stale_or_masked_text'
