@@ -405,23 +405,9 @@ async fn dynamic_tunnel(name: &str, arguments: &Value, frontend: Frontend) -> Re
         return Err(anyhow!("unknown tunnel argument"));
     }
     let store = load_store(frontend)?;
-    if frontend.is_unattended() && (!store.mcp_use_saved_credentials() || !store.mcp_allow_commands()) {
-        return Err(anyhow!("dynamic tunnels require saved-credential and arbitrary-command permissions"));
-    }
-    let id = required_string(arguments, "session_id")?;
-    let session = store.get(id).cloned().ok_or_else(|| anyhow!("session not found"))?;
-    if session.kind.as_str() != "ssh" { return Err(anyhow!("dynamic tunnels require an SSH session")); }
-    let index = match optional_u64(arguments, "forward_index")? {
-        Some(value) => usize::try_from(value).map_err(|_| anyhow!("forward_index is too large"))?,
-        None => {
-            let dynamic: Vec<_> = session.forwards.iter().enumerate().filter(|(_, rule)| rule.kind == "dynamic").collect();
-            if dynamic.len() != 1 { return Err(anyhow!("select forward_index from the saved dynamic_forwards; expected exactly one rule when omitted")); }
-            dynamic[0].0
-        }
-    };
-    let jumps = store.resolve_jump_chain(&session)?;
+    let route = super::saved_route::admit(&store, frontend, arguments)?;
     drop(store);
-    let status = owner.start(session, jumps, index, name == "ensure_dynamic_tunnel", expires).await?;
+    let status = owner.start(route.session, route.jumps, route.index, name == "ensure_dynamic_tunnel", expires).await?;
     serde_json::to_value(status).context("serialize tunnel status")
 }
 
@@ -448,7 +434,7 @@ fn safe_session(session: &Session) -> Value {
     })
 }
 
-fn required_string<'a>(arguments: &'a Value, key: &str) -> Result<&'a str> {
+pub(super) fn required_string<'a>(arguments: &'a Value, key: &str) -> Result<&'a str> {
     arguments
         .get(key)
         .and_then(Value::as_str)
@@ -472,7 +458,7 @@ fn optional_bool(arguments: &Value, key: &str) -> Result<Option<bool>> {
     }
 }
 
-fn optional_u64(arguments: &Value, key: &str) -> Result<Option<u64>> {
+pub(super) fn optional_u64(arguments: &Value, key: &str) -> Result<Option<u64>> {
     match arguments.get(key) {
         None | Some(Value::Null) => Ok(None),
         Some(value) => value

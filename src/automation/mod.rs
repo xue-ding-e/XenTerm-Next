@@ -9,6 +9,8 @@ mod sftp;
 mod structs;
 #[path = "impls/tools.rs"]
 mod tools;
+#[path = "impls/saved_route.rs"]
+mod saved_route;
 
 pub(crate) use structs::Frontend;
 pub(crate) use structs::execution_log;
