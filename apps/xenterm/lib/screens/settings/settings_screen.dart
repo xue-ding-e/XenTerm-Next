@@ -16,7 +16,11 @@ import 'package:flutter/services.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 import '../../bridge/native_bridge.dart'
-    show CoreSettings, coreVersionSync, exportProfileFromCore, importProfileToCore;
+    show
+        CoreSettings,
+        coreVersionSync,
+        exportProfileFromCore,
+        importProfileToCore;
 import '../../l10n/app_language.dart';
 import '../../terminal/core_settings.dart';
 import '../../theme/app_fonts.dart';
@@ -32,6 +36,9 @@ class SettingsScreen extends StatefulWidget {
   /// Test/alternate persistence hook; defaults to the shared controller.
   final Future<String?> Function(Map<String, dynamic> values)? saveSettings;
 
+  /// Test/alternate directory picker; defaults to the native folder dialog.
+  final Future<String?> Function()? pickDownloadDirectory;
+
   const SettingsScreen({
     super.key,
     required this.lightTheme,
@@ -39,6 +46,7 @@ class SettingsScreen extends StatefulWidget {
     required this.fonts,
     required this.settings,
     this.saveSettings,
+    this.pickDownloadDirectory,
   });
 
   @override
@@ -174,8 +182,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _chooseDownloadFolder() async {
-    final directory = await getDirectoryPath();
-    if (directory == null || directory.isEmpty) return;
+    final directory =
+        await (widget.pickDownloadDirectory?.call() ?? getDirectoryPath());
+    // The settings screen may close while the native dialog is still open.
+    if (!mounted || directory == null || directory.isEmpty) return;
     await _save({'download_dir': directory});
   }
 
@@ -221,7 +231,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
               builder: (context, constraints) {
                 // The tab rail shrinks a step on small windows so the 700px
                 // card column keeps its breathing room at the 940px minimum.
-                final sidebarWidth = constraints.maxWidth < 1000 ? 176.0 : 220.0;
+                final sidebarWidth = constraints.maxWidth < 1000
+                    ? 176.0
+                    : 220.0;
                 return Row(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
@@ -271,7 +283,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
     );
   }
-
 
   /// About tab: the real application icon, the canonical build version exactly
   /// as the Rust core reports it, a compact feature summary and the project
@@ -437,7 +448,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
             // Aligned with the link labels below.
             padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
             child: Text(
-              AppLanguage.tr(context, 'Tap a link to copy it to the clipboard.'),
+              AppLanguage.tr(
+                context,
+                'Tap a link to copy it to the clipboard.',
+              ),
               style: theme.typography.normal.copyWith(
                 fontSize: 12,
                 color: XtColors.textTertiary(context),
@@ -494,7 +508,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
               'underline' => 'Underline',
               _ => 'Block',
             },
-            options: const {'Block': 'Block', 'Bar': 'Bar', 'Underline': 'Underline'},
+            options: const {
+              'Block': 'Block',
+              'Bar': 'Bar',
+              'Underline': 'Underline',
+            },
             onChanged: (value) => _save({
               'cursor_style': switch (value) {
                 'Bar' => 'bar',
@@ -602,10 +620,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             },
           ),
           if (fonts.error != null)
-            _SettingsText(
-              fonts.error!,
-              color: XtColors.danger(context),
-            )
+            _SettingsText(fonts.error!, color: XtColors.danger(context))
           else
             const _SettingsText(
               'Imported fonts are stored in this device\'s app data.',
@@ -622,8 +637,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         XtSwitchRow(
           key: const ValueKey('setting-sftp-follow'),
           label: 'Follow the terminal directory',
-          description:
-              'Open the file browser at the shell\'s current folder when supported',
+          description: 'Open the file browser at the shell\'s current folder when supported',
           value: _core.sftpFollowCd,
           onChanged: (value) => _save({'sftp_follow_cd': value}),
         ),
@@ -1056,7 +1070,6 @@ class _DestinationRow extends StatelessWidget {
     );
   }
 }
-
 
 /// One feature summary on the About page: a real icon, a title and a short
 /// detail line. Two of these form a row in the 700px settings column.

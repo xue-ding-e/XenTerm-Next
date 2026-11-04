@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
@@ -44,6 +46,115 @@ Future<void> _pumpAtWindow(
 }
 
 void main() {
+  testWidgets('closed settings ignore a late download folder selection', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    final fonts = AppFonts();
+    addTearDown(fonts.dispose);
+    final controller = CoreSettingsController()
+      ..settings = const CoreSettings()
+      ..loaded = true;
+    addTearDown(controller.dispose);
+    final selection = Completer<String?>();
+    final saved = <Map<String, dynamic>>[];
+    var pickerCalls = 0;
+    await tester.pumpWidget(
+      _app(
+        SettingsScreen(
+          lightTheme: false,
+          onThemeChanged: (_) {},
+          fonts: fonts,
+          settings: controller,
+          pickDownloadDirectory: () {
+            pickerCalls++;
+            return selection.future;
+          },
+          saveSettings: (values) async {
+            saved.add(Map<String, dynamic>.of(values));
+            return null;
+          },
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('SFTP').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Choose…'));
+    await tester.pump();
+    expect(pickerCalls, 1);
+    expect(selection.isCompleted, isFalse);
+
+    // Unmount before completing the picker; no real dialog/profile is used.
+    await tester.pumpWidget(_app(const SizedBox.shrink()));
+    expect(find.byType(SettingsScreen), findsNothing);
+    selection.complete('/synthetic/downloads');
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(saved, isEmpty);
+    expect(controller.settings.downloadDir, isEmpty);
+  });
+
+  for (final chosen in <String?>['/synthetic/downloads', null, '']) {
+    testWidgets(
+      'mounted folder picker handles ${chosen == null
+          ? 'cancel'
+          : chosen.isEmpty
+          ? 'empty'
+          : 'selection'}',
+      (tester) async {
+        SharedPreferences.setMockInitialValues({});
+        final fonts = AppFonts();
+        addTearDown(fonts.dispose);
+        final controller = CoreSettingsController()
+          ..settings = const CoreSettings()
+          ..loaded = true;
+        addTearDown(controller.dispose);
+        final selection = Completer<String?>();
+        final saved = <Map<String, dynamic>>[];
+        var pickerCalls = 0;
+        await tester.pumpWidget(
+          _app(
+            SettingsScreen(
+              lightTheme: false,
+              onThemeChanged: (_) {},
+              fonts: fonts,
+              settings: controller,
+              pickDownloadDirectory: () {
+                pickerCalls++;
+                return selection.future;
+              },
+              saveSettings: (values) async {
+                saved.add(Map<String, dynamic>.of(values));
+                return null;
+              },
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('SFTP').last);
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Choose…'));
+        await tester.pump();
+        expect(pickerCalls, 1);
+        expect(saved, isEmpty);
+        selection.complete(chosen);
+        await tester.pumpAndSettle();
+
+        expect(tester.takeException(), isNull);
+        expect(
+          saved,
+          chosen == null || chosen.isEmpty
+              ? isEmpty
+              : equals([
+                  {'download_dir': chosen},
+                ]),
+        );
+      },
+    );
+  }
+
   testWidgets(
     'language menu switches settings labels without changing values',
     (tester) async {
@@ -226,4 +337,3 @@ void main() {
     expect(plus.left, greaterThanOrEqualTo(0));
   });
 }
-
