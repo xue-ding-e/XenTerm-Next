@@ -1,0 +1,11 @@
+--- a/apps/xenterm/lib/screens/settings/settings_screen.dart
++++ b/apps/xenterm/lib/screens/settings/settings_screen.dart
+@@ -181,7 +181,7 @@
+     final directory =
+         await (widget.pickDownloadDirectory?.call() ?? getDirectoryPath());
+     // The settings screen may close while the native dialog is still open.
+-    if (!mounted || directory == null || directory.isEmpty) return;
++    if (directory == null || directory.isEmpty) return;
+     await _save({'download_dir': directory});
+   }
+ 

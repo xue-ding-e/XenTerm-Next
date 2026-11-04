@@ -1,0 +1,41 @@
+name: Next Flutter settings picker red-green (Dart only)
+on:
+  push:
+    branches: [validation/flutter-settings-picker-20261104]
+permissions:
+  contents: read
+concurrency:
+  group: next-product-heavy
+  cancel-in-progress: false
+jobs:
+  picker:
+    if: github.repository == 'xue-ding-e/XenTerm-Next' && github.ref == 'refs/heads/validation/flutter-settings-picker-20261104'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: control
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: de9c366867c4ff8c8c1b2b4cda6e9356c0ca1109
+          path: source
+          persist-credentials: false
+      - name: Verify controller contracts before SDK setup
+        run: python3 -m unittest discover -s control/scripts/next -p test_settings_picker_gate.py
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.7'
+          channel: stable
+          cache: true
+      - name: Synthetic picker red then green with locked dependencies
+        timeout-minutes: 20
+        run: python3 control/scripts/next/run_settings_picker_gate.py --source source --logs evidence
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: settings-picker-de9c3668-${{ github.run_attempt }}-${{ job.status }}
+          path: evidence/*
+          if-no-files-found: error
+          retention-days: 14
