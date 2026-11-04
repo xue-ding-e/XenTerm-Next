@@ -156,7 +156,18 @@ def red_version(green):
 
 def verify_machine(output, code, expected, *, red=False):
     try:
-        events = [json.loads(line) for line in output.splitlines() if line.strip()]
+        events = []
+        for line in output.splitlines():
+            if not line.strip():
+                continue
+            event = json.loads(line)
+            # Flutter 3.47.7 emits this one auxiliary process-start envelope
+            # alongside package:test JSON. Other list/scalar shapes fail closed.
+            if event == [{"event": "test.startedProcess", "params": {"vmServiceUri": None}}]:
+                continue
+            if not isinstance(event, dict):
+                raise ControlError("unreviewed machine event shape")
+            events.append(event)
     except (ValueError, TypeError) as error:
         raise ControlError("test output is not valid machine JSON") from error
     starts = {event["test"]["id"]: event["test"]["name"]
@@ -181,6 +192,29 @@ def verify_machine(output, code, expected, *, red=False):
                     and "_SettingsScreenState" in event.get("error", "")
                     and "settings_screen.dart" in event.get("stackTrace", "")
                     and "_save" in event.get("stackTrace", "")]
+        # Flutter framework exceptions can be rendered as a same-test print
+        # block, followed by a generic error event with an empty stack. Bind
+        # both records to the single failed test; never accept generic failure.
+        if len(errors) == 1 and not matching:
+            error = errors[0]
+            generic = ("Test failed. See exception logs above.\n"
+                       "The test description was: " + LATE)
+            blocks = [event for event in events
+                      if event.get("type") == "print"
+                      and "EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK" in event.get("message", "")]
+            if (error.get("testID") == finishes[0]["testID"]
+                    and error.get("error") == generic
+                    and error.get("stackTrace") == ""
+                    and error.get("isFailure") is False
+                    and len(blocks) == 1):
+                block = blocks[0]
+                message = block.get("message", "")
+                if (block.get("testID") == error["testID"]
+                        and block.get("messageType") == "print"
+                        and "setState() called after dispose(): _SettingsScreenState#" in message
+                        and "_SettingsScreenState._save (package:xenterm_app/screens/settings/settings_screen.dart:" in message
+                        and "_SettingsScreenState._chooseDownloadFolder (package:xenterm_app/screens/settings/settings_screen.dart:" in message):
+                    matching = [error]
         if len(errors) != 1 or len(matching) != 1:
             raise ControlError("red failed for an unreviewed reason")
     elif code != 0 or done[0].get("success") is not True or errors or any(

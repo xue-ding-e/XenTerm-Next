@@ -148,6 +148,53 @@ class Contracts(unittest.TestCase):
             self.assertNotIn(forbidden, workflow)
             self.assertNotIn(forbidden, script)
 
+    def actual_red_events(self):
+        path = Path(__file__).with_name("fixtures") / "picker-red-late-dispose.jsonl"
+        return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+    def test_actual_red_fixture_preserves_expected_failure(self):
+        verify_machine(encode(self.actual_red_events()), 1, [LATE], red=True)
+
+    def test_only_exact_auxiliary_envelope_is_accepted(self):
+        auxiliary = [{"event": "test.startedProcess", "params": {"vmServiceUri": None}}]
+        verify_machine(encode([auxiliary] + events([LATE])), 0, [LATE])
+        for wrong in ([], [auxiliary[0], auxiliary[0]], [dict(auxiliary[0], extra=True)],
+                      [{"event": "other", "params": {"vmServiceUri": None}}],
+                      [{"event": "test.startedProcess", "params": {"vmServiceUri": "unexpected"}}],
+                      "scalar", 7, None):
+            with self.subTest(wrong=wrong), self.assertRaises(ControlError):
+                verify_machine(encode([wrong] + events([LATE])), 0, [LATE])
+
+    def test_actual_red_rejects_wrong_print_id_cause_and_stack(self):
+        for change in ("wrong-id", "different-exception", "wrong-state", "missing-save",
+                       "missing-picker", "missing-print", "duplicate-exception", "extra-error",
+                       "generic-error-changed", "wrong-error-id"):
+            items = self.actual_red_events()
+            block = next(item for item in items if isinstance(item, dict) and item.get("type") == "print")
+            error = next(item for item in items if isinstance(item, dict) and item.get("type") == "error")
+            if change == "wrong-id":
+                block["testID"] = 999
+            elif change == "different-exception":
+                block["message"] = block["message"].replace("setState() called after dispose()", "unrelated assertion")
+            elif change == "wrong-state":
+                block["message"] = block["message"].replace("_SettingsScreenState#", "_OtherState#")
+            elif change == "missing-save":
+                block["message"] = block["message"].replace("_SettingsScreenState._save", "_OtherState._save")
+            elif change == "missing-picker":
+                block["message"] = block["message"].replace("_SettingsScreenState._chooseDownloadFolder", "_OtherState._choose")
+            elif change == "missing-print":
+                items.remove(block)
+            elif change == "duplicate-exception":
+                items.insert(-1, copy.deepcopy(block))
+            elif change == "extra-error":
+                items.insert(-1, copy.deepcopy(error))
+            elif change == "generic-error-changed":
+                error["error"] = "Compilation failure"
+            elif change == "wrong-error-id":
+                error["testID"] = 999
+            with self.subTest(change=change), self.assertRaises(ControlError):
+                verify_machine(encode(items), 1, [LATE], red=True)
+
 
 class RealProcessControls(unittest.TestCase):
     def invoke(self, script, root, *, failure=False, seconds=3, limit=8192):
