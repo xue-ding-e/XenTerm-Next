@@ -1,0 +1,25 @@
+{
+  "base_commit": "efd545d25255971c88097d01d10b21fc42ea199b",
+  "patch_sha256": "520514b2f842cec3e8745f700691280a5797848cd7821ef0339525d516a778c7",
+  "files": {
+    "src/automation/impls/saved_route.rs": "b3408a624ccffdf44e5c604d8ecc06b198bc2b6d64de610d7fd6a01c8ed4793a",
+    "src/automation/impls/tools.rs": "f0f9d0baa4284a6decaeeb63b13d8aaf1b66501f51b2787e2dcc96d0bc1ef1fb",
+    "src/automation/mod.rs": "dae5f1270f0d92725399e055066b75d8f66670ca4c67dffd347563c71128a0bf",
+    "src/tunnel/impls/owner.rs": "f0d5fa8822948cb702a9cdaf1d3423b13e28fbf754c1f4979492ccad455ae217",
+    "src/tunnel/mod.rs": "fd0162bffe1d8256d18e52c08a440c85642be1fe49b7eba681f88411ac2d0e17"
+  },
+  "groups": {
+    "saved_route": [
+      "automation::saved_route::tests::capability_gate_precedes_parsing_and_requires_both_permissions",
+      "automation::saved_route::tests::capability_gate_does_not_replace_adapter_mcp_on_switch",
+      "automation::saved_route::tests::session_errors_precede_index_errors",
+      "automation::saved_route::tests::omitted_or_null_index_selects_the_only_dynamic_rule",
+      "automation::saved_route::tests::omitted_index_rejects_zero_or_multiple_dynamic_rules",
+      "automation::saved_route::tests::explicit_index_preserves_strict_numeric_errors",
+      "automation::saved_route::tests::explicit_non_dynamic_rule_is_rejected",
+      "automation::saved_route::tests::loopback_rules_reuse_the_owner_validation",
+      "automation::saved_route::tests::jump_errors_precede_rule_bounds_and_bind_errors",
+      "automation::saved_route::tests::resolved_jumps_keep_immediate_first_order_and_do_not_read_keys"
+    ]
+  }
+}

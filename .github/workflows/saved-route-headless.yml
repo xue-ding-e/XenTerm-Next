@@ -1,0 +1,90 @@
+# LOCAL CANDIDATE ONLY: do not publish/trigger while the shared heavy slot is occupied.
+# Control-only tree: source checkout is fixed base plus SHA-verified patch, not a product commit.
+# After approval, pair with reviewed maintenance/saved-route/{run-gate.mjs,required-tests.json}.
+name: Saved-route fixed-base headless validation
+on:
+  push:
+    branches: [validation/saved-route-20261104]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: next-product-heavy
+  cancel-in-progress: false
+jobs:
+  core:
+    if: github.repository == 'xue-ding-e/XenTerm-Next' && github.ref == 'refs/heads/validation/saved-route-20261104'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - name: Checkout reviewed control files
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # official v4 resolved 2026-11-02
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Check controller invariants without product execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          node control/maintenance/saved-route/run-gate.mjs --self-test
+          node control/maintenance/saved-route/control-tests.mjs
+      - name: Checkout fixed candidate, not default branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: xue-ding-e/XenTerm-Next
+          ref: efd545d25255971c88097d01d10b21fc42ea199b
+          path: source
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Install fixed Rust toolchain
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # official action resolved 2026-11-02
+        with:
+          toolchain: 1.99.1
+      - name: Verify source and capture toolchain evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/evidence"
+          test "$(git -C source rev-parse HEAD)" = efd545d25255971c88097d01d10b21fc42ea199b
+          {
+            git -C source show -s --format=fuller HEAD
+            git -C source rev-parse 'HEAD^{tree}'
+            sha256sum source/Cargo.lock
+            rustc --version --verbose
+            cargo --version
+            node --version
+            python3 --version
+          } > evidence/source-and-toolchain.txt
+      - name: Prepare existing isolated-environment factory dependencies
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/broker-control-python"
+          "$RUNNER_TEMP/broker-control-python/bin/python3" -m pip install paramiko cryptography > evidence/python-setup.stdout 2> evidence/python-setup.stderr
+          "$RUNNER_TEMP/broker-control-python/bin/python3" -m pip freeze > evidence/python-versions.txt
+      - name: Compile patched headless tests and CLI in shared 30-minute budget
+        id: compile
+        timeout-minutes: 31
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$RUNNER_TEMP/broker-control-python/bin:$PATH"
+          node control/maintenance/saved-route/run-gate.mjs "$GITHUB_WORKSPACE/source" "$GITHUB_WORKSPACE/evidence" "$GITHUB_WORKSPACE/control/maintenance/saved-route/required-tests.json" --compile
+      - name: Run exactly 10 tests and existing stdio and HTTP dynamic regressions
+        timeout-minutes: 11
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$RUNNER_TEMP/broker-control-python/bin:$PATH"
+          node control/maintenance/saved-route/run-gate.mjs "$GITHUB_WORKSPACE/source" "$GITHUB_WORKSPACE/evidence" "$GITHUB_WORKSPACE/control/maintenance/saved-route/required-tests.json"
+      - name: Preserve evidence even on compile failure or budget expiry
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # official v4 resolved 2026-11-02
+        with:
+          name: saved-route-headless-${{ github.sha }}-${{ github.run_id }}
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 7
