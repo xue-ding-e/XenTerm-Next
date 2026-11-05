@@ -1,0 +1,47 @@
+--- a/apps/xenterm/lib/screens/forwards/forwards_screen.dart
++++ b/apps/xenterm/lib/screens/forwards/forwards_screen.dart
+@@ -70,7 +70,6 @@
+   int _tunnelSourceEpoch = 0;
+   String? _tunnelError;
+   bool _loading = true;
+-  int _reloadEpoch = 0;
+   String? _error;
+   String? _notice;
+   bool _searching = false;
+@@ -173,8 +172,6 @@
+   }
+ 
+   Future<void> _reload({bool silent = false}) async {
+-    if (!mounted) return;
+-    final epoch = ++_reloadEpoch;
+     if (!silent) {
+       setState(() {
+         _loading = true;
+@@ -183,17 +180,13 @@
+     }
+     try {
+       final rules = await (widget.loadForwards ?? loadForwardsFromCore)();
+-      if (!mounted || epoch != _reloadEpoch) return;
+       final hosts = await (widget.loadHosts ?? loadHostsFromCore)();
+-      if (!mounted || epoch != _reloadEpoch) return;
+       final jumps = widget.loadJumps != null
+           ? await widget.loadJumps!()
+           : widget.loadHosts != null
+           ? const <JumpChain>[]
+           : await loadJumpChainsFromCore();
+-      // A slow earlier refresh must not restore old rules after a newer read
+-      // or a save/delete refresh has completed. All three lists share an epoch.
+-      if (!mounted || epoch != _reloadEpoch) return;
++      if (!mounted) return;
+       setState(() {
+         _rules = rules;
+         _jumps = jumps;
+@@ -202,7 +195,7 @@
+         _error = null;
+       });
+     } catch (error) {
+-      if (!mounted || epoch != _reloadEpoch) return;
++      if (!mounted) return;
+       setState(() {
+         _loading = false;
+         _error = error is NativeBridgeError ? error.message : '$error';

@@ -1,4 +1,4 @@
-"""Pinned, synthetic Flutter settings picker validation. No native product build."""
+"""Pinned, synthetic Flutter forwards refresh validation. No native product build."""
 import argparse
 import difflib
 import hashlib
@@ -11,32 +11,16 @@ import subprocess
 import tempfile
 import time
 
-SOURCE = "de9c366867c4ff8c8c1b2b4cda6e9356c0ca1109"
-SCREEN = "apps/xenterm/lib/screens/settings/settings_screen.dart"
-TEST = "apps/xenterm/test/settings_test.dart"
-FILES = {
-    SCREEN: "674e8123cf217c9a365d1897b68ed3672d11e71d71302d8b0530cb6745cce142",
-    TEST: "a9812b15e964fa1e2dec08ca4986ea71dab3c370b04fa6d1a856b1bde9c55a32",
-}
-BASE = {
-    SCREEN: "68cadf557a4e4604d9ed9bead4ad228bb3172ed77f90324c7d9048c3ef5a4b7a",
-    TEST: "df7ef71f716b28b34b4cefd39fc846cee4e26fa62deed5ef0cb4a90ef7e681cf",
-}
-PATCHES = {
-    "settings-picker.patch": "16107067361a4a6479e63e16d087333f8a4aba6e25b2efe97d256dca588570a7",
-    "settings-picker-red-control.patch": "551bf9da9259c6d107620f5f44c56bbbc587818f8f62cecd685df155c77a37ab",
-}
-LATE = "closed settings ignore a late download folder selection"
-NEW_TESTS = [LATE, "mounted folder picker handles selection",
-             "mounted folder picker handles cancel", "mounted folder picker handles empty"]
-ALL_TESTS = NEW_TESTS + [
-    "language menu switches settings labels without changing values",
-    "renderer settings save through the core callback",
-    "every tab fits the default 1280×720 window",
-    "controls stay visible at the 940×600 minimum window",
-]
-GREEN_GUARD = "if (!mounted || directory == null || directory.isEmpty) return;"
-RED_GUARD = "if (directory == null || directory.isEmpty) return;"
+SOURCE = "12f482827c3961c1d83c8c5aa5ae96e44646f9eb"
+SCREEN = "apps/xenterm/lib/screens/forwards/forwards_screen.dart"
+TEST = "apps/xenterm/test/forwards_test.dart"
+FILES = {'apps/xenterm/lib/screens/forwards/forwards_screen.dart': 'adf5317916660b89931bf872b946f2109c6f7db4d5455582f9664b1d298f6cac', 'apps/xenterm/test/forwards_test.dart': 'c10587ba19f0128fbfa1803b271adf2f2aef0a6ebf06e64374a9b4b0100d83ee'}
+BASE = {'apps/xenterm/lib/screens/forwards/forwards_screen.dart': 'f488a20f5a64c148721cb9523891fab73af6d16782cd5b701945270af43d9d8e', 'apps/xenterm/test/forwards_test.dart': '021c56b668556de536f1b85ef74933957328ff32e456066810117116df8e896c'}
+PATCHES = {'forwards-refresh.patch': '5b094c9afa48428368af1d134b4ed93fd0cb0cfb4bda6e69bd961451c8976327', 'forwards-refresh-red-control.patch': '6b1307f87248c35e805e635664f9dc8dbd53d35f0021f9a1cc1420df944da2e4'}
+LATE = 'latest forward refresh ignores older rules success'
+NEW_TESTS = ['latest forward refresh ignores older rules success', 'latest forward refresh ignores older rules error', 'latest forward refresh ignores older hosts success', 'latest forward refresh ignores older hosts error', 'latest forward refresh ignores older jumps success', 'latest forward refresh ignores older jumps error', 'older refresh cannot hide the newest refresh error', 'older refresh cannot end the newest loading state', 'closed forwards screen stops a pending refresh chain']
+ALL_TESTS = ['latest forward refresh ignores older rules success', 'latest forward refresh ignores older rules error', 'latest forward refresh ignores older hosts success', 'latest forward refresh ignores older hosts error', 'latest forward refresh ignores older jumps success', 'latest forward refresh ignores older jumps error', 'older refresh cannot hide the newest refresh error', 'older refresh cannot end the newest loading state', 'closed forwards screen stops a pending refresh chain', 'forward rules load and can be deleted', 'a new rule is validated and saved through the bridge callback']
+FAILURE = "an older refresh replaced the newest forwarding rules"
 MAX_OUTPUT = 8 * 1024 * 1024
 TOTAL_SECONDS = 18 * 60
 
@@ -148,12 +132,6 @@ def verify_hashes(root, expected):
             raise ControlError("frozen bytes mismatch: " + name)
 
 
-def red_version(green):
-    if green.count(GREEN_GUARD) != 1:
-        raise ControlError("formatted source must contain exactly one reviewed guard")
-    return green.replace(GREEN_GUARD, RED_GUARD, 1)
-
-
 def verify_machine(output, code, expected, *, red=False):
     try:
         events = []
@@ -183,39 +161,27 @@ def verify_machine(output, code, expected, *, red=False):
     errors = [event for event in events if event.get("type") == "error"]
     if red:
         if expected != [LATE] or code != 1 or done[0].get("success") is not False:
-            raise ControlError("red control must fail exactly the late-dispose test")
+            raise ControlError("red control must fail exactly the stale-refresh test")
+        target = finishes[0]["testID"]
         if finishes[0].get("result") not in ("error", "failure"):
-            raise ControlError("red control did not report a test error")
-        matching = [event for event in errors
-                    if event.get("testID") == finishes[0]["testID"]
-                    and "setState() called after dispose()" in event.get("error", "")
-                    and "_SettingsScreenState" in event.get("error", "")
-                    and "settings_screen.dart" in event.get("stackTrace", "")
-                    and "_save" in event.get("stackTrace", "")]
-        # Flutter framework exceptions can be rendered as a same-test print
-        # block, followed by a generic error event with an empty stack. Bind
-        # both records to the single failed test; never accept generic failure.
-        if len(errors) == 1 and not matching:
-            error = errors[0]
-            generic = ("Test failed. See exception logs above.\n"
-                       "The test description was: " + LATE)
-            blocks = [event for event in events
-                      if event.get("type") == "print"
-                      and "EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK" in event.get("message", "")]
-            if (error.get("testID") == finishes[0]["testID"]
-                    and error.get("error") == generic
-                    and error.get("stackTrace") == ""
-                    and error.get("isFailure") is False
-                    and len(blocks) == 1):
-                block = blocks[0]
-                message = block.get("message", "")
-                if (block.get("testID") == error["testID"]
-                        and block.get("messageType") == "print"
-                        and "setState() called after dispose(): _SettingsScreenState#" in message
-                        and "_SettingsScreenState._save (package:xenterm_app/screens/settings/settings_screen.dart:" in message
-                        and "_SettingsScreenState._chooseDownloadFolder (package:xenterm_app/screens/settings/settings_screen.dart:" in message):
-                    matching = [error]
-        if len(errors) != 1 or len(matching) != 1:
+            raise ControlError("red control did not report a test failure")
+        if len(errors) != 1 or errors[0].get("testID") != target:
+            raise ControlError("red must report one same-test failure")
+        error = errors[0]
+        direct = (FAILURE in error.get("error", "")
+                  and "forwards_test.dart" in error.get("stackTrace", ""))
+        blocks = [event for event in events
+                  if event.get("type") == "print"
+                  and "EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK" in event.get("message", "")]
+        generic = "Test failed. See exception logs above.\nThe test description was: " + LATE
+        printed = (len(blocks) == 1 and blocks[0].get("testID") == target
+                   and blocks[0].get("messageType") == "print"
+                   and FAILURE in blocks[0].get("message", "")
+                   and "forwards_test.dart" in blocks[0].get("message", "")
+                   and 'Found 0 widgets with text "Latest saved forward"' in blocks[0].get("message", "")
+                   and error.get("error") == generic
+                   and error.get("stackTrace") == "")
+        if not direct and not printed:
             raise ControlError("red failed for an unreviewed reason")
     elif code != 0 or done[0].get("success") is not True or errors or any(
             event.get("result") != "success" for event in finishes):
@@ -241,7 +207,7 @@ def run(args):
     deadline, cancel = Deadline(), Cancellation()
     previous = {sig: signal.signal(sig, cancel.handle) for sig in (signal.SIGINT, signal.SIGTERM)}
     try:
-        with tempfile.TemporaryDirectory(prefix="settings-picker-") as directory:
+        with tempfile.TemporaryDirectory(prefix="forwards-refresh-") as directory:
             env = isolated_env(Path(directory))
             def call(command, label, seconds=60, cwd=source, allow_failure=False):
                 return checked(command, cwd=cwd, env=env, logs=logs, label=label,
@@ -258,16 +224,17 @@ def run(args):
             lock_hash = digest(lock_path.read_bytes())
             if lock_hash != "2bf7221d4be4a58e6b41df5f28a00b7e9f3821a514c671a2dda278f420bc1a23":
                 raise ControlError("unreviewed pubspec.lock")
-            git("apply", "--check", str(controls / "settings-picker.patch"), label="check-main-patch")
-            git("apply", str(controls / "settings-picker.patch"), label="apply-main-patch")
+            base_screen = (source / SCREEN).read_bytes()
+            git("apply", "--check", str(controls / "forwards-refresh.patch"), label="check-main-patch")
+            git("apply", str(controls / "forwards-refresh.patch"), label="apply-main-patch")
             verify_hashes(source, FILES)
             raw_green = {name: (source / name).read_bytes() for name in FILES}
-            # Prove the frozen red patch is exactly the guard removal before
-            # any formatter can change its line context.
-            git("apply", "--check", str(controls / "settings-picker-red-control.patch"), label="check-red-patch")
-            git("apply", str(controls / "settings-picker-red-control.patch"), label="bind-red-patch")
-            if (source / SCREEN).read_text() != red_version(raw_green[SCREEN].decode()):
-                raise ControlError("red patch changes more than the reviewed guard")
+            # RED restores the exact official screen bytes while retaining
+            # the new tests. No assertion or loader is changed for the control.
+            git("apply", "--check", str(controls / "forwards-refresh-red-control.patch"), label="check-red-patch")
+            git("apply", str(controls / "forwards-refresh-red-control.patch"), label="bind-red-patch")
+            if (source / SCREEN).read_bytes() != base_screen:
+                raise ControlError("red patch does not restore the exact official screen")
             for name, data in raw_green.items():
                 (source / name).write_bytes(data)
 
@@ -299,8 +266,8 @@ def run(args):
             # This bounded diff is retained for independent review before any
             # formatted bytes can be promoted into the product branch.
             git("diff", "--no-ext-diff", "--", *FILES, label="formatted-source-diff")
-            call([str(flutter), "analyze", "--no-pub", *paths], "analyze-reviewed-files", 180, app)
-            red = red_version(green[SCREEN].decode()).encode()
+            call([str(flutter), "analyze", "--no-pub"], "analyze-reviewed-files", 180, app)
+            red = base_screen
             receipt = {"base": SOURCE, "patches": PATCHES, "raw_green": FILES,
                        "formatted_green": {name: digest(data) for name, data in green.items()},
                        "red_screen": digest(red), "lock_sha256": lock_hash, "sdk": version}
@@ -310,19 +277,19 @@ def run(args):
             try:
                 (source / SCREEN).write_bytes(red)
                 command = [str(flutter), "test", "--no-pub", "--machine",
-                           "test/settings_test.dart", "--plain-name", LATE]
-                code, output = call(command, "red-late-dispose", 120, app, True)
+                           "test/forwards_test.dart", "--plain-name", LATE]
+                code, output = call(command, "red-stale-refresh", 120, app, True)
                 verify_machine(output, code, [LATE], red=True)
             finally:
                 for name, data in green.items():
                     (source / name).write_bytes(data)
             for index, name in enumerate(NEW_TESTS):
                 code, output = call([str(flutter), "test", "--no-pub", "--machine",
-                                     "test/settings_test.dart", "--plain-name", name],
+                                     "test/forwards_test.dart", "--plain-name", name],
                                     f"green-exact-{index}", 90, app, True)
                 verify_machine(output, code, [name])
-            code, output = call([str(flutter), "test", "--no-pub", "--machine", "test/settings_test.dart"],
-                                "green-full-settings", 180, app, True)
+            code, output = call([str(flutter), "test", "--no-pub", "--machine", "test/forwards_test.dart"],
+                                "green-full-forwards", 180, app, True)
             verify_machine(output, code, ALL_TESTS)
             if any((source / name).read_bytes() != data for name, data in green.items()):
                 raise ControlError("green source drifted during tests")
@@ -333,7 +300,7 @@ def run(args):
             if git("ls-files", "--others", "--exclude-standard", label="untracked-source"):
                 raise ControlError("unexpected untracked source files")
             cancel.check()
-            print("SETTINGS_PICKER_RED_GREEN_PASS synthetic_only=true", flush=True)
+            print("FORWARDS_REFRESH_RED_GREEN_PASS synthetic_only=true", flush=True)
     finally:
         for sig, handler in previous.items():
             signal.signal(sig, handler)
