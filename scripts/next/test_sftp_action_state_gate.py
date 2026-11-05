@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from run_forwards_refresh_gate import (
+from run_sftp_action_state_gate import (
     ALL_TESTS, BASE, FILES, LATE, NEW_TESTS, PATCHES, SOURCE, FAILURE,
     Cancellation, ControlError, Deadline, checked, digest,
     isolated_env, live_members, verify_hashes, verify_machine,
@@ -23,12 +23,12 @@ def events(names, red=False, printed=False):
             if printed:
                 result.append({"type": "print", "testID": index, "messageType": "print",
                                "message": 'EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK\n'
-                               'Found 0 widgets with text "Latest saved forward"\n'
-                               + FAILURE + '\nforwards_test.dart:130'})
+                               'Found 1 widget with icon\n'
+                               + FAILURE + '\nsftp_test.dart:130'})
             result.append({"type": "error", "testID": index,
                            "error": ('Test failed. See exception logs above.\nThe test description was: '
-                                     + LATE) if printed else FAILURE,
-                           "stackTrace": '' if printed else 'forwards_test.dart:130'})
+                                     + LATE) if printed else FAILURE + '\nFound 1 widget with icon',
+                           "stackTrace": '' if printed else 'sftp_test.dart:130'})
         result.append({"type": "testDone", "testID": index, "hidden": False,
                        "skipped": False, "result": "error" if red else "success"})
     result.append({"type": "done", "success": not red})
@@ -45,12 +45,12 @@ class Contracts(unittest.TestCase):
         self.assertEqual(len(FILES), 2)
         self.assertEqual(set(FILES), set(BASE))
         self.assertTrue(all(name.startswith("apps/xenterm/") for name in FILES))
-        self.assertEqual(len(NEW_TESTS), 9)
-        self.assertEqual(len(ALL_TESTS), 11)
-        self.assertEqual(len(set(ALL_TESTS)), 11)
-        red = Path(__file__).with_name("forwards-refresh-red-control.patch").read_text()
-        self.assertIn("forwards_screen.dart", red)
-        self.assertNotIn("forwards_test.dart", red)
+        self.assertEqual(len(NEW_TESTS), 13)
+        self.assertEqual(len(ALL_TESTS), 18)
+        self.assertEqual(len(set(ALL_TESTS)), 18)
+        red = Path(__file__).with_name("sftp-action-state-red-control.patch").read_text()
+        self.assertIn("sftp_view.dart", red)
+        self.assertNotIn("sftp_test.dart", red)
 
     def test_altered_patch_hash_fails(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -80,7 +80,9 @@ class Contracts(unittest.TestCase):
             for code in (0, 2, -9):
                 with self.assertRaises(ControlError):
                     verify_machine(encode(events([LATE], red=True, printed=printed)), code, [LATE], red=True)
-        for field, value in (("error", "Compilation failed"), ("stackTrace", "unrelated.dart"), ("testID", 999)):
+        for field, value in (("error", "Compilation failed"), ("error", FAILURE),
+                             ("error", FAILURE + '\nFound 0 widgets with icon'),
+                             ("stackTrace", "unrelated.dart"), ("testID", 999)):
             items = events([LATE], red=True); items[1][field] = value
             with self.assertRaises(ControlError):
                 verify_machine(encode(items), 1, [LATE], red=True)
@@ -107,14 +109,14 @@ class Contracts(unittest.TestCase):
                 verify_machine(encode([wrong] + events([LATE])), 0, [LATE])
 
     def test_hidden_loader_is_not_coverage(self):
-        items = [{"type": "testStart", "test": {"id": 99, "name": "loading forwards_test.dart"}},
+        items = [{"type": "testStart", "test": {"id": 99, "name": "loading sftp_test.dart"}},
                  {"type": "testDone", "testID": 99, "hidden": True, "skipped": False, "result": "success"}]
         verify_machine(encode(items + events([LATE])), 0, [LATE])
         with self.assertRaises(ControlError):
             verify_machine(encode(items + [{"type": "done", "success": True}]), 0, [LATE])
 
     def test_total_budget_is_shared(self):
-        with patch("run_forwards_refresh_gate.time.monotonic", side_effect=[10, 12, 19, 21]):
+        with patch("run_sftp_action_state_gate.time.monotonic", side_effect=[10, 12, 19, 21]):
             deadline = Deadline(10)
             self.assertEqual(deadline.limit(9), 8)
             self.assertEqual(deadline.limit(9), 1)
@@ -133,8 +135,8 @@ class Contracts(unittest.TestCase):
 
     def test_pinned_dart_only_workflow(self):
         root = Path(__file__).resolve().parents[2]
-        workflow = (root / ".github/workflows/next-flutter-forwards-refresh.yml").read_text()
-        script = Path(__file__).with_name("run_forwards_refresh_gate.py").read_text()
+        workflow = (root / ".github/workflows/next-flutter-sftp-action-state.yml").read_text()
+        script = Path(__file__).with_name("run_sftp_action_state_gate.py").read_text()
         for expected in ("ref: " + SOURCE, "flutter-version: '3.47.7'", "group: next-product-heavy",
                          "timeout-minutes: 25", "timeout-minutes: 20", "if-no-files-found: error"):
             self.assertIn(expected, workflow)
@@ -189,7 +191,7 @@ class RealProcessControls(unittest.TestCase):
     def test_cancel_before_launch_does_not_spawn(self):
         cancel = Cancellation()
         cancel.handle(signal.SIGTERM, None)
-        with tempfile.TemporaryDirectory() as directory, patch("run_forwards_refresh_gate.subprocess.Popen") as launch:
+        with tempfile.TemporaryDirectory() as directory, patch("run_sftp_action_state_gate.subprocess.Popen") as launch:
             with self.assertRaisesRegex(ControlError, "cancelled"):
                 checked(["never"], cwd=Path(directory), env={}, logs=Path(directory), label="cancel",
                         seconds=1, deadline=Deadline(5), cancellation=cancel)

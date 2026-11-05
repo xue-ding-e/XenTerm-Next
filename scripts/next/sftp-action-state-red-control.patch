@@ -1,0 +1,45 @@
+--- a/apps/xenterm/lib/screens/terminal/sftp_view.dart
++++ b/apps/xenterm/lib/screens/terminal/sftp_view.dart
+@@ -576,42 +576,6 @@
+   final TextEditingController _folderName = TextEditingController();
+ 
+   @override
+-  void didUpdateWidget(covariant SftpBrowser oldWidget) {
+-    super.didUpdateWidget(oldWidget);
+-    if (oldWidget.snapshot.path != widget.snapshot.path) {
+-      // Selection and unfinished actions belong to the displayed directory,
+-      // not to the next listing delivered by the SFTP worker.
+-      _selected = null;
+-      _pendingDelete = null;
+-      _creating = false;
+-      _folderName.clear();
+-      return;
+-    }
+-    _selected = _listedEntry(_selected);
+-    final pending = _pendingDelete;
+-    final current = _listedEntry(pending);
+-    // Keep an unchanged confirmation across polling, but require a fresh one
+-    // when the displayed entry disappears or its visible metadata changes.
+-    _pendingDelete = pending != null && current != null &&
+-            pending.name == current.name &&
+-            pending.size == current.size &&
+-            pending.modified == current.modified &&
+-            pending.mode == current.mode
+-        ? current
+-        : null;
+-  }
+-
+-  SftpEntry? _listedEntry(SftpEntry? selected) {
+-    if (selected == null) return null;
+-    for (final entry in widget.snapshot.entries) {
+-      if (entry.path == selected.path && entry.isDir == selected.isDir) {
+-        return entry;
+-      }
+-    }
+-    return null;
+-  }
+-
+-  @override
+   void dispose() {
+     _folderName.dispose();
+     super.dispose();

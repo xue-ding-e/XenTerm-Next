@@ -1,0 +1,286 @@
+--- a/apps/xenterm/lib/screens/terminal/sftp_view.dart
++++ b/apps/xenterm/lib/screens/terminal/sftp_view.dart
+@@ -576,6 +576,42 @@
+   final TextEditingController _folderName = TextEditingController();
+ 
+   @override
++  void didUpdateWidget(covariant SftpBrowser oldWidget) {
++    super.didUpdateWidget(oldWidget);
++    if (oldWidget.snapshot.path != widget.snapshot.path) {
++      // Selection and unfinished actions belong to the displayed directory,
++      // not to the next listing delivered by the SFTP worker.
++      _selected = null;
++      _pendingDelete = null;
++      _creating = false;
++      _folderName.clear();
++      return;
++    }
++    _selected = _listedEntry(_selected);
++    final pending = _pendingDelete;
++    final current = _listedEntry(pending);
++    // Keep an unchanged confirmation across polling, but require a fresh one
++    // when the displayed entry disappears or its visible metadata changes.
++    _pendingDelete = pending != null && current != null &&
++            pending.name == current.name &&
++            pending.size == current.size &&
++            pending.modified == current.modified &&
++            pending.mode == current.mode
++        ? current
++        : null;
++  }
++
++  SftpEntry? _listedEntry(SftpEntry? selected) {
++    if (selected == null) return null;
++    for (final entry in widget.snapshot.entries) {
++      if (entry.path == selected.path && entry.isDir == selected.isDir) {
++        return entry;
++      }
++    }
++    return null;
++  }
++
++  @override
+   void dispose() {
+     _folderName.dispose();
+     super.dispose();
+--- a/apps/xenterm/test/sftp_test.dart
++++ b/apps/xenterm/test/sftp_test.dart
+@@ -31,7 +31,238 @@
+   ],
+ );
+ 
++SftpEntry _updatedFile({
++  String name = 'notes.txt',
++  bool isDir = false,
++  int size = 2048,
++  int modified = 1760000000,
++  int mode = 420,
++}) => SftpEntry(
++  name: name,
++  path: '/home/me/notes.txt',
++  isDir: isDir,
++  size: size,
++  modified: modified,
++  mode: mode,
++);
++
++Future<void> _selectFile(WidgetTester tester) async {
++  await tester.tap(find.byKey(const ValueKey('sftp-/home/me/notes.txt')));
++  await tester.pump(const Duration(milliseconds: 400));
++}
++
+ void main() {
++  testWidgets('directory change clears the previous file selection', (
++    tester,
++  ) async {
++    final downloaded = <SftpEntry>[];
++    Widget browser(SftpSnapshot snapshot) => _app(
++      SftpBrowser(snapshot: snapshot, onDownload: downloaded.add),
++    );
++    await tester.pumpWidget(browser(_snapshot));
++    await tester.pumpAndSettle();
++    await _selectFile(tester);
++    expect(find.byIcon(LucideIcons.download), findsOneWidget);
++    expect(find.byIcon(LucideIcons.trash2), findsOneWidget);
++
++    await tester.pumpWidget(browser(const SftpSnapshot(path: '/other')));
++    await tester.pumpAndSettle();
++    expect(find.text('/other'), findsOneWidget);
++    expect(
++      find.byIcon(LucideIcons.download),
++      findsNothing,
++      reason: 'navigation kept a download action for the previous directory',
++    );
++    expect(find.byIcon(LucideIcons.trash2), findsNothing);
++    expect(downloaded, isEmpty);
++    expect(tester.takeException(), isNull);
++  });
++
++  testWidgets('directory change cancels a pending delete confirmation', (
++    tester,
++  ) async {
++    final deleted = <SftpEntry>[];
++    Widget browser(SftpSnapshot snapshot) => _app(
++      SftpBrowser(snapshot: snapshot, onDelete: deleted.add),
++    );
++    await tester.pumpWidget(browser(_snapshot));
++    await tester.pumpAndSettle();
++    await _selectFile(tester);
++    await tester.tap(find.byIcon(LucideIcons.trash2));
++    await tester.pumpAndSettle();
++    expect(find.textContaining('Delete “notes.txt”'), findsOneWidget);
++
++    await tester.pumpWidget(browser(const SftpSnapshot(path: '/other')));
++    await tester.pumpAndSettle();
++    expect(find.textContaining('Delete “notes.txt”'), findsNothing);
++    expect(find.text('Delete'), findsNothing);
++    expect(deleted, isEmpty);
++    expect(tester.takeException(), isNull);
++  });
++
++  testWidgets('directory change cancels a new folder draft', (tester) async {
++    final created = <String>[];
++    Widget browser(SftpSnapshot snapshot) => _app(
++      SftpBrowser(snapshot: snapshot, onCreateFolder: created.add),
++    );
++    await tester.pumpWidget(browser(_snapshot));
++    await tester.pumpAndSettle();
++    await tester.tap(find.byIcon(LucideIcons.folderPlus));
++    await tester.pumpAndSettle();
++    final input = find.descendant(
++      of: find.byKey(const ValueKey('sftp-new-folder-name')),
++      matching: find.byType(EditableText),
++    );
++    await tester.enterText(input, 'old-directory-draft');
++
++    await tester.pumpWidget(browser(const SftpSnapshot(path: '/other')));
++    await tester.pumpAndSettle();
++    expect(find.byKey(const ValueKey('sftp-new-folder-name')), findsNothing);
++    expect(find.text('Create'), findsNothing);
++    expect(created, isEmpty);
++    await tester.tap(find.byIcon(LucideIcons.folderPlus));
++    await tester.pumpAndSettle();
++    expect(tester.widget<EditableText>(input).controller.text, isEmpty);
++    expect(tester.takeException(), isNull);
++  });
++
++  testWidgets('same directory refresh keeps selection with fresh metadata', (
++    tester,
++  ) async {
++    final downloaded = <SftpEntry>[];
++    Widget browser(SftpSnapshot snapshot) => _app(
++      SftpBrowser(snapshot: snapshot, onDownload: downloaded.add),
++    );
++    await tester.pumpWidget(browser(_snapshot));
++    await tester.pumpAndSettle();
++    await _selectFile(tester);
++    final updated = _updatedFile(size: 4096, modified: 1760000010);
++    await tester.pumpWidget(
++      browser(SftpSnapshot(path: '/home/me', entries: [updated])),
++    );
++    await tester.pumpAndSettle();
++    await tester.tap(find.byIcon(LucideIcons.download));
++    await tester.pumpAndSettle();
++    expect(downloaded, hasLength(1));
++    expect(identical(downloaded.single, updated), isTrue);
++    expect(tester.takeException(), isNull);
++  });
++
++  for (final change in ['removed', 'type', 'name', 'size', 'modified', 'mode']) {
++    testWidgets('same directory $change clears an outdated delete confirmation', (
++      tester,
++    ) async {
++      final deleted = <SftpEntry>[];
++      Widget browser(SftpSnapshot snapshot) => _app(
++        SftpBrowser(snapshot: snapshot, onDelete: deleted.add),
++      );
++      await tester.pumpWidget(browser(_snapshot));
++      await tester.pumpAndSettle();
++      await _selectFile(tester);
++      await tester.tap(find.byIcon(LucideIcons.trash2));
++      await tester.pumpAndSettle();
++      expect(find.textContaining('Delete “notes.txt”'), findsOneWidget);
++      final entry = _updatedFile(
++        name: change == 'name' ? 'updated-name.txt' : 'notes.txt',
++        isDir: change == 'type',
++        size: change == 'size' ? 4096 : 2048,
++        modified: change == 'modified' ? 1760000010 : 1760000000,
++        mode: change == 'mode' ? 384 : 420,
++      );
++      await tester.pumpWidget(
++        browser(SftpSnapshot(
++          path: '/home/me',
++          entries: change == 'removed' ? const [] : [entry],
++        )),
++      );
++      await tester.pumpAndSettle();
++      expect(find.textContaining('Delete “notes.txt”'), findsNothing);
++      expect(find.text('Delete'), findsNothing);
++      if (change == 'removed' || change == 'type') {
++        expect(find.byIcon(LucideIcons.download), findsNothing);
++        expect(find.byIcon(LucideIcons.trash2), findsNothing);
++      } else {
++        expect(find.byIcon(LucideIcons.download), findsOneWidget);
++      }
++      expect(deleted, isEmpty);
++      expect(tester.takeException(), isNull);
++    });
++  }
++
++  testWidgets('unchanged entry refresh preserves its delete confirmation', (
++    tester,
++  ) async {
++    final deleted = <SftpEntry>[];
++    Widget browser(SftpSnapshot snapshot) => _app(
++      SftpBrowser(snapshot: snapshot, onDelete: deleted.add),
++    );
++    await tester.pumpWidget(browser(_snapshot));
++    await tester.pumpAndSettle();
++    await _selectFile(tester);
++    await tester.tap(find.byIcon(LucideIcons.trash2));
++    await tester.pumpAndSettle();
++    final unchanged = _updatedFile();
++    await tester.pumpWidget(
++      browser(SftpSnapshot(path: '/home/me', entries: [unchanged])),
++    );
++    await tester.pumpAndSettle();
++    expect(find.textContaining('Delete “notes.txt”'), findsOneWidget);
++    await tester.tap(find.text('Delete'));
++    await tester.pumpAndSettle();
++    expect(deleted, hasLength(1));
++    expect(identical(deleted.single, unchanged), isTrue);
++    expect(tester.takeException(), isNull);
++  });
++
++  testWidgets('entering a folder clears its parent listing selection', (
++    tester,
++  ) async {
++    String? opened;
++    Widget browser(SftpSnapshot snapshot) => _app(
++      SftpBrowser(snapshot: snapshot, onOpenDirectory: (path) => opened = path),
++    );
++    await tester.pumpWidget(browser(_snapshot));
++    await tester.pumpAndSettle();
++    await tester.tap(find.byKey(const ValueKey('sftp-/home/me/logs')));
++    await tester.pump(const Duration(milliseconds: 400));
++    await tester.pumpAndSettle();
++    expect(opened, '/home/me/logs');
++    await tester.pumpWidget(
++      browser(const SftpSnapshot(path: '/home/me/logs')),
++    );
++    await tester.pumpAndSettle();
++    expect(find.byIcon(LucideIcons.trash2), findsNothing);
++    expect(tester.takeException(), isNull);
++  });
++
++  testWidgets('same directory refresh preserves a new folder draft', (
++    tester,
++  ) async {
++    final created = <String>[];
++    Widget browser(SftpSnapshot snapshot) => _app(
++      SftpBrowser(snapshot: snapshot, onCreateFolder: created.add),
++    );
++    await tester.pumpWidget(browser(_snapshot));
++    await tester.pumpAndSettle();
++    await tester.tap(find.byIcon(LucideIcons.folderPlus));
++    await tester.pumpAndSettle();
++    await tester.enterText(
++      find.descendant(
++        of: find.byKey(const ValueKey('sftp-new-folder-name')),
++        matching: find.byType(EditableText),
++      ),
++      'preserved-draft',
++    );
++    await tester.pumpWidget(
++      browser(SftpSnapshot(path: '/home/me', entries: [_updatedFile()])),
++    );
++    await tester.pumpAndSettle();
++    await tester.tap(find.text('Create'));
++    await tester.pumpAndSettle();
++    expect(created, ['preserved-draft']);
++    expect(tester.takeException(), isNull);
++  });
++
+   testWidgets('the browser lists a real snapshot and navigates on click', (
+     tester,
+   ) async {

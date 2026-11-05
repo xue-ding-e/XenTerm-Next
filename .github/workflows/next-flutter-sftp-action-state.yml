@@ -1,7 +1,7 @@
-name: Next Flutter forwards refresh red-green (Dart only)
+name: Next Flutter SFTP action state red-green (Dart only)
 on:
   push:
-    branches: [validation/flutter-forwards-refresh-20261105]
+    branches: [validation/flutter-sftp-action-state-20261105]
 permissions:
   contents: read
 concurrency:
@@ -9,7 +9,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   refresh:
-    if: github.repository == 'xue-ding-e/XenTerm-Next' && github.ref == 'refs/heads/validation/flutter-forwards-refresh-20261105'
+    if: github.repository == 'xue-ding-e/XenTerm-Next' && github.ref == 'refs/heads/validation/flutter-sftp-action-state-20261105'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -19,23 +19,23 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
-          ref: 12f482827c3961c1d83c8c5aa5ae96e44646f9eb
+          ref: c0d371e4730b83a81ece806cbb42d216eb9d874d
           path: source
           persist-credentials: false
       - name: Verify controller contracts before SDK setup
-        run: python3 -m unittest discover -s control/scripts/next -p test_forwards_refresh_gate.py
+        run: python3 -m unittest discover -s control/scripts/next -p test_sftp_action_state_gate.py
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.47.7'
           channel: stable
           cache: true
-      - name: Synthetic refresh red then green with locked dependencies
+      - name: Synthetic SFTP state red then green with locked dependencies
         timeout-minutes: 20
-        run: python3 control/scripts/next/run_forwards_refresh_gate.py --source source --logs evidence
+        run: python3 control/scripts/next/run_sftp_action_state_gate.py --source source --logs evidence
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: forwards-refresh-12f48282-${{ github.run_attempt }}-${{ job.status }}
+          name: sftp-action-state-c0d371e4-${{ github.run_attempt }}-${{ job.status }}
           path: evidence/*
           if-no-files-found: error
           retention-days: 14
