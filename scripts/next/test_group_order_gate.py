@@ -9,8 +9,8 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
-from group_order_process import Cancellation, ControlError, Deadline, checked, live_members, digest, verify_hashes
-from run_group_order_gate import (RED_DART, RED_RUST, REASON, SOURCE, SMOKE, verify_flutter, verify_rust, test_binary, transplant_test, isolated_env, rust_inventory, parse_git_paths)
+from group_order_process import Cancellation, ControlError, Deadline, checked, live_members, digest, verify_hashes, KNOWN_IGNORED_RUST
+from run_group_order_gate import (RED_DART, RED_RUST, REASON, SOURCE, SMOKE, verify_flutter, verify_rust, test_binary, transplant_test, isolated_env, rust_inventory, parse_git_paths, verify_full_harness, rust_root_inventory)
 
 
 def events(name=RED_DART,red=False,printed=False):
@@ -33,6 +33,78 @@ def rust_log(red=False,name=RED_RUST):
 
 
 class Contracts(unittest.TestCase):
+    def headless_evidence(self):
+        root=Path(__file__).parent/'fixtures'
+        inventory=(root/'headless-inventory-run42020597677.log').read_text()
+        output=(root/'headless-run42020597677.log').read_text()
+        self.assertEqual(digest(inventory.encode()),'3eb66efbe4c362790d8331e3b3fc3723b8b65baeb39d46900d87e2f692e88725')
+        self.assertEqual(digest(output.encode()),'ec27df6598efab117460cde80ba8d7fea22ee6e11a4fe826cc6f049cfbafe8ee')
+        return output,rust_root_inventory(inventory,0)
+
+    def test_real_full_headless_nested_harness_evidence(self):
+        output,names=self.headless_evidence()
+        result=verify_full_harness(output,0,names,KNOWN_IGNORED_RUST)
+        self.assertEqual((result['passed'],result['ignored']),(727,5))
+        self.assertEqual([(r['label'],r['passed'],r['ignored']) for r in result['roots']], [('src/lib.rs',724,5),('src/main.rs',3,0),('doc:xenterm',0,0)])
+        self.assertEqual(len(result['children']),30)
+        self.assertEqual(max(c['depth'] for c in result['children']),2)
+        self.assertTrue(all(c['passed']==1 and c['filtered']==728 and c['ignored']==0 for c in result['children']))
+
+    def test_real_full_headless_rejects_corrupted_layers(self):
+        output,names=self.headless_evidence()
+        firstrow=next(line for line in output.splitlines() if line.startswith('test ') and line.endswith(' ... ok'))
+        childrow='test config::config::persistence::tests::subprocess_stale_writer_fixture ... ok'
+        childsummary='test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 728 filtered out; finished in 0.01s'
+        bare='\nok\n'
+        mutations={
+            'missing root row':output.replace(firstrow+'\n','',1),
+            'unknown root case':output.replace(firstrow,'test unknown ... ok',1),
+            'duplicate root row':output.replace(firstrow,firstrow+'\n'+firstrow,1),
+            'missing child row':output.replace(childrow+'\n','',1),
+            'child failed row':output.replace(childrow,childrow[:-2]+'FAILED',1),
+            'child failed summary':output.replace(childsummary,childsummary.replace('ok. 1 passed; 0 failed','FAILED. 0 passed; 1 failed'),1),
+            'missing child summary':output.replace(childsummary+'\n','',1),
+            'missing parent bare ok':output.replace(bare,'\n',1),
+            'wrong child count':output.replace('running 1 test','running 2 tests',1),
+            'wrong root count':output.replace('running 729 tests','running 730 tests',1),
+            'wrong root summary':output.replace('724 passed; 0 failed; 5 ignored','723 passed; 0 failed; 5 ignored',1),
+            'child unknown skip':output.replace(childrow,childrow[:-2]+'ignored, unknown',1),
+            'child skip summary':output.replace(childsummary,childsummary.replace('1 passed; 0 failed; 0 ignored','0 passed; 0 failed; 1 ignored'),1),
+            'wrong child filter':output.replace(childsummary,childsummary.replace('728 filtered','727 filtered'),1),
+            'root filter':output.replace('5 ignored; 0 measured; 0 filtered','5 ignored; 0 measured; 1 filtered',1),
+            'unknown root skip':output.replace(firstrow,firstrow[:-2]+'ignored, unknown',1),
+            'missing doc root':output[:output.index('   Doc-tests xenterm')],
+            'extra root':output+'   Doc-tests xenterm\n',
+            'fake root in parent':output.replace('running 1 test','   Doc-tests xenterm\nrunning 1 test',1),
+            'orphan row':output+'test unknown ... ok\n',
+            'orphan failure':output+'FAILED\n',
+            'orphan summary':output+childsummary+'\n',
+            'malformed status during pending':output.replace('running 1 test','ok malformed\nrunning 1 test',1),
+        }
+        moved='test '+names['src/main.rs'][0]+' ... ok'
+        crossed=output.replace(moved+'\n','',1).replace('test result: ok. 724 passed;',moved+'\ntest result: ok. 725 passed;',1)
+        crossed=crossed.replace('running 729 tests','running 730 tests',1).replace('running 3 tests','running 2 tests',1).replace('test result: ok. 3 passed;','test result: ok. 2 passed;',1).replace('728 filtered out','729 filtered out')
+        mutations['move bin case to lib and compensate all counts']=crossed
+        for label,damaged in mutations.items():
+            with self.subTest(label=label), self.assertRaises(ControlError):
+                verify_full_harness(damaged,0,names,KNOWN_IGNORED_RUST)
+        swapped=copy.deepcopy(names)
+        swapped['src/lib.rs'][0],swapped['src/main.rs'][0]=swapped['src/main.rs'][0],swapped['src/lib.rs'][0]
+        with self.assertRaises(ControlError):verify_full_harness(output,0,swapped,KNOWN_IGNORED_RUST)
+        for code in (1,101,-9):
+            with self.assertRaises(ControlError):verify_full_harness(output,code,names,KNOWN_IGNORED_RUST)
+        with self.assertRaises(ControlError):verify_full_harness(output,0,dict(list(names.items())[:-1]),KNOWN_IGNORED_RUST)
+
+    def test_full_inventory_requires_all_root_boundaries_and_counts(self):
+        inventory=(Path(__file__).parent/'fixtures/headless-inventory-run42020597677.log').read_text()
+        for corrupted in (inventory.replace('729 tests, 0 benchmarks','730 tests, 0 benchmarks',1),
+                          inventory[:inventory.index('   Doc-tests xenterm')],
+                          inventory+'   Doc-tests xenterm\n0 tests, 0 benchmarks\n',
+                          inventory+'unexpected output\n',
+                          '     Running unittests src/other.rs (target/other)\n'+inventory):
+            with self.assertRaises(ControlError):rust_root_inventory(corrupted,0)
+        with self.assertRaises(ControlError):rust_root_inventory(inventory,1)
+
     def test_git_paths_require_strict_nul_delimiters(self):
         self.assertEqual(parse_git_paths(''), [])
         self.assertEqual(parse_git_paths('中文/ 空格 \0line\nname\0'), ['中文/ 空格 ', 'line\nname'])

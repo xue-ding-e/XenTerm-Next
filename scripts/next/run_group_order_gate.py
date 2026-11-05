@@ -94,6 +94,153 @@ def test_binary(output, code, source):
     return str(binary)
 
 
+ROOTS = ['src/lib.rs', 'src/main.rs', 'doc:xenterm']
+SUMMARY = re.compile(r'test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out; finished in [0-9.]+s')
+
+
+def rust_root_inventory(output, code):
+    if code:
+        raise ControlError('Rust inventory command failed')
+    markers=list(re.finditer(r'^\s+Running unittests (src/(?:lib|main)\.rs) \(target/[^\n]+\)$|^\s+(Doc-tests xenterm)$',output,re.M))
+    labels=[m.group(1) if m.group(1) else 'doc:xenterm' for m in markers]
+    if labels != ROOTS:
+        raise ControlError('missing or extra inventory root')
+    if any(re.match(r'^\s*(?:Running\b|Doc-tests\b|running\b|test\b|.+: test$|\d+ tests?\b)',line) for line in output[:markers[0].start()].splitlines()):
+        raise ControlError('unexpected harness inventory before first root')
+    grouped={}
+    for index,marker in enumerate(markers):
+        end=markers[index+1].start() if index+1<len(markers) else len(output)
+        block=output[marker.end():end]
+        names=re.findall(r'^(.+): test$',block,re.M)
+        totals=re.findall(r'^(\d+) tests?, (\d+) benchmarks?$',block,re.M)
+        if len(totals)!=1 or int(totals[0][0])!=len(names) or int(totals[0][1]) or len(set(names))!=len(names):
+            raise ControlError('invalid per-root inventory count or duplicate')
+        if any(line.strip() and not re.fullmatch(r'.+: test|\d+ tests?, \d+ benchmarks?',line) for line in block.splitlines()):
+            raise ControlError('unknown per-root inventory output')
+        grouped[labels[index]]=names
+    return grouped
+
+
+def verify_full_harness(output, code, expected_by_root, allow_ignored):
+    if code != 0:
+        raise ControlError('full Rust command failed')
+    if list(expected_by_root) != ROOTS:
+        raise ControlError('incomplete expected root inventory')
+    expected = [name for names in expected_by_root.values() for name in names]
+    stack, roots, children = [], [], []
+    awaiting_root = None
+    root_inventory = set(expected)
+    lib_size = None
+
+    def finish_row(frame, name, status):
+        if name not in root_inventory or name in {n for n, _ in frame['rows']}:
+            raise ControlError('unknown or duplicate harness test')
+        if status == 'FAILED':
+            raise ControlError('failed harness row')
+        if status.startswith('ignored'):
+            if len(stack) != 1 or name.rsplit('::', 1)[-1] not in allow_ignored:
+                raise ControlError('unknown or nested ignored test')
+        frame['rows'].append((name, status))
+        frame['pending'] = None
+
+    for line in output.splitlines():
+        marker = re.fullmatch(r'\s+Running unittests (src/(?:lib|main)\.rs) \(target/[^\n]+\)', line)
+        doc = re.fullmatch(r'\s+Doc-tests xenterm', line)
+        if marker or doc:
+            if stack or awaiting_root is not None:
+                raise ControlError('Cargo root boundary inside unfinished harness')
+            label = marker.group(1) if marker else 'doc:xenterm'
+            if len(roots) >= len(ROOTS) or label != ROOTS[len(roots)]:
+                raise ControlError('unexpected Cargo harness root')
+            awaiting_root = label
+            continue
+        running = re.fullmatch(r'running (\d+) tests?', line)
+        if running:
+            count = int(running.group(1))
+            if stack:
+                if stack[-1]['pending'] is None or count != 1 or awaiting_root is not None:
+                    raise ControlError('child harness lacks pending parent or exact one-case run')
+                label = stack[0]['label']
+                if label != 'src/lib.rs':
+                    raise ControlError('unexpected child harness outside core library')
+            else:
+                if awaiting_root is None:
+                    raise ControlError('harness started without Cargo root')
+                label, awaiting_root = awaiting_root, None
+                if count != len(expected_by_root[label]):
+                    raise ControlError('root declared count differs from listed inventory')
+                if label == 'src/lib.rs':
+                    lib_size = count
+            stack.append({'label': label, 'declared': count, 'rows': [], 'pending': None,
+                          'depth': len(stack), 'parent_test': stack[-1]['pending'] if stack else None})
+            continue
+        summary = SUMMARY.fullmatch(line)
+        if summary:
+            if not stack:
+                raise ControlError('summary without harness')
+            frame = stack[-1]
+            status = summary.group(1)
+            passed, failed, ignored, measured, filtered = map(int, summary.groups()[1:])
+            rows = frame['rows']
+            if frame['pending'] is not None or len(rows) != frame['declared']:
+                raise ControlError('unfinished harness test or missing rows')
+            if status != 'ok' or failed or measured:
+                raise ControlError('unsuccessful harness summary')
+            if passed != sum(s == 'ok' for _, s in rows) or ignored != sum(s.startswith('ignored') for _, s in rows):
+                raise ControlError('harness summary counts differ from its own rows')
+            if len(stack) > 1:
+                if (passed, ignored, filtered) != (1, 0, lib_size - 1):
+                    raise ControlError('child harness counts do not match library inventory')
+            elif filtered:
+                raise ControlError('root harness filtered tests')
+            elif sorted(n for n, _ in rows) != sorted(expected_by_root[frame['label']]):
+                raise ControlError('root harness rows differ from its listed inventory')
+            frame.update(passed=passed, ignored=ignored, filtered=filtered)
+            stack.pop()
+            (children if stack else roots).append(frame)
+            continue
+        row = re.fullmatch(r'test (.+?) \.\.\. (ok|FAILED|ignored[^\n]*)?', line)
+        if row:
+            if not stack or stack[-1]['pending'] is not None:
+                raise ControlError('test row outside harness or previous test unfinished')
+            name, status = row.groups()
+            if name not in root_inventory or (len(stack)>1 and name not in set(expected_by_root['src/lib.rs'])):
+                raise ControlError('harness test absent from frozen execution inventory')
+            if status is None:
+                stack[-1]['pending'] = name
+            else:
+                finish_row(stack[-1], name, status)
+            continue
+        if re.fullmatch(r'ok|FAILED|ignored[^\n]*', line):
+            if not stack or stack[-1]['pending'] is None:
+                raise ControlError('orphan harness test result')
+            finish_row(stack[-1], stack[-1]['pending'], line)
+            continue
+        if not line.strip():
+            continue
+        # Diagnostics (including intentionally induced Tokio panics) may occur
+        # while a test is pending. They never supply success or replace rows.
+        # Compilation diagnostics occur only before the first Cargo root.
+        if re.match(r'^\s*(?:test\b|running\b|Running\b|Doc-tests\b|ok\b|FAILED\b|ignored\b|failures:|error:|error\[)',line):
+            raise ControlError('malformed or failing harness control output')
+        if stack and stack[-1]['pending'] is not None:
+            continue
+        if not roots and not stack and awaiting_root is None:
+            continue
+        raise ControlError('unexpected output outside pending harness test')
+
+    if stack or awaiting_root is not None or [r['label'] for r in roots] != ROOTS:
+        raise ControlError('unfinished or missing Cargo root harness')
+    rows = [row for root in roots for row in root['rows']]
+    if sorted(n for n, _ in rows) != sorted(expected):
+        raise ControlError('root Rust inventory differs from complete list')
+    passed = sum(root['passed'] for root in roots)
+    if not passed:
+        raise ControlError('empty full Rust execution')
+    return {'passed': passed, 'failed': 0, 'ignored': sum(r['ignored'] for r in roots),
+            'tests': rows, 'roots': roots, 'children': children}
+
+
 def verify_rust(output, code, expected=None, *, red=False, allow_ignored=(), full=False):
     rows=re.findall(r'^test (.+?) \.\.\. (ok|FAILED|ignored[^\n]*)$',output,re.M)
     summaries=re.findall(r'^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out;.*$',output,re.M)
@@ -235,9 +382,9 @@ def run(args):
                 code,out=call([binary,name,'--exact','--test-threads=1'],f'green-rust-exact-{index}',120,allow_failure=True)
                 results[f'rust:{name}']=verify_rust(out,code,[name])
             code,out=call(cargo+['--','--list'],'green-full-headless-inventory',900,allow_failure=True)
-            all_rust=rust_inventory(out,code)
+            all_rust=rust_root_inventory(out,code)
             code,out=call(cargo+['--','--test-threads=1'],'green-full-headless',900,allow_failure=True)
-            results['full_headless']=verify_rust(out,code,all_rust,allow_ignored=manifest['rust_ignored_names'],full=True)
+            results['full_headless']=verify_full_harness(out,code,all_rust,manifest['rust_ignored_names'])
             code,out=call(['cargo','test','--locked','-p','xenterm-bridge','--test','groups','--','--test-threads=1'],'green-native-groups',900,allow_failure=True)
             results['native_groups']=verify_rust(out,code,['host_groups_round_trip'])
             verify_hashes(source,{n:sha for n,sha in baseline.items() if n not in files})
