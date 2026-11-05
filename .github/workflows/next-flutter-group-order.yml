@@ -12,10 +12,12 @@ jobs:
     if: github.repository == 'xue-ding-e/XenTerm-Next' && github.ref == 'refs/heads/validation/flutter-group-order-20261105'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-    env:
-      RUSTUP_HOME: ${{ runner.temp }}/group-order-rustup
-      CARGO_HOME: ${{ runner.temp }}/group-order-cargo
     steps:
+      - name: Initialize isolated toolchain homes
+        shell: bash
+        run: |
+          printf 'RUSTUP_HOME=%s/group-order-rustup\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'CARGO_HOME=%s/group-order-cargo\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
         with:
           path: control

@@ -131,6 +131,18 @@ class Contracts(unittest.TestCase):
             self.assertIn(text,script)
         self.assertEqual(script.count('finally: restore(green)'),2)
 
+    def test_workflow_initializes_toolchain_homes_in_first_step(self):
+        text=(Path(__file__).resolve().parents[2]/'.github/workflows/next-flutter-group-order.yml').read_text()
+        job_header,steps=text.split('    steps:',1)
+        self.assertNotIn('    env:',job_header)
+        self.assertNotIn('${{ runner.',text)
+        first_step=steps.split('      - uses:',1)[0]
+        self.assertIn('      - name: Initialize isolated toolchain homes',first_step)
+        self.assertIn('        shell: bash',first_step)
+        for key,suffix in [('RUSTUP_HOME','rustup'),('CARGO_HOME','cargo')]:
+            self.assertIn("printf '"+key+"=%s/group-order-"+suffix+r"\n' "+'"$RUNNER_TEMP" >> "$GITHUB_ENV"',first_step)
+        self.assertEqual(first_step.count('>> "$GITHUB_ENV"'),2)
+
     def test_workflow_pins_and_scope(self):
         text=(Path(__file__).resolve().parents[2]/'.github/workflows/next-flutter-group-order.yml').read_text()
         for item in ('ref: '+SOURCE,"flutter-version: '3.47.7'",'dtolnay/rust-toolchain@1.99.1','ubuntu-24.04','timeout-minutes: 60','timeout-minutes: 50','group: next-product-heavy','cancel-in-progress: false','if: always()','contents: read','libudev-dev libdbus-1-dev pkg-config'):self.assertIn(item,text)
