@@ -268,7 +268,9 @@ class _SftpViewState extends State<SftpView> with WidgetsBindingObserver {
 
   SftpSession _startNative() {
     final bridge = NativeBridge.tryLoad();
-    if (bridge == null) throw NativeBridgeError(NativeBridge.unavailableMessage());
+    if (bridge == null) {
+      throw NativeBridgeError(NativeBridge.unavailableMessage());
+    }
     return _NativeSftpSession(bridge, bridge.startSftp(widget.host.id));
   }
 
@@ -331,7 +333,8 @@ class _SftpViewState extends State<SftpView> with WidgetsBindingObserver {
   /// Static bridge errors are translated; core-supplied detail text is shown
   /// verbatim because it names the technical cause.
   String _errorText(BuildContext context, String error) {
-    if (error == NativeBridge.unavailableMessage() || error == 'SFTP needs an SSH host.') {
+    if (error == NativeBridge.unavailableMessage() ||
+        error == 'SFTP needs an SSH host.') {
       return AppLanguage.tr(context, error);
     }
     return error;
@@ -376,7 +379,10 @@ class _SftpViewState extends State<SftpView> with WidgetsBindingObserver {
                             ? XtEmptyState(
                                 icon: LucideIcons.triangleAlert,
                                 danger: true,
-                                title: AppLanguage.tr(context, 'SFTP unavailable'),
+                                title: AppLanguage.tr(
+                                  context,
+                                  'SFTP unavailable',
+                                ),
                                 message: _errorText(context, _error!),
                                 action: XtActionButton(
                                   label: AppLanguage.tr(context, 'Retry'),
@@ -392,7 +398,8 @@ class _SftpViewState extends State<SftpView> with WidgetsBindingObserver {
                                 onUpload: _upload,
                                 onCreateFolder: (name) =>
                                     _session?.createFolder(name),
-                                onDelete: (entry) => _session?.delete(entry.path),
+                                onDelete: (entry) =>
+                                    _session?.delete(entry.path),
                               ),
                       ),
                       if (_snapshot.prompt != null && _error == null)
@@ -576,6 +583,44 @@ class _SftpBrowserState extends State<SftpBrowser> {
   final TextEditingController _folderName = TextEditingController();
 
   @override
+  void didUpdateWidget(covariant SftpBrowser oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.snapshot.path != widget.snapshot.path) {
+      // Selection and unfinished actions belong to the displayed directory,
+      // not to the next listing delivered by the SFTP worker.
+      _selected = null;
+      _pendingDelete = null;
+      _creating = false;
+      _folderName.clear();
+      return;
+    }
+    _selected = _listedEntry(_selected);
+    final pending = _pendingDelete;
+    final current = _listedEntry(pending);
+    // Keep an unchanged confirmation across polling, but require a fresh one
+    // when the displayed entry disappears or its visible metadata changes.
+    _pendingDelete =
+        pending != null &&
+            current != null &&
+            pending.name == current.name &&
+            pending.size == current.size &&
+            pending.modified == current.modified &&
+            pending.mode == current.mode
+        ? current
+        : null;
+  }
+
+  SftpEntry? _listedEntry(SftpEntry? selected) {
+    if (selected == null) return null;
+    for (final entry in widget.snapshot.entries) {
+      if (entry.path == selected.path && entry.isDir == selected.isDir) {
+        return entry;
+      }
+    }
+    return null;
+  }
+
+  @override
   void dispose() {
     _folderName.dispose();
     super.dispose();
@@ -643,11 +688,9 @@ class _SftpBrowserState extends State<SftpBrowser> {
               if (_selected != null && !_selected!.isDir) ...[
                 XtIconButton(
                   icon: LucideIcons.download,
-                  tooltip: AppLanguage.tr(
-                    context,
-                    'Download {name}',
-                    {'name': _selected!.name},
-                  ),
+                  tooltip: AppLanguage.tr(context, 'Download {name}', {
+                    'name': _selected!.name,
+                  }),
                   size: 30,
                   onPressed: () => widget.onDownload?.call(_selected!),
                 ),
@@ -656,11 +699,9 @@ class _SftpBrowserState extends State<SftpBrowser> {
               if (_selected != null)
                 XtIconButton(
                   icon: LucideIcons.trash2,
-                  tooltip: AppLanguage.tr(
-                    context,
-                    'Delete {name}',
-                    {'name': _selected!.name},
-                  ),
+                  tooltip: AppLanguage.tr(context, 'Delete {name}', {
+                    'name': _selected!.name,
+                  }),
                   size: 30,
                   onPressed: () => setState(() => _pendingDelete = _selected),
                 ),
@@ -799,9 +840,7 @@ class _SftpBrowserState extends State<SftpBrowser> {
               ? Center(
                   child: Text(
                     AppLanguage.tr(context, 'Loading folder…'),
-                    style: TextStyle(
-                      color: XtColors.textTertiary(context),
-                    ),
+                    style: TextStyle(color: XtColors.textTertiary(context)),
                   ),
                 )
               : snapshot.entries.isEmpty && snapshot.error != null
@@ -810,9 +849,7 @@ class _SftpBrowserState extends State<SftpBrowser> {
               ? Center(
                   child: Text(
                     AppLanguage.tr(context, 'This folder is empty'),
-                    style: TextStyle(
-                      color: XtColors.textTertiary(context),
-                    ),
+                    style: TextStyle(color: XtColors.textTertiary(context)),
                   ),
                 )
               : ListView.builder(
@@ -851,10 +888,7 @@ class _Header extends StatelessWidget {
   Widget build(BuildContext context) {
     return Text(
       text,
-      style: TextStyle(
-        fontSize: 11,
-        color: XtColors.textTertiary(context),
-      ),
+      style: TextStyle(fontSize: 11, color: XtColors.textTertiary(context)),
     );
   }
 }
@@ -1018,11 +1052,10 @@ class _TransferStrip extends StatelessWidget {
               Expanded(
                 child: Text(
                   latest.state == 2
-                      ? AppLanguage.tr(
-                          context,
-                          '{name}: {message}',
-                          {'name': latest.name, 'message': latest.message},
-                        )
+                      ? AppLanguage.tr(context, '{name}: {message}', {
+                          'name': latest.name,
+                          'message': latest.message,
+                        })
                       : latest.state == 1
                       ? AppLanguage.tr(
                           context,
@@ -1031,14 +1064,10 @@ class _TransferStrip extends StatelessWidget {
                               : '{name} downloaded',
                           {'name': latest.name},
                         )
-                      : AppLanguage.tr(
-                          context,
-                          '{name} · {percent}%',
-                          {
-                            'name': latest.name,
-                            'percent': (fraction * 100).round(),
-                          },
-                        ),
+                      : AppLanguage.tr(context, '{name} · {percent}%', {
+                          'name': latest.name,
+                          'percent': (fraction * 100).round(),
+                        }),
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     fontSize: 12,
@@ -1050,11 +1079,7 @@ class _TransferStrip extends StatelessWidget {
               ),
               if (active > 0)
                 Text(
-                  AppLanguage.tr(
-                    context,
-                    '{count} active',
-                    {'count': active},
-                  ),
+                  AppLanguage.tr(context, '{count} active', {'count': active}),
                   style: TextStyle(
                     fontSize: 11,
                     color: XtColors.textTertiary(context),
@@ -1063,11 +1088,7 @@ class _TransferStrip extends StatelessWidget {
               if (failed > 0) ...[
                 const SizedBox(width: 8),
                 Text(
-                  AppLanguage.tr(
-                    context,
-                    '{count} failed',
-                    {'count': failed},
-                  ),
+                  AppLanguage.tr(context, '{count} failed', {'count': failed}),
                   style: TextStyle(fontSize: 11, color: failedColor),
                 ),
               ],
