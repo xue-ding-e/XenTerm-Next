@@ -123,7 +123,8 @@ class NativeBridge implements RuntimeTunnelSource {
       }
     }
     _instance = null;
-    loadError = 'xenterm_bridge library not found '
+    loadError =
+        'xenterm_bridge library not found '
         '(tried ${errors.join('; ')})';
     return _instance;
   }
@@ -160,7 +161,9 @@ class NativeBridge implements RuntimeTunnelSource {
     final beside = dir.uri.resolve(name).toFilePath();
     if (isMacOS ?? Platform.isMacOS) {
       // xenterm_app.app/Contents/MacOS/<exe> -> Contents/Frameworks/<lib>
-      final frameworks = dir.parent.uri.resolve('Frameworks/$name').toFilePath();
+      final frameworks = dir.parent.uri
+          .resolve('Frameworks/$name')
+          .toFilePath();
       return [frameworks, beside];
     }
     if (isLinux ?? Platform.isLinux) {
@@ -196,6 +199,9 @@ class NativeBridge implements RuntimeTunnelSource {
   );
   late final _StrFn _groupCreate = _lib.lookupFunction<_StrFnC, _StrFn>(
     'xenterm_group_create',
+  );
+  late final _StrFn _groupReorder = _lib.lookupFunction<_StrFnC, _StrFn>(
+    'xenterm_group_reorder',
   );
   late final _TwoStrFn _groupRename = _lib
       .lookupFunction<_TwoStrFnC, _TwoStrFn>('xenterm_group_rename');
@@ -377,6 +383,17 @@ class NativeBridge implements RuntimeTunnelSource {
   Map<String, dynamic> createGroup(String name) =>
       jsonDecode(_callWith(_groupCreate, name)) as Map<String, dynamic>;
 
+  /// Reorder the complete displayed group list, rejecting a stale snapshot.
+  Map<String, dynamic> reorderGroups(
+    List<String> expected,
+    List<String> order,
+  ) => jsonDecode(
+    _callWith(
+      _groupReorder,
+      jsonEncode({'expected': expected, 'order': order}),
+    ),
+  ) as Map<String, dynamic>;
+
   Map<String, dynamic> renameGroup(String old, String next) {
     final first = old.toNativeUtf8();
     final second = next.toNativeUtf8();
@@ -429,14 +446,9 @@ class NativeBridge implements RuntimeTunnelSource {
 
   /// Imports a portable profile. `dryRun` validates without touching the
   /// store; applying is append-only (existing sessions are never rewritten).
-  Map<String, dynamic> profileImport(String json, bool dryRun) =>
-      jsonDecode(
-        _callWith(
-          _profileImport,
-          jsonEncode({'json': json, 'dry_run': dryRun}),
-        ),
-      )
-          as Map<String, dynamic>;
+  Map<String, dynamic> profileImport(String json, bool dryRun) => jsonDecode(
+    _callWith(_profileImport, jsonEncode({'json': json, 'dry_run': dryRun})),
+  ) as Map<String, dynamic>;
 
   // ── Terminal sessions ──────────────────────────────────────────────────
 
@@ -1750,6 +1762,23 @@ Future<CoreWriteResult> createGroupInCore(String name) {
       throw NativeBridgeError(NativeBridge.unavailableMessage());
     }
     final result = bridge.createGroup(name);
+    return CoreWriteResult(
+      ok: result['ok'] == true,
+      error: result['error'] as String?,
+    );
+  });
+}
+
+Future<CoreWriteResult> reorderGroupsInCore(
+  List<String> expected,
+  List<String> order,
+) {
+  return Isolate.run(() {
+    final bridge = NativeBridge.tryLoad();
+    if (bridge == null) {
+      throw NativeBridgeError(NativeBridge.unavailableMessage());
+    }
+    final result = bridge.reorderGroups(expected, order);
     return CoreWriteResult(
       ok: result['ok'] == true,
       error: result['error'] as String?,

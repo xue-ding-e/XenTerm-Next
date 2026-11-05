@@ -9,6 +9,13 @@ const Map<String, String> zhHosts = <String, String>{
   // Host list: search, toolbar, sections, empty/error states.
   'New host': '新建主机',
   'New group': '新建分组',
+  'Manage groups': '管理分组',
+  'Move group up': '上移分组',
+  'Move group down': '下移分组',
+  'Drag to reorder group': '拖动调整分组顺序',
+  'Saving group order…': '正在保存分组顺序…',
+  'No groups to reorder': '暂无可排序的分组',
+  'Could not reorder groups': '无法调整分组顺序',
   'Import hosts': '导入主机',
   'Rename group': '重命名分组',
   'Delete group': '删除分组',

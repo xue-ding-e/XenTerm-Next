@@ -5,7 +5,9 @@ library;
 
 import 'dart:async';
 
-import 'package:flutter/foundation.dart' show ValueListenable, ValueNotifier;
+import 'package:flutter/foundation.dart'
+    show ValueListenable, ValueNotifier, listEquals;
+import 'package:flutter/services.dart' show LogicalKeyboardKey;
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 import '../../bridge/native_bridge.dart';
@@ -57,6 +59,24 @@ typedef GroupCollapser = Future<CoreWriteResult> Function(
   bool collapsed,
 );
 typedef HostImporter = Future<ImportResult> Function();
+typedef GroupReorderer = Future<CoreWriteResult> Function(
+  List<String> expected,
+  List<String> order,
+);
+
+// Match the core's ASCII-insensitive group identity without merging distinct
+// non-ASCII names. Preserve the core's spelling in labels and write requests.
+String _groupIdentity(String name) => String.fromCharCodes(
+  name.codeUnits.map((unit) => unit >= 65 && unit <= 90 ? unit + 32 : unit),
+);
+
+class _GroupDrag {
+  final String name;
+  final List<String> expected;
+
+  _GroupDrag(this.name, List<String> expected)
+    : expected = List.unmodifiable(expected);
+}
 
 class HostsScreen extends StatefulWidget {
   final ValueChanged<Host>? onConnect;
@@ -77,6 +97,7 @@ class HostsScreen extends StatefulWidget {
   final GroupRenamer? renameGroup;
   final GroupDeleter? deleteGroup;
   final GroupCollapser? collapseGroup;
+  final GroupReorderer? reorderGroups;
 
   /// OpenSSH config importer; production reads `~/.ssh/config` through the core.
   final HostImporter? importHosts;
@@ -96,6 +117,7 @@ class HostsScreen extends StatefulWidget {
     this.renameGroup,
     this.deleteGroup,
     this.collapseGroup,
+    this.reorderGroups,
     this.importHosts,
     this.loadSerialPorts,
   });
@@ -122,14 +144,21 @@ class _HostsScreenState extends State<HostsScreen> {
   List<Host> _hosts = const [];
 
   /// Group names already in use — the drawers' Parent group picker options.
-  List<String> get _knownGroups => {
-    for (final host in _hosts)
-      if (!host.ephemeral && host.group.trim().isNotEmpty) host.group.trim(),
-  }.toList()
-    ..sort();
+  List<String> get _knownGroups => _groupOrder;
   List<HostGroup> _groups = const [];
   bool _loading = true;
   String? _loadError;
+  int _reloadEpoch = 0;
+  bool _groupManagerOpen = false;
+  bool _groupOrderSaving = false;
+  bool _groupMutationBusy = false;
+  String? _groupOrderError;
+
+  bool get _groupBusy => _groupOrderSaving || _groupMutationBusy;
+  List<String> get _groupOrder => [
+    for (final section in _sections)
+      if (section.name != null) section.name!,
+  ];
 
   /// Inline group editor: null = closed; `renaming == null` = create.
   bool _groupEditorOpen = false;
@@ -180,6 +209,8 @@ class _HostsScreenState extends State<HostsScreen> {
   }
 
   Future<void> _reload({bool silent = false}) async {
+    if (!mounted) return;
+    final epoch = ++_reloadEpoch;
     if (!silent) {
       setState(() {
         _loading = true;
@@ -188,6 +219,7 @@ class _HostsScreenState extends State<HostsScreen> {
     }
     try {
       final hosts = await (widget.loadHosts ?? loadHostsFromCore)();
+      if (!mounted || epoch != _reloadEpoch) return;
       // Widget tests inject only the host loader; don't reach for the FFI
       // group store unless production wiring (or a group seam) is present.
       final groups = widget.loadGroups != null
@@ -195,14 +227,15 @@ class _HostsScreenState extends State<HostsScreen> {
           : widget.loadHosts != null
           ? const <HostGroup>[]
           : await loadGroupsFromCore();
-      if (!mounted) return;
+      if (!mounted || epoch != _reloadEpoch) return;
       setState(() {
         _hosts = hosts;
         _groups = groups;
         _loading = false;
+        _loadError = null;
       });
     } catch (error) {
-      if (!mounted) return;
+      if (!mounted || epoch != _reloadEpoch) return;
       setState(() {
         _loading = false;
         _loadError = error is NativeBridgeError ? error.message : '$error';
@@ -581,9 +614,207 @@ class _HostsScreenState extends State<HostsScreen> {
 
   // ── Groups (folders) ───────────────────────────────────────────────────
 
+  void _openGroupManager() {
+    if (_groupBusy) return;
+    setState(() {
+      _groupManagerOpen = true;
+      _groupEditorOpen = false;
+      _deletingGroup = null;
+    });
+  }
+
+  Future<void> _moveGroup(
+    String name,
+    String target,
+    List<String> expected,
+  ) async {
+    if (!mounted || _groupBusy || !listEquals(expected, _groupOrder)) return;
+    final from = expected.indexOf(name);
+    final to = expected.indexOf(target);
+    if (from < 0 || to < 0 || from == to) return;
+    final order = List<String>.of(expected)..removeAt(from);
+    order.insert(to, name);
+    setState(() {
+      _groupOrderSaving = true;
+      _groupOrderError = null;
+      // A load started before this mutation must not overwrite its result.
+      _reloadEpoch++;
+    });
+    try {
+      final result = await (widget.reorderGroups ?? reorderGroupsInCore)(
+        List<String>.unmodifiable(expected),
+        List<String>.unmodifiable(order),
+      );
+      if (!mounted) return;
+      if (!result.ok) {
+        setState(() => _groupOrderError = result.error ?? 'Save failed');
+      }
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _groupOrderError = '$error');
+    } finally {
+      if (mounted) {
+        // Do not reorder optimistically. A failed/stale write keeps the last
+        // confirmed order and reloads the core before another attempt.
+        await _reload(silent: true);
+        if (mounted) setState(() => _groupOrderSaving = false);
+      }
+    }
+  }
+
+  Widget _groupOrderPanel(ThemeData theme) {
+    final order = _groupOrder;
+    return Container(
+      key: const ValueKey('group-order-panel'),
+      color: XtColors.surface(context),
+      padding: const EdgeInsets.fromLTRB(18, 8, 18, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Expanded(child: Text(AppLanguage.tr(context, 'Manage groups'))),
+              if (_groupOrderSaving)
+                Text(AppLanguage.tr(context, 'Saving group order…')),
+              XtIconButton(
+                key: const ValueKey('group-order-close'),
+                icon: LucideIcons.x,
+                tooltip: AppLanguage.tr(context, 'Close'),
+                onPressed: () => setState(() => _groupManagerOpen = false),
+              ),
+            ],
+          ),
+          if (order.isEmpty)
+            Text(AppLanguage.tr(context, 'No groups to reorder'))
+          else
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 220),
+              child: ListView(
+                shrinkWrap: true,
+                children: [
+                  for (var index = 0; index < order.length; index++)
+                    Row(
+                      key: ValueKey('group-order-row-${order[index]}'),
+                      children: [
+                        Expanded(child: Text(order[index])),
+                        _GroupOrderButton(
+                          controlKey: ValueKey('group-up-${order[index]}'),
+                          icon: LucideIcons.arrowUp,
+                          tooltip: AppLanguage.tr(context, 'Move group up'),
+                          onPressed: _groupBusy || index == 0
+                              ? null
+                              : () => _moveGroup(
+                                  order[index],
+                                  order[index - 1],
+                                  order,
+                                ),
+                        ),
+                        _GroupOrderButton(
+                          controlKey: ValueKey('group-down-${order[index]}'),
+                          icon: LucideIcons.arrowDown,
+                          tooltip: AppLanguage.tr(context, 'Move group down'),
+                          onPressed: _groupBusy || index == order.length - 1
+                              ? null
+                              : () => _moveGroup(
+                                  order[index],
+                                  order[index + 1],
+                                  order,
+                                ),
+                        ),
+                      ],
+                    ),
+                ],
+              ),
+            ),
+          if (_groupOrderError != null)
+            Text(
+              '${AppLanguage.tr(context, 'Could not reorder groups')}: $_groupOrderError',
+              key: const ValueKey('group-order-error'),
+              style: TextStyle(color: XtColors.danger(context)),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _reorderableGroupHeader(_HostSection section, ThemeData theme) {
+    final name = section.name!;
+    final order = _groupOrder;
+    final enabled = !_groupBusy && order.length > 1;
+    final handle = Draggable<_GroupDrag>(
+      data: _GroupDrag(name, order),
+      maxSimultaneousDrags: enabled ? 1 : 0,
+      feedback: Container(
+        width: 220,
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: XtColors.surface(context),
+          border: Border.all(color: XtColors.textSecondary(context)),
+          borderRadius: BorderRadius.circular(XtRadius.field),
+        ),
+        child: Text(name, style: theme.typography.normal),
+      ),
+      child: Semantics(
+        label: AppLanguage.tr(context, 'Drag to reorder group'),
+        child: MouseRegion(
+          cursor: enabled ? SystemMouseCursors.grab : SystemMouseCursors.basic,
+          child: GestureDetector(
+            onTap: () {},
+            child: SizedBox(
+              key: ValueKey('group-drag-$name'),
+              width: 26,
+              height: 32,
+              child: Icon(
+                LucideIcons.gripVertical,
+                size: 15,
+                color: XtColors.textTertiary(context),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    return DragTarget<_GroupDrag>(
+      key: ValueKey('group-drop-$name'),
+      onWillAcceptWithDetails: (details) =>
+          enabled &&
+          details.data.name != name &&
+          listEquals(details.data.expected, _groupOrder),
+      onAcceptWithDetails: (details) =>
+          _moveGroup(details.data.name, name, details.data.expected),
+      builder: (context, candidates, rejected) => DecoratedBox(
+        decoration: BoxDecoration(
+          border: candidates.isEmpty
+              ? null
+              : Border.all(color: XtColors.textSecondary(context)),
+        ),
+        child: _GroupHeader(
+          key: ValueKey('group-header-$name'),
+          name: name,
+          count: section.hosts.length,
+          collapsed: section.collapsed,
+          theme: theme,
+          dragHandle: handle,
+          onToggle: _groupBusy
+              ? null
+              : () => _toggleGroup(
+                  HostGroup(name: name, collapsed: section.collapsed),
+                ),
+          onRename: _groupBusy ? null : () => _openGroupEditor(rename: name),
+          onDelete: _groupBusy
+              ? null
+              : () => setState(() => _deletingGroup = name),
+          onAdd: _groupBusy ? null : () => _newHostInGroup(name),
+        ),
+      ),
+    );
+  }
+
   void _openGroupEditor({String? rename}) {
+    if (_groupBusy) return;
     setState(() {
       _groupEditorOpen = true;
+      _groupManagerOpen = false;
       _renaming = rename;
       _groupName.text = rename ?? '';
       _groupError = null;
@@ -598,23 +829,25 @@ class _HostsScreenState extends State<HostsScreen> {
   });
 
   Future<void> _saveGroup() async {
+    if (_groupBusy) return;
     final name = _groupName.text.trim();
     if (name.isEmpty) {
       setState(() => _groupError = 'Enter a group name');
       return;
     }
     final renaming = _renaming;
+    setState(() => _groupMutationBusy = true);
     try {
       final result = renaming == null
           ? await (widget.createGroup ?? createGroupInCore)(name)
           : await (widget.renameGroup ?? renameGroupInCore)(renaming, name);
+      if (!mounted) return;
       if (!result.ok) {
         setState(
           () => _groupError = result.error ?? 'Could not save the group',
         );
         return;
       }
-      if (!mounted) return;
       setState(() {
         _groupEditorOpen = false;
         _renaming = null;
@@ -624,30 +857,38 @@ class _HostsScreenState extends State<HostsScreen> {
     } catch (error) {
       if (!mounted) return;
       setState(() => _groupError = '$error');
+    } finally {
+      if (mounted) setState(() => _groupMutationBusy = false);
     }
   }
 
   Future<void> _deleteGroupNamed(String name) async {
+    if (_groupBusy) return;
+    setState(() => _groupMutationBusy = true);
     try {
       final result = await (widget.deleteGroup ?? deleteGroupFromCore)(name);
+      if (!mounted) return;
       if (!result.ok) {
         setState(
           () => _loadError = result.error ?? 'Could not delete the group',
         );
         return;
       }
-      if (!mounted) return;
       setState(() => _deletingGroup = null);
       await _reload(silent: true);
     } catch (error) {
       if (!mounted) return;
       setState(() => _loadError = '$error');
+    } finally {
+      if (mounted) setState(() => _groupMutationBusy = false);
     }
   }
 
   Future<void> _toggleGroup(HostGroup group) async {
+    if (_groupBusy) return;
     final collapsed = !group.collapsed;
     setState(() {
+      _groupMutationBusy = true;
       _groups = [
         for (final g in _groups)
           g.name == group.name
@@ -665,6 +906,8 @@ class _HostsScreenState extends State<HostsScreen> {
       }
     } catch (_) {
       if (mounted) await _reload(silent: true);
+    } finally {
+      if (mounted) setState(() => _groupMutationBusy = false);
     }
   }
 
@@ -696,9 +939,7 @@ class _HostsScreenState extends State<HostsScreen> {
           ? AppLanguage.tr(context, 'No new hosts to import')
           : added == 1
           ? AppLanguage.tr(context, 'Imported 1 host')
-          : AppLanguage.tr(context, 'Imported {count} hosts', {
-              'count': added,
-            });
+          : AppLanguage.tr(context, 'Imported {count} hosts', {'count': added});
       setState(() {
         _importing = false;
         _importError = !result.ok;
@@ -805,6 +1046,11 @@ class _HostsScreenState extends State<HostsScreen> {
                                 onTap: _openGroupEditor,
                               ),
                               SplitMenuEntry(
+                                icon: LucideIcons.listOrdered,
+                                label: AppLanguage.tr(context, 'Manage groups'),
+                                onTap: _openGroupManager,
+                              ),
+                              SplitMenuEntry(
                                 icon: LucideIcons.import,
                                 label: AppLanguage.tr(context, 'Import hosts'),
                                 onTap: _importHosts,
@@ -842,6 +1088,19 @@ class _HostsScreenState extends State<HostsScreen> {
               ),
               // ── Inline group editor / import result ─────────────────────
               if (_groupEditorOpen) _groupEditorBar(theme),
+              if (_groupManagerOpen) _groupOrderPanel(theme),
+              if (!_groupManagerOpen && _groupOrderError != null)
+                Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 18,
+                    vertical: 8,
+                  ),
+                  child: Text(
+                    '${AppLanguage.tr(context, 'Could not reorder groups')}: $_groupOrderError',
+                    key: const ValueKey('group-order-error'),
+                    style: TextStyle(color: XtColors.danger(context)),
+                  ),
+                ),
               if (_importNotice != null) _importBanner(theme),
               // ── Section titles + cards ──────────────────────────────────
               // Only this subtree listens to the debounced search query: a
@@ -886,8 +1145,7 @@ class _HostsScreenState extends State<HostsScreen> {
                                     )
                                   : hosts.isEmpty && _groups.isEmpty
                                   ? _emptyState
-                                  : _groups.isEmpty ||
-                                        query.trim().isNotEmpty
+                                  : _groups.isEmpty || query.trim().isNotEmpty
                                   ? (hosts.isEmpty
                                         ? _emptyState
                                         : _layout == HostsLayout.cards
@@ -911,67 +1169,62 @@ class _HostsScreenState extends State<HostsScreen> {
     // hosts column: a 340px macOS-inspector-style panel slid in by pure
     // transform, so neither the grid nor the header relayouts per frame.
     final drawer = _DrawerSlider(
-          open: _drawerOpen,
-          child: _serialPanelOpen
-              ? SerialDetailsPanel(
-                  host: _serialHost,
-                  loadPorts: widget.loadSerialPorts,
-                  error: _serialError,
-                  saveMode: _serialSaveDraft,
-                  groups: _knownGroups,
-                  onSwitchToSsh:
-                      _serialHost == null ? _switchDraftToSsh : null,
-                  onSubmit: _submitSerial,
-                  onClose: _closeSerialPanel,
-                  // A saved serial session deletes through the same core path
-                  // as SSH/Telnet/local; a draft has no stored id.
-                  onDelete: _serialHost != null && _serialHost!.id.isNotEmpty
-                      ? _deleteHostToCore
-                      : null,
-                )
-              : _drawerHost == null
-              ? const SizedBox.shrink()
-              : HostDetailsPanel(
-                  host: _drawerHost!,
-                  hosts: _hosts,
-                  onClose: _closeDrawer,
-                  onSwitchToSerial:
-                      _drawerHost!.id.isEmpty ? _switchDraftToSerial : null,
-                  onKindChanged: _drawerHost!.id.isEmpty
-                      ? (kind) => setState(() {
-                          final draft = _drawerHost!;
-                          _drawerHost = Host(
-                            id: draft.id,
-                            label: draft.label,
-                            address: draft.address,
-                            port: draft.port,
-                            username: draft.username,
-                            group: draft.group,
-                            protocol: kind,
-                            ephemeral: true,
-                          );
-                        })
-                      : null,
-                  onConnect: () {
-                    final host = _drawerHost;
-                    _closeDrawer();
-                    _connect(host);
-                  },
-                  onSave: (
-                    host,
-                    password,
-                    clearPassword,
-                    keyInline,
-                    clearKey,
-                  ) => _saveHostToCore(
+      open: _drawerOpen,
+      child: _serialPanelOpen
+          ? SerialDetailsPanel(
+              host: _serialHost,
+              loadPorts: widget.loadSerialPorts,
+              error: _serialError,
+              saveMode: _serialSaveDraft,
+              groups: _knownGroups,
+              onSwitchToSsh: _serialHost == null ? _switchDraftToSsh : null,
+              onSubmit: _submitSerial,
+              onClose: _closeSerialPanel,
+              // A saved serial session deletes through the same core path
+              // as SSH/Telnet/local; a draft has no stored id.
+              onDelete: _serialHost != null && _serialHost!.id.isNotEmpty
+                  ? _deleteHostToCore
+                  : null,
+            )
+          : _drawerHost == null
+          ? const SizedBox.shrink()
+          : HostDetailsPanel(
+              host: _drawerHost!,
+              hosts: _hosts,
+              onClose: _closeDrawer,
+              onSwitchToSerial: _drawerHost!.id.isEmpty
+                  ? _switchDraftToSerial
+                  : null,
+              onKindChanged: _drawerHost!.id.isEmpty
+                  ? (kind) => setState(() {
+                      final draft = _drawerHost!;
+                      _drawerHost = Host(
+                        id: draft.id,
+                        label: draft.label,
+                        address: draft.address,
+                        port: draft.port,
+                        username: draft.username,
+                        group: draft.group,
+                        protocol: kind,
+                        ephemeral: true,
+                      );
+                    })
+                  : null,
+              onConnect: () {
+                final host = _drawerHost;
+                _closeDrawer();
+                _connect(host);
+              },
+              onSave: (host, password, clearPassword, keyInline, clearKey) =>
+                  _saveHostToCore(
                     host,
                     password: password,
                     clearPassword: clearPassword,
                     keyInline: keyInline,
                     clearKey: clearKey,
                   ),
-                  onDelete: _deleteHostToCore,
-                ),
+              onDelete: _deleteHostToCore,
+            ),
     );
     return Stack(
       children: [
@@ -1029,7 +1282,7 @@ class _HostsScreenState extends State<HostsScreen> {
                 key: const ValueKey('group-save'),
                 label: AppLanguage.tr(context, 'Save'),
                 variant: XtActionVariant.primary,
-                onPressed: _saveGroup,
+                onPressed: _groupBusy ? null : _saveGroup,
               ),
               const SizedBox(width: 8),
               XtActionButton(
@@ -1106,33 +1359,45 @@ class _HostsScreenState extends State<HostsScreen> {
   /// Named groups plus the ungrouped bucket, in core display order.
   List<_HostSection> get _sections {
     final byGroup = <String, List<Host>>{};
+    final spellings = <String, String>{};
     final ungrouped = <Host>[];
     for (final host in _hosts) {
       final group = host.group.trim();
-      final reserved =
-          group.toLowerCase() == 'default' || group.toLowerCase() == 'system';
-      if (group.isEmpty || reserved) {
+      final identity = _groupIdentity(group);
+      if (group.isEmpty || identity == 'default' || identity == 'system') {
         ungrouped.add(host);
       } else {
-        byGroup.putIfAbsent(group, () => []).add(host);
+        byGroup.putIfAbsent(identity, () => []).add(host);
+        spellings.putIfAbsent(identity, () => group);
       }
     }
-    final known = <String>{
-      for (final group in _groups) group.name.toLowerCase(),
-    };
-    final names = <String>[
-      for (final group in _groups) group.name,
-      for (final name in byGroup.keys)
-        if (!known.contains(name.toLowerCase())) name,
+    final seen = <String>{};
+    final names = <String>[];
+    for (final group in _groups) {
+      final identity = _groupIdentity(group.name);
+      if (group.name.isEmpty || identity == 'default' || identity == 'system') {
+        continue;
+      }
+      if (seen.add(identity)) names.add(group.name);
+    }
+    // Production returns all groups. A partial injected/source snapshot may
+    // omit implicit groups: append those, never re-sort the confirmed order.
+    final missing = [
+      for (final entry in spellings.entries)
+        if (!seen.contains(entry.key)) entry.value,
     ]..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    names.addAll(missing);
     return [
       if (ungrouped.isNotEmpty || names.isEmpty)
         _HostSection(name: null, collapsed: false, hosts: ungrouped),
       for (final name in names)
         _HostSection(
           name: name,
-          collapsed: _groups.any((g) => g.name == name && g.collapsed),
-          hosts: byGroup[name] ?? const [],
+          collapsed: _groups.any(
+            (g) =>
+                _groupIdentity(g.name) == _groupIdentity(name) && g.collapsed,
+          ),
+          hosts: byGroup[_groupIdentity(name)] ?? const [],
         ),
     ];
   }
@@ -1148,23 +1413,7 @@ class _HostsScreenState extends State<HostsScreen> {
           else
             _deletingGroup == section.name
                 ? _deleteGroupBar(section.name!, theme)
-                : _GroupHeader(
-                    key: ValueKey('group-header-${section.name}'),
-                    name: section.name!,
-                    count: section.hosts.length,
-                    collapsed: section.collapsed,
-                    theme: theme,
-                    onToggle: () => _toggleGroup(
-                      HostGroup(
-                        name: section.name!,
-                        collapsed: section.collapsed,
-                      ),
-                    ),
-                    onRename: () => _openGroupEditor(rename: section.name),
-                    onDelete: () =>
-                        setState(() => _deletingGroup = section.name),
-                    onAdd: () => _newHostInGroup(section.name!),
-                  ),
+                : _reorderableGroupHeader(section, theme),
           if (section.name == null || !section.collapsed)
             Padding(
               padding: EdgeInsets.fromLTRB(
@@ -1177,10 +1426,7 @@ class _HostsScreenState extends State<HostsScreen> {
                   ? Padding(
                       padding: const EdgeInsets.symmetric(vertical: 8),
                       child: Text(
-                        AppLanguage.tr(
-                          context,
-                          'No hosts in this group yet.',
-                        ),
+                        AppLanguage.tr(context, 'No hosts in this group yet.'),
                         style: theme.typography.normal.copyWith(
                           fontSize: 12,
                           color: XtColors.textTertiary(context),
@@ -1230,7 +1476,7 @@ class _HostsScreenState extends State<HostsScreen> {
             key: const ValueKey('group-delete-confirm'),
             label: AppLanguage.tr(context, 'Delete'),
             variant: XtActionVariant.danger,
-            onPressed: () => _deleteGroupNamed(name),
+            onPressed: _groupBusy ? null : () => _deleteGroupNamed(name),
           ),
           const SizedBox(width: 8),
           XtActionButton(
@@ -1326,16 +1572,69 @@ class _HostSection {
   });
 }
 
+/// A keyboard-operable ordering action, with a visible focus highlight.
+class _GroupOrderButton extends StatefulWidget {
+  final Key controlKey;
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback? onPressed;
+
+  const _GroupOrderButton({
+    required this.controlKey,
+    required this.icon,
+    required this.tooltip,
+    this.onPressed,
+  });
+
+  @override
+  State<_GroupOrderButton> createState() => _GroupOrderButtonState();
+}
+
+class _GroupOrderButtonState extends State<_GroupOrderButton> {
+  bool _focused = false;
+
+  @override
+  Widget build(BuildContext context) => FocusableActionDetector(
+    enabled: widget.onPressed != null,
+    onShowFocusHighlight: (focused) => setState(() => _focused = focused),
+    shortcuts: const {
+      SingleActivator(LogicalKeyboardKey.enter): ActivateIntent(),
+      SingleActivator(LogicalKeyboardKey.space): ActivateIntent(),
+    },
+    actions: {
+      ActivateIntent: CallbackAction<ActivateIntent>(
+        onInvoke: (_) {
+          widget.onPressed?.call();
+          return null;
+        },
+      ),
+    },
+    child: Semantics(
+      button: true,
+      label: widget.tooltip,
+      enabled: widget.onPressed != null,
+      child: XtIconButton(
+        key: widget.controlKey,
+        icon: widget.icon,
+        tooltip: widget.tooltip,
+        selected: _focused,
+        onPressed: widget.onPressed,
+      ),
+    ),
+  );
+}
+
 /// Folder header: chevron + folder glyph + name + count, with hover actions.
 class _GroupHeader extends StatefulWidget {
   final String name;
   final int count;
   final bool collapsed;
   final ThemeData theme;
-  final VoidCallback onToggle;
-  final VoidCallback onRename;
-  final VoidCallback onDelete;
-  final VoidCallback onAdd;
+  final VoidCallback? onToggle;
+  final VoidCallback? onRename;
+  final VoidCallback? onDelete;
+  final VoidCallback? onAdd;
+  final Widget? dragHandle;
 
   const _GroupHeader({
     super.key,
@@ -1347,6 +1646,7 @@ class _GroupHeader extends StatefulWidget {
     required this.onRename,
     required this.onDelete,
     required this.onAdd,
+    this.dragHandle,
   });
 
   @override
@@ -1370,6 +1670,7 @@ class _GroupHeaderState extends State<_GroupHeader> {
         onTap: widget.onToggle,
         child: Row(
           children: [
+            if (widget.dragHandle != null) widget.dragHandle!,
             AnimatedRotation(
               turns: widget.collapsed ? -0.25 : 0,
               duration: XtMotion.micro,
@@ -1411,11 +1712,9 @@ class _GroupHeaderState extends State<_GroupHeader> {
                   XtIconButton(
                     key: ValueKey('group-add-${widget.name}'),
                     icon: LucideIcons.plus,
-                    tooltip: AppLanguage.tr(
-                      context,
-                      'New host in {group}',
-                      {'group': widget.name},
-                    ),
+                    tooltip: AppLanguage.tr(context, 'New host in {group}', {
+                      'group': widget.name,
+                    }),
                     onPressed: widget.onAdd,
                     size: 28,
                   ),

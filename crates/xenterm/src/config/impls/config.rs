@@ -435,26 +435,28 @@ pub(crate) fn is_reserved_session_group(name: &str) -> bool {
 
 /// Named display groups: explicit folders ∪ the groups sessions are filed
 /// under, with reserved names and ungrouped excluded, de-duplicated and
-/// sorted case-insensitively. The single source of truth for group display
-/// order — shared by the welcome list, drag-reorder target finding and the
-/// group dropdown; if these ever drift, drop targets and rendered rows
-/// disagree (#41).
+/// sorted case-insensitively. `ordered_session_groups` overlays the persisted
+/// user order on this membership list so display and drop targets agree (#41).
 pub(crate) fn named_display_groups(explicit: &[String], sessions: &[Session]) -> Vec<String> {
     let mut named: Vec<String> = explicit
         .iter()
-        .filter(|group| !is_reserved_session_group(group.trim()))
+        .filter(|group| !group.trim().is_empty() && !is_reserved_session_group(group.trim()))
         .cloned()
         .chain(
             sessions
                 .iter()
                 .filter(|session| {
-                    !session.group.is_empty() && !is_reserved_session_group(session.group.trim())
+                    !session.group.trim().is_empty()
+                        && !is_reserved_session_group(session.group.trim())
                 })
                 .map(|session| session.group.clone()),
         )
         .collect();
+    // Deduplicate before sorting: explicit folder spelling wins, and Unicode
+    // lowercase ties (K/K/k) must not hide non-adjacent ASCII aliases.
+    let mut seen = std::collections::HashSet::new();
+    named.retain(|group| seen.insert(group.to_ascii_lowercase()));
     named.sort_by_key(|group| group.to_lowercase());
-    named.dedup();
     named
 }
 
@@ -922,16 +924,21 @@ impl ConfigStore {
     /// boundary (first member moving down, last moving up). Returns whether
     /// anything changed.
     pub fn reorder_session(&mut self, id: &str, dir: isize) -> bool {
-        // Display group of a session: ungrouped (and reserved names) render
-        // under "default"; everything else under its own group. Mirrors
-        // build_session_rows in src/app/session_models.rs.
-        fn display_group(session: &Session) -> String {
-            if session.group.is_empty() || is_reserved_session_group(session.group.trim()) {
+        // Match the display list's ASCII-insensitive identity while retaining
+        // its canonical spelling. Unicode lowercase is only a sort key, never
+        // a reason to merge otherwise distinct group names.
+        let named = self.ordered_session_groups();
+        let display_group = |session: &Session| -> String {
+            if session.group.trim().is_empty() || is_reserved_session_group(session.group.trim()) {
                 "default".to_string()
             } else {
-                session.group.clone()
+                named
+                    .iter()
+                    .find(|name| name.eq_ignore_ascii_case(&session.group))
+                    .cloned()
+                    .unwrap_or_else(|| session.group.clone())
             }
-        }
+        };
 
         let Some(idx) = self.cache.sessions.iter().position(|s| s.id == id) else {
             return false;
@@ -956,14 +963,18 @@ impl ConfigStore {
 
         // Cross-group hop. Display order: "default" first (only when ungrouped
         // sessions exist), then named groups — explicit folders ∪ sessions'
-        // groups — alphabetically. Collapsed groups are skipped: their rows
+        // groups — in user display order. Collapsed groups are skipped: their rows
         // are hidden, so a card must never land inside one.
         let Some(collapsed_groups) = self.cache.collapsed_session_groups.clone() else {
             // Mirrors build_session_rows: no collapse list = everything
             // collapsed, so no visible target group can exist.
             return false;
         };
-        let is_collapsed = |name: &str| collapsed_groups.iter().any(|g| g == name);
+        let is_collapsed = |name: &str| {
+            collapsed_groups
+                .iter()
+                .any(|g| g.eq_ignore_ascii_case(name))
+        };
 
         let mut display: Vec<String> = Vec::new();
         if self
@@ -974,10 +985,7 @@ impl ConfigStore {
         {
             display.push("default".to_string());
         }
-        display.extend(named_display_groups(
-            &self.cache.groups,
-            &self.cache.sessions,
-        ));
+        display.extend(named.iter().cloned());
 
         let Some(pos) = display.iter().position(|g| g == &group) else {
             return false;
@@ -992,7 +1000,7 @@ impl ConfigStore {
             return false;
         };
 
-        let source_group = self.cache.sessions[idx].group.clone();
+        let source_group = group.clone();
         let mut moved = self.cache.sessions.remove(idx);
         moved.group = if target_group == "default" {
             String::new()
@@ -1024,8 +1032,16 @@ impl ConfigStore {
         // it in `groups` directly rather than via add_group: the folder was
         // visibly expanded during the drag, and add_group would collapse it.
         if group != "default"
-            && !self.cache.sessions.iter().any(|s| s.group == source_group)
-            && !self.cache.groups.iter().any(|g| g == &source_group)
+            && !self
+                .cache
+                .sessions
+                .iter()
+                .any(|s| display_group(s) == source_group)
+            && !self
+                .cache
+                .groups
+                .iter()
+                .any(|g| g.eq_ignore_ascii_case(&source_group))
         {
             self.cache.groups.push(source_group);
         }
@@ -1991,12 +2007,61 @@ impl ConfigStore {
         }
 
         let groups = self.cache.collapsed_session_groups.as_mut().unwrap();
-        groups.retain(|group| group != name);
+        groups.retain(|group| !group.eq_ignore_ascii_case(name));
         if collapsed {
             groups.push(name.to_string());
             groups.sort();
             groups.dedup();
         }
+    }
+
+    /// Named folders in the same order used for rendering and cross-group moves.
+    /// Stale/duplicate persisted entries are ignored; newly discovered groups
+    /// follow the saved prefix alphabetically without mutating the folder set.
+    pub fn ordered_session_groups(&self) -> Vec<String> {
+        let mut remaining = named_display_groups(&self.cache.groups, &self.cache.sessions);
+        let mut ordered = Vec::with_capacity(remaining.len());
+        if let Some(saved) = &self.cache.session_group_order {
+            for name in saved {
+                if let Some(index) = remaining.iter().position(|group| group == name) {
+                    ordered.push(remaining.remove(index));
+                }
+            }
+        }
+        ordered.extend(remaining);
+        ordered
+    }
+
+    /// Persist a complete permutation only if the caller still sees the current
+    /// display order. The cache lock held by the caller and the ordered save lock
+    /// cover validation, persistence and rollback, just like settings updates.
+    pub fn reorder_session_groups_and_save(
+        &mut self,
+        expected: &[String],
+        order: &[String],
+    ) -> Result<()> {
+        let _ordered = Self::save_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let current = self.ordered_session_groups();
+        if expected != current.as_slice() {
+            bail!("group order changed; refresh before reordering");
+        }
+        let mut membership = order.to_vec();
+        membership.sort();
+        let mut current_membership = current;
+        current_membership.sort();
+        // Comparing sorted full vectors rejects duplicates, omissions, unknown
+        // and reserved names, as well as changes in spelling/case.
+        if membership != current_membership {
+            bail!("group order must contain every current group exactly once");
+        }
+        let previous = self.cache.session_group_order.replace(order.to_vec());
+        let result = self.save_impl_locked(None, self.keyring_enabled);
+        if result.is_err() {
+            self.cache.session_group_order = previous;
+        }
+        result
     }
 
     /// Whether a user group already exists, including groups inferred from
@@ -2036,12 +2101,15 @@ impl ConfigStore {
         if is_reserved_session_group(name.trim()) {
             return;
         }
-        self.cache.groups.retain(|g| g != name);
+        self.cache.groups.retain(|g| !g.eq_ignore_ascii_case(name));
+        if let Some(order) = &mut self.cache.session_group_order {
+            order.retain(|group| !group.eq_ignore_ascii_case(name));
+        }
         if let Some(groups) = &mut self.cache.collapsed_session_groups {
-            groups.retain(|group| group != name);
+            groups.retain(|group| !group.eq_ignore_ascii_case(name));
         }
         for s in &mut self.cache.sessions {
-            if s.group == name {
+            if s.group.eq_ignore_ascii_case(name) {
                 s.group.clear();
             }
         }
@@ -2058,19 +2126,26 @@ impl ConfigStore {
         {
             return;
         }
+        if let Some(order) = &mut self.cache.session_group_order {
+            for group in order {
+                if group.eq_ignore_ascii_case(old) {
+                    *group = n.clone();
+                }
+            }
+        }
         for g in &mut self.cache.groups {
-            if g == old {
+            if g.eq_ignore_ascii_case(old) {
                 *g = n.clone();
             }
         }
         for s in &mut self.cache.sessions {
-            if s.group == old {
+            if s.group.eq_ignore_ascii_case(old) {
                 s.group = n.clone();
             }
         }
         if let Some(groups) = &mut self.cache.collapsed_session_groups {
             for group in groups.iter_mut() {
-                if group == old {
+                if group.eq_ignore_ascii_case(old) {
                     *group = n.clone();
                 }
             }
@@ -3121,6 +3196,22 @@ mod tests {
             .iter()
             .map(|s| (s.name.clone(), s.group.clone()))
             .collect()
+    }
+
+    #[test]
+    fn reorder_session_hop_honors_persisted_group_order() {
+        // This regression uses only pre-existing APIs: on the old core the
+        // unknown JSON field is ignored and d2 incorrectly lands in alpha.
+        let mut store = reorder_store();
+        let mut config = serde_json::to_value(&store.cache).unwrap();
+        config["session_group_order"] = serde_json::json!(["beta", "alpha"]);
+        store.cache = serde_json::from_value(config).unwrap();
+        let id = id_of(&store, "d2");
+        assert!(store.reorder_session(&id, 1));
+        assert_eq!(
+            store.sessions().iter().find(|s| s.id == id).unwrap().group,
+            "beta"
+        );
     }
 
     #[test]
@@ -4591,3 +4682,7 @@ mod issue98_layout_tests {
 #[cfg(test)]
 #[path = "settings_update_tests.rs"]
 mod settings_update_tests;
+
+#[cfg(test)]
+#[path = "session_group_order_tests.rs"]
+mod session_group_order_tests;

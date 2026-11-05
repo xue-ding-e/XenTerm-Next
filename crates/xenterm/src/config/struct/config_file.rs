@@ -178,6 +178,10 @@ pub struct ConfigFile {
     /// not stored here.
     #[serde(default)]
     pub groups: Vec<String>,
+    /// Optional user display order, independent of explicit folder membership.
+    /// Missing entries follow alphabetically; legacy configs remain alphabetical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_group_order: Option<Vec<String>>,
     /// Quick Connect folders that were collapsed when the UI was last used.
     /// `None` is a legacy/new config and starts with every folder collapsed;
     /// `Some([])` means the user explicitly expanded every folder.

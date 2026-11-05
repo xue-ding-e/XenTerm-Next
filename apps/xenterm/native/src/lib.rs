@@ -438,34 +438,20 @@ fn is_reserved_group(name: &str) -> bool {
 }
 
 /// Named host groups as a JSON array of `{"name", "collapsed"}`: explicit
-/// folders ∪ the groups sessions are filed under, sorted case-insensitively.
+/// folders ∪ the groups sessions are filed under, in persisted display order.
 #[no_mangle]
 pub extern "C" fn xenterm_groups_json() -> *mut c_char {
     let result = (|| -> Result<String, String> {
         let store = store()?;
         let store = store.lock().unwrap_or_else(|p| p.into_inner());
-        let mut names: Vec<String> = store
-            .groups()
-            .iter()
-            .filter(|g| !is_reserved_group(g))
-            .cloned()
-            .chain(
-                store
-                    .sessions()
-                    .iter()
-                    .filter(|s| !is_reserved_group(&s.group))
-                    .map(|s| s.group.clone()),
-            )
-            .collect();
-        names.sort_by_key(|g| g.to_lowercase());
-        names.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+        let names = store.ordered_session_groups();
         let collapsed = store.collapsed_session_groups().unwrap_or(&[]);
         let rows: Vec<serde_json::Value> = names
             .iter()
             .map(|name| {
                 serde_json::json!({
                     "name": name,
-                    "collapsed": collapsed.iter().any(|c| c == name),
+                    "collapsed": collapsed.iter().any(|c| c.eq_ignore_ascii_case(name)),
                 })
             })
             .collect();
@@ -474,6 +460,47 @@ pub extern "C" fn xenterm_groups_json() -> *mut c_char {
     match result {
         Ok(json) => to_c(json),
         Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// Reorder all named groups using an exact display-order compare-and-swap.
+/// JSON: {"expected":[current names],"order":[requested names]}.
+#[no_mangle]
+pub extern "C" fn xenterm_group_reorder(request: *const c_char) -> *mut c_char {
+    fn names(value: &serde_json::Value, field: &str) -> Result<Vec<String>, String> {
+        let values = value
+            .as_array()
+            .ok_or_else(|| format!("group order {field} must be an array of strings"))?;
+        values
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| format!("group order {field} must contain only strings"))
+            })
+            .collect()
+    }
+    let result = (|| -> Result<(), String> {
+        let request: serde_json::Value = serde_json::from_str(&unsafe { take_c(request) })
+            .map_err(|error| format!("invalid group order: {error}"))?;
+        let request = request
+            .as_object()
+            .ok_or("group order request must be an object")?;
+        if request.len() != 2 || !request.contains_key("expected") || !request.contains_key("order") {
+            return Err("group order request must contain exactly expected and order".into());
+        }
+        let expected = names(&request["expected"], "expected")?;
+        let order = names(&request["order"], "order")?;
+        let store = store()?;
+        let mut store = store.lock().unwrap_or_else(|p| p.into_inner());
+        store
+            .reorder_session_groups_and_save(&expected, &order)
+            .map_err(|error| error.to_string())
+    })();
+    match result {
+        Ok(()) => to_c(serde_json::json!({"ok": true}).to_string()),
+        Err(error) => to_c(serde_json::json!({"ok": false, "error": error}).to_string()),
     }
 }
 

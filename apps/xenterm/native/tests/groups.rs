@@ -133,6 +133,103 @@ fn host_groups_round_trip() {
         .collect();
     assert_eq!(names, vec!["Staging".to_string()]);
 
+    // Group ordering is a full display-order CAS, independent of sessions and
+    // collapsed state. Include an implicit folder so membership is not limited
+    // to the explicit `groups` collection.
+    call(
+        "create Alpha",
+        xenterm_bridge::xenterm_group_create(c("Alpha").as_ptr()),
+    );
+    let payload = c(
+        r#"{"id":"","label":"implicit","address":"192.0.2.1","port":22,"username":"test","group":"Implicit","kind":"ssh"}"#,
+    );
+    call(
+        "implicit session",
+        xenterm_bridge::xenterm_session_upsert(payload.as_ptr()),
+    );
+    call(
+        "collapse staging",
+        xenterm_bridge::xenterm_group_collapse(c("staging").as_ptr(), 1),
+    );
+    assert_eq!(groups()[2]["collapsed"], true); // lowercase stored alias
+    call(
+        "expand canonical",
+        xenterm_bridge::xenterm_group_collapse(staging.as_ptr(), 0),
+    );
+    assert_eq!(groups()[2]["collapsed"], false);
+    call(
+        "collapse alias again",
+        xenterm_bridge::xenterm_group_collapse(c("staging").as_ptr(), 1),
+    );
+    let sessions_before = sessions();
+    let order =
+        c(r#"{"expected":["Alpha","Implicit","Staging"],"order":["Staging","Implicit","Alpha"]}"#);
+    call(
+        "reorder",
+        xenterm_bridge::xenterm_group_reorder(order.as_ptr()),
+    );
+    assert_eq!(groups()[0]["name"], "Staging");
+    assert_eq!(groups()[0]["collapsed"], true);
+    assert_eq!(sessions(), sessions_before);
+    let disk = xenterm::config::ConfigStore::load().unwrap();
+    assert_eq!(
+        disk.ordered_session_groups(),
+        vec!["Staging", "Implicit", "Alpha"]
+    );
+    assert!(!disk.groups().iter().any(|name| name == "Implicit"));
+    let before = groups();
+    for request in [
+        r#"{"expected":["Alpha","Implicit","Staging"],"order":["Staging","Implicit","Alpha"]}"#,
+        r#"{"expected":["Staging","Implicit","Alpha"],"order":["Staging","Implicit"]}"#,
+        r#"{"expected":["Staging","Implicit","Alpha"],"order":["Staging","Alpha","Alpha"]}"#,
+        r#"{"expected":["Staging","Implicit","Alpha"],"order":["unknown","Implicit","Alpha"]}"#,
+        r#"{"expected":["Staging","Implicit","Alpha"],"order":["system","Implicit","Alpha"]}"#,
+        r#"{"expected":["Staging","Implicit","Alpha"],"order":["default","Implicit","Alpha"]}"#,
+        r#"{"expected":["Staging","Implicit","Alpha"],"order":["staging","Implicit","Alpha"]}"#,
+        r#"{"order":["Staging","Implicit","Alpha"]}"#,
+        r#"{"expected":null,"order":[]}"#,
+        r#"{"expected":["Staging","Implicit","Alpha"],"order":[1,"Implicit","Alpha"]}"#,
+        r#"{"expected":[true,"Implicit","Alpha"],"order":["Staging","Implicit","Alpha"]}"#,
+        r#"{"expected":["Staging","Implicit","Alpha"]}"#,
+        r#"{"expected":[],"order":[],"unknown":true}"#,
+        r#"{"expected":[],"unknown":[]}"#,
+        r#"[]"#,
+        r#"null"#,
+        "not json",
+    ] {
+        let response: serde_json::Value = serde_json::from_str(&take(
+            xenterm_bridge::xenterm_group_reorder(c(request).as_ptr()),
+        ))
+        .unwrap();
+        assert_eq!(response["ok"], false, "accepted invalid request: {request}");
+        assert_eq!(groups(), before);
+    }
+    let null: serde_json::Value = serde_json::from_str(&take(
+        xenterm_bridge::xenterm_group_reorder(std::ptr::null()),
+    ))
+    .unwrap();
+    assert_eq!(null["ok"], false);
+    call(
+        "rename sorted",
+        xenterm_bridge::xenterm_group_rename(staging.as_ptr(), c("STAGING").as_ptr()),
+    );
+    assert_eq!(groups()[0]["name"], "STAGING");
+    assert_eq!(groups()[0]["collapsed"], true);
+    call(
+        "delete sorted",
+        xenterm_bridge::xenterm_group_delete(c("Implicit").as_ptr()),
+    );
+    call(
+        "new group",
+        xenterm_bridge::xenterm_group_create(c("Aardvark").as_ptr()),
+    );
+    assert_eq!(
+        xenterm::config::ConfigStore::load()
+            .unwrap()
+            .ordered_session_groups(),
+        vec!["STAGING", "Alpha", "Aardvark"]
+    );
+
     // Reserved names cannot be created.
     let default = c("default");
     let rejected = take(xenterm_bridge::xenterm_group_create(default.as_ptr()));
