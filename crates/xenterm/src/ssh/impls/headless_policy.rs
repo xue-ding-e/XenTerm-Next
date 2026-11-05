@@ -103,14 +103,11 @@ fn reusable_credentials(session: &Session, jumps: &[Session]) -> bool {
             || !hop.private_key_inline.as_str().trim().is_empty()
     })
 }
-/// Recheck trust/effective proxy before publishing ready. The connection itself
-/// already consumed the frozen policy; this never substitutes a new verifier.
-pub(crate) fn still_current(session: &Session, jumps: &[Session]) -> bool {
-    let Ok(current) = Policy::capture(session, jumps) else {
-        return false;
-    };
-    TASK.try_with(|policy| policy.identity == current.identity)
-        .unwrap_or(false)
+/// Snapshot the frozen identity inside its task-local scope before handing a
+/// fresh trust/proxy check to an owned blocking job. This does no I/O and never
+/// substitutes a new verifier for the one already consumed by the connection.
+pub(crate) fn current_identity() -> Option<[u8; 32]> {
+    TASK.try_with(|policy| policy.identity).ok()
 }
 pub(crate) fn current_trust() -> Option<Arc<HostKeySnapshot>> {
     TASK.try_with(|policy| policy.trust.clone()).ok()

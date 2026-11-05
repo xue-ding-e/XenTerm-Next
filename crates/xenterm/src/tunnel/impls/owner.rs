@@ -93,6 +93,8 @@ struct Entry {
     expires: Option<Instant>,
     #[cfg(test)]
     permission_probe: Option<Arc<PermissionProbe>>,
+    #[cfg(test)]
+    admission_probe: Option<Arc<AdmissionProbe>>,
     state: watch::Receiver<&'static str>,
     stop: watch::Sender<bool>,
     // Retained across a timed-out or cancelled release; no early successful ACK.
@@ -211,6 +213,8 @@ pub(crate) struct ForwardOwner {
     enforce_permissions: bool,
     #[cfg(test)]
     permission_probe: Option<Arc<PermissionProbe>>,
+    #[cfg(test)]
+    admission_probe: Option<Arc<AdmissionProbe>>,
     entries: Mutex<HashMap<String, Arc<Entry>>>,
 }
 impl ForwardOwner {
@@ -224,6 +228,8 @@ impl ForwardOwner {
             enforce_permissions,
             #[cfg(test)]
             permission_probe: None,
+            #[cfg(test)]
+            admission_probe: None,
             entries: Mutex::new(HashMap::new()),
         }
     }
@@ -411,6 +417,8 @@ impl ForwardOwner {
             expires,
             #[cfg(test)]
             permission_probe: self.permission_probe.clone(),
+            #[cfg(test)]
+            admission_probe: self.admission_probe.clone(),
             state,
             stop,
             task: tokio::sync::Mutex::new(None),
@@ -625,6 +633,8 @@ async fn prepare_worker(
             expires,
             #[cfg(test)]
             entry.permission_probe.clone(),
+            #[cfg(test)]
+            entry.admission_probe.clone(),
         ),
     )
     .await
@@ -663,15 +673,38 @@ async fn owned_worker(
     });
     confirmed
 }
-/// A permission read remains owned even when its awaiting cancellation future
-/// is dropped. The enclosing worker must drain this slot before acknowledging
-/// cleanup. At most one blocking read exists, and each read reloads the profile.
+/// A blocking policy read stays owned when its awaiting future is dropped.
+/// The enclosing worker drains every slot before acknowledging cleanup. Each
+/// slot owns at most one read, and each read reloads its policy from disk.
 #[derive(Default)]
-struct PermissionChecks {
+struct PolicyChecks {
     job: Option<JoinHandle<bool>>,
     failed: bool,
     #[cfg(test)]
     probe: Option<Arc<PermissionProbe>>,
+}
+
+/// Pause only this owner's authenticated route before its real admission I/O.
+/// The fixture takes the actual isolated profile lock, not a mock permission.
+#[cfg(test)]
+struct AdmissionProbe {
+    reached: watch::Sender<bool>,
+    proceed: watch::Sender<bool>,
+    attempting: watch::Sender<bool>,
+    reader: Option<Arc<PermissionProbe>>,
+    running_published: AtomicBool,
+}
+#[cfg(test)]
+impl AdmissionProbe {
+    fn new() -> Self {
+        Self {
+            reached: watch::channel(false).0,
+            proceed: watch::channel(false).0,
+            attempting: watch::channel(false).0,
+            reader: None,
+            running_published: AtomicBool::new(false),
+        }
+    }
 }
 
 /// Per-owner test gate. No global hooks or replacement production permissions.
@@ -682,6 +715,8 @@ struct PermissionProbe {
     gate: Mutex<bool>,
     changed: std::sync::Condvar,
     panic_operation: bool,
+    panic_reader: bool,
+    rescue_after: Duration,
 }
 #[cfg(test)]
 impl PermissionProbe {
@@ -692,6 +727,8 @@ impl PermissionProbe {
             gate: Mutex::new(false),
             changed: std::sync::Condvar::new(),
             panic_operation: false,
+            panic_reader: false,
+            rescue_after: Duration::from_secs(4),
         }
     }
     fn wait(&self) {
@@ -699,27 +736,46 @@ impl PermissionProbe {
         self.entered.send_replace(true);
         // Bound a failed test without allowing the timeout to count as success.
         let (open, _) = self.changed.wait_timeout_while(
-            open, Duration::from_secs(4), |open| !*open,
+            open, self.rescue_after, |open| !*open,
         ).unwrap();
         assert!(*open, "permission reader gate timed out");
+        assert!(!self.panic_reader, "synthetic blocking policy reader panic");
     }
     fn open(&self) {
         *self.gate.lock().unwrap() = true;
         self.changed.notify_all();
     }
 }
-impl PermissionChecks {
+impl PolicyChecks {
     async fn read(&mut self, enforce: bool) -> bool {
         if !enforce {
             return true;
         }
+        self.check(|| permitted(true)).await
+    }
+    async fn admission(&mut self, enforce: bool, session: Session, jumps: Vec<Session>) -> bool {
+        // Tokio task-local state does not follow spawn_blocking. Capture only
+        // its immutable identity here, inside the original owner's scope.
+        let expected = crate::ssh::headless_policy::current_identity();
+        self.check(move || {
+            permitted(enforce)
+                && crate::ssh::headless_policy::Policy::capture(&session, &jumps)
+                    .is_ok_and(|current| Some(current.identity()) == expected)
+        })
+        .await
+    }
+    async fn check(&mut self, work: impl FnOnce() -> bool + Send + 'static) -> bool {
         #[cfg(test)]
         let probe = self.probe.clone();
-        let job = self.job.get_or_insert_with(|| tokio::task::spawn_blocking(move || {
-            #[cfg(test)]
-            if let Some(probe) = probe { probe.wait(); }
-            permitted(true)
-        }));
+        let job = self.job.get_or_insert_with(|| {
+            tokio::task::spawn_blocking(move || {
+                #[cfg(test)]
+                if let Some(probe) = probe {
+                    probe.wait();
+                }
+                work()
+            })
+        });
         let result = job.await;
         self.job.take();
         self.failed |= result.is_err();
@@ -758,7 +814,7 @@ async fn cancelled(
     shutdown: watch::Receiver<bool>,
     enforce: bool,
     expires: Option<Instant>,
-    permissions: &mut PermissionChecks,
+    permissions: &mut PolicyChecks,
 ) -> &'static str {
     let signal = cancellation_signal(stop, shutdown, expires);
     tokio::pin!(signal);
@@ -787,18 +843,45 @@ async fn run(
     enforce: bool,
     expires: Option<Instant>,
     #[cfg(test)] probe: Option<Arc<PermissionProbe>>,
+    #[cfg(test)] admission_probe: Option<Arc<AdmissionProbe>>,
 ) -> (&'static str, bool) {
-    let mut permissions = PermissionChecks::default();
+    let mut permissions = PolicyChecks::default();
+    let mut admission = PolicyChecks::default();
     #[cfg(test)]
-    { permissions.probe = probe; }
-    // Catch before dropping the tracker: even a panic must join permission I/O.
+    {
+        permissions.probe = probe;
+        admission.probe = admission_probe
+            .as_ref()
+            .and_then(|probe| probe.reader.clone());
+    }
+    // Catch before dropping either tracker: even a panic must join policy I/O.
     let outcome = std::panic::AssertUnwindSafe(run_with_permissions(
-        session, jumps, listener, state.clone(), stopped, shutdown, enforce,
-        expires, &mut permissions,
-    )).catch_unwind().await.unwrap_or(("cleanup_unconfirmed", false));
+        session,
+        jumps,
+        listener,
+        state.clone(),
+        stopped,
+        shutdown,
+        enforce,
+        expires,
+        &mut permissions,
+        &mut admission,
+        #[cfg(test)]
+        admission_probe,
+    ))
+    .catch_unwind()
+    .await
+    .unwrap_or(("cleanup_unconfirmed", false));
     state.send_replace("stopping");
-    let drained = permissions.drain().await;
-    if drained { outcome } else { ("cleanup_unconfirmed", false) }
+    // Do not short-circuit: a failed permission read still requires joining
+    // the separate post-connect admission read (and dropping its route inputs).
+    let permissions_drained = permissions.drain().await;
+    let admission_drained = admission.drain().await;
+    if permissions_drained && admission_drained {
+        outcome
+    } else {
+        ("cleanup_unconfirmed", false)
+    }
 }
 async fn run_with_permissions(
     session: Session,
@@ -809,7 +892,9 @@ async fn run_with_permissions(
     shutdown: watch::Receiver<bool>,
     enforce: bool,
     expires: Option<Instant>,
-    permissions: &mut PermissionChecks,
+    permissions: &mut PolicyChecks,
+    admission: &mut PolicyChecks,
+    #[cfg(test)] admission_probe: Option<Arc<AdmissionProbe>>,
 ) -> (&'static str, bool) {
     crate::ssh::connection::with_automation_cancellation(async move {
         #[cfg(test)]
@@ -825,7 +910,7 @@ async fn run_with_permissions(
                 _ = entered.wait_for(|entered| *entered) => panic!("synthetic operation panic during permission read"),
             }
         }
-        let cancellation = cancelled(stopped, shutdown, enforce, expires, permissions);
+        let cancellation = cancelled(stopped.clone(), shutdown.clone(), enforce, expires, permissions);
         tokio::pin!(cancellation);
         let connection = tokio::select! {
             biased;
@@ -837,12 +922,34 @@ async fn run_with_permissions(
             Ok(Ok(route)) => route,
             _ => return ("failed", true),
         };
-        if !permitted(enforce) || expires.is_some_and(|end| end <= Instant::now())
-            || !crate::ssh::headless_policy::still_current(&session, &jumps) {
+        #[cfg(test)]
+        if let Some(probe) = &admission_probe {
+            probe.reached.send_replace(true);
+            let mut proceed = probe.proceed.subscribe();
+            proceed.wait_for(|open| *open).await.unwrap();
+            // The regression observes whether the executor can progress while
+            // the actual admission read is blocked by the isolated profile lock.
+            probe.attempting.send_replace(true);
+        }
+        let admitted = tokio::select! {
+            biased;
+            reason = &mut cancellation => return (reason, true),
+            admitted = admission.admission(enforce, session, jumps) => admitted,
+        };
+        // Cancellation or expiry can win while the blocking read completes.
+        // Never publish a late successful admission after either signal.
+        if let Some(reason) = preparation_cancel_reason(&stopped, &shutdown, expires) {
+            return (reason, true);
+        }
+        if !admitted {
             return ("authorization_changed", true);
         }
         let handle = Arc::new(handle);
         let listener = super::forward::start_dynamic_bound(handle.clone(), listener);
+        #[cfg(test)]
+        if let Some(probe) = &admission_probe {
+            probe.running_published.store(true, Ordering::Release);
+        }
         state.send_replace("running");
         let reason = tokio::select! {
             biased;

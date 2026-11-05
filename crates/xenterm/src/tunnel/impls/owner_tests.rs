@@ -413,6 +413,7 @@ fn cancelled_or_timed_out_key_load_is_joined_before_release_ack() {
                     state: "starting".into(), ownership: "synthetic-owner" },
                 identity: Mutex::new(None), proxy_url: Mutex::new(String::new()),
                 expires: None, permission_probe: None, state, stop,
+                admission_probe: None,
                 task: tokio::sync::Mutex::new(Some(task)),
                 completed: AtomicBool::new(false), unconfirmed: AtomicBool::new(false),
                 finished_at: Mutex::new(None),
@@ -1046,7 +1047,7 @@ fn permission_profile_lock_must_not_stall_cancellation_timer() {
         let cancelled_while_locked = tokio::task::spawn_blocking(move || {
             let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
             attempting.send(()).unwrap();
-            let mut permissions = PermissionChecks::default();
+            let mut permissions = PolicyChecks::default();
             runtime.block_on(async {
                 let (stop, stopped) = watch::channel(false);
                 let (_shutdown, shutdown) = watch::channel(false);
@@ -1260,4 +1261,362 @@ fn operation_panic_drains_in_flight_permission_reader_without_clean_ack() {
         assert!(entry.unconfirmed.load(Ordering::Acquire));
         assert!(entry.task.lock().await.is_none(), "permission drain did not finish the retained worker");
     });
+}
+
+#[test]
+fn postconnect_profile_lock_must_not_stall_executor_or_ack_release() {
+    isolated("tunnel::owner::lifecycle_tests::postconnect_profile_lock_must_not_stall_executor_or_ack_release", || async {
+        // Keep the existing process/profile isolation, but give the route and
+        // heartbeat exactly one executor thread. The outer fixture runtime
+        // must not hide synchronous admission I/O with another worker thread.
+        tokio::task::spawn_blocking(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().unwrap();
+            runtime.block_on(async {
+                save_permission_fixture(true);
+                let mut fixture = Fixture::new(0, false).await;
+                let probe = Arc::new(AdmissionProbe::new());
+                let mut reached = probe.reached.subscribe();
+                let mut attempting = probe.attempting.subscribe();
+                let mut owner = ForwardOwner::unattended();
+                owner.admission_probe = Some(probe.clone());
+                let owner = Arc::new(owner);
+                let session = fixture.target.clone();
+                let jumps = fixture.jumps.clone();
+                // Fixture keeps an unrelated remote rule at index zero so
+                // the route must explicitly select its dynamic rule.
+                let forward_index = 1;
+                assert_eq!(session.forwards[forward_index].kind, "dynamic");
+                let accepted = owner.begin(session.id.clone(), forward_index, None, move || {
+                    PreparedForward::capture(session, jumps, forward_index, 1)
+                }).unwrap();
+                tokio::time::timeout(Duration::from_secs(5), reached.wait_for(|yes| *yes))
+                    .await.unwrap_or_else(|_| panic!(
+                        "admission probe not reached: state={}, auth={:?}, permitted={}",
+                        owner.status(&accepted.handle).unwrap().state,
+                        fixture.auth.iter().map(|count| count.load(Ordering::SeqCst)).collect::<Vec<_>>(),
+                        owner.permitted(),
+                    )).unwrap();
+                // This gate is after open_forward_connection has returned all
+                // authenticated hops, not before preparation or SSH auth.
+                assert!(fixture.auth.iter().all(|count| count.load(Ordering::SeqCst) == 1));
+                let entry = owner.entry(&accepted.handle).unwrap();
+                let address: SocketAddr = entry.proxy_url.lock().unwrap()
+                    .strip_prefix("socks5h://").unwrap().parse().unwrap();
+                let path = crate::config::data_dir().join("sessions.db.profile-lock");
+                let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+                let (heartbeat_tx, heartbeat_rx) = std::sync::mpsc::channel();
+                let held = Arc::new(AtomicBool::new(false));
+                let holder_held = held.clone();
+                let holder = std::thread::spawn(move || {
+                    let file = std::fs::OpenOptions::new().read(true).write(true)
+                        .open(path).unwrap();
+                    fs2::FileExt::lock_exclusive(&file).unwrap();
+                    holder_held.store(true, Ordering::Release);
+                    locked_tx.send(()).unwrap();
+                    // Rescue only: success requires the handshake while this
+                    // same file handle still holds the real profile lock.
+                    // It precedes ProfileIoGuard's five-second error timeout.
+                    let evidence = heartbeat_rx.recv_timeout(Duration::from_secs(3));
+                    holder_held.store(false, Ordering::Release);
+                    drop(file);
+                    evidence
+                });
+                locked_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+                let heartbeat_owner = owner.clone();
+                let handle = accepted.handle.clone();
+                let heartbeat = tokio::spawn(async move {
+                    attempting.wait_for(|yes| *yes).await.unwrap();
+                    let locked = held.load(Ordering::Acquire);
+                    let before = heartbeat_owner.status(&handle).unwrap().state;
+                    heartbeat_owner.request_release(&handle).unwrap();
+                    // Poll the actual retained worker join once, not merely a
+                    // timer or a status string. Dropping this pending caller
+                    // must not lose the owner's handle. This is a point-in-time
+                    // no-ACK assertion, not full coverage of a future drain fix.
+                    let pending = heartbeat_owner.release(&handle).now_or_never().is_none();
+                    let entry = heartbeat_owner.entry(&handle).unwrap();
+                    let retained = entry.task.try_lock().is_ok_and(|task| task.is_some());
+                    let not_completed = !entry.completed.load(Ordering::Acquire);
+                    let _ = heartbeat_tx.send((locked, before, pending, retained, not_completed));
+                });
+                probe.proceed.send_replace(true);
+                heartbeat.await.unwrap();
+                let evidence = holder.join().unwrap();
+                owner.release(&accepted.handle).await.unwrap();
+                owner.shutdown().await.unwrap();
+                fixture.finish(false).await;
+                let rebound = TcpListener::bind(address).await.unwrap();
+                drop(rebound);
+                // Cleanup happens before the expected old-source assertion.
+                let (locked, state, pending, retained, not_completed) = evidence.expect(
+                    "post-connect admission stalled executor heartbeat until profile lock rescue");
+                assert!(locked, "heartbeat did not execute while the profile lock was held");
+                assert_eq!(state, "starting", "route published running before admission completed");
+                assert!(pending && retained && not_completed,
+                    "release acknowledged or lost its worker while admission was still blocked");
+            });
+        }).await.unwrap();
+    });
+}
+
+async fn postconnect_gated_owner(
+    panic_reader: bool,
+    expires: Option<Instant>,
+) -> (
+    Fixture,
+    Arc<ForwardOwner>,
+    ForwardStatus,
+    Arc<AdmissionProbe>,
+    Arc<PermissionProbe>,
+) {
+    save_permission_fixture(true);
+    let fixture = Fixture::new(0, false).await;
+    let mut reader = PermissionProbe::new();
+    reader.panic_reader = panic_reader;
+    if expires.is_some() {
+        // Allow the bounded three-hop handshake to finish before expiry, while
+        // keeping the reader rescue strictly later than the expiry assertion.
+        reader.rescue_after = Duration::from_secs(10);
+    }
+    let reader = Arc::new(reader);
+    let mut probe = AdmissionProbe::new();
+    probe.reader = Some(reader.clone());
+    let probe = Arc::new(probe);
+    let mut reached = probe.reached.subscribe();
+    let mut owner = ForwardOwner::unattended();
+    owner.admission_probe = Some(probe.clone());
+    let owner = Arc::new(owner);
+    let session = fixture.target.clone();
+    let jumps = fixture.jumps.clone();
+    assert_eq!(session.forwards[1].kind, "dynamic");
+    let accepted = owner
+        .begin(session.id.clone(), 1, expires, move || {
+            PreparedForward::capture(session, jumps, 1, 1)
+        })
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), reached.wait_for(|yes| *yes))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(fixture
+        .auth
+        .iter()
+        .all(|count| count.load(Ordering::SeqCst) == 1));
+    assert_eq!(owner.status(&accepted.handle).unwrap().state, "starting");
+    (fixture, owner, accepted, probe, reader)
+}
+
+async fn postconnect_reader_drains_before_ack(
+    close_owner: bool,
+    panic_reader: bool,
+    expires: bool,
+) {
+    let deadline = expires.then(|| Instant::now() + Duration::from_secs(6));
+    let (mut fixture, owner, accepted, probe, reader) =
+        postconnect_gated_owner(panic_reader, deadline).await;
+    let mut entered = reader.entered.subscribe();
+    let mut draining = reader.draining.subscribe();
+    let entry = owner.entry(&accepted.handle).unwrap();
+    let address: SocketAddr = entry
+        .proxy_url
+        .lock()
+        .unwrap()
+        .strip_prefix("socks5h://")
+        .unwrap()
+        .parse()
+        .unwrap();
+    probe.proceed.send_replace(true);
+    // Unlike the heartbeat regression, this signal originates in the owned
+    // blocking admission job. Cancellation cannot pass by never starting it.
+    tokio::time::timeout(Duration::from_secs(2), entered.wait_for(|yes| *yes))
+        .await
+        .unwrap()
+        .unwrap();
+    let mut closing = if close_owner {
+        let owner = owner.clone();
+        Some(tokio::spawn(async move { owner.shutdown().await }))
+    } else {
+        if !expires {
+            owner.request_release(&accepted.handle).unwrap();
+        }
+        None
+    };
+    tokio::time::timeout(Duration::from_secs(8), draining.wait_for(|yes| *yes))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!*reader.gate.lock().unwrap());
+    assert_eq!(*entry.state.borrow(), "stopping");
+    assert!(!entry.completed.load(Ordering::Acquire));
+    assert!(!probe.running_published.load(Ordering::Acquire));
+    if let Some(closing) = closing.as_mut() {
+        assert!(
+            tokio::time::timeout(Duration::from_millis(150), closing)
+                .await
+                .is_err(),
+            "shutdown acknowledged before post-connect admission joined"
+        );
+        assert!(
+            entry.task.try_lock().is_err(),
+            "shutdown lost its worker join"
+        );
+    } else {
+        assert!(
+            tokio::time::timeout(Duration::from_millis(150), owner.release(&accepted.handle))
+                .await
+                .is_err(),
+            "release acknowledged before post-connect admission joined"
+        );
+        assert!(
+            entry.task.lock().await.is_some(),
+            "timed-out release lost its admission worker"
+        );
+    }
+    reader.open();
+    if let Some(closing) = closing {
+        closing.await.unwrap().unwrap();
+    }
+    let released = owner.release(&accepted.handle).await;
+    if panic_reader {
+        assert!(released
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("cleanup_unconfirmed"));
+        assert!(!entry.completed.load(Ordering::Acquire));
+        assert!(entry.unconfirmed.load(Ordering::Acquire));
+        assert_eq!(
+            owner.status(&accepted.handle).unwrap().state,
+            "cleanup_unconfirmed"
+        );
+        assert!(owner.shutdown().await.is_err());
+    } else {
+        assert_eq!(released.unwrap().state, "released");
+        assert!(entry.completed.load(Ordering::Acquire));
+        owner.shutdown().await.unwrap();
+    }
+    assert!(entry.task.lock().await.is_none());
+    assert!(
+        !probe.running_published.load(Ordering::Acquire),
+        "late admission published running after cancellation"
+    );
+    fixture.finish(false).await;
+    drop(TcpListener::bind(address).await.unwrap());
+}
+
+#[test]
+fn postconnect_release_waits_for_admission_reader() {
+    isolated(
+        "tunnel::owner::lifecycle_tests::postconnect_release_waits_for_admission_reader",
+        || async {
+            postconnect_reader_drains_before_ack(false, false, false).await;
+        },
+    );
+}
+
+#[test]
+fn postconnect_shutdown_waits_for_admission_reader() {
+    isolated(
+        "tunnel::owner::lifecycle_tests::postconnect_shutdown_waits_for_admission_reader",
+        || async {
+            postconnect_reader_drains_before_ack(true, false, false).await;
+        },
+    );
+}
+
+#[test]
+fn postconnect_expiry_cancels_then_drains_admission_reader() {
+    isolated(
+        "tunnel::owner::lifecycle_tests::postconnect_expiry_cancels_then_drains_admission_reader",
+        || async {
+            postconnect_reader_drains_before_ack(false, false, true).await;
+        },
+    );
+}
+
+#[test]
+fn postconnect_panicked_admission_reader_never_acknowledges_cleanup() {
+    isolated("tunnel::owner::lifecycle_tests::postconnect_panicked_admission_reader_never_acknowledges_cleanup", || async {
+        postconnect_reader_drains_before_ack(false, true, false).await;
+    });
+}
+
+async fn postconnect_rejects_changed_policy(revoke_permission: bool) {
+    let (mut fixture, owner, accepted, probe, reader) = postconnect_gated_owner(false, None).await;
+    let mut entered = reader.entered.subscribe();
+    probe.proceed.send_replace(true);
+    tokio::time::timeout(Duration::from_secs(2), entered.wait_for(|yes| *yes))
+        .await
+        .unwrap()
+        .unwrap();
+    if revoke_permission {
+        save_permission_fixture(false);
+    } else {
+        // Changing only trust cannot be caught by the periodic permission read.
+        // The admission job must compare fresh trust to the original task scope.
+        std::fs::write(crate::config::data_dir().join("known_hosts"), "").unwrap();
+    }
+    reader.open();
+    let entry = owner.entry(&accepted.handle).unwrap();
+    let address: SocketAddr = entry
+        .proxy_url
+        .lock()
+        .unwrap()
+        .strip_prefix("socks5h://")
+        .unwrap()
+        .parse()
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let status = owner.status(&accepted.handle).unwrap();
+            if matches!(
+                status.state.as_str(),
+                "authorization_changed" | "permission_revoked"
+            ) {
+                break;
+            }
+            assert_ne!(status.state, "running");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(!probe.running_published.load(Ordering::Acquire));
+    owner.release(&accepted.handle).await.unwrap();
+    owner.shutdown().await.unwrap();
+    fixture.finish(false).await;
+    drop(TcpListener::bind(address).await.unwrap());
+}
+
+#[test]
+fn postconnect_admission_reloads_revoked_permissions() {
+    isolated(
+        "tunnel::owner::lifecycle_tests::postconnect_admission_reloads_revoked_permissions",
+        || async {
+            postconnect_rejects_changed_policy(true).await;
+        },
+    );
+}
+
+#[test]
+fn postconnect_admission_rejects_changed_trust() {
+    isolated(
+        "tunnel::owner::lifecycle_tests::postconnect_admission_rejects_changed_trust",
+        || async {
+            postconnect_rejects_changed_policy(false).await;
+        },
+    );
+}
+
+#[test]
+fn admission_without_task_local_policy_fails_closed() {
+    isolated(
+        "tunnel::owner::lifecycle_tests::admission_without_task_local_policy_fails_closed",
+        || async {
+            let mut admission = PolicyChecks::default();
+            assert!(!admission.admission(false, saved_dynamic(0), vec![]).await);
+            assert!(admission.drain().await);
+        },
+    );
 }
