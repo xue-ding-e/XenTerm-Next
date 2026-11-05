@@ -1,6 +1,17 @@
 --- a/apps/xenterm/lib/screens/terminal/sftp_view.dart
 +++ b/apps/xenterm/lib/screens/terminal/sftp_view.dart
-@@ -576,42 +576,6 @@
+@@ -268,9 +268,7 @@
+ 
+   SftpSession _startNative() {
+     final bridge = NativeBridge.tryLoad();
+-    if (bridge == null) {
+-      throw NativeBridgeError(NativeBridge.unavailableMessage());
+-    }
++    if (bridge == null) throw NativeBridgeError(NativeBridge.unavailableMessage());
+     return _NativeSftpSession(bridge, bridge.startSftp(widget.host.id));
+   }
+ 
+@@ -578,42 +576,6 @@
    final TextEditingController _folderName = TextEditingController();
  
    @override
