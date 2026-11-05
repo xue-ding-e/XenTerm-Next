@@ -1,0 +1,50 @@
+name: Next Flutter group ordering synthetic RED GREEN
+on:
+  push:
+    branches: [validation/flutter-group-order-20261105]
+permissions:
+  contents: read
+concurrency:
+  group: next-product-heavy
+  cancel-in-progress: false
+jobs:
+  validate:
+    if: github.repository == 'xue-ding-e/XenTerm-Next' && github.ref == 'refs/heads/validation/flutter-group-order-20261105'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      RUSTUP_HOME: ${{ runner.temp }}/group-order-rustup
+      CARGO_HOME: ${{ runner.temp }}/group-order-cargo
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: control
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: 06b7e6b07ced17718a11d41a5e01e25cef803529
+          path: source
+          persist-credentials: false
+      - name: Check controller before SDK setup
+        run: python3 -m unittest discover -s control/scripts/next -p test_group_order_gate.py
+      - name: Official Ubuntu build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libudev-dev libdbus-1-dev pkg-config
+          mkdir -p "$RUSTUP_HOME" "$CARGO_HOME"
+      - uses: dtolnay/rust-toolchain@1.99.1
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.7'
+          channel: stable
+          cache: true
+      - name: Serial synthetic Flutter and Rust RED GREEN
+        timeout-minutes: 50
+        run: python3 control/scripts/next/run_group_order_gate.py --source source --logs evidence
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: group-order-06b7e6b0-${{ github.run_attempt }}-${{ job.status }}
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 14

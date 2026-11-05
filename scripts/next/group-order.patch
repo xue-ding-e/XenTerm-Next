@@ -1,0 +1,2015 @@
+--- a/apps/xenterm/lib/bridge/native_bridge.dart
++++ b/apps/xenterm/lib/bridge/native_bridge.dart
+@@ -197,6 +197,9 @@
+   late final _StrFn _groupCreate = _lib.lookupFunction<_StrFnC, _StrFn>(
+     'xenterm_group_create',
+   );
++  late final _StrFn _groupReorder = _lib.lookupFunction<_StrFnC, _StrFn>(
++    'xenterm_group_reorder',
++  );
+   late final _TwoStrFn _groupRename = _lib
+       .lookupFunction<_TwoStrFnC, _TwoStrFn>('xenterm_group_rename');
+   late final _StrFn _groupDelete = _lib.lookupFunction<_StrFnC, _StrFn>(
+@@ -376,6 +379,14 @@
+ 
+   Map<String, dynamic> createGroup(String name) =>
+       jsonDecode(_callWith(_groupCreate, name)) as Map<String, dynamic>;
++
++  /// Reorder the complete displayed group list, rejecting a stale snapshot.
++  Map<String, dynamic> reorderGroups(
++    List<String> expected,
++    List<String> order,
++  ) => jsonDecode(
++    _callWith(_groupReorder, jsonEncode({'expected': expected, 'order': order})),
++  ) as Map<String, dynamic>;
+ 
+   Map<String, dynamic> renameGroup(String old, String next) {
+     final first = old.toNativeUtf8();
+@@ -1757,6 +1768,23 @@
+   });
+ }
+ 
++Future<CoreWriteResult> reorderGroupsInCore(
++  List<String> expected,
++  List<String> order,
++) {
++  return Isolate.run(() {
++    final bridge = NativeBridge.tryLoad();
++    if (bridge == null) {
++      throw NativeBridgeError(NativeBridge.unavailableMessage());
++    }
++    final result = bridge.reorderGroups(expected, order);
++    return CoreWriteResult(
++      ok: result['ok'] == true,
++      error: result['error'] as String?,
++    );
++  });
++}
++
+ Future<CoreWriteResult> renameGroupInCore(String old, String next) {
+   return Isolate.run(() {
+     final bridge = NativeBridge.tryLoad();
+--- a/apps/xenterm/lib/l10n/zh_hosts.dart
++++ b/apps/xenterm/lib/l10n/zh_hosts.dart
+@@ -9,6 +9,13 @@
+   // Host list: search, toolbar, sections, empty/error states.
+   'New host': '新建主机',
+   'New group': '新建分组',
++  'Manage groups': '管理分组',
++  'Move group up': '上移分组',
++  'Move group down': '下移分组',
++  'Drag to reorder group': '拖动调整分组顺序',
++  'Saving group order…': '正在保存分组顺序…',
++  'No groups to reorder': '暂无可排序的分组',
++  'Could not reorder groups': '无法调整分组顺序',
+   'Import hosts': '导入主机',
+   'Rename group': '重命名分组',
+   'Delete group': '删除分组',
+--- a/apps/xenterm/lib/screens/hosts/hosts_screen.dart
++++ b/apps/xenterm/lib/screens/hosts/hosts_screen.dart
+@@ -5,7 +5,8 @@
+ 
+ import 'dart:async';
+ 
+-import 'package:flutter/foundation.dart' show ValueListenable, ValueNotifier;
++import 'package:flutter/foundation.dart' show ValueListenable, ValueNotifier, listEquals;
++import 'package:flutter/services.dart' show LogicalKeyboardKey;
+ import 'package:shadcn_flutter/shadcn_flutter.dart';
+ 
+ import '../../bridge/native_bridge.dart';
+@@ -57,6 +58,24 @@
+   bool collapsed,
+ );
+ typedef HostImporter = Future<ImportResult> Function();
++typedef GroupReorderer = Future<CoreWriteResult> Function(
++  List<String> expected,
++  List<String> order,
++);
++
++// Match the core's ASCII-insensitive group identity without merging distinct
++// non-ASCII names. Preserve the core's spelling in labels and write requests.
++String _groupIdentity(String name) => String.fromCharCodes(
++  name.codeUnits.map((unit) => unit >= 65 && unit <= 90 ? unit + 32 : unit),
++);
++
++class _GroupDrag {
++  final String name;
++  final List<String> expected;
++
++  _GroupDrag(this.name, List<String> expected)
++    : expected = List.unmodifiable(expected);
++}
+ 
+ class HostsScreen extends StatefulWidget {
+   final ValueChanged<Host>? onConnect;
+@@ -77,6 +96,7 @@
+   final GroupRenamer? renameGroup;
+   final GroupDeleter? deleteGroup;
+   final GroupCollapser? collapseGroup;
++  final GroupReorderer? reorderGroups;
+ 
+   /// OpenSSH config importer; production reads `~/.ssh/config` through the core.
+   final HostImporter? importHosts;
+@@ -96,6 +116,7 @@
+     this.renameGroup,
+     this.deleteGroup,
+     this.collapseGroup,
++    this.reorderGroups,
+     this.importHosts,
+     this.loadSerialPorts,
+   });
+@@ -122,14 +143,21 @@
+   List<Host> _hosts = const [];
+ 
+   /// Group names already in use — the drawers' Parent group picker options.
+-  List<String> get _knownGroups => {
+-    for (final host in _hosts)
+-      if (!host.ephemeral && host.group.trim().isNotEmpty) host.group.trim(),
+-  }.toList()
+-    ..sort();
++  List<String> get _knownGroups => _groupOrder;
+   List<HostGroup> _groups = const [];
+   bool _loading = true;
+   String? _loadError;
++  int _reloadEpoch = 0;
++  bool _groupManagerOpen = false;
++  bool _groupOrderSaving = false;
++  bool _groupMutationBusy = false;
++  String? _groupOrderError;
++
++  bool get _groupBusy => _groupOrderSaving || _groupMutationBusy;
++  List<String> get _groupOrder => [
++    for (final section in _sections)
++      if (section.name != null) section.name!,
++  ];
+ 
+   /// Inline group editor: null = closed; `renaming == null` = create.
+   bool _groupEditorOpen = false;
+@@ -180,6 +208,8 @@
+   }
+ 
+   Future<void> _reload({bool silent = false}) async {
++    if (!mounted) return;
++    final epoch = ++_reloadEpoch;
+     if (!silent) {
+       setState(() {
+         _loading = true;
+@@ -188,6 +218,7 @@
+     }
+     try {
+       final hosts = await (widget.loadHosts ?? loadHostsFromCore)();
++      if (!mounted || epoch != _reloadEpoch) return;
+       // Widget tests inject only the host loader; don't reach for the FFI
+       // group store unless production wiring (or a group seam) is present.
+       final groups = widget.loadGroups != null
+@@ -195,14 +226,15 @@
+           : widget.loadHosts != null
+           ? const <HostGroup>[]
+           : await loadGroupsFromCore();
+-      if (!mounted) return;
++      if (!mounted || epoch != _reloadEpoch) return;
+       setState(() {
+         _hosts = hosts;
+         _groups = groups;
+         _loading = false;
++        _loadError = null;
+       });
+     } catch (error) {
+-      if (!mounted) return;
++      if (!mounted || epoch != _reloadEpoch) return;
+       setState(() {
+         _loading = false;
+         _loadError = error is NativeBridgeError ? error.message : '$error';
+@@ -581,9 +613,195 @@
+ 
+   // ── Groups (folders) ───────────────────────────────────────────────────
+ 
++  void _openGroupManager() {
++    if (_groupBusy) return;
++    setState(() {
++      _groupManagerOpen = true;
++      _groupEditorOpen = false;
++      _deletingGroup = null;
++    });
++  }
++
++  Future<void> _moveGroup(
++    String name,
++    String target,
++    List<String> expected,
++  ) async {
++    if (!mounted || _groupBusy || !listEquals(expected, _groupOrder)) return;
++    final from = expected.indexOf(name);
++    final to = expected.indexOf(target);
++    if (from < 0 || to < 0 || from == to) return;
++    final order = List<String>.of(expected)..removeAt(from);
++    order.insert(to, name);
++    setState(() {
++      _groupOrderSaving = true;
++      _groupOrderError = null;
++      // A load started before this mutation must not overwrite its result.
++      _reloadEpoch++;
++    });
++    try {
++      final result = await (widget.reorderGroups ?? reorderGroupsInCore)(
++        List<String>.unmodifiable(expected),
++        List<String>.unmodifiable(order),
++      );
++      if (!mounted) return;
++      if (!result.ok) {
++        setState(() => _groupOrderError = result.error ?? 'Save failed');
++      }
++    } catch (error) {
++      if (!mounted) return;
++      setState(() => _groupOrderError = '$error');
++    } finally {
++      if (mounted) {
++        // Do not reorder optimistically. A failed/stale write keeps the last
++        // confirmed order and reloads the core before another attempt.
++        await _reload(silent: true);
++        if (mounted) setState(() => _groupOrderSaving = false);
++      }
++    }
++  }
++
++  Widget _groupOrderPanel(ThemeData theme) {
++    final order = _groupOrder;
++    return Container(
++      key: const ValueKey('group-order-panel'),
++      color: XtColors.surface(context),
++      padding: const EdgeInsets.fromLTRB(18, 8, 18, 12),
++      child: Column(
++        crossAxisAlignment: CrossAxisAlignment.stretch,
++        children: [
++          Row(
++            children: [
++              Expanded(child: Text(AppLanguage.tr(context, 'Manage groups'))),
++              if (_groupOrderSaving)
++                Text(AppLanguage.tr(context, 'Saving group order…')),
++              XtIconButton(
++                key: const ValueKey('group-order-close'),
++                icon: LucideIcons.x,
++                tooltip: AppLanguage.tr(context, 'Close'),
++                onPressed: () => setState(() => _groupManagerOpen = false),
++              ),
++            ],
++          ),
++          if (order.isEmpty)
++            Text(AppLanguage.tr(context, 'No groups to reorder'))
++          else
++            ConstrainedBox(
++              constraints: const BoxConstraints(maxHeight: 220),
++              child: ListView(
++                shrinkWrap: true,
++                children: [
++                  for (var index = 0; index < order.length; index++)
++                    Row(
++                      key: ValueKey('group-order-row-${order[index]}'),
++                      children: [
++                        Expanded(child: Text(order[index])),
++                        _GroupOrderButton(
++                          controlKey: ValueKey('group-up-${order[index]}'),
++                          icon: LucideIcons.arrowUp,
++                          tooltip: AppLanguage.tr(context, 'Move group up'),
++                          onPressed: _groupBusy || index == 0
++                              ? null
++                              : () => _moveGroup(order[index], order[index - 1], order),
++                        ),
++                        _GroupOrderButton(
++                          controlKey: ValueKey('group-down-${order[index]}'),
++                          icon: LucideIcons.arrowDown,
++                          tooltip: AppLanguage.tr(context, 'Move group down'),
++                          onPressed: _groupBusy || index == order.length - 1
++                              ? null
++                              : () => _moveGroup(order[index], order[index + 1], order),
++                        ),
++                      ],
++                    ),
++                ],
++              ),
++            ),
++          if (_groupOrderError != null)
++            Text(
++              '${AppLanguage.tr(context, 'Could not reorder groups')}: $_groupOrderError',
++              key: const ValueKey('group-order-error'),
++              style: TextStyle(color: XtColors.danger(context)),
++            ),
++        ],
++      ),
++    );
++  }
++
++  Widget _reorderableGroupHeader(_HostSection section, ThemeData theme) {
++    final name = section.name!;
++    final order = _groupOrder;
++    final enabled = !_groupBusy && order.length > 1;
++    final handle = Draggable<_GroupDrag>(
++      data: _GroupDrag(name, order),
++      maxSimultaneousDrags: enabled ? 1 : 0,
++      feedback: Container(
++        width: 220,
++        padding: const EdgeInsets.all(12),
++        decoration: BoxDecoration(
++          color: XtColors.surface(context),
++          border: Border.all(color: XtColors.textSecondary(context)),
++          borderRadius: BorderRadius.circular(XtRadius.field),
++        ),
++        child: Text(name, style: theme.typography.normal),
++      ),
++      child: Semantics(
++        label: AppLanguage.tr(context, 'Drag to reorder group'),
++        child: MouseRegion(
++          cursor: enabled ? SystemMouseCursors.grab : SystemMouseCursors.basic,
++          child: GestureDetector(
++            onTap: () {},
++            child: SizedBox(
++              key: ValueKey('group-drag-$name'),
++              width: 26,
++              height: 32,
++              child: Icon(
++                LucideIcons.gripVertical,
++                size: 15,
++                color: XtColors.textTertiary(context),
++              ),
++            ),
++          ),
++        ),
++      ),
++    );
++    return DragTarget<_GroupDrag>(
++      key: ValueKey('group-drop-$name'),
++      onWillAcceptWithDetails: (details) =>
++          enabled &&
++          details.data.name != name &&
++          listEquals(details.data.expected, _groupOrder),
++      onAcceptWithDetails: (details) =>
++          _moveGroup(details.data.name, name, details.data.expected),
++      builder: (context, candidates, rejected) => DecoratedBox(
++        decoration: BoxDecoration(
++          border: candidates.isEmpty
++              ? null
++              : Border.all(color: XtColors.textSecondary(context)),
++        ),
++        child: _GroupHeader(
++          key: ValueKey('group-header-$name'),
++          name: name,
++          count: section.hosts.length,
++          collapsed: section.collapsed,
++          theme: theme,
++          dragHandle: handle,
++          onToggle: _groupBusy
++              ? null
++              : () => _toggleGroup(HostGroup(name: name, collapsed: section.collapsed)),
++          onRename: _groupBusy ? null : () => _openGroupEditor(rename: name),
++          onDelete: _groupBusy ? null : () => setState(() => _deletingGroup = name),
++          onAdd: _groupBusy ? null : () => _newHostInGroup(name),
++        ),
++      ),
++    );
++  }
++
+   void _openGroupEditor({String? rename}) {
++    if (_groupBusy) return;
+     setState(() {
+       _groupEditorOpen = true;
++      _groupManagerOpen = false;
+       _renaming = rename;
+       _groupName.text = rename ?? '';
+       _groupError = null;
+@@ -598,23 +816,25 @@
+   });
+ 
+   Future<void> _saveGroup() async {
++    if (_groupBusy) return;
+     final name = _groupName.text.trim();
+     if (name.isEmpty) {
+       setState(() => _groupError = 'Enter a group name');
+       return;
+     }
+     final renaming = _renaming;
++    setState(() => _groupMutationBusy = true);
+     try {
+       final result = renaming == null
+           ? await (widget.createGroup ?? createGroupInCore)(name)
+           : await (widget.renameGroup ?? renameGroupInCore)(renaming, name);
++      if (!mounted) return;
+       if (!result.ok) {
+         setState(
+           () => _groupError = result.error ?? 'Could not save the group',
+         );
+         return;
+       }
+-      if (!mounted) return;
+       setState(() {
+         _groupEditorOpen = false;
+         _renaming = null;
+@@ -624,30 +844,38 @@
+     } catch (error) {
+       if (!mounted) return;
+       setState(() => _groupError = '$error');
++    } finally {
++      if (mounted) setState(() => _groupMutationBusy = false);
+     }
+   }
+ 
+   Future<void> _deleteGroupNamed(String name) async {
++    if (_groupBusy) return;
++    setState(() => _groupMutationBusy = true);
+     try {
+       final result = await (widget.deleteGroup ?? deleteGroupFromCore)(name);
++      if (!mounted) return;
+       if (!result.ok) {
+         setState(
+           () => _loadError = result.error ?? 'Could not delete the group',
+         );
+         return;
+       }
+-      if (!mounted) return;
+       setState(() => _deletingGroup = null);
+       await _reload(silent: true);
+     } catch (error) {
+       if (!mounted) return;
+       setState(() => _loadError = '$error');
++    } finally {
++      if (mounted) setState(() => _groupMutationBusy = false);
+     }
+   }
+ 
+   Future<void> _toggleGroup(HostGroup group) async {
++    if (_groupBusy) return;
+     final collapsed = !group.collapsed;
+     setState(() {
++      _groupMutationBusy = true;
+       _groups = [
+         for (final g in _groups)
+           g.name == group.name
+@@ -665,6 +893,8 @@
+       }
+     } catch (_) {
+       if (mounted) await _reload(silent: true);
++    } finally {
++      if (mounted) setState(() => _groupMutationBusy = false);
+     }
+   }
+ 
+@@ -805,6 +1035,11 @@
+                                 onTap: _openGroupEditor,
+                               ),
+                               SplitMenuEntry(
++                                icon: LucideIcons.listOrdered,
++                                label: AppLanguage.tr(context, 'Manage groups'),
++                                onTap: _openGroupManager,
++                              ),
++                              SplitMenuEntry(
+                                 icon: LucideIcons.import,
+                                 label: AppLanguage.tr(context, 'Import hosts'),
+                                 onTap: _importHosts,
+@@ -842,6 +1077,16 @@
+               ),
+               // ── Inline group editor / import result ─────────────────────
+               if (_groupEditorOpen) _groupEditorBar(theme),
++              if (_groupManagerOpen) _groupOrderPanel(theme),
++              if (!_groupManagerOpen && _groupOrderError != null)
++                Padding(
++                  padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
++                  child: Text(
++                    '${AppLanguage.tr(context, 'Could not reorder groups')}: $_groupOrderError',
++                    key: const ValueKey('group-order-error'),
++                    style: TextStyle(color: XtColors.danger(context)),
++                  ),
++                ),
+               if (_importNotice != null) _importBanner(theme),
+               // ── Section titles + cards ──────────────────────────────────
+               // Only this subtree listens to the debounced search query: a
+@@ -1029,7 +1274,7 @@
+                 key: const ValueKey('group-save'),
+                 label: AppLanguage.tr(context, 'Save'),
+                 variant: XtActionVariant.primary,
+-                onPressed: _saveGroup,
++                onPressed: _groupBusy ? null : _saveGroup,
+               ),
+               const SizedBox(width: 8),
+               XtActionButton(
+@@ -1106,33 +1351,44 @@
+   /// Named groups plus the ungrouped bucket, in core display order.
+   List<_HostSection> get _sections {
+     final byGroup = <String, List<Host>>{};
++    final spellings = <String, String>{};
+     final ungrouped = <Host>[];
+     for (final host in _hosts) {
+       final group = host.group.trim();
+-      final reserved =
+-          group.toLowerCase() == 'default' || group.toLowerCase() == 'system';
+-      if (group.isEmpty || reserved) {
++      final identity = _groupIdentity(group);
++      if (group.isEmpty || identity == 'default' || identity == 'system') {
+         ungrouped.add(host);
+       } else {
+-        byGroup.putIfAbsent(group, () => []).add(host);
++        byGroup.putIfAbsent(identity, () => []).add(host);
++        spellings.putIfAbsent(identity, () => group);
+       }
+     }
+-    final known = <String>{
+-      for (final group in _groups) group.name.toLowerCase(),
+-    };
+-    final names = <String>[
+-      for (final group in _groups) group.name,
+-      for (final name in byGroup.keys)
+-        if (!known.contains(name.toLowerCase())) name,
++    final seen = <String>{};
++    final names = <String>[];
++    for (final group in _groups) {
++      final identity = _groupIdentity(group.name);
++      if (group.name.isEmpty || identity == 'default' || identity == 'system') {
++        continue;
++      }
++      if (seen.add(identity)) names.add(group.name);
++    }
++    // Production returns all groups. A partial injected/source snapshot may
++    // omit implicit groups: append those, never re-sort the confirmed order.
++    final missing = [
++      for (final entry in spellings.entries)
++        if (!seen.contains(entry.key)) entry.value,
+     ]..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
++    names.addAll(missing);
+     return [
+       if (ungrouped.isNotEmpty || names.isEmpty)
+         _HostSection(name: null, collapsed: false, hosts: ungrouped),
+       for (final name in names)
+         _HostSection(
+           name: name,
+-          collapsed: _groups.any((g) => g.name == name && g.collapsed),
+-          hosts: byGroup[name] ?? const [],
++          collapsed: _groups.any(
++            (g) => _groupIdentity(g.name) == _groupIdentity(name) && g.collapsed,
++          ),
++          hosts: byGroup[_groupIdentity(name)] ?? const [],
+         ),
+     ];
+   }
+@@ -1148,23 +1404,7 @@
+           else
+             _deletingGroup == section.name
+                 ? _deleteGroupBar(section.name!, theme)
+-                : _GroupHeader(
+-                    key: ValueKey('group-header-${section.name}'),
+-                    name: section.name!,
+-                    count: section.hosts.length,
+-                    collapsed: section.collapsed,
+-                    theme: theme,
+-                    onToggle: () => _toggleGroup(
+-                      HostGroup(
+-                        name: section.name!,
+-                        collapsed: section.collapsed,
+-                      ),
+-                    ),
+-                    onRename: () => _openGroupEditor(rename: section.name),
+-                    onDelete: () =>
+-                        setState(() => _deletingGroup = section.name),
+-                    onAdd: () => _newHostInGroup(section.name!),
+-                  ),
++                : _reorderableGroupHeader(section, theme),
+           if (section.name == null || !section.collapsed)
+             Padding(
+               padding: EdgeInsets.fromLTRB(
+@@ -1230,7 +1470,7 @@
+             key: const ValueKey('group-delete-confirm'),
+             label: AppLanguage.tr(context, 'Delete'),
+             variant: XtActionVariant.danger,
+-            onPressed: () => _deleteGroupNamed(name),
++            onPressed: _groupBusy ? null : () => _deleteGroupNamed(name),
+           ),
+           const SizedBox(width: 8),
+           XtActionButton(
+@@ -1326,16 +1566,67 @@
+   });
+ }
+ 
++/// A keyboard-operable ordering action, with a visible focus highlight.
++class _GroupOrderButton extends StatefulWidget {
++  final Key controlKey;
++  final IconData icon;
++  final String tooltip;
++  final VoidCallback? onPressed;
++
++  const _GroupOrderButton({
++    required this.controlKey,
++    required this.icon,
++    required this.tooltip,
++    this.onPressed,
++  });
++
++  @override
++  State<_GroupOrderButton> createState() => _GroupOrderButtonState();
++}
++
++class _GroupOrderButtonState extends State<_GroupOrderButton> {
++  bool _focused = false;
++
++  @override
++  Widget build(BuildContext context) => FocusableActionDetector(
++    enabled: widget.onPressed != null,
++    onShowFocusHighlight: (focused) => setState(() => _focused = focused),
++    shortcuts: const {
++      SingleActivator(LogicalKeyboardKey.enter): ActivateIntent(),
++      SingleActivator(LogicalKeyboardKey.space): ActivateIntent(),
++    },
++    actions: {
++      ActivateIntent: CallbackAction<ActivateIntent>(onInvoke: (_) {
++        widget.onPressed?.call();
++        return null;
++      }),
++    },
++    child: Semantics(
++      button: true,
++      label: widget.tooltip,
++      enabled: widget.onPressed != null,
++      child: XtIconButton(
++        key: widget.controlKey,
++        icon: widget.icon,
++        tooltip: widget.tooltip,
++        selected: _focused,
++        onPressed: widget.onPressed,
++      ),
++    ),
++  );
++}
++
+ /// Folder header: chevron + folder glyph + name + count, with hover actions.
+ class _GroupHeader extends StatefulWidget {
+   final String name;
+   final int count;
+   final bool collapsed;
+   final ThemeData theme;
+-  final VoidCallback onToggle;
+-  final VoidCallback onRename;
+-  final VoidCallback onDelete;
+-  final VoidCallback onAdd;
++  final VoidCallback? onToggle;
++  final VoidCallback? onRename;
++  final VoidCallback? onDelete;
++  final VoidCallback? onAdd;
++  final Widget? dragHandle;
+ 
+   const _GroupHeader({
+     super.key,
+@@ -1347,6 +1638,7 @@
+     required this.onRename,
+     required this.onDelete,
+     required this.onAdd,
++    this.dragHandle,
+   });
+ 
+   @override
+@@ -1370,6 +1662,7 @@
+         onTap: widget.onToggle,
+         child: Row(
+           children: [
++            if (widget.dragHandle != null) widget.dragHandle!,
+             AnimatedRotation(
+               turns: widget.collapsed ? -0.25 : 0,
+               duration: XtMotion.micro,
+--- a/apps/xenterm/native/src/lib.rs
++++ b/apps/xenterm/native/src/lib.rs
+@@ -438,34 +438,20 @@
+ }
+ 
+ /// Named host groups as a JSON array of `{"name", "collapsed"}`: explicit
+-/// folders ∪ the groups sessions are filed under, sorted case-insensitively.
++/// folders ∪ the groups sessions are filed under, in persisted display order.
+ #[no_mangle]
+ pub extern "C" fn xenterm_groups_json() -> *mut c_char {
+     let result = (|| -> Result<String, String> {
+         let store = store()?;
+         let store = store.lock().unwrap_or_else(|p| p.into_inner());
+-        let mut names: Vec<String> = store
+-            .groups()
+-            .iter()
+-            .filter(|g| !is_reserved_group(g))
+-            .cloned()
+-            .chain(
+-                store
+-                    .sessions()
+-                    .iter()
+-                    .filter(|s| !is_reserved_group(&s.group))
+-                    .map(|s| s.group.clone()),
+-            )
+-            .collect();
+-        names.sort_by_key(|g| g.to_lowercase());
+-        names.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
++        let names = store.ordered_session_groups();
+         let collapsed = store.collapsed_session_groups().unwrap_or(&[]);
+         let rows: Vec<serde_json::Value> = names
+             .iter()
+             .map(|name| {
+                 serde_json::json!({
+                     "name": name,
+-                    "collapsed": collapsed.iter().any(|c| c == name),
++                    "collapsed": collapsed.iter().any(|c| c.eq_ignore_ascii_case(name)),
+                 })
+             })
+             .collect();
+@@ -474,6 +460,47 @@
+     match result {
+         Ok(json) => to_c(json),
+         Err(_) => std::ptr::null_mut(),
++    }
++}
++
++/// Reorder all named groups using an exact display-order compare-and-swap.
++/// JSON: {"expected":[current names],"order":[requested names]}.
++#[no_mangle]
++pub extern "C" fn xenterm_group_reorder(request: *const c_char) -> *mut c_char {
++    fn names(value: &serde_json::Value, field: &str) -> Result<Vec<String>, String> {
++        let values = value
++            .as_array()
++            .ok_or_else(|| format!("group order {field} must be an array of strings"))?;
++        values
++            .iter()
++            .map(|value| {
++                value
++                    .as_str()
++                    .map(str::to_owned)
++                    .ok_or_else(|| format!("group order {field} must contain only strings"))
++            })
++            .collect()
++    }
++    let result = (|| -> Result<(), String> {
++        let request: serde_json::Value = serde_json::from_str(&unsafe { take_c(request) })
++            .map_err(|error| format!("invalid group order: {error}"))?;
++        let request = request
++            .as_object()
++            .ok_or("group order request must be an object")?;
++        if request.len() != 2 || !request.contains_key("expected") || !request.contains_key("order") {
++            return Err("group order request must contain exactly expected and order".into());
++        }
++        let expected = names(&request["expected"], "expected")?;
++        let order = names(&request["order"], "order")?;
++        let store = store()?;
++        let mut store = store.lock().unwrap_or_else(|p| p.into_inner());
++        store
++            .reorder_session_groups_and_save(&expected, &order)
++            .map_err(|error| error.to_string())
++    })();
++    match result {
++        Ok(()) => to_c(serde_json::json!({"ok": true}).to_string()),
++        Err(error) => to_c(serde_json::json!({"ok": false, "error": error}).to_string()),
+     }
+ }
+ 
+--- a/apps/xenterm/native/tests/groups.rs
++++ b/apps/xenterm/native/tests/groups.rs
+@@ -133,6 +133,103 @@
+         .collect();
+     assert_eq!(names, vec!["Staging".to_string()]);
+ 
++    // Group ordering is a full display-order CAS, independent of sessions and
++    // collapsed state. Include an implicit folder so membership is not limited
++    // to the explicit `groups` collection.
++    call(
++        "create Alpha",
++        xenterm_bridge::xenterm_group_create(c("Alpha").as_ptr()),
++    );
++    let payload = c(
++        r#"{"id":"","label":"implicit","address":"192.0.2.1","port":22,"username":"test","group":"Implicit","kind":"ssh"}"#,
++    );
++    call(
++        "implicit session",
++        xenterm_bridge::xenterm_session_upsert(payload.as_ptr()),
++    );
++    call(
++        "collapse staging",
++        xenterm_bridge::xenterm_group_collapse(c("staging").as_ptr(), 1),
++    );
++    assert_eq!(groups()[2]["collapsed"], true); // lowercase stored alias
++    call(
++        "expand canonical",
++        xenterm_bridge::xenterm_group_collapse(staging.as_ptr(), 0),
++    );
++    assert_eq!(groups()[2]["collapsed"], false);
++    call(
++        "collapse alias again",
++        xenterm_bridge::xenterm_group_collapse(c("staging").as_ptr(), 1),
++    );
++    let sessions_before = sessions();
++    let order =
++        c(r#"{"expected":["Alpha","Implicit","Staging"],"order":["Staging","Implicit","Alpha"]}"#);
++    call(
++        "reorder",
++        xenterm_bridge::xenterm_group_reorder(order.as_ptr()),
++    );
++    assert_eq!(groups()[0]["name"], "Staging");
++    assert_eq!(groups()[0]["collapsed"], true);
++    assert_eq!(sessions(), sessions_before);
++    let disk = xenterm::config::ConfigStore::load().unwrap();
++    assert_eq!(
++        disk.ordered_session_groups(),
++        vec!["Staging", "Implicit", "Alpha"]
++    );
++    assert!(!disk.groups().iter().any(|name| name == "Implicit"));
++    let before = groups();
++    for request in [
++        r#"{"expected":["Alpha","Implicit","Staging"],"order":["Staging","Implicit","Alpha"]}"#,
++        r#"{"expected":["Staging","Implicit","Alpha"],"order":["Staging","Implicit"]}"#,
++        r#"{"expected":["Staging","Implicit","Alpha"],"order":["Staging","Alpha","Alpha"]}"#,
++        r#"{"expected":["Staging","Implicit","Alpha"],"order":["unknown","Implicit","Alpha"]}"#,
++        r#"{"expected":["Staging","Implicit","Alpha"],"order":["system","Implicit","Alpha"]}"#,
++        r#"{"expected":["Staging","Implicit","Alpha"],"order":["default","Implicit","Alpha"]}"#,
++        r#"{"expected":["Staging","Implicit","Alpha"],"order":["staging","Implicit","Alpha"]}"#,
++        r#"{"order":["Staging","Implicit","Alpha"]}"#,
++        r#"{"expected":null,"order":[]}"#,
++        r#"{"expected":["Staging","Implicit","Alpha"],"order":[1,"Implicit","Alpha"]}"#,
++        r#"{"expected":[true,"Implicit","Alpha"],"order":["Staging","Implicit","Alpha"]}"#,
++        r#"{"expected":["Staging","Implicit","Alpha"]}"#,
++        r#"{"expected":[],"order":[],"unknown":true}"#,
++        r#"{"expected":[],"unknown":[]}"#,
++        r#"[]"#,
++        r#"null"#,
++        "not json",
++    ] {
++        let response: serde_json::Value = serde_json::from_str(&take(
++            xenterm_bridge::xenterm_group_reorder(c(request).as_ptr()),
++        ))
++        .unwrap();
++        assert_eq!(response["ok"], false, "accepted invalid request: {request}");
++        assert_eq!(groups(), before);
++    }
++    let null: serde_json::Value = serde_json::from_str(&take(
++        xenterm_bridge::xenterm_group_reorder(std::ptr::null()),
++    ))
++    .unwrap();
++    assert_eq!(null["ok"], false);
++    call(
++        "rename sorted",
++        xenterm_bridge::xenterm_group_rename(staging.as_ptr(), c("STAGING").as_ptr()),
++    );
++    assert_eq!(groups()[0]["name"], "STAGING");
++    assert_eq!(groups()[0]["collapsed"], true);
++    call(
++        "delete sorted",
++        xenterm_bridge::xenterm_group_delete(c("Implicit").as_ptr()),
++    );
++    call(
++        "new group",
++        xenterm_bridge::xenterm_group_create(c("Aardvark").as_ptr()),
++    );
++    assert_eq!(
++        xenterm::config::ConfigStore::load()
++            .unwrap()
++            .ordered_session_groups(),
++        vec!["STAGING", "Alpha", "Aardvark"]
++    );
++
+     // Reserved names cannot be created.
+     let default = c("default");
+     let rejected = take(xenterm_bridge::xenterm_group_create(default.as_ptr()));
+--- /dev/null
++++ b/apps/xenterm/test/group_order_actions_test.dart
+@@ -0,0 +1,379 @@
++import 'dart:async';
++import 'dart:io';
++import 'dart:ui' as ui;
++
++import 'package:flutter_test/flutter_test.dart';
++import 'package:flutter/services.dart';
++import 'package:flutter/rendering.dart';
++import 'package:shadcn_flutter/shadcn_flutter.dart';
++import 'package:xenterm_app/bridge/native_bridge.dart';
++import 'package:xenterm_app/data/hosts.dart';
++import 'package:xenterm_app/l10n/app_language.dart';
++import 'package:xenterm_app/screens/hosts/hosts_screen.dart';
++import 'package:xenterm_app/screens/hosts/host_card.dart';
++import 'package:xenterm_app/screens/hosts/host_details_panel.dart';
++import 'package:xenterm_app/theme/app_theme.dart';
++import 'package:xenterm_app/widgets/primitives.dart';
++
++Future<void> _viewport(WidgetTester tester) async {
++  await tester.binding.setSurfaceSize(const Size(1400, 1000));
++  addTearDown(() => tester.binding.setSurfaceSize(null));
++}
++
++Widget _app(Widget child) => ShadcnApp(
++  theme: ThemeData(colorScheme: xtDarkScheme()),
++  home: RepaintBoundary(
++    key: const ValueKey('group-test-capture'),
++    child: Scaffold(child: child),
++  ),
++);
++
++// Optional synthetic-widget evidence for the isolated validation workflow.
++// Normal tests do not write files; no user sessions or host data are captured.
++Future<void> _capture(WidgetTester tester, String name) async {
++  final destination = Platform.environment['XENTERM_WIDGET_EVIDENCE_DIR'];
++  if (destination == null || destination.isEmpty) return;
++  final boundary = tester.renderObject<RenderRepaintBoundary>(
++    find.byKey(const ValueKey('group-test-capture')),
++  );
++  await tester.runAsync(() async {
++    final image = await boundary.toImage(pixelRatio: 1);
++    try {
++      final png = await image.toByteData(format: ui.ImageByteFormat.png);
++      if (png == null) throw StateError('widget evidence encoding failed');
++      final directory = Directory(destination);
++      await directory.create(recursive: true);
++      await File('${directory.path}/$name.png').writeAsBytes(
++        png.buffer.asUint8List(),
++        flush: true,
++      );
++    } finally {
++      image.dispose();
++    }
++  });
++}
++
++const _initial = [
++  HostGroup(name: 'Alpha', collapsed: true),
++  HostGroup(name: 'Beta', collapsed: false),
++  HostGroup(name: 'Zeta', collapsed: false),
++];
++
++Future<void> _manager(WidgetTester tester) async {
++  await tester.tap(find.byIcon(LucideIcons.chevronDown).first);
++  await tester.pumpAndSettle();
++  await tester.tap(find.text('Manage groups'));
++  await tester.pumpAndSettle();
++}
++
++void _expectOrder(WidgetTester tester, List<String> names, {bool manager = false}) {
++  final prefix = manager ? 'group-order-row-' : 'group-header-';
++  for (var i = 1; i < names.length; i++) {
++    expect(
++      tester.getTopLeft(find.byKey(ValueKey('$prefix${names[i - 1]}'))).dy,
++      lessThan(tester.getTopLeft(find.byKey(ValueKey('$prefix${names[i]}'))).dy),
++    );
++  }
++}
++
++List<HostGroup> _ordered(List<HostGroup> current, List<String> order) => [
++  for (final name in order) current.firstWhere((group) => group.name == name),
++];
++
++void main() {
++  testWidgets('group manager moves groups and disables the end buttons', (
++    tester,
++  ) async {
++    var groups = List<HostGroup>.of(_initial);
++    final calls = <(List<String>, List<String>)>[];
++    await _viewport(tester);
++    await tester.pumpWidget(_app(HostsScreen(
++      loadHosts: () async => const [],
++      loadGroups: () async => groups,
++      reorderGroups: (expected, order) async {
++        calls.add((expected, order));
++        groups = _ordered(groups, order);
++        return const CoreWriteResult(ok: true);
++      },
++    )));
++    await tester.pumpAndSettle();
++    await _manager(tester);
++    expect(tester.widget<XtIconButton>(find.byKey(const ValueKey('group-up-Alpha'))).onPressed, isNull);
++    expect(tester.widget<XtIconButton>(find.byKey(const ValueKey('group-down-Zeta'))).onPressed, isNull);
++    await tester.tap(find.byKey(const ValueKey('group-down-Alpha')));
++    await tester.pumpAndSettle();
++    expect(calls.single.$1, ['Alpha', 'Beta', 'Zeta']);
++    expect(calls.single.$2, ['Beta', 'Alpha', 'Zeta']);
++    _expectOrder(tester, ['Beta', 'Alpha', 'Zeta'], manager: true);
++    await _capture(tester, 'group-manager-reordered');
++    _expectOrder(tester, ['Beta', 'Alpha', 'Zeta']);
++    expect(groups.firstWhere((group) => group.name == 'Alpha').collapsed, isTrue);
++    await tester.tap(find.byKey(const ValueKey('group-up-Alpha')));
++    await tester.pumpAndSettle();
++    _expectOrder(tester, ['Alpha', 'Beta', 'Zeta']);
++    expect(calls, hasLength(2));
++  });
++
++  testWidgets('group order buttons support Enter and Space', (tester) async {
++    var groups = List<HostGroup>.of(_initial);
++    await _viewport(tester);
++    await tester.pumpWidget(_app(HostsScreen(
++      loadHosts: () async => const [],
++      loadGroups: () async => groups,
++      reorderGroups: (expected, order) async {
++        groups = _ordered(groups, order);
++        return const CoreWriteResult(ok: true);
++      },
++    )));
++    await tester.pumpAndSettle();
++    await _manager(tester);
++    Focus.of(tester.element(find.byKey(const ValueKey('group-down-Alpha')))).requestFocus();
++    await tester.pump();
++    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
++    await tester.pumpAndSettle();
++    _expectOrder(tester, ['Beta', 'Alpha', 'Zeta']);
++    Focus.of(tester.element(find.byKey(const ValueKey('group-up-Alpha')))).requestFocus();
++    await tester.pump();
++    await tester.sendKeyEvent(LogicalKeyboardKey.space);
++    await tester.pumpAndSettle();
++    _expectOrder(tester, ['Alpha', 'Beta', 'Zeta']);
++  });
++
++  testWidgets('group handles drag first to last and last to first', (
++    tester,
++  ) async {
++    var groups = List<HostGroup>.of(_initial);
++    final calls = <List<String>>[];
++    await _viewport(tester);
++    await tester.pumpWidget(_app(HostsScreen(
++      loadHosts: () async => const [],
++      loadGroups: () async => groups,
++      reorderGroups: (expected, order) async {
++        calls.add(order);
++        groups = _ordered(groups, order);
++        return const CoreWriteResult(ok: true);
++      },
++    )));
++    await tester.pumpAndSettle();
++    final first = tester.getCenter(find.byKey(const ValueKey('group-drag-Alpha')));
++    final last = tester.getCenter(find.byKey(const ValueKey('group-drop-Zeta')));
++    await tester.dragFrom(first, last - first);
++    await tester.pumpAndSettle();
++    expect(calls.single, ['Beta', 'Zeta', 'Alpha']);
++    _expectOrder(tester, ['Beta', 'Zeta', 'Alpha']);
++    await _capture(tester, 'group-list-drag-reordered');
++    final from = tester.getCenter(find.byKey(const ValueKey('group-drag-Alpha')));
++    final to = tester.getCenter(find.byKey(const ValueKey('group-drop-Beta')));
++    await tester.dragFrom(from, to - from);
++    await tester.pumpAndSettle();
++    expect(calls.last, ['Alpha', 'Beta', 'Zeta']);
++    _expectOrder(tester, ['Alpha', 'Beta', 'Zeta']);
++  });
++
++  testWidgets('pending group order blocks repeated sorting and group mutations', (
++    tester,
++  ) async {
++    var groups = List<HostGroup>.of(_initial);
++    final result = Completer<CoreWriteResult>();
++    var calls = 0;
++    await _viewport(tester);
++    await tester.pumpWidget(_app(HostsScreen(
++      loadHosts: () async => const [],
++      loadGroups: () async => groups,
++      reorderGroups: (expected, order) {
++        calls++;
++        return result.future;
++      },
++    )));
++    await tester.pumpAndSettle();
++    await _manager(tester);
++    await tester.tap(find.byKey(const ValueKey('group-down-Alpha')));
++    await tester.pump();
++    expect(find.text('Saving group order…'), findsOneWidget);
++    expect(tester.widget<XtIconButton>(find.byKey(const ValueKey('group-down-Beta'))).onPressed, isNull);
++    expect(tester.widget<XtIconButton>(find.byKey(const ValueKey('group-rename-Alpha'))).onPressed, isNull);
++    expect(tester.widget<XtIconButton>(find.byKey(const ValueKey('group-delete-Alpha'))).onPressed, isNull);
++    _expectOrder(tester, ['Alpha', 'Beta', 'Zeta']);
++    groups = _ordered(groups, ['Beta', 'Alpha', 'Zeta']);
++    result.complete(const CoreWriteResult(ok: true));
++    await tester.pumpAndSettle();
++    expect(calls, 1);
++    _expectOrder(tester, ['Beta', 'Alpha', 'Zeta']);
++  });
++
++  for (final throws in [false, true]) {
++    testWidgets('failed group reorder ${throws ? 'exception' : 'response'} keeps confirmed order', (
++      tester,
++    ) async {
++      var loads = 0;
++      await _viewport(tester);
++    await tester.pumpWidget(_app(HostsScreen(
++        loadHosts: () async => const [],
++        loadGroups: () async { loads++; return _initial; },
++        reorderGroups: (expected, order) async {
++          if (throws) throw StateError('disk conflict');
++          return const CoreWriteResult(ok: false, error: 'disk conflict');
++        },
++      )));
++      await tester.pumpAndSettle();
++      await _manager(tester);
++      await tester.tap(find.byKey(const ValueKey('group-down-Alpha')));
++      await tester.pumpAndSettle();
++      expect(loads, 2);
++      expect(find.textContaining('disk conflict'), findsOneWidget);
++      _expectOrder(tester, ['Alpha', 'Beta', 'Zeta']);
++      expect(tester.widget<XtIconButton>(find.byKey(const ValueKey('group-down-Alpha'))).onPressed, isNotNull);
++    });
++  }
++
++  testWidgets('disposed group manager ignores a late reorder response', (
++    tester,
++  ) async {
++    final result = Completer<CoreWriteResult>();
++    var loads = 0;
++    await _viewport(tester);
++    await tester.pumpWidget(_app(HostsScreen(
++      loadHosts: () async => const [],
++      loadGroups: () async { loads++; return _initial; },
++      reorderGroups: (expected, order) => result.future,
++    )));
++    await tester.pumpAndSettle();
++    await _manager(tester);
++    await tester.tap(find.byKey(const ValueKey('group-down-Alpha')));
++    await tester.pump();
++    await _viewport(tester);
++    await tester.pumpWidget(const SizedBox.shrink());
++    result.complete(const CoreWriteResult(ok: false, error: 'late failure'));
++    await tester.pump();
++    expect(loads, 1);
++    expect(tester.takeException(), isNull);
++  });
++
++  testWidgets('search hides drag handles while manager reorders all groups', (
++    tester,
++  ) async {
++    var groups = List<HostGroup>.of(_initial);
++    List<String>? expectedNames;
++    await _viewport(tester);
++    await tester.pumpWidget(_app(HostsScreen(
++      loadHosts: () async => const <Host>[],
++      loadGroups: () async => groups,
++      reorderGroups: (expected, order) async {
++        expectedNames = expected;
++        groups = _ordered(groups, order);
++        return const CoreWriteResult(ok: true);
++      },
++    )));
++    await tester.pumpAndSettle();
++    await tester.enterText(find.byKey(const ValueKey('host-search')), 'Alpha');
++    await tester.pumpAndSettle();
++    expect(find.byKey(const ValueKey('group-drag-Alpha')), findsNothing);
++    await _manager(tester);
++    await tester.tap(find.byKey(const ValueKey('group-down-Alpha')));
++    await tester.pumpAndSettle();
++    expect(expectedNames, ['Alpha', 'Beta', 'Zeta']);
++    await tester.enterText(find.byKey(const ValueKey('host-search')), '');
++    await tester.pumpAndSettle();
++    _expectOrder(tester, ['Beta', 'Alpha', 'Zeta']);
++  });
++
++  testWidgets('empty group manager has no reorder action', (tester) async {
++    var calls = 0;
++    await _viewport(tester);
++    await tester.pumpWidget(_app(HostsScreen(
++      loadHosts: () async => const [],
++      loadGroups: () async => const [],
++      reorderGroups: (expected, order) async {
++        calls++;
++        return const CoreWriteResult(ok: true);
++      },
++    )));
++    await tester.pumpAndSettle();
++    await _manager(tester);
++    expect(find.text('No groups to reorder'), findsOneWidget);
++    expect(calls, 0);
++  });
++
++  for (final staleError in [false, true]) {
++    testWidgets('old group reload ${staleError ? 'error' : 'success'} cannot replace a saved order', (
++      tester,
++    ) async {
++      var groups = List<HostGroup>.of(_initial);
++      final older = Completer<List<HostGroup>>();
++      var loads = 0;
++      const host = Host(
++        id: 'one', label: 'host-one', address: 'example.invalid', port: 22,
++        username: 'test', group: 'Beta', protocol: 'ssh',
++      );
++      await _viewport(tester);
++    await tester.pumpWidget(_app(HostsScreen(
++        loadHosts: () async => const [host],
++        loadGroups: () {
++          loads++;
++          return loads == 2 ? older.future : Future.value(groups);
++        },
++        deleteSession: (_) async => const CoreWriteResult(ok: true),
++        reorderGroups: (expected, order) async {
++          groups = _ordered(groups, order);
++          return const CoreWriteResult(ok: true);
++        },
++      )));
++      await tester.pumpAndSettle();
++      await _manager(tester);
++      // Use the real drawer callback to leave an earlier host-mutation reload
++      // pending, while a later group-order write gets a newer snapshot.
++      tester.widget<HostCard>(find.byType(HostCard).first).onEdit();
++      await tester.pumpAndSettle();
++      final pendingDelete = tester.widget<HostDetailsPanel>(
++        find.byType(HostDetailsPanel),
++      ).onDelete(host);
++      await tester.pumpAndSettle();
++      expect(loads, 2);
++      await tester.tap(find.byKey(const ValueKey('group-down-Alpha')));
++      await tester.pumpAndSettle();
++      expect(loads, 3);
++      _expectOrder(tester, ['Beta', 'Alpha', 'Zeta'], manager: true);
++      if (staleError) {
++        older.completeError(StateError('obsolete group load'));
++      } else {
++        older.complete(_initial);
++      }
++      await pendingDelete;
++      await tester.pumpAndSettle();
++      _expectOrder(tester, ['Beta', 'Alpha', 'Zeta'], manager: true);
++      expect(find.textContaining('obsolete group load'), findsNothing);
++      expect(tester.takeException(), isNull);
++    });
++  }
++
++  testWidgets('cancelled and self group drags do not write an order', (
++    tester,
++  ) async {
++    var calls = 0;
++    await _viewport(tester);
++    await tester.pumpWidget(_app(HostsScreen(
++      loadHosts: () async => const [],
++      loadGroups: () async => _initial,
++      reorderGroups: (expected, order) async {
++        calls++;
++        return const CoreWriteResult(ok: true);
++      },
++    )));
++    await tester.pumpAndSettle();
++    final handle = tester.getCenter(find.byKey(const ValueKey('group-drag-Alpha')));
++    await tester.dragFrom(handle, const Offset(70, 0));
++    await tester.pumpAndSettle();
++    await tester.dragFrom(handle, Offset(10, 10) - handle);
++    await tester.pumpAndSettle();
++    expect(calls, 0);
++    _expectOrder(tester, ['Alpha', 'Beta', 'Zeta']);
++  });
++
++  test('group order controls have Simplified Chinese labels', () {
++    for (final text in ['Manage groups', 'Move group up', 'Move group down',
++      'Drag to reorder group', 'Saving group order…', 'No groups to reorder',
++      'Could not reorder groups']) {
++      expect(AppLanguage.translate('zh', text), isNot(text));
++    }
++  });
++}
+--- /dev/null
++++ b/apps/xenterm/test/group_order_display_test.dart
+@@ -0,0 +1,124 @@
++import 'package:flutter_test/flutter_test.dart';
++import 'package:shadcn_flutter/shadcn_flutter.dart';
++import 'package:xenterm_app/bridge/native_bridge.dart';
++import 'package:xenterm_app/data/hosts.dart';
++import 'package:xenterm_app/screens/hosts/hosts_screen.dart';
++import 'package:xenterm_app/theme/app_theme.dart';
++
++Future<void> _viewport(WidgetTester tester) async {
++  await tester.binding.setSurfaceSize(const Size(1400, 1000));
++  addTearDown(() => tester.binding.setSurfaceSize(null));
++}
++
++Widget _app(Widget child) => ShadcnApp(
++  theme: ThemeData(colorScheme: xtDarkScheme()),
++  home: Scaffold(child: child),
++);
++
++Host _host(String id, String group) => Host(
++  id: id,
++  label: 'host-$id',
++  address: 'example.invalid',
++  port: 22,
++  username: 'test',
++  group: group,
++  protocol: 'ssh',
++);
++
++double _headerY(WidgetTester tester, String name) => tester
++    .getTopLeft(find.byKey(ValueKey('group-header-$name')))
++    .dy;
++
++void main() {
++  testWidgets('host sections preserve the core group display order', (
++    tester,
++  ) async {
++    await _viewport(tester);
++    await tester.pumpWidget(
++      _app(
++        HostsScreen(
++          loadHosts: () async => const [],
++          loadGroups: () async => const [
++            HostGroup(name: 'Zeta', collapsed: false),
++            HostGroup(name: 'Alpha', collapsed: false),
++          ],
++        ),
++      ),
++    );
++    await tester.pumpAndSettle();
++    expect(
++      _headerY(tester, 'Zeta'),
++      lessThan(_headerY(tester, 'Alpha')),
++      reason: 'host sections discarded the core group display order',
++    );
++  });
++
++  testWidgets('implicit groups append without resorting known groups', (
++    tester,
++  ) async {
++    await _viewport(tester);
++    await tester.pumpWidget(
++      _app(
++        HostsScreen(
++          loadHosts: () async => [_host('b', 'Beta'), _host('a', 'Alpha')],
++          loadGroups: () async => const [
++            HostGroup(name: 'Zeta', collapsed: false),
++          ],
++        ),
++      ),
++    );
++    await tester.pumpAndSettle();
++    expect(_headerY(tester, 'Zeta'), lessThan(_headerY(tester, 'Alpha')));
++    expect(_headerY(tester, 'Alpha'), lessThan(_headerY(tester, 'Beta')));
++    expect(find.text('host-a'), findsOneWidget);
++    expect(find.text('host-b'), findsOneWidget);
++  });
++
++  testWidgets('ASCII group aliases keep hosts under the canonical group', (
++    tester,
++  ) async {
++    await _viewport(tester);
++    await tester.pumpWidget(
++      _app(
++        HostsScreen(
++          loadHosts: () async => [_host('a', 'ALPHA')],
++          loadGroups: () async => const [
++            HostGroup(name: 'Alpha', collapsed: false),
++          ],
++        ),
++      ),
++    );
++    await tester.pumpAndSettle();
++    expect(find.byKey(const ValueKey('group-header-Alpha')), findsOneWidget);
++    expect(find.byKey(const ValueKey('group-header-ALPHA')), findsNothing);
++    expect(find.text('host-a'), findsOneWidget);
++  });
++
++  testWidgets('non ASCII group names stay distinct and Home stays first', (
++    tester,
++  ) async {
++    await _viewport(tester);
++    await tester.pumpWidget(
++      _app(
++        HostsScreen(
++          loadHosts: () async => [
++            _host('home', 'default'),
++            _host('upper', 'Ä'),
++            _host('lower', 'ä'),
++          ],
++          loadGroups: () async => const [
++            HostGroup(name: 'ä', collapsed: false),
++            HostGroup(name: 'Ä', collapsed: false),
++          ],
++        ),
++      ),
++    );
++    await tester.pumpAndSettle();
++    expect(find.text('host-upper'), findsOneWidget);
++    expect(find.text('host-lower'), findsOneWidget);
++    expect(tester.getTopLeft(find.text('host-home')).dy, lessThan(_headerY(tester, 'ä')));
++    expect(_headerY(tester, 'ä'), lessThan(_headerY(tester, 'Ä')));
++    expect(find.byKey(const ValueKey('group-drag-default')), findsNothing);
++    expect(find.byKey(const ValueKey('group-drag-system')), findsNothing);
++  });
++}
+--- a/crates/xenterm/src/config/impls/config.rs
++++ b/crates/xenterm/src/config/impls/config.rs
+@@ -435,26 +435,28 @@
+ 
+ /// Named display groups: explicit folders ∪ the groups sessions are filed
+ /// under, with reserved names and ungrouped excluded, de-duplicated and
+-/// sorted case-insensitively. The single source of truth for group display
+-/// order — shared by the welcome list, drag-reorder target finding and the
+-/// group dropdown; if these ever drift, drop targets and rendered rows
+-/// disagree (#41).
++/// sorted case-insensitively. `ordered_session_groups` overlays the persisted
++/// user order on this membership list so display and drop targets agree (#41).
+ pub(crate) fn named_display_groups(explicit: &[String], sessions: &[Session]) -> Vec<String> {
+     let mut named: Vec<String> = explicit
+         .iter()
+-        .filter(|group| !is_reserved_session_group(group.trim()))
++        .filter(|group| !group.trim().is_empty() && !is_reserved_session_group(group.trim()))
+         .cloned()
+         .chain(
+             sessions
+                 .iter()
+                 .filter(|session| {
+-                    !session.group.is_empty() && !is_reserved_session_group(session.group.trim())
++                    !session.group.trim().is_empty()
++                        && !is_reserved_session_group(session.group.trim())
+                 })
+                 .map(|session| session.group.clone()),
+         )
+         .collect();
++    // Deduplicate before sorting: explicit folder spelling wins, and Unicode
++    // lowercase ties (K/K/k) must not hide non-adjacent ASCII aliases.
++    let mut seen = std::collections::HashSet::new();
++    named.retain(|group| seen.insert(group.to_ascii_lowercase()));
+     named.sort_by_key(|group| group.to_lowercase());
+-    named.dedup();
+     named
+ }
+ 
+@@ -922,16 +924,21 @@
+     /// boundary (first member moving down, last moving up). Returns whether
+     /// anything changed.
+     pub fn reorder_session(&mut self, id: &str, dir: isize) -> bool {
+-        // Display group of a session: ungrouped (and reserved names) render
+-        // under "default"; everything else under its own group. Mirrors
+-        // build_session_rows in src/app/session_models.rs.
+-        fn display_group(session: &Session) -> String {
+-            if session.group.is_empty() || is_reserved_session_group(session.group.trim()) {
++        // Match the display list's ASCII-insensitive identity while retaining
++        // its canonical spelling. Unicode lowercase is only a sort key, never
++        // a reason to merge otherwise distinct group names.
++        let named = self.ordered_session_groups();
++        let display_group = |session: &Session| -> String {
++            if session.group.trim().is_empty() || is_reserved_session_group(session.group.trim()) {
+                 "default".to_string()
+             } else {
+-                session.group.clone()
+-            }
+-        }
++                named
++                    .iter()
++                    .find(|name| name.eq_ignore_ascii_case(&session.group))
++                    .cloned()
++                    .unwrap_or_else(|| session.group.clone())
++            }
++        };
+ 
+         let Some(idx) = self.cache.sessions.iter().position(|s| s.id == id) else {
+             return false;
+@@ -956,14 +963,18 @@
+ 
+         // Cross-group hop. Display order: "default" first (only when ungrouped
+         // sessions exist), then named groups — explicit folders ∪ sessions'
+-        // groups — alphabetically. Collapsed groups are skipped: their rows
++        // groups — in user display order. Collapsed groups are skipped: their rows
+         // are hidden, so a card must never land inside one.
+         let Some(collapsed_groups) = self.cache.collapsed_session_groups.clone() else {
+             // Mirrors build_session_rows: no collapse list = everything
+             // collapsed, so no visible target group can exist.
+             return false;
+         };
+-        let is_collapsed = |name: &str| collapsed_groups.iter().any(|g| g == name);
++        let is_collapsed = |name: &str| {
++            collapsed_groups
++                .iter()
++                .any(|g| g.eq_ignore_ascii_case(name))
++        };
+ 
+         let mut display: Vec<String> = Vec::new();
+         if self
+@@ -974,10 +985,7 @@
+         {
+             display.push("default".to_string());
+         }
+-        display.extend(named_display_groups(
+-            &self.cache.groups,
+-            &self.cache.sessions,
+-        ));
++        display.extend(named.iter().cloned());
+ 
+         let Some(pos) = display.iter().position(|g| g == &group) else {
+             return false;
+@@ -992,7 +1000,7 @@
+             return false;
+         };
+ 
+-        let source_group = self.cache.sessions[idx].group.clone();
++        let source_group = group.clone();
+         let mut moved = self.cache.sessions.remove(idx);
+         moved.group = if target_group == "default" {
+             String::new()
+@@ -1024,8 +1032,16 @@
+         // it in `groups` directly rather than via add_group: the folder was
+         // visibly expanded during the drag, and add_group would collapse it.
+         if group != "default"
+-            && !self.cache.sessions.iter().any(|s| s.group == source_group)
+-            && !self.cache.groups.iter().any(|g| g == &source_group)
++            && !self
++                .cache
++                .sessions
++                .iter()
++                .any(|s| display_group(s) == source_group)
++            && !self
++                .cache
++                .groups
++                .iter()
++                .any(|g| g.eq_ignore_ascii_case(&source_group))
+         {
+             self.cache.groups.push(source_group);
+         }
+@@ -1991,12 +2007,61 @@
+         }
+ 
+         let groups = self.cache.collapsed_session_groups.as_mut().unwrap();
+-        groups.retain(|group| group != name);
++        groups.retain(|group| !group.eq_ignore_ascii_case(name));
+         if collapsed {
+             groups.push(name.to_string());
+             groups.sort();
+             groups.dedup();
+         }
++    }
++
++    /// Named folders in the same order used for rendering and cross-group moves.
++    /// Stale/duplicate persisted entries are ignored; newly discovered groups
++    /// follow the saved prefix alphabetically without mutating the folder set.
++    pub fn ordered_session_groups(&self) -> Vec<String> {
++        let mut remaining = named_display_groups(&self.cache.groups, &self.cache.sessions);
++        let mut ordered = Vec::with_capacity(remaining.len());
++        if let Some(saved) = &self.cache.session_group_order {
++            for name in saved {
++                if let Some(index) = remaining.iter().position(|group| group == name) {
++                    ordered.push(remaining.remove(index));
++                }
++            }
++        }
++        ordered.extend(remaining);
++        ordered
++    }
++
++    /// Persist a complete permutation only if the caller still sees the current
++    /// display order. The cache lock held by the caller and the ordered save lock
++    /// cover validation, persistence and rollback, just like settings updates.
++    pub fn reorder_session_groups_and_save(
++        &mut self,
++        expected: &[String],
++        order: &[String],
++    ) -> Result<()> {
++        let _ordered = Self::save_lock()
++            .lock()
++            .unwrap_or_else(|poisoned| poisoned.into_inner());
++        let current = self.ordered_session_groups();
++        if expected != current.as_slice() {
++            bail!("group order changed; refresh before reordering");
++        }
++        let mut membership = order.to_vec();
++        membership.sort();
++        let mut current_membership = current;
++        current_membership.sort();
++        // Comparing sorted full vectors rejects duplicates, omissions, unknown
++        // and reserved names, as well as changes in spelling/case.
++        if membership != current_membership {
++            bail!("group order must contain every current group exactly once");
++        }
++        let previous = self.cache.session_group_order.replace(order.to_vec());
++        let result = self.save_impl_locked(None, self.keyring_enabled);
++        if result.is_err() {
++            self.cache.session_group_order = previous;
++        }
++        result
+     }
+ 
+     /// Whether a user group already exists, including groups inferred from
+@@ -2036,12 +2101,15 @@
+         if is_reserved_session_group(name.trim()) {
+             return;
+         }
+-        self.cache.groups.retain(|g| g != name);
++        self.cache.groups.retain(|g| !g.eq_ignore_ascii_case(name));
++        if let Some(order) = &mut self.cache.session_group_order {
++            order.retain(|group| !group.eq_ignore_ascii_case(name));
++        }
+         if let Some(groups) = &mut self.cache.collapsed_session_groups {
+-            groups.retain(|group| group != name);
++            groups.retain(|group| !group.eq_ignore_ascii_case(name));
+         }
+         for s in &mut self.cache.sessions {
+-            if s.group == name {
++            if s.group.eq_ignore_ascii_case(name) {
+                 s.group.clear();
+             }
+         }
+@@ -2058,19 +2126,26 @@
+         {
+             return;
+         }
++        if let Some(order) = &mut self.cache.session_group_order {
++            for group in order {
++                if group.eq_ignore_ascii_case(old) {
++                    *group = n.clone();
++                }
++            }
++        }
+         for g in &mut self.cache.groups {
+-            if g == old {
++            if g.eq_ignore_ascii_case(old) {
+                 *g = n.clone();
+             }
+         }
+         for s in &mut self.cache.sessions {
+-            if s.group == old {
++            if s.group.eq_ignore_ascii_case(old) {
+                 s.group = n.clone();
+             }
+         }
+         if let Some(groups) = &mut self.cache.collapsed_session_groups {
+             for group in groups.iter_mut() {
+-                if group == old {
++                if group.eq_ignore_ascii_case(old) {
+                     *group = n.clone();
+                 }
+             }
+@@ -3124,6 +3199,22 @@
+     }
+ 
+     #[test]
++    fn reorder_session_hop_honors_persisted_group_order() {
++        // This regression uses only pre-existing APIs: on the old core the
++        // unknown JSON field is ignored and d2 incorrectly lands in alpha.
++        let mut store = reorder_store();
++        let mut config = serde_json::to_value(&store.cache).unwrap();
++        config["session_group_order"] = serde_json::json!(["beta", "alpha"]);
++        store.cache = serde_json::from_value(config).unwrap();
++        let id = id_of(&store, "d2");
++        assert!(store.reorder_session(&id, 1));
++        assert_eq!(
++            store.sessions().iter().find(|s| s.id == id).unwrap().group,
++            "beta"
++        );
++    }
++
++    #[test]
+     fn reorder_session_swaps_same_group_neighbours() {
+         let mut store = reorder_store();
+         assert!(store.reorder_session(&id_of(&store, "d1"), 1));
+@@ -4591,3 +4682,7 @@
+ #[cfg(test)]
+ #[path = "settings_update_tests.rs"]
+ mod settings_update_tests;
++
++#[cfg(test)]
++#[path = "session_group_order_tests.rs"]
++mod session_group_order_tests;
+--- /dev/null
++++ b/crates/xenterm/src/config/impls/session_group_order_tests.rs
+@@ -0,0 +1,352 @@
++//! Synthetic stores only: no global profile, keyring, or live credentials.
++use super::*;
++
++fn names(values: &[&str]) -> Vec<String> {
++    values.iter().map(|value| (*value).into()).collect()
++}
++
++fn fixture() -> (tempfile::TempDir, ConfigStore) {
++    let dir = tempfile::tempdir().unwrap();
++    let mut store = tests::temp_store();
++    store.path = dir.path().join("sessions.db");
++    store.cache.groups = names(&["Zulu", "Alpha"]);
++    store.cache.collapsed_session_groups = Some(names(&["Zulu"]));
++    store.save().unwrap();
++    (dir, store)
++}
++
++fn reopen(store: &ConfigStore) -> ConfigStore {
++    let (cache, fingerprint) = ConfigStore::read_cache_snapshot(&store.path, &store.key).unwrap();
++    ConfigStore {
++        path: store.path.clone(),
++        backup_dir: None,
++        key: store.key,
++        keyring_enabled: false,
++        saved_state: Mutex::new(SavedState {
++            disk_fingerprint: fingerprint,
++            ..SavedState::of_cache(&cache)
++        })
++        .into(),
++        cache,
++    }
++}
++
++#[test]
++fn legacy_membership_and_saved_order_are_independent() {
++    let (_dir, mut store) = fixture();
++    assert!(serde_json::from_str::<ConfigFile>("{}")
++        .unwrap()
++        .session_group_order
++        .is_none());
++    store
++        .cache
++        .groups
++        .extend(names(&["", " ", "DEFAULT", "system"]));
++    for group in ["Implicit", "alpha", "Ä", "ä", "default", "system", ""] {
++        let mut session = tests::sample_session(group);
++        session.group = group.into();
++        store.cache.sessions.push(session);
++    }
++    let alphabetical = names(&["Alpha", "Implicit", "Zulu", "Ä", "ä"]);
++    assert_eq!(store.ordered_session_groups(), alphabetical);
++    let sessions = serde_json::to_value(&store.cache.sessions).unwrap();
++    let groups = store.cache.groups.clone();
++    let collapsed = store.cache.collapsed_session_groups.clone();
++    let wanted = names(&["Zulu", "ä", "Implicit", "Alpha", "Ä"]);
++    store
++        .reorder_session_groups_and_save(&alphabetical, &wanted)
++        .unwrap();
++    assert_eq!(store.ordered_session_groups(), wanted);
++    assert_eq!(reopen(&store).ordered_session_groups(), wanted);
++    assert_eq!(
++        serde_json::to_value(&store.cache.sessions).unwrap(),
++        sessions
++    );
++    assert_eq!(store.cache.groups, groups); // implicit groups stay implicit
++    assert_eq!(store.cache.collapsed_session_groups, collapsed);
++    store.add_group("Aardvark".into());
++    store.add_group("Beta".into());
++    assert_eq!(
++        store.ordered_session_groups(),
++        names(&["Zulu", "ä", "Implicit", "Alpha", "Ä", "Aardvark", "Beta"])
++    );
++}
++
++#[test]
++fn rename_delete_and_stale_persisted_names_preserve_remaining_positions() {
++    let (_dir, mut store) = fixture();
++    store
++        .reorder_session_groups_and_save(&names(&["Alpha", "Zulu"]), &names(&["Zulu", "Alpha"]))
++        .unwrap();
++    store.rename_group("Zulu", "zULU".into());
++    assert_eq!(store.ordered_session_groups(), names(&["zULU", "Alpha"]));
++    assert_eq!(store.cache.collapsed_session_groups, Some(names(&["zULU"])));
++    store.remove_group("Alpha");
++    assert_eq!(store.cache.session_group_order, Some(names(&["zULU"])));
++    store.cache.session_group_order = Some(names(&["missing", "system", "zULU", "zULU"]));
++    store.add_group("Alpha".into());
++    assert_eq!(store.ordered_session_groups(), names(&["zULU", "Alpha"]));
++    store.save().unwrap();
++    assert_eq!(
++        reopen(&store).ordered_session_groups(),
++        names(&["zULU", "Alpha"])
++    );
++}
++
++#[test]
++fn exact_permutation_and_expected_order_reject_invalid_or_stale_requests() {
++    let (_dir, mut store) = fixture();
++    let current = store.ordered_session_groups();
++    let before = serde_json::to_value(&store.cache).unwrap();
++    for invalid in [
++        names(&[]),
++        names(&["Alpha"]),
++        names(&["Alpha", "Alpha"]),
++        names(&["Zulu", "unknown"]),
++        names(&["default", "Alpha"]),
++        names(&["system", "Alpha"]),
++        names(&["alpha", "Zulu"]),
++    ] {
++        assert!(store
++            .reorder_session_groups_and_save(&current, &invalid)
++            .is_err());
++        assert_eq!(serde_json::to_value(&store.cache).unwrap(), before);
++    }
++    let reversed = names(&["Zulu", "Alpha"]);
++    store
++        .reorder_session_groups_and_save(&current, &reversed)
++        .unwrap();
++    assert!(store
++        .reorder_session_groups_and_save(&current, &current)
++        .is_err());
++    store.add_group("Beta".into());
++    assert!(store
++        .reorder_session_groups_and_save(&reversed, &current)
++        .is_err());
++    assert_eq!(
++        store.ordered_session_groups(),
++        names(&["Zulu", "Alpha", "Beta"])
++    );
++}
++
++#[test]
++fn session_boundary_hop_uses_custom_group_order() {
++    let (_dir, mut store) = fixture();
++    let session = tests::sample_session("ungrouped");
++    let id = session.id.clone();
++    store.cache.sessions.push(session);
++    store.cache.collapsed_session_groups = Some(Vec::new());
++    store
++        .reorder_session_groups_and_save(&names(&["Alpha", "Zulu"]), &names(&["Zulu", "Alpha"]))
++        .unwrap();
++    assert!(store.reorder_session(&id, 1));
++    assert_eq!(store.cache.sessions[0].group, "Zulu");
++    assert!(store.reorder_session(&id, 1));
++    assert_eq!(store.cache.sessions[0].group, "Alpha");
++}
++
++#[test]
++fn conflict_rolls_back_order_without_losing_pending_edits_or_bypassing_cas() {
++    let (_dir, mut store) = fixture();
++    let mut other = reopen(&store);
++    other.set_language("en".into());
++    other.save().unwrap();
++    store
++        .cache
++        .command_history
++        .push("synthetic pending history".into());
++    let before = serde_json::to_value(&store.cache).unwrap();
++    let baseline = store.saved_state.lock().unwrap().clone();
++    let error = store
++        .reorder_session_groups_and_save(&names(&["Alpha", "Zulu"]), &names(&["Zulu", "Alpha"]))
++        .unwrap_err();
++    assert!(error.downcast_ref::<ConfigurationChanged>().is_some());
++    assert_eq!(serde_json::to_value(&store.cache).unwrap(), before);
++    let after = store.saved_state.lock().unwrap().clone();
++    assert_eq!(after.settings, baseline.settings);
++    assert_eq!(after.disk_fingerprint, baseline.disk_fingerprint);
++    assert!(after.error.is_some());
++    assert_eq!(after.submitted, baseline.submitted + 1);
++    assert!(store
++        .save()
++        .unwrap_err()
++        .downcast_ref::<ConfigurationChanged>()
++        .is_some());
++    assert_eq!(reopen(&store).cache.language, "en");
++    assert_eq!(reopen(&store).cache.session_group_order, None);
++}
++
++#[test]
++fn storage_failure_restores_order_before_any_later_save() {
++    let (_dir, mut store) = fixture();
++    store
++        .reorder_session_groups_and_save(&names(&["Alpha", "Zulu"]), &names(&["Zulu", "Alpha"]))
++        .unwrap();
++    store.set_language("en".into());
++    let before = serde_json::to_value(&store.cache).unwrap();
++    let queued_cache = store.cache.clone();
++    let queued_sequence = {
++        let mut saved = store.saved_state.lock().unwrap();
++        saved.submitted += 1;
++        saved.submitted
++    };
++    let held = store.path.with_extension("held");
++    fs::rename(&store.path, &held).unwrap();
++    fs::create_dir(&store.path).unwrap(); // deterministic open failure even as root
++    assert!(store
++        .reorder_session_groups_and_save(&names(&["Zulu", "Alpha"]), &names(&["Alpha", "Zulu"]))
++        .is_err());
++    assert_eq!(serde_json::to_value(&store.cache).unwrap(), before);
++    fs::remove_dir(&store.path).unwrap();
++    fs::rename(&held, &store.path).unwrap();
++    let attempted = store.saved_state.lock().unwrap().attempted;
++    assert!(attempted > queued_sequence);
++    let disk_before = serde_json::to_value(&reopen(&store).cache).unwrap();
++    ConfigStore::run_background_save(
++        queued_cache,
++        queued_sequence,
++        store.saved_state.clone(),
++        store.key,
++        store.path.clone(),
++        None,
++        false,
++    );
++    assert_eq!(store.saved_state.lock().unwrap().attempted, attempted);
++    assert_eq!(
++        serde_json::to_value(&reopen(&store).cache).unwrap(),
++        disk_before
++    );
++    store.save().unwrap();
++    assert_eq!(serde_json::to_value(&reopen(&store).cache).unwrap(), before);
++    assert!(store.persistence_error().is_none());
++}
++
++#[test]
++fn ascii_aliases_deduplicate_even_with_unicode_sort_key_ties() {
++    let (_dir, mut store) = fixture();
++    store.cache.groups = names(&["K", "K", "k", "Ä", "ä"]);
++    assert_eq!(store.ordered_session_groups(), names(&["K", "K", "Ä", "ä"]));
++}
++
++#[test]
++fn session_aliases_share_siblings_cross_group_targets_and_source_folder() {
++    let (_dir, mut store) = fixture();
++    store.cache.collapsed_session_groups = Some(Vec::new());
++    let mut first = tests::sample_session("first");
++    first.group = "alpha".into();
++    let first_id = first.id.clone();
++    let mut second = tests::sample_session("second");
++    second.group = "ALPHA".into();
++    let second_id = second.id.clone();
++    let mut last = tests::sample_session("last");
++    last.group = "zulu".into();
++    store.cache.sessions = vec![first, second, last];
++    assert!(store.reorder_session(&first_id, 1));
++    assert_eq!(store.cache.sessions[0].id, second_id);
++    assert_eq!(store.cache.sessions[1].id, first_id);
++    // The boundary hop lands before the differently-cased existing member.
++    assert!(store.reorder_session(&first_id, 1));
++    assert_eq!(store.cache.sessions[1].group, "Zulu");
++    assert_eq!(store.cache.sessions[2].group, "zulu");
++    // Emptying Alpha must not materialize a duplicate lowercase folder.
++    assert!(store.reorder_session(&second_id, 1));
++    assert_eq!(store.cache.groups, names(&["Zulu", "Alpha"]));
++    assert_eq!(store.cache.sessions[0].group, "Zulu");
++    // Moving up from the canonical target also finds the first alias member.
++    assert!(store.reorder_session(&second_id, -1));
++    assert_eq!(store.cache.sessions[0].group, "Alpha");
++}
++
++#[test]
++fn non_ascii_groups_remain_distinct_when_moving_sessions() {
++    let (_dir, mut store) = fixture();
++    store.cache.groups = names(&["Ä", "ä"]);
++    store.cache.collapsed_session_groups = Some(Vec::new());
++    let mut first = tests::sample_session("upper");
++    first.group = "Ä".into();
++    let id = first.id.clone();
++    let mut second = tests::sample_session("lower");
++    second.group = "ä".into();
++    store.cache.sessions = vec![first, second];
++    assert!(store.reorder_session(&id, 1));
++    assert_eq!(store.cache.sessions[0].id, id);
++    assert_eq!(store.cache.sessions[0].group, "ä");
++    assert_eq!(store.cache.sessions[1].name, "lower");
++}
++
++#[test]
++fn collapsed_alias_is_skipped_and_can_be_expanded_by_canonical_name() {
++    let (_dir, mut store) = fixture();
++    store.cache.collapsed_session_groups = Some(names(&["alpha"]));
++    let session = tests::sample_session("ungrouped");
++    let id = session.id.clone();
++    store.cache.sessions.push(session);
++    assert!(store.reorder_session(&id, 1));
++    assert_eq!(store.cache.sessions[0].group, "Zulu");
++    store.set_session_group_collapsed("Alpha", false);
++    assert_eq!(store.cache.collapsed_session_groups, Some(Vec::new()));
++    assert!(store.reorder_session(&id, -1));
++    assert_eq!(store.cache.sessions[0].group, "Alpha");
++}
++
++#[test]
++fn rename_and_delete_update_all_ascii_aliases_but_preserve_non_ascii_groups() {
++    let (_dir, mut store) = fixture();
++    store.cache.groups = names(&["K", "k", "K"]);
++    store.cache.session_group_order = Some(names(&["k", "K"]));
++    store.cache.collapsed_session_groups = Some(names(&["k", "K", "K"]));
++    for group in ["K", "k", "K"] {
++        let mut session = tests::sample_session(group);
++        session.group = group.into();
++        store.cache.sessions.push(session);
++    }
++    store.rename_group("K", "Renamed".into());
++    assert_eq!(store.cache.groups, names(&["Renamed", "K"]));
++    assert_eq!(
++        store.cache.session_group_order,
++        Some(names(&["Renamed", "K"]))
++    );
++    assert_eq!(
++        store.cache.collapsed_session_groups,
++        Some(names(&["Renamed", "K"]))
++    );
++    assert_eq!(
++        store
++            .cache
++            .sessions
++            .iter()
++            .map(|s| s.group.clone())
++            .collect::<Vec<_>>(),
++        names(&["Renamed", "Renamed", "K"])
++    );
++    // Deletion accepts an alias and removes all matching metadata and sessions.
++    store.cache.sessions[0].group = "RENAMED".into();
++    store.cache.groups.push("RENAMED".into());
++    store
++        .cache
++        .session_group_order
++        .as_mut()
++        .unwrap()
++        .push("RENAMED".into());
++    store
++        .cache
++        .collapsed_session_groups
++        .as_mut()
++        .unwrap()
++        .push("RENAMED".into());
++    store.remove_group("renamed");
++    assert_eq!(store.cache.groups, names(&["K"]));
++    assert_eq!(store.cache.session_group_order, Some(names(&["K"])));
++    assert_eq!(store.cache.collapsed_session_groups, Some(names(&["K"])));
++    assert_eq!(
++        store
++            .cache
++            .sessions
++            .iter()
++            .map(|s| s.group.clone())
++            .collect::<Vec<_>>(),
++        names(&["", "", "K"])
++    );
++    store.save().unwrap();
++    assert_eq!(reopen(&store).ordered_session_groups(), names(&["K"]));
++}
+--- a/crates/xenterm/src/config/struct/config_file.rs
++++ b/crates/xenterm/src/config/struct/config_file.rs
+@@ -178,6 +178,10 @@
+     /// not stored here.
+     #[serde(default)]
+     pub groups: Vec<String>,
++    /// Optional user display order, independent of explicit folder membership.
++    /// Missing entries follow alphabetically; legacy configs remain alphabetical.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub session_group_order: Option<Vec<String>>,
+     /// Quick Connect folders that were collapsed when the UI was last used.
+     /// `None` is a legacy/new config and starts with every folder collapsed;
+     /// `Some([])` means the user explicitly expanded every folder.
