@@ -70,6 +70,7 @@ class _ForwardsScreenState extends State<ForwardsScreen> {
   int _tunnelSourceEpoch = 0;
   String? _tunnelError;
   bool _loading = true;
+  int _reloadEpoch = 0;
   String? _error;
   String? _notice;
   bool _searching = false;
@@ -172,6 +173,8 @@ class _ForwardsScreenState extends State<ForwardsScreen> {
   }
 
   Future<void> _reload({bool silent = false}) async {
+    if (!mounted) return;
+    final epoch = ++_reloadEpoch;
     if (!silent) {
       setState(() {
         _loading = true;
@@ -180,13 +183,17 @@ class _ForwardsScreenState extends State<ForwardsScreen> {
     }
     try {
       final rules = await (widget.loadForwards ?? loadForwardsFromCore)();
+      if (!mounted || epoch != _reloadEpoch) return;
       final hosts = await (widget.loadHosts ?? loadHostsFromCore)();
+      if (!mounted || epoch != _reloadEpoch) return;
       final jumps = widget.loadJumps != null
           ? await widget.loadJumps!()
           : widget.loadHosts != null
           ? const <JumpChain>[]
           : await loadJumpChainsFromCore();
-      if (!mounted) return;
+      // A slow earlier refresh must not restore old rules after a newer read
+      // or a save/delete refresh has completed. All three lists share an epoch.
+      if (!mounted || epoch != _reloadEpoch) return;
       setState(() {
         _rules = rules;
         _jumps = jumps;
@@ -195,7 +202,7 @@ class _ForwardsScreenState extends State<ForwardsScreen> {
         _error = null;
       });
     } catch (error) {
-      if (!mounted) return;
+      if (!mounted || epoch != _reloadEpoch) return;
       setState(() {
         _loading = false;
         _error = error is NativeBridgeError ? error.message : '$error';
@@ -489,7 +496,8 @@ class _ForwardsScreenState extends State<ForwardsScreen> {
               Text(
                 _tunnelError == null
                     ? AppLanguage.tr(context, '{count} active', {
-                        'count': '${_tunnels.where((tunnel) => tunnel.active).length}',
+                        'count':
+                            '${_tunnels.where((tunnel) => tunnel.active).length}',
                       })
                     : AppLanguage.tr(context, 'Status unavailable'),
                 key: const ValueKey('runtime-tunnel-active-count'),
@@ -503,7 +511,9 @@ class _ForwardsScreenState extends State<ForwardsScreen> {
           const SizedBox(height: 8),
           for (final tunnel in _tunnels)
             Padding(
-              key: ValueKey('runtime-tunnel-${tunnel.sessionHandle}-${tunnel.id}'),
+              key: ValueKey(
+                'runtime-tunnel-${tunnel.sessionHandle}-${tunnel.id}',
+              ),
               padding: const EdgeInsets.only(bottom: 8),
               child: _TunnelCard(tunnel: tunnel),
             ),
@@ -1103,7 +1113,10 @@ class _TunnelCard extends StatelessWidget {
                     Text(
                       tunnel.name.isEmpty
                           ? AppLanguage.tr(context, '{kind} tunnel', {
-                              'kind': _ForwardsScreenState.kindLabel(context, tunnel.kind),
+                              'kind': _ForwardsScreenState.kindLabel(
+                                context,
+                                tunnel.kind,
+                              ),
                             })
                           : tunnel.name,
                       maxLines: 1,
@@ -1133,9 +1146,14 @@ class _TunnelCard extends StatelessWidget {
           // preserves the actual error instead of overflowing a trailing Row.
           Text(
             tunnel.status,
-            key: ValueKey('runtime-tunnel-status-${tunnel.sessionHandle}-${tunnel.id}'),
+            key: ValueKey(
+              'runtime-tunnel-status-${tunnel.sessionHandle}-${tunnel.id}',
+            ),
             softWrap: true,
-            style: TextStyle(fontSize: 11, color: XtColors.textTertiary(context)),
+            style: TextStyle(
+              fontSize: 11,
+              color: XtColors.textTertiary(context),
+            ),
           ),
         ],
       ),

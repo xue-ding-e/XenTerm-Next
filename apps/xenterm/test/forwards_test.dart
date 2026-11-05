@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/gestures.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
@@ -32,7 +34,197 @@ const _rule = ForwardRule(
   hostPort: 80,
 );
 
+ForwardRule _namedRule(String name) => ForwardRule(
+  sessionId: _rule.sessionId,
+  sessionName: _rule.sessionName,
+  sessionKind: _rule.sessionKind,
+  index: _rule.index,
+  kind: _rule.kind,
+  name: name,
+  bindAddr: _rule.bindAddr,
+  bindPort: _rule.bindPort,
+  host: _rule.host,
+  hostPort: _rule.hostPort,
+);
+
+/// Delay a real screen loader, without accessing any native bridge or profile.
+class _DelayedRefresh {
+  final String stage;
+  final rules = Completer<List<ForwardRule>>();
+  final hosts = Completer<List<Host>>();
+  final jumps = Completer<List<JumpChain>>();
+  final started = Completer<void>();
+  int ruleCalls = 0;
+  int hostCalls = 0;
+  int jumpCalls = 0;
+
+  _DelayedRefresh(this.stage);
+
+  Future<List<ForwardRule>> loadRules() async {
+    ruleCalls++;
+    if (ruleCalls == 1 && stage == 'rules') {
+      started.complete();
+      return rules.future;
+    }
+    return [
+      _namedRule(
+        ruleCalls == 1 ? 'Earlier saved forward' : 'Latest saved forward',
+      ),
+    ];
+  }
+
+  Future<List<Host>> loadHosts() async {
+    hostCalls++;
+    if (hostCalls == 1 && stage == 'hosts') {
+      started.complete();
+      return hosts.future;
+    }
+    return const [_host];
+  }
+
+  Future<List<JumpChain>> loadJumps() async {
+    jumpCalls++;
+    if (jumpCalls == 1 && stage == 'jumps') {
+      started.complete();
+      return jumps.future;
+    }
+    return const [];
+  }
+
+  void complete({bool fail = false}) {
+    switch (stage) {
+      case 'rules':
+        fail
+            ? rules.completeError(StateError('stale refresh failed'))
+            : rules.complete([_namedRule('Earlier saved forward')]);
+      case 'hosts':
+        fail
+            ? hosts.completeError(StateError('stale refresh failed'))
+            : hosts.complete(const [_host]);
+      case 'jumps':
+        fail
+            ? jumps.completeError(StateError('stale refresh failed'))
+            : jumps.complete(const []);
+    }
+  }
+
+  Widget screen() => ForwardsScreen(
+    loadForwards: loadRules,
+    loadHosts: loadHosts,
+    loadJumps: loadJumps,
+    loadTunnels: () async => const [],
+  );
+}
+
 void main() {
+  for (final stage in ['rules', 'hosts', 'jumps']) {
+    for (final fail in [false, true]) {
+      testWidgets(
+        'latest forward refresh ignores older $stage ${fail ? 'error' : 'success'}',
+        (tester) async {
+          final delayed = _DelayedRefresh(stage);
+          await tester.pumpWidget(_app(delayed.screen()));
+          await tester.pumpAndSettle();
+          expect(delayed.started.isCompleted, isTrue);
+
+          await tester.tap(find.byIcon(LucideIcons.refreshCw));
+          await tester.pumpAndSettle();
+          expect(find.text('Latest saved forward'), findsOneWidget);
+          delayed.complete(fail: fail);
+          await tester.pumpAndSettle();
+
+          expect(
+            find.text('Latest saved forward'),
+            findsOneWidget,
+            reason: 'an older refresh replaced the newest forwarding rules',
+          );
+          expect(find.text('Earlier saved forward'), findsNothing);
+          expect(find.textContaining('stale refresh failed'), findsNothing);
+          expect(delayed.ruleCalls, 2);
+          // Stale reads stop before requesting another part of the snapshot.
+          expect(delayed.hostCalls, stage == 'rules' ? 1 : 2);
+          expect(delayed.jumpCalls, stage == 'jumps' ? 2 : 1);
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+  }
+
+  testWidgets('older refresh cannot hide the newest refresh error', (
+    tester,
+  ) async {
+    final first = Completer<List<ForwardRule>>();
+    var calls = 0;
+    await tester.pumpWidget(
+      _app(
+        ForwardsScreen(
+          loadForwards: () {
+            calls++;
+            return calls == 1
+                ? first.future
+                : Future.error(StateError('newest refresh failed'));
+          },
+          loadHosts: () async => const [_host],
+          loadJumps: () async => const [],
+          loadTunnels: () async => const [],
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byIcon(LucideIcons.refreshCw));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('newest refresh failed'), findsOneWidget);
+    first.complete([_rule]);
+    await tester.pumpAndSettle();
+    expect(find.textContaining('newest refresh failed'), findsOneWidget);
+    expect(find.text('Web'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('older refresh cannot end the newest loading state', (
+    tester,
+  ) async {
+    final first = Completer<List<ForwardRule>>();
+    final second = Completer<List<ForwardRule>>();
+    var calls = 0;
+    await tester.pumpWidget(
+      _app(
+        ForwardsScreen(
+          loadForwards: () => ++calls == 1 ? first.future : second.future,
+          loadHosts: () async => const [_host],
+          loadJumps: () async => const [],
+          loadTunnels: () async => const [],
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byIcon(LucideIcons.refreshCw));
+    await tester.pumpAndSettle();
+    first.complete([_rule]);
+    await tester.pumpAndSettle();
+    expect(find.text('Loading port forwards…'), findsOneWidget);
+    expect(find.text('Web'), findsNothing);
+    second.complete([_namedRule('Latest saved forward')]);
+    await tester.pumpAndSettle();
+    expect(find.text('Latest saved forward'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('closed forwards screen stops a pending refresh chain', (
+    tester,
+  ) async {
+    final delayed = _DelayedRefresh('rules');
+    await tester.pumpWidget(_app(delayed.screen()));
+    await tester.pumpAndSettle();
+    expect(delayed.started.isCompleted, isTrue);
+    await tester.pumpWidget(_app(const SizedBox.shrink()));
+    delayed.complete();
+    await tester.pumpAndSettle();
+    expect(delayed.hostCalls, 0);
+    expect(delayed.jumpCalls, 0);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('forward rules load and can be deleted', (tester) async {
     var rules = <ForwardRule>[_rule];
     String? deleted;
