@@ -35,6 +35,15 @@ jobs:
           sudo apt-get install --no-install-recommends -y libudev-dev libdbus-1-dev pkg-config
           mkdir -p "$RUSTUP_HOME" "$CARGO_HOME"
       - uses: dtolnay/rust-toolchain@1.99.1
+      - name: Check real Rust harness default capture
+        shell: bash
+        env:
+          GROUP_ORDER_RUST_CAPTURE_CHECK: '1'
+        run: |
+          command -v rustc
+          rustc --version | grep -E '^rustc 1\.99\.1 '
+          cd control/scripts/next
+          python3 -m unittest test_group_order_gate.Contracts.test_real_rust_default_capture_keeps_harness_rows
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.47.7'

@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -106,6 +107,55 @@ class Contracts(unittest.TestCase):
         for name in ('unknown',RED_DART):
             es[0]['test']['name']=name
             with self.assertRaises(ControlError):verify_flutter(encode(es),0,full=True)
+
+    @unittest.skipUnless(os.environ.get('GROUP_ORDER_RUST_CAPTURE_CHECK') == '1' and shutil.which('rustc'), 'requires explicit post-toolchain harness check; mandatory CI step enables it')
+    def test_real_rust_default_capture_keeps_harness_rows(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            source=root/'config.rs'
+            source.write_text("""
+mod config {
+    mod config {
+        mod tests {
+            #[test]
+            fn reorder_session_hop_honors_persisted_group_order() {
+                println!("synthetic stdout must remain captured");
+                eprintln!("synthetic stderr must remain captured");
+                assert_eq!("alpha", "beta");
+            }
+            #[test]
+            fn green_control() {
+                println!("green stdout must remain captured");
+                assert_eq!(1, 1);
+            }
+        }
+    }
+}
+""")
+            env={key:os.environ[key] for key in ('PATH','RUSTUP_HOME','CARGO_HOME','RUSTUP_TOOLCHAIN','LANG','LC_ALL') if key in os.environ}
+            env.update(HOME=directory,TMPDIR=directory,RUST_BACKTRACE='0')
+            binary=root/'capture-tests'
+            subprocess.run([shutil.which('rustc'),'--test','--edition=2021',str(source),'-o',str(binary)],env=env,check=True,capture_output=True,timeout=30)
+            for name,red in [(RED_RUST,True),('config::config::tests::green_control',False)]:
+                result=subprocess.run([str(binary),name,'--exact','--test-threads=1'],env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,encoding='utf-8',errors='strict',timeout=10)
+                verify_rust(result.stdout,result.returncode,[name],red=red)
+                if red:
+                    self.assertIn('test '+name+' ... FAILED\n',result.stdout)
+                    self.assertIn('---- '+name+' stdout ----',result.stdout)
+                else:
+                    self.assertNotIn('green stdout must remain captured',result.stdout)
+
+    def test_exact_rust_commands_keep_default_capture(self):
+        script=Path(__file__).with_name('run_group_order_gate.py').read_text()
+        self.assertNotIn('--nocapture',script)
+        self.assertIn("[binary,RED_RUST,'--exact','--test-threads=1']",script)
+        self.assertIn("[binary,name,'--exact','--test-threads=1']",script)
+        workflow=(Path(__file__).resolve().parents[2]/'.github/workflows/next-flutter-group-order.yml').read_text()
+        self.assertLess(workflow.index('dtolnay/rust-toolchain@1.99.1'),workflow.index('name: Check real Rust harness default capture'))
+        self.assertIn("GROUP_ORDER_RUST_CAPTURE_CHECK: '1'",workflow)
+        self.assertIn('command -v rustc',workflow)
+        self.assertIn('rustc --version | grep -E',workflow)
+
 
     def test_rust_requires_exact_real_panic(self):
         verify_rust(rust_log(),0,[RED_RUST]);verify_rust(rust_log(True),101,[RED_RUST],red=True)

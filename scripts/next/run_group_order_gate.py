@@ -211,7 +211,7 @@ def run(args):
                 binary=test_binary(out,code,source)
                 listing=call([binary,'--list'],'red-rust-inventory')[1]
                 if listing.splitlines().count(RED_RUST+': test')!=1: raise ControlError('RED case missing from binary')
-                code,out=call([binary,RED_RUST,'--exact','--nocapture','--test-threads=1'],'red-rust',120,allow_failure=True)
+                code,out=call([binary,RED_RUST,'--exact','--test-threads=1'],'red-rust',120,allow_failure=True)
                 results['red_rust']=verify_rust(out,code,[RED_RUST],red=True)
             finally: restore(green)
             call([flutter,'analyze','--no-pub'],'flutter-analyze',300,app)
@@ -232,7 +232,7 @@ def run(args):
             listing=call([binary,'--list'],'green-rust-inventory')[1]
             for index,name in enumerate(manifest['rust_tests']):
                 if listing.splitlines().count(name+': test')!=1: raise ControlError('GREEN case missing from binary')
-                code,out=call([binary,name,'--exact','--nocapture','--test-threads=1'],f'green-rust-exact-{index}',120,allow_failure=True)
+                code,out=call([binary,name,'--exact','--test-threads=1'],f'green-rust-exact-{index}',120,allow_failure=True)
                 results[f'rust:{name}']=verify_rust(out,code,[name])
             code,out=call(cargo+['--','--list'],'green-full-headless-inventory',900,allow_failure=True)
             all_rust=rust_inventory(out,code)
