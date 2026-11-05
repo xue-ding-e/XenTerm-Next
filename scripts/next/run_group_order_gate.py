@@ -20,6 +20,20 @@ REASON='host sections discarded the core group display order'
 SMOKE='the packaged bridge loads and returns its version'
 
 
+def parse_git_paths(output):
+    """Decode Git -z output without quoting, line splitting, or whitespace loss."""
+    if output == '':
+        return []
+    if not output.endswith('\0'):
+        raise ControlError('Git path inventory lacks final NUL delimiter')
+    paths = output[:-1].split('\0')
+    if any(not path or any(part in ('', '.', '..') for part in path.split('/')) for path in paths):
+        raise ControlError('invalid or non-relative Git inventory path')
+    if len(paths) != len(set(paths)):
+        raise ControlError('duplicate Git inventory path')
+    return paths
+
+
 def machine_events(output):
     events=[]
     try:
@@ -147,10 +161,10 @@ def run(args):
             env=isolated_env(Path(temp),logs)
             def call(command,label,seconds=120,cwd=source,allow_failure=False):
                 return checked(command,cwd=cwd,env=env,logs=logs,label=label,seconds=seconds,deadline=deadline,cancellation=cancel,allow_failure=allow_failure)
-            def git(*args,label): return call(['git',*args],label)[1].strip()
-            if git('rev-parse','HEAD',label='source-sha')!=SOURCE or git('status','--porcelain',label='clean-source'): raise ControlError('wrong or dirty source')
+            def git(*args,label): return call(['git',*args],label)[1]
+            if git('rev-parse','HEAD',label='source-sha').strip()!=SOURCE or git('status','--porcelain',label='clean-source'): raise ControlError('wrong or dirty source')
             verify_hashes(source,baseline)
-            if set(git('ls-files',label='baseline-tracked-inventory').splitlines())!=set(baseline): raise ControlError('baseline tracked inventory mismatch')
+            if set(parse_git_paths(git('ls-files','-z',label='baseline-tracked-inventory')))!=set(baseline): raise ControlError('baseline tracked inventory mismatch')
             base={n:(source/n).read_bytes() if n in baseline else None for n in files}
             git('apply','--check',str(controls/'group-order.patch'),label='check-main-patch')
             git('apply',str(controls/'group-order.patch'),label='apply-main-patch');verify_hashes(source,files)
@@ -228,8 +242,8 @@ def run(args):
             results['native_groups']=verify_rust(out,code,['host_groups_round_trip'])
             verify_hashes(source,{n:sha for n,sha in baseline.items() if n not in files})
             verify_hashes(source,{n:digest(d) for n,d in green.items()})
-            tracked=git('diff','--name-only',label='final-tracked-scope').splitlines()
-            added=git('ls-files','--others','--exclude-standard',label='final-untracked-scope').splitlines()
+            tracked=parse_git_paths(git('diff','--name-only','-z',label='final-tracked-scope'))
+            added=parse_git_paths(git('ls-files','--others','--exclude-standard','-z',label='final-untracked-scope'))
             if set(tracked)!=set(files)&set(baseline) or set(added)!=set(files)-set(baseline): raise ControlError('unexpected final Git scope')
             (logs/'results.json').write_text(json.dumps(results,indent=2)+'\n')
             cancel.check();print('GROUP_ORDER_RED_GREEN_PASS synthetic_only=true',flush=True)

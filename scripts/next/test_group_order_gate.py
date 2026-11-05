@@ -3,12 +3,13 @@ import json
 import os
 from pathlib import Path
 import signal
+import subprocess
 import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 from group_order_process import Cancellation, ControlError, Deadline, checked, live_members, digest, verify_hashes
-from run_group_order_gate import (RED_DART, RED_RUST, REASON, SOURCE, SMOKE, verify_flutter, verify_rust, test_binary, transplant_test, isolated_env, rust_inventory)
+from run_group_order_gate import (RED_DART, RED_RUST, REASON, SOURCE, SMOKE, verify_flutter, verify_rust, test_binary, transplant_test, isolated_env, rust_inventory, parse_git_paths)
 
 
 def events(name=RED_DART,red=False,printed=False):
@@ -31,6 +32,38 @@ def rust_log(red=False,name=RED_RUST):
 
 
 class Contracts(unittest.TestCase):
+    def test_git_paths_require_strict_nul_delimiters(self):
+        self.assertEqual(parse_git_paths(''), [])
+        self.assertEqual(parse_git_paths('中文/ 空格 \0line\nname\0'), ['中文/ 空格 ', 'line\nname'])
+        for text in ('no-final-nul', 'a\0\0', '\0', 'a\0a\0', '/absolute\0', '../escape\0', 'a/../b\0', './a\0', 'a//b\0'):
+            with self.assertRaises(ControlError):
+                parse_git_paths(text)
+
+    def test_real_git_inventory_preserves_unicode_spaces_and_newlines(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env = {'PATH': os.environ.get('PATH', ''), 'HOME': directory,
+                   'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': '/dev/null',
+                   'LC_ALL': 'C.UTF-8'}
+            def git(*args):
+                return subprocess.run(['git', '-c', 'core.quotePath=true', *args],
+                                      cwd=root, env=env, check=True, capture_output=True,
+                                      encoding='utf-8', errors='strict').stdout
+            git('init', '-q')
+            tracked = ['中文目录/说明.md', 'space name.txt', 'line\nbreak.txt', ' leading and trailing ']
+            for name in tracked:
+                path=root/name; path.parent.mkdir(parents=True, exist_ok=True); path.write_text('base\n')
+            git('add', '--', *tracked)
+            self.assertEqual(set(parse_git_paths(git('ls-files', '-z'))), set(tracked))
+            self.assertIn('\\', git('ls-files'))  # Legacy quoted output differs.
+            for name in tracked:
+                (root/name).write_text('changed\n')
+            self.assertEqual(set(parse_git_paths(git('diff', '--name-only', '-z'))), set(tracked))
+            added=['新增 文件.txt', 'new\nline.txt', ' untracked ']
+            for name in added:
+                (root/name).write_text('new\n')
+            self.assertEqual(set(parse_git_paths(git('ls-files', '--others', '--exclude-standard', '-z'))), set(added))
+
     def test_manifest_current_proposal(self):
         root=Path(__file__).parent;m=json.loads((root/'group-order-manifest.json').read_text())
         self.assertEqual(m['source'],SOURCE);self.assertEqual(len(m['baseline']),742)
