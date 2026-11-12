@@ -74,8 +74,13 @@ try {
     $infoText = & $cli --config-info
     if ($LASTEXITCODE -ne 0) { throw 'Installed CLI profile inspection failed.' }
     $info = $infoText | ConvertFrom-Json
-    if ([System.IO.Path]::GetFullPath($info.data_dir) -ne [System.IO.Path]::GetFullPath($profile) -or $info.session_count -ne 0) {
-        throw 'Installed CLI profile escaped its isolated empty directory.'
+    # Rust canonicalize returns Windows extended-length drive paths (\\?\D:\...).
+    # Strip only that drive prefix, not arbitrary path segments or UNC roots.
+    $actualProfile = [System.IO.Path]::GetFullPath($info.data_dir)
+    if ($actualProfile -match '^\\\\\?\\[A-Za-z]:\\') { $actualProfile = $actualProfile.Substring(4) }
+    $expectedProfile = [System.IO.Path]::GetFullPath($profile)
+    if (-not [string]::Equals($actualProfile, $expectedProfile, [StringComparison]::OrdinalIgnoreCase) -or $info.session_count -ne 0) {
+        throw "Installed CLI profile mismatch: actual=$actualProfile expected=$expectedProfile sessions=$($info.session_count)"
     }
     New-Item -ItemType Directory -Path $profile -Force | Out-Null
     $marker = Join-Path $profile 'lifecycle-fixture.txt'
