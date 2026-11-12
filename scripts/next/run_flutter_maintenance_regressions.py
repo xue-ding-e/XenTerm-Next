@@ -110,6 +110,11 @@ INPUT_ADMISSION_TESTS = (
     "frontend::input_admission_tests::oneshot_wake_can_reenter_responder_and_close_without_held_locks",
     "frontend::input_admission_tests::poisoned_prompt_state_cancels_and_never_accepts_late_answers",
 )
+ENCODING_TESTS = (
+    "terminal::encoding::tests::gbk_round_trip_and_split_decode",
+    "terminal::encoding::tests::unknown_label_falls_back_to_utf8",
+    "terminal::local::tests::conpty_read_boundary_keeps_utf8_codepoints",
+)
 WINDOWS_INPUT_TESTS = (
     "terminal::terminal_windows_tests::conpty_powershell_preserves_long_unicode_output",
 )
@@ -122,7 +127,7 @@ CORE = ("cargo", "test", "--locked", "-p", "xenterm", "--lib")
 BRIDGE = ("cargo", "test", "--locked", "-p", "xenterm-bridge", "--test", "settings")
 BRIDGE_LIB = ("cargo", "test", "--locked", "-p", "xenterm-bridge", "--lib")
 RUST_GROUPS = (
-    (CORE, TUNNEL_TESTS + SETTINGS_TESTS + INPUT_ADMISSION_TESTS),
+    (CORE, TUNNEL_TESTS + SETTINGS_TESTS + INPUT_ADMISSION_TESTS + ENCODING_TESTS),
     (BRIDGE, BRIDGE_TESTS),
     (BRIDGE_LIB, BRIDGE_INPUT_TESTS),
 )
