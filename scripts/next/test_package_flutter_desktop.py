@@ -94,7 +94,9 @@ class DesktopPackageTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix='flutter-desktop-test-')
         self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name)
+        # macOS exposes /var via a system symlink. Fixtures use the canonical
+        # directory because the packaging API deliberately refuses linked roots.
+        self.root = Path(self.temporary.name).resolve()
         for name in ('LICENSE', 'THIRD_PARTY_NOTICES.md', 'assets/fonts/LICENSE-One.txt',
                      'assets/fonts/LICENSE-Two.txt'):
             path = self.root / name

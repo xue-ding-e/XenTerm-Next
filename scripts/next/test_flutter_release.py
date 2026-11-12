@@ -98,6 +98,9 @@ class FakeGitHub:
     def preserve_tag_object(self, expected):
         pass
 
+    def tag_commit(self, expected):
+        return expected
+
     def api(self, endpoint, method='GET', body=None):
         if method == 'PATCH':
             self.publication.update(body)
@@ -262,6 +265,20 @@ class ReleaseTests(unittest.TestCase):
         with patch.object(release.GitHub, 'command') as command:
             release.GitHub().preserve_tag_object('')
         command.assert_not_called()
+
+    def test_annotated_previous_tag_uses_raw_lease_and_preserves_its_commit_assets(self):
+        class AnnotatedGitHub(FakeGitHub):
+            def tag_commit(self, expected):
+                return 'c' * 40 if expected == 'd' * 40 else expected
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            fixture(directory)
+            api = AnnotatedGitHub()
+            api.current_tag = 'd' * 40
+            with patch('flutter_release_archive.archive_old_generations') as archive:
+                release.publish(api, directory, SHA, '42')
+            self.assertEqual(archive.call_args.args[-1], 'c' * 40)
+            self.assertEqual(api.current_tag, SHA)
 
 
 if __name__ == '__main__':

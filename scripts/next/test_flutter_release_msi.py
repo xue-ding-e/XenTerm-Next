@@ -319,6 +319,20 @@ class ReleaseMsiArtifactTests(unittest.TestCase):
         self.assertEqual(set(bundle['value']), set(BINARIES))
         self.assertTrue(helper('archive', archive=str(self.archive), stem=STEM)['ok'])
 
+    def test_short_windows_temp_path_preserves_relative_binary_names(self):
+        import ctypes
+        buffer = ctypes.create_unicode_buffer(32768)
+        get_short = ctypes.windll.kernel32.GetShortPathNameW
+        get_short.argtypes = (ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint)
+        get_short.restype = ctypes.c_uint
+        result = get_short(str(self.bundle), buffer, len(buffer))
+        if not result:
+            self.fail('GetShortPathNameW failed for the existing fixture bundle')
+        short = buffer.value
+        validated = helper('bundle', bundle=short, receipt=str(self.receipt_path), sha=SHA, version=VERSION)
+        self.assertTrue(validated['ok'], validated)
+        self.assertEqual(set(validated['value']), set(BINARIES))
+
     def test_wrong_receipt_source_runtime_and_numeric_version_are_rejected(self):
         for field, wrong, message in (('source_sha', 'b' * 40, 'source SHA mismatch'),
                                       ('runtime_version', VERSION + '-wrong', 'runtime version mismatch'),

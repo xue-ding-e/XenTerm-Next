@@ -237,6 +237,11 @@ class GitHub:
             self.command('git', 'fetch', '--no-tags', 'origin', expected, timeout=60)
             self.command('git', 'cat-file', '-e', expected, timeout=15)
 
+    def tag_commit(self, expected):
+        if not expected:
+            return ''
+        return full_sha(self.command('git', 'rev-parse', expected + '^{commit}', timeout=15))
+
 
 def release_body(metadata, hashes, tag=TAG):
     sha, run_id = metadata['source_sha'], metadata['build_run']
@@ -259,7 +264,7 @@ def reuse_published(api, current, assets, metadata, hashes):
     new run. Re-download every original asset and verify its original CI instead.
     """
     sha = metadata['source_sha']
-    if current.get('draft') is not False or api.tag() != sha:
+    if current.get('draft') is not False or api.tag_commit(api.tag()) != sha:
         return None
     known = {asset['name']: asset for asset in assets}
     if not set(hashes).issubset(known):
@@ -277,7 +282,7 @@ def reuse_published(api, current, assets, metadata, hashes):
             raise ValueError('Published source generation has inconsistent provenance')
         api.check(sha, original_run)
         api.check(sha, metadata['build_run'])
-        if api.tag() != sha:
+        if api.tag_commit(api.tag()) != sha:
             raise ValueError('Flutter tag changed during existing-generation verification')
     print(f'Reused verified Flutter source {sha} from original build {original_run}; current CI build {metadata["build_run"]}.')
     return current
@@ -292,6 +297,9 @@ def publish(api, directory, sha, run_id):
     known = {asset['name']: asset for asset in assets}
     if len(known) != len(assets):
         raise ValueError('Duplicate release asset names')
+    old = api.tag()
+    api.preserve_tag_object(old)
+    previous_commit = api.tag_commit(old)
     reused = reuse_published(api, release, assets, metadata, hashes)
     if reused is not None:
         return reused
@@ -301,8 +309,6 @@ def publish(api, directory, sha, run_id):
         if name not in known:
             known[name] = api.upload(path, rid)
         api.verify(known[name], path, checksum)
-    old = api.tag()
-    api.preserve_tag_object(old)
     api.check(sha, run_id)
     api.promote_tag(sha, old)
     try:
@@ -325,7 +331,7 @@ def publish(api, directory, sha, run_id):
     # asset IDs. Manual assets and the previous complete generation stay put.
     from flutter_release_archive import archive_old_generations
     try:
-        archive_old_generations(api, actual, sha, run_id, old)
+        archive_old_generations(api, actual, sha, run_id, previous_commit)
     except Exception as error:
         print('Current Flutter release verified; historical rotation retained assets: ' + type(error).__name__)
     return actual

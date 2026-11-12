@@ -78,7 +78,10 @@ def plain_path(path):
     for ancestor in (path, *path.parents):
         if os.path.lexists(ancestor) and is_link(ancestor):
             raise ValueError(f'Path links are not permitted: {ancestor}')
-    return path
+    # Windows temporary paths may use an 8.3 spelling while resolve() on a
+    # framework link returns its long spelling. Compare canonical roots after
+    # checking links, otherwise valid internal links appear to escape the app.
+    return path.resolve()
 
 
 def payload_paths(bundle, platform):

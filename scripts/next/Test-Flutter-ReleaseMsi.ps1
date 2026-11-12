@@ -169,6 +169,19 @@ function Assert-PortableArchive {
     } finally { $zip.Dispose() }
 }
 
+function Get-BundleBinaryNames {
+    param([string] $Directory, [string] $Relative = '')
+    foreach ($file in Get-ChildItem -LiteralPath $Directory -Force) {
+        Assert-NoReparseAncestor $file.FullName
+        $name = if ($Relative) { $Relative + '/' + $file.Name } else { $file.Name }
+        if ($file.PSIsContainer) {
+            Get-BundleBinaryNames $file.FullName $name
+        } elseif ($file.Extension.ToLowerInvariant() -in @('.exe', '.dll', '.so')) {
+            $name
+        }
+    }
+}
+
 function Read-PortableRuntime {
     param([string] $Bundle, [string] $SourceSha, [string] $RuntimeVersion, $Receipt)
     $runtime = Get-Content -LiteralPath (Join-Path $Bundle 'WINDOWS-RUNTIME.json') -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -190,14 +203,13 @@ function Read-PortableRuntime {
     }
     # Compare every packaged DLL, including Flutter/plugins and any additional
     # app-local CRT files. Their bytes are bound to the platform receipt by ZIP SHA.
-    foreach ($file in @(Get-ChildItem -LiteralPath $Bundle -Recurse -File)) {
-        Assert-NoReparseAncestor $file.FullName
-        $name = $file.FullName.Substring($Bundle.TrimEnd('\').Length + 1).Replace('\', '/')
-        if ($file.Extension.ToLowerInvariant() -in @('.exe', '.dll', '.so')) {
-            if ($file.Name -match '^(msvcp|vcruntime|concrt|vcomp|vcamp)[0-9].*\.dll$' -and
-                -not $hashes.ContainsKey($name)) { throw "App-local CRT hash is missing: $name" }
-            if (-not $hashes.ContainsKey($name)) { throw "Runtime receipt is missing a packaged binary hash: $name" }
-        }
+    # Build names from directory entries rather than slicing FullName: Windows
+    # providers can expand an 8.3 temp path during enumeration.
+    foreach ($name in @(Get-BundleBinaryNames $Bundle)) {
+        $leaf = ($name -split '/')[-1]
+        if ($leaf -match '^(msvcp|vcruntime|concrt|vcomp|vcamp)[0-9].*\.dll$' -and
+            -not $hashes.ContainsKey($name)) { throw "App-local CRT hash is missing: $name" }
+        if (-not $hashes.ContainsKey($name)) { throw "Runtime receipt is missing a packaged binary hash: $name" }
     }
     if (-not $hashes.ContainsKey('flutter_windows.dll')) { throw 'Missing Flutter engine DLL.' }
     # A publisher may also embed runtime provenance directly in the platform receipt.
