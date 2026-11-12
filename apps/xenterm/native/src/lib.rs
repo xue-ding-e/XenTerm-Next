@@ -765,7 +765,8 @@ pub extern "C" fn xenterm_session_snapshot(handle: u64) -> *mut c_char {
     }
 }
 
-/// Sends raw bytes (encoded keys/paste) to the session PTY.
+/// Enqueues raw bytes (encoded keys/paste). Returns 1 only when accepted;
+/// 0 includes SSH authentication/startup and closing or closed sessions.
 #[no_mangle]
 pub extern "C" fn xenterm_session_input(handle: u64, bytes: *const u8, len: usize) -> i32 {
     if bytes.is_null() || len == 0 {
@@ -773,10 +774,7 @@ pub extern "C" fn xenterm_session_input(handle: u64, bytes: *const u8, len: usiz
     }
     let slice = unsafe { std::slice::from_raw_parts(bytes, len) };
     match session(handle) {
-        Some(session) => {
-            session.send_input(slice);
-            1
-        }
+        Some(session) => i32::from(session.send_input(slice)),
         None => 0,
     }
 }
@@ -1651,5 +1649,32 @@ pub extern "C" fn xenterm_sftp_close(handle: u64) -> i32 {
 pub extern "C" fn xenterm_string_free(ptr: *mut c_char) {
     if !ptr.is_null() {
         drop(unsafe { CString::from_raw(ptr) });
+    }
+}
+
+#[cfg(test)]
+mod input_admission_tests {
+    use super::*;
+
+    #[test]
+    fn ffi_rejects_ssh_input_before_worker_or_prompt_pump_runs() {
+        // Never drive this current-thread runtime. The real SSH constructor is
+        // exercised without running connection, auth, PTY or profile access.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let mut config = xenterm::config::Session::new_empty();
+        config.kind = xenterm::config::SessionKind::Ssh;
+        let terminal =
+            TerminalSession::start_adhoc(runtime.handle(), config, false, 80, 24, 100).unwrap();
+        let handle = NEXT_HANDLE.fetch_add(1, Ordering::SeqCst);
+        sessions().lock().unwrap().insert(handle, terminal);
+        let bytes = b"synthetic-startup-input";
+        let accepted = xenterm_session_input(handle, bytes.as_ptr(), bytes.len());
+        // Remove the registry entry even when the pre-fix assertion will fail.
+        let terminal = sessions().lock().unwrap().remove(&handle).unwrap();
+        terminal.close();
+        drop(runtime);
+        assert_eq!(accepted, 0);
     }
 }

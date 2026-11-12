@@ -15,7 +15,9 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use crate::config::Session;
 use crate::i18n::t;
-use crate::session::protocol::{ProcessKillResult, SessionCommand, SessionEvent, SessionHandle};
+use crate::session::protocol::{
+    ProcessKillResult, SessionCommand, SessionCommandSender, SessionEvent, SessionHandle,
+};
 
 // ConPTY read boundaries need not align with UTF-8 code point boundaries.
 fn decode_local_output(decoder: &mut encoding_rs::Decoder, bytes: &[u8], last: bool) -> String {
@@ -41,7 +43,7 @@ pub fn spawn_local_session(
     initial_cols: u32,
     initial_rows: u32,
 ) -> (SessionHandle, UnboundedReceiver<SessionEvent>) {
-    let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<SessionCommand>();
+    let (cmd_tx, cmd_rx) = SessionCommandSender::channel();
     let (evt_tx, evt_rx) = mpsc::unbounded_channel::<SessionEvent>();
 
     let evt_for_task = evt_tx.clone();

@@ -659,8 +659,9 @@ impl TerminalSession {
         runtime_tunnels_json(&tunnels)
     }
 
-    pub fn send_input(&self, bytes: &[u8]) {
-        self.handle.send_raw(bytes.to_vec());
+    /// Returns whether the worker accepted these bytes; rejected input is not retried.
+    pub fn send_input(&self, bytes: &[u8]) -> bool {
+        self.handle.send_raw(bytes.to_vec())
     }
 
     pub fn resize(&self, cols: u16, rows: u16) {
@@ -1597,4 +1598,37 @@ pub type SessionRegistry = HashMap<u64, Arc<TerminalSession>>;
 /// Creates a session registry shared behind a mutex.
 pub fn new_registry() -> Arc<Mutex<SessionRegistry>> {
     Arc::new(Mutex::new(SessionRegistry::new()))
+}
+
+#[cfg(test)]
+mod input_admission_tests {
+    use super::*;
+
+    #[test]
+    fn answering_a_prompt_does_not_make_terminal_input_ready() {
+        // A dormant runtime keeps the real SSH worker before its first poll.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let mut config = crate::config::Session::new_empty();
+        config.kind = SessionKind::Ssh;
+        let terminal =
+            TerminalSession::start_adhoc(runtime.handle(), config, false, 80, 24, 100).unwrap();
+        assert!(terminal.prompt.lock().unwrap().is_none());
+        assert!(!terminal.send_input(b"before-prompt-event"));
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        *terminal.prompt.lock().unwrap() = Some(PromptEntry {
+            id: 7,
+            prompt: PendingPrompt::Mfa {
+                prompt: "synthetic challenge".into(),
+                echo: false,
+                responder: crate::session::protocol::MfaResponder::new(tx),
+            },
+        });
+        terminal.answer_prompt(7, true, None, None, Some("fixture-answer".into()));
+        assert_eq!(rx.try_recv().unwrap(), Some("fixture-answer".into()));
+        assert!(terminal.prompt.lock().unwrap().is_none());
+        assert!(!terminal.send_input(b"after-answer-before-auth-finishes"));
+        terminal.close();
+    }
 }

@@ -26,7 +26,8 @@ use crate::i18n::t;
 // SSH's to own: `crate::session::protocol` holds it and every layer speaks it.
 use crate::session::protocol::{
     CredentialResponder, HostKeyResponder, MfaResponder, ProcInfo, ProcessKillResult,
-    RuntimeTunnelInfo, SessionCommand, SessionEvent, SessionHandle, SystemDetails,
+    RuntimeTunnelInfo, SessionCommand, SessionCommandSender, SessionEvent, SessionHandle,
+    SessionInputReady, SystemDetails,
 };
 
 struct RuntimeTrigger {
@@ -932,7 +933,7 @@ pub fn spawn_session(
     initial_cols: u32,
     initial_rows: u32,
 ) -> (SessionHandle, UnboundedReceiver<SessionEvent>) {
-    let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<SessionCommand>();
+    let (cmd_tx, cmd_rx, input_ready) = SessionCommandSender::awaiting_shell();
     let (evt_tx, evt_rx) = mpsc::unbounded_channel::<SessionEvent>();
 
     let evt_tx_for_task = evt_tx.clone();
@@ -946,6 +947,7 @@ pub fn spawn_session(
             session,
             jump,
             cmd_rx,
+            input_ready,
             evt_tx_for_task.clone(),
             initial_cols,
             initial_rows,
@@ -1938,6 +1940,7 @@ async fn run_session(
     session: Session,
     jump: Vec<Session>,
     mut commands: UnboundedReceiver<SessionCommand>,
+    input_ready: SessionInputReady,
     events: UnboundedSender<SessionEvent>,
     initial_cols: u32,
     initial_rows: u32,
@@ -2035,6 +2038,10 @@ async fn run_session(
         .await
         .context("request PTY")?;
     channel.request_shell(true).await.context("request shell")?;
+    // Authentication (including every jump/MFA prompt) is complete. russh has
+    // queued the shell request here; this is not a remote shell acknowledgement.
+    // Input rejected before this point is never buffered or replayed.
+    input_ready.mark_ready();
 
     tracing::info!(
         "[SESSION_START] id={} stage=terminal-ready elapsed_ms={}",
@@ -2743,6 +2750,10 @@ async fn run_session(
             }
         }
     }
+
+    // The input pump has stopped. Reject new commands before teardown awaits;
+    // otherwise the queue could accept bytes that no worker will consume.
+    drop(commands);
 
     // Tear down any port-forward listeners (#56); -R forwards die with the
     // session's disconnect below.

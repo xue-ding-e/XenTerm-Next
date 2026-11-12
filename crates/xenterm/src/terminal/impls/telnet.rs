@@ -20,7 +20,9 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use crate::config::Session;
 use crate::i18n::t;
-use crate::session::protocol::{ProcessKillResult, SessionCommand, SessionEvent, SessionHandle};
+use crate::session::protocol::{
+    ProcessKillResult, SessionCommand, SessionCommandSender, SessionEvent, SessionHandle,
+};
 
 // Telnet protocol bytes (RFC 854).
 const IAC: u8 = 255;
@@ -43,7 +45,7 @@ pub fn spawn_telnet_session(
     initial_cols: u32,
     initial_rows: u32,
 ) -> (SessionHandle, UnboundedReceiver<SessionEvent>) {
-    let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<SessionCommand>();
+    let (cmd_tx, cmd_rx) = SessionCommandSender::channel();
     let (evt_tx, evt_rx) = mpsc::unbounded_channel::<SessionEvent>();
 
     let evt_for_task = evt_tx.clone();

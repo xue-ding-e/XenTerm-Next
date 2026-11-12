@@ -1,10 +1,9 @@
 use super::*;
 use crate::config::Session;
-use crate::session::protocol::{SessionCommand, SessionEvent};
+use crate::session::protocol::{SessionCommand, SessionCommandSender, SessionEvent};
 use std::time::Duration;
-use tokio::sync::mpsc::UnboundedSender;
 
-struct CloseOnDrop(UnboundedSender<SessionCommand>);
+struct CloseOnDrop(SessionCommandSender);
 impl Drop for CloseOnDrop {
     fn drop(&mut self) {
         let _ = self.0.send(SessionCommand::Close);
