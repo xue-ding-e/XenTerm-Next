@@ -59,14 +59,14 @@ jobs:
       - name: Analyze Flutter
         working-directory: apps/xenterm
         run: flutter analyze
-      - name: Test exact Flutter runtime regressions (14 required)
+      - name: Test exact Flutter maintenance regressions (43 required)
         shell: pwsh
         run: |
           python scripts/next/run_flutter_maintenance_regressions.py --suite flutter --expected-source "$env:GITHUB_SHA"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      # Unlike --bin, this explicitly discovers and executes all 13 tunnel
-      # library regressions plus 3 settings regressions and the settings C ABI.
-      - name: Test exact Rust maintenance regressions (17 required)
+      # Explicit library selection covers 13 tunnel, 3 settings, 15 protocol,
+      # 1 frontend and 1 Windows ConPTY regression, plus 2 bridge targets.
+      - name: Test exact Rust maintenance regressions (35 required)
         shell: pwsh
         run: |
           python scripts/next/run_flutter_maintenance_regressions.py --suite rust --expected-source "$env:GITHUB_SHA"

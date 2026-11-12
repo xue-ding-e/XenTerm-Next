@@ -4,12 +4,71 @@ import io
 import json
 from pathlib import Path
 import subprocess
+import sys
 import unittest
+from unittest.mock import patch
 
 
 spec = importlib.util.spec_from_file_location("maintenance_gate", Path(__file__).with_name("run_flutter_maintenance_regressions.py"))
 gate = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gate)
+
+
+EXPECTED_INPUT_DART_TESTS = (
+    "existing tab 1 takes input from tab 0",
+    "existing tab 0 takes input from tab 1",
+    "covered workspace rejects even residual terminal focus",
+    "initially inactive panes neither autofocus nor accept input",
+    "inactive lifecycle blocks hardware input until resumed",
+    "mounting while inactive restores input on first resume",
+    "resuming leaves an existing search field focused",
+    "search typing never reaches either PTY",
+    "explicit background commands preserve visible tab ownership",
+    "same-frame field request beats pending terminal restoration",
+    "delayed copy does not steal focus after switching tabs",
+    "delayed copy does not steal focus after clicking a field",
+    "modal route blocks queued terminal restoration (requestFocus=true)",
+    "modal route blocks queued terminal restoration (requestFocus=false)",
+    "inline credential field keeps its identity across A B A",
+    "pending prompt blocks residual focus and ordinary send paths",
+    "new hidden prompt blocks commands without disabling background input",
+    "new unpolled prompt blocks ordinary clear input",
+    "new unpolled prompt blocks ordinary snippet input",
+    "new unpolled prompt blocks ordinary hardware input",
+    "prompt replaced while hidden never restores the old field",
+    "unfocusable saved prompt field does not fall back to PTY",
+    "competing field wins over queued inline prompt restoration",
+    "new hidden prompt without a saved field never focuses PTY",
+    "resolved hidden prompt releases its field for terminal input",
+    "activation read failure (version) blocks input until refreshed",
+    "activation read failure (snapshot) blocks input until refreshed",
+    "activation read failure (empty) blocks input until refreshed",
+    "rapid A B A routes input and disposal cancels pending focus",
+)
+EXPECTED_INPUT_CORE_TESTS = (
+    "session::protocol::input_admission_tests::send_raw_reports_actual_admission_and_closed_receiver",
+    "session::protocol::input_admission_tests::prompt_answers_do_not_open_the_command_gate",
+    "session::protocol::input_admission_tests::non_ssh_type_ahead_stays_available_before_the_worker_reads",
+    "session::protocol::input_admission_tests::ready_shell_keeps_text_sudo_and_terminal_query_replies",
+    "session::protocol::input_admission_tests::controls_remain_usable_during_startup",
+    "session::protocol::input_admission_tests::close_before_ready_cannot_be_reopened_by_the_worker",
+    "session::protocol::input_admission_tests::close_after_ready_closes_all_sender_clones",
+    "session::protocol::input_admission_tests::dropped_readiness_token_never_opens_input",
+    "session::protocol::input_admission_tests::readiness_token_does_not_keep_the_command_queue_connected",
+    "session::protocol::input_admission_tests::poisoned_admission_lock_fails_closed",
+    "session::protocol::input_admission_tests::concurrent_ready_and_close_cannot_reopen_input",
+    "session::protocol::input_admission_tests::concurrent_input_is_never_enqueued_behind_close",
+    "session::protocol::input_admission_tests::regressions::starting_ssh_rejects_handle_input_before_any_prompt_event",
+    "session::protocol::input_admission_tests::regressions::starting_ssh_rejects_cloned_command_sender_input",
+    "session::protocol::input_admission_tests::regressions::rejected_startup_input_is_never_replayed_after_admission_opens",
+    "frontend::input_admission_tests::answering_a_prompt_does_not_make_terminal_input_ready",
+)
+EXPECTED_WINDOWS_CORE_TESTS = (
+    "terminal::terminal_windows_tests::conpty_powershell_preserves_long_unicode_output",
+)
+EXPECTED_INPUT_BRIDGE_TESTS = (
+    "input_admission_tests::ffi_rejects_ssh_input_before_worker_or_prompt_pump_runs",
+)
 
 
 class MaintenanceGateTests(unittest.TestCase):
@@ -25,12 +84,15 @@ class MaintenanceGateTests(unittest.TestCase):
         for summary in (
             "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 99 filtered out",
             "test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 99 filtered out",
+            "test result: ok. 1 passed; 0 failed; 1 ignored; 0 measured; 99 filtered out",
+            "test result: ok. 1 passed; 0 failed; 0 ignored; 1 measured; 99 filtered out",
             "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 99 filtered out",
             "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 99 filtered out",
         ):
             with self.subTest(summary=summary), self.assertRaises(RuntimeError):
-                gate.verify_single_pass(summary, "synthetic")
+                gate.verify_single_pass("test synthetic ... ok\n" + summary, "synthetic")
         gate.verify_single_pass(
+            "test synthetic ... ok\n"
             "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 99 filtered out", "synthetic"
         )
 
@@ -48,19 +110,32 @@ class MaintenanceGateTests(unittest.TestCase):
             if command[0] == "git":
                 output = "a" * 40 + "\n"
             elif command[-1] == "--list":
-                tests = gate.BRIDGE_TESTS if "xenterm-bridge" in command else gate.TUNNEL_TESTS + gate.SETTINGS_TESTS
+                if "xenterm-bridge" not in command:
+                    tests = gate.TUNNEL_TESTS + gate.SETTINGS_TESTS + EXPECTED_INPUT_CORE_TESTS + EXPECTED_WINDOWS_CORE_TESTS
+                elif "--lib" in command:
+                    tests = EXPECTED_INPUT_BRIDGE_TESTS
+                else:
+                    tests = gate.BRIDGE_TESTS
                 output = "\n".join(f"{name}: test" for name in tests)
             else:
-                output = "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 100 filtered out\n"
+                name = command[command.index("--") - 1]
+                output = f"test {name} ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 100 filtered out\n"
             return subprocess.CompletedProcess(command, 0, output, "")
 
-        with contextlib.redirect_stdout(io.StringIO()):
+        with patch.object(sys, "platform", "win32"), contextlib.redirect_stdout(io.StringIO()) as captured:
             gate.run_regressions("a" * 40, runner=fake)
-        self.assertEqual(len(commands), 20)  # git + two inventories + 17 exact tests
+        self.assertEqual(len(commands), 39)  # git + three inventories + 35 exact tests
+        self.assertIn("suite=rust count=35", captured.getvalue())
+        self.assertNotIn("PLATFORM_EXCLUDED", captured.getvalue())
         exact = [command for command in commands if "--exact" in command]
-        expected = [*gate.TUNNEL_TESTS, *gate.SETTINGS_TESTS, *gate.BRIDGE_TESTS]
+        expected = [*gate.TUNNEL_TESTS, *gate.SETTINGS_TESTS, *EXPECTED_INPUT_CORE_TESTS, *EXPECTED_WINDOWS_CORE_TESTS,
+                    *gate.BRIDGE_TESTS, *EXPECTED_INPUT_BRIDGE_TESTS]
+        self.assertEqual(len(exact), 35)
         for command, name in zip(exact, expected):
-            target = gate.BRIDGE if name in gate.BRIDGE_TESTS else gate.CORE
+            if name in EXPECTED_INPUT_BRIDGE_TESTS:
+                target = ("cargo", "test", "--locked", "-p", "xenterm-bridge", "--lib")
+            else:
+                target = gate.BRIDGE if name in gate.BRIDGE_TESTS else gate.CORE
             self.assertEqual(command[:len(target)], list(target))
             self.assertIn(name, command)
             self.assertIn("--exact", command)
@@ -95,8 +170,8 @@ class MaintenanceGateTests(unittest.TestCase):
             "Resolve and verify Flutter dependencies",
             "Verify dependency resolution did not rewrite the lockfile",
             "Analyze Flutter",
-            "Test exact Flutter runtime regressions (14 required)",
-            "Test exact Rust maintenance regressions (17 required)",
+            "Test exact Flutter maintenance regressions (43 required)",
+            "Test exact Rust maintenance regressions (35 required)",
             "Build Rust bridge and CLI/MCP companion",
             "Test Flutter",
             "Build Flutter Windows",
@@ -124,9 +199,9 @@ class MaintenanceGateTests(unittest.TestCase):
             self.assertIn(f'--suite {suite} --expected-source "$env:GITHUB_SHA"', workflow)
 
     @staticmethod
-    def flutter_output(*, omit=None, skipped=None, failed=None, done=True):
+    def flutter_output(*, names=None, omit=None, skipped=None, failed=None, done=True):
         events = []
-        for index, name in enumerate(gate.DART_TESTS):
+        for index, name in enumerate(gate.DART_TESTS if names is None else names):
             if name == omit:
                 continue
             events.append({"type": "testStart", "test": {"id": index, "name": name}})
@@ -158,15 +233,186 @@ class MaintenanceGateTests(unittest.TestCase):
         commands = []
         def fake(command, **kwargs):
             commands.append((command, kwargs.get("cwd")))
-            output = "a" * 40 if command[0] == "git" else self.flutter_output()
+            if command[0] == "git":
+                output = "a" * 40
+            elif "test/terminal_input_ownership_test.dart" in command:
+                output = self.flutter_output(names=EXPECTED_INPUT_DART_TESTS)
+            else:
+                output = self.flutter_output()
             return subprocess.CompletedProcess(command, 0, output, "")
-        with contextlib.redirect_stdout(io.StringIO()):
+        with contextlib.redirect_stdout(io.StringIO()) as captured:
             gate.run_regressions("a" * 40, suite="flutter", runner=fake)
-        self.assertEqual(len(commands), 2)
+        self.assertEqual(len(commands), 3)
+        self.assertIn("suite=flutter count=43", captured.getvalue())
+        self.assertIn("count=14", captured.getvalue())
+        self.assertIn("count=29", captured.getvalue())
         self.assertIn("test/runtime_tunnels_test.dart", commands[1][0])
         self.assertIn("test/runtime_tunnel_loader_test.dart", commands[1][0])
         self.assertIn("json", commands[1][0])
         self.assertEqual(commands[1][1], Path("apps/xenterm"))
+        self.assertNotIn("test/terminal_input_ownership_test.dart", commands[1][0])
+        self.assertEqual(commands[2][0][-1:], ["test/terminal_input_ownership_test.dart"])
+        self.assertNotIn("test/runtime_tunnels_test.dart", commands[2][0])
+        self.assertIn("json", commands[2][0])
+        self.assertEqual(commands[2][1], Path("apps/xenterm"))
+
+
+    def test_windows_flutter_launcher_uses_argv_for_both_independent_groups(self):
+        commands = []
+        def fake(command, **kwargs):
+            commands.append((command, kwargs))
+            if command[0] == "git":
+                output = "a" * 40
+            elif "test/terminal_input_ownership_test.dart" in command:
+                output = self.flutter_output(names=EXPECTED_INPUT_DART_TESTS)
+            else:
+                output = self.flutter_output()
+            return subprocess.CompletedProcess(command, 0, output, "")
+        with patch.object(sys, "platform", "win32"), contextlib.redirect_stdout(io.StringIO()):
+            gate.run_regressions("a" * 40, suite="flutter", runner=fake)
+        self.assertEqual(len(commands), 3)
+        for command, kwargs in commands[1:]:
+            self.assertEqual(command[:7], ["cmd.exe", "/d", "/c", "flutter", "test", "--reporter", "json"])
+            self.assertNotIn("a" * 40, command)
+            self.assertIsNot(kwargs.get("shell"), True)
+            self.assertEqual(kwargs["cwd"], Path("apps/xenterm"))
+
+    def test_input_manifests_match_reviewed_names_and_targets(self):
+        self.assertEqual(gate.INPUT_OWNERSHIP_DART_TESTS, EXPECTED_INPUT_DART_TESTS)
+        self.assertEqual(len(set(EXPECTED_INPUT_DART_TESTS)), 29)
+        self.assertEqual(gate.INPUT_ADMISSION_TESTS, EXPECTED_INPUT_CORE_TESTS)
+        self.assertEqual(gate.WINDOWS_INPUT_TESTS, EXPECTED_WINDOWS_CORE_TESTS)
+        self.assertEqual(gate.BRIDGE_INPUT_TESTS, EXPECTED_INPUT_BRIDGE_TESTS)
+        core, settings, bridge_input = gate.RUST_GROUPS
+        self.assertEqual(core, (gate.CORE, gate.TUNNEL_TESTS + gate.SETTINGS_TESTS + EXPECTED_INPUT_CORE_TESTS))
+        self.assertEqual(settings, (gate.BRIDGE, gate.BRIDGE_TESTS))
+        self.assertEqual(bridge_input, (("cargo", "test", "--locked", "-p", "xenterm-bridge", "--lib"), EXPECTED_INPUT_BRIDGE_TESTS))
+        self.assertEqual([len(tests) for _, tests in gate.RUST_GROUPS], [32, 1, 1])
+        self.assertEqual(len({name for _, tests in gate.RUST_GROUPS for name in tests}), 34)
+
+    def test_duplicate_rust_inventory_or_manifest_cannot_inflate_counts(self):
+        with self.assertRaisesRegex(RuntimeError, "duplicate"):
+            gate.verify_inventory("required: test\nrequired: test", ("required",))
+        with self.assertRaisesRegex(RuntimeError, "duplicate"):
+            gate.verify_inventory("required: test", ("required", "required"))
+
+    def test_exact_rust_pass_requires_the_named_test_even_with_nocapture(self):
+        summary = "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out"
+        for output in (summary, "test other ... ok\n" + summary,
+                       "test required ... ok\ntest required ... ok\n" + summary,
+                       "test required ... ok\n" + summary + "\n" + summary):
+            with self.subTest(output=output), self.assertRaises(RuntimeError):
+                gate.verify_single_pass(output, "required")
+        gate.verify_single_pass("test required ... synthetic captured output\nmore output\nok\n" + summary, "required")
+
+    def test_each_new_rust_inventory_name_is_required_before_execution(self):
+        for missing in (*EXPECTED_INPUT_CORE_TESTS, *EXPECTED_WINDOWS_CORE_TESTS, *EXPECTED_INPUT_BRIDGE_TESTS):
+            exact = []
+            def fake(command, **kwargs):
+                if command[0] == "git":
+                    output = "a" * 40
+                elif command[-1] == "--list":
+                    if "xenterm-bridge" not in command:
+                        tests = gate.TUNNEL_TESTS + gate.SETTINGS_TESTS + EXPECTED_INPUT_CORE_TESTS + EXPECTED_WINDOWS_CORE_TESTS
+                    elif "--lib" in command:
+                        tests = EXPECTED_INPUT_BRIDGE_TESTS
+                    else:
+                        tests = gate.BRIDGE_TESTS
+                    output = "\n".join(f"{name}: test" for name in tests if name != missing)
+                else:
+                    name = command[command.index("--") - 1]
+                    exact.append(name)
+                    output = f"test {name} ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out"
+                return subprocess.CompletedProcess(command, 0, output, "")
+            with self.subTest(missing=missing):
+                with patch.object(sys, "platform", "win32"), contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(RuntimeError, "not discovered"):
+                    gate.run_regressions("a" * 40, runner=fake)
+                if missing in (*EXPECTED_INPUT_CORE_TESTS, *EXPECTED_WINDOWS_CORE_TESTS):
+                    self.assertEqual(exact, [])
+                else:
+                    self.assertEqual(len(exact), 34)
+
+    def test_non_windows_core_does_not_require_or_execute_conpty(self):
+        for platform in ("linux", "darwin"):
+            exact = []
+            def fake(command, **kwargs):
+                if command[0] == "git":
+                    output = "a" * 40
+                elif command[-1] == "--list":
+                    if "xenterm-bridge" not in command:
+                        tests = gate.TUNNEL_TESTS + gate.SETTINGS_TESTS + EXPECTED_INPUT_CORE_TESTS
+                    elif "--lib" in command:
+                        tests = EXPECTED_INPUT_BRIDGE_TESTS
+                    else:
+                        tests = gate.BRIDGE_TESTS
+                    output = "\n".join(f"{name}: test" for name in tests)
+                else:
+                    name = command[command.index("--") - 1]
+                    exact.append(name)
+                    output = f"test {name} ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out"
+                return subprocess.CompletedProcess(command, 0, output, "")
+            with self.subTest(platform=platform), patch.object(sys, "platform", platform), contextlib.redirect_stdout(io.StringIO()) as captured:
+                gate.run_regressions("a" * 40, runner=fake)
+                self.assertEqual(exact, [*gate.TUNNEL_TESTS, *gate.SETTINGS_TESTS, *EXPECTED_INPUT_CORE_TESTS,
+                                         *gate.BRIDGE_TESTS, *EXPECTED_INPUT_BRIDGE_TESTS])
+                self.assertNotIn(EXPECTED_WINDOWS_CORE_TESTS[0], exact)
+                self.assertIn("suite=rust count=34", captured.getvalue())
+                self.assertIn(f"PLATFORM_EXCLUDED platform={platform} requires=win32 name={EXPECTED_WINDOWS_CORE_TESTS[0]}", captured.getvalue())
+
+    def test_each_input_dart_case_requires_a_visible_non_skipped_first_pass(self):
+        valid = self.flutter_output(names=EXPECTED_INPUT_DART_TESTS)
+        gate.verify_flutter_results(valid, EXPECTED_INPUT_DART_TESTS)
+        for name in EXPECTED_INPUT_DART_TESTS:
+            for field in ("omit", "skipped", "failed"):
+                with self.subTest(name=name, field=field), self.assertRaises(RuntimeError):
+                    gate.verify_flutter_results(self.flutter_output(names=EXPECTED_INPUT_DART_TESTS, **{field: name}), EXPECTED_INPUT_DART_TESTS)
+            for field in ("hidden", "retried"):
+                events = [json.loads(line) for line in valid.splitlines()]
+                events[2 * EXPECTED_INPUT_DART_TESTS.index(name) + 1][field] = True
+                with self.subTest(name=name, field=field), self.assertRaises(RuntimeError):
+                    gate.verify_flutter_results("\n".join(json.dumps(event) for event in events), EXPECTED_INPUT_DART_TESTS)
+
+    def test_input_dart_duplicates_and_fake_success_cannot_pass(self):
+        valid = self.flutter_output(names=EXPECTED_INPUT_DART_TESTS)
+        events = [json.loads(line) for line in valid.splitlines()]
+        duplicates = (
+            {"type": "testStart", "test": {"id": 99, "name": EXPECTED_INPUT_DART_TESTS[0]}},
+            {"type": "testStart", "test": {"id": 0, "name": EXPECTED_INPUT_DART_TESTS[1]}},
+            events[1],
+            {"type": "done", "success": True},
+            {"type": "error", "testID": 0, "error": "synthetic late error"},
+        )
+        for duplicate in duplicates:
+            with self.subTest(duplicate=duplicate), self.assertRaises(RuntimeError):
+                gate.verify_flutter_results(valid + "\n" + json.dumps(duplicate), EXPECTED_INPUT_DART_TESTS)
+        for output in ("All tests passed!", self.flutter_output(names=()),
+                       self.flutter_output(names=EXPECTED_INPUT_DART_TESTS, done=False)):
+            with self.subTest(output=output), self.assertRaises(RuntimeError):
+                gate.verify_flutter_results(output, EXPECTED_INPUT_DART_TESTS)
+        with self.assertRaisesRegex(RuntimeError, "duplicate"):
+            gate.verify_flutter_results(valid, EXPECTED_INPUT_DART_TESTS + EXPECTED_INPUT_DART_TESTS[:1])
+
+    def test_flutter_groups_cannot_make_up_for_each_others_missing_cases(self):
+        for names, other in ((gate.DART_TESTS, EXPECTED_INPUT_DART_TESTS),
+                             (EXPECTED_INPUT_DART_TESTS, gate.DART_TESTS)):
+            # Even an equal total of passing cases from the wrong file cannot
+            # replace one required exact name in this independently run group.
+            replacement = names[1:] + other[:1]
+            with self.subTest(names=names), self.assertRaisesRegex(RuntimeError, "not discovered"):
+                gate.verify_flutter_results(self.flutter_output(names=replacement), names)
+
+    def test_flutter_runner_rejects_a_missing_or_skipped_input_case(self):
+        for fault in ("omit", "skipped", "failed"):
+            def fake(command, **kwargs):
+                if command[0] == "git":
+                    output = "a" * 40
+                elif "test/terminal_input_ownership_test.dart" in command:
+                    output = self.flutter_output(names=EXPECTED_INPUT_DART_TESTS, **{fault: EXPECTED_INPUT_DART_TESTS[0]})
+                else:
+                    output = self.flutter_output()
+                return subprocess.CompletedProcess(command, 0, output, "")
+            with self.subTest(fault=fault), contextlib.redirect_stdout(io.StringIO()), self.assertRaises(RuntimeError):
+                gate.run_regressions("a" * 40, suite="flutter", runner=fake)
 
 
 if __name__ == "__main__":
