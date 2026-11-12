@@ -118,6 +118,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: next-flutter-${{ matrix.platform }}
+          cache-on-failure: true
       - uses: ilammy/msvc-dev-cmd@v1
         if: runner.os == 'Windows'
         with:
@@ -212,14 +213,14 @@ jobs:
         shell: bash
         env:
           BUNDLE: ${{ matrix.bundle }}
-          PLATFORM: ${{ matrix.platform }}
+          XENTERM_PACKAGE_PLATFORM: ${{ matrix.platform }}
           UPSTREAM_SHA: ${{ needs.prepare.outputs.upstream_sha }}
           MSI_VERSION: ${{ needs.prepare.outputs.msi_version }}
         run: |
           set -euo pipefail
           extra=()
           if [ "$RUNNER_OS" = Windows ]; then extra=(--msi "$FLUTTER_MSI" --msi-product-version "$MSI_VERSION"); fi
-          python scripts/next/package_flutter_desktop.py --bundle "$BUNDLE" --platform "$PLATFORM" --output dist-flutter --version "$XT_VERSION" --source-sha "$SOURCE_SHA" --run-id "$GITHUB_RUN_ID" --upstream-sha "$UPSTREAM_SHA" "${extra[@]}"
+          python scripts/next/package_flutter_desktop.py --bundle "$BUNDLE" --platform "$XENTERM_PACKAGE_PLATFORM" --output dist-flutter --version "$XT_VERSION" --source-sha "$SOURCE_SHA" --run-id "$GITHUB_RUN_ID" --upstream-sha "$UPSTREAM_SHA" "${extra[@]}"
       - uses: actions/upload-artifact@v4
         with:
           name: flutter-package-${{ matrix.platform }}
