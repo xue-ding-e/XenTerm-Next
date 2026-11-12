@@ -89,7 +89,9 @@ jobs:
       max-parallel: 1
       matrix:
         include:
-          - {os: windows-2025, platform: windows-x86_64, flutter: windows, bundle: apps/xenterm/build/windows/x64/runner/Release, bridge: xenterm_bridge.dll, cli: xenterm-cli.exe}
+          # windows-2025 now aliases the VS 2026 image. Use the supported VS
+          # 2022 build image explicitly; installation still runs on Server 2025.
+          - {os: windows-2022, platform: windows-x86_64, flutter: windows, bundle: apps/xenterm/build/windows/x64/runner/Release, bridge: xenterm_bridge.dll, cli: xenterm-cli.exe}
           - {os: ubuntu-22.04, platform: linux-x86_64, flutter: linux, bundle: apps/xenterm/build/linux/x64/release/bundle, bridge: lib/libxenterm_bridge.so, cli: xenterm-cli}
           - {os: macos-15, platform: macos-aarch64, flutter: macos, bundle: apps/xenterm/build/macos/Build/Products/Release/xenterm_app.app, bridge: Contents/Frameworks/libxenterm_bridge.dylib, cli: Contents/MacOS/xenterm-cli}
     env:

@@ -42,8 +42,11 @@ Each push to `flutter-next` builds platforms sequentially and requires the exact
 maintenance regressions, packaged bridge loading and MSI install/upgrade/uninstall
 in both default and custom directories before publishing the current source.
 Pull requests only validate; manual dispatch can disable `publish`. Per-platform
-and combined BUILD.json/SHA256SUMS identify the same source and build; old assets
-are preserved. MSI's numeric version losslessly encodes the application version's
+and combined BUILD.json/SHA256SUMS identify the same source and build. The rolling
+channel keeps the current and previous generation. Older complete builds are
+copied to independent historical Releases and downloaded/verified before their
+rolling copies are removed. Rerunning an already released SHA verifies and reuses
+the original published build. MSI's numeric version losslessly encodes the application version's
 timestamp and its upgrade family is independent of GPUI and upstream.
 
 Windows requires Windows 10/11 x64. Extract the **entire** portable ZIP, not just

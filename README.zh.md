@@ -37,7 +37,9 @@
 提供 Windows x64 portable ZIP 和 MSI、Linux x64 tar.gz、macOS Apple Silicon ZIP。
 推送 `flutter-next` 后，三平台串行构建、指定维护回归、桥接加载、MSI 默认/自定义目录的
 安装、升级和卸载全部通过，才会发布当前同 SHA 的产物；PR 只验证，不发布。
-手动运行可关闭 `publish` 仅验证。发布附带每平台及总 BUILD.json、SHA256SUMS，旧资产保留。
+手动运行可关闭 `publish` 仅验证。发布附带每平台及总 BUILD.json、SHA256SUMS。
+滚动渠道保留当前和上一代；更早的完整构建先复制、下载验真并发布到独立历史 Release，
+再移除滚动页中的对应副本，保留可恢复的历史下载。同一 SHA 重跑会验证并复用原已发布构建。
 MSI 数字版本无损编码应用版本中的时间戳，升级族与 GPUI、上游完全独立。
 
 Windows 需要 Windows 10/11 x64，必须完整解压 ZIP，不能只取 exe。构建从托管 runner

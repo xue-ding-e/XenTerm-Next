@@ -52,7 +52,8 @@ class FakeGitHub:
         self.writes = []
         self.uploaded = {}
         self.current_tag = 'c' * 40
-        self.publication = {'id': 77, 'draft': False, 'body': 'previous working Flutter release'}
+        self.publication = {'id': 77, 'tag_name': 'flutter-beta', 'draft': False,
+                            'body': 'previous working Flutter release'}
         self.checks = 0
         self.stale_at = None
         self.fail_download = False
@@ -69,7 +70,8 @@ class FakeGitHub:
         return list(self.uploaded.values())
 
     def upload(self, path, rid):
-        asset = {'id': len(self.uploaded) + 100, 'name': path.name, 'checksum': release.digest(path)}
+        asset = {'id': len(self.uploaded) + 100, 'name': path.name, 'checksum': release.digest(path),
+                 'size': path.stat().st_size, 'data': path.read_bytes()}
         self.uploaded[path.name] = asset
         self.writes.append(('upload', path.name))
         return asset
@@ -78,7 +80,13 @@ class FakeGitHub:
         if self.fail_download or asset['checksum'] != checksum:
             raise ValueError('remote download differs')
 
-    def tag(self):
+    def download(self, asset, destination):
+        if self.fail_download or hashlib.sha256(asset['data']).hexdigest() != asset['checksum']:
+            raise ValueError('remote download differs')
+        with destination.open('xb') as stream:
+            stream.write(asset['data'])
+
+    def tag(self, name=None):
         return self.current_tag
 
     def promote_tag(self, sha, old):
@@ -86,6 +94,9 @@ class FakeGitHub:
             raise ValueError('tag changed')
         self.current_tag = sha
         self.writes.append(('tag', sha))
+
+    def preserve_tag_object(self, expected):
+        pass
 
     def api(self, endpoint, method='GET', body=None):
         if method == 'PATCH':
@@ -142,6 +153,17 @@ class ReleaseTests(unittest.TestCase):
                 if not name.endswith('-SHA256SUMS'):
                     self.assertIn(f'{checksum}  {name}\n', sums)
 
+    def test_failed_job_retry_uses_each_latest_execution_without_losing_prior_successes(self):
+        run, jobs = ci()
+        name = release.REQUIRED_JOBS[1]
+        old = {**jobs[1], 'id': 100, 'run_attempt': 1, 'conclusion': 'failure'}
+        new = {**jobs[1], 'id': 200, 'run_attempt': 2}
+        rest = jobs[:1] + jobs[2:]
+        release.source_gate(SHA, '42', run, SHA, [old, *rest, new])
+        with self.assertRaisesRegex(ValueError, name.replace('(', r'\(').replace(')', r'\)')):
+            release.source_gate(SHA, '42', run, SHA, [{**old, 'conclusion': 'success'}, *rest,
+                                                    {**new, 'conclusion': 'failure'}])
+
     def test_missing_or_tampered_or_mixed_source_never_gets_promoted(self):
         faults = ('missing-msi', 'tampered-archive', 'wrong-run', 'wrong-source', 'wrong-version',
                   'wrong-upstream', 'wrong-msi-version', 'unexpected-file', 'wrong-checksum')
@@ -173,7 +195,7 @@ class ReleaseTests(unittest.TestCase):
                 self.assertEqual(api.writes, [])
 
     def test_failed_download_or_newer_source_preserves_previous_release(self):
-        for fault in ('download', 'stale-before-upload', 'stale-during-upload'):
+        for fault in ('download', 'stale-before-upload', 'stale-during-upload', 'stale-after-tag'):
             with self.subTest(fault=fault), tempfile.TemporaryDirectory() as temp:
                 directory = Path(temp)
                 fixture(directory)
@@ -181,13 +203,17 @@ class ReleaseTests(unittest.TestCase):
                 if fault == 'download':
                     api.fail_download = True
                 else:
-                    api.stale_at = 1 if fault.endswith('before-upload') else 3
+                    api.stale_at = {'stale-before-upload': 1, 'stale-during-upload': 3,
+                                    'stale-after-tag': 15}[fault]
                 before = api.publication.copy()
                 with self.assertRaises(ValueError):
                     release.publish(api, directory, SHA, '42')
                 self.assertEqual(api.publication, before)
                 self.assertEqual(api.current_tag, 'c' * 40)
-                self.assertFalse(any(kind in ('tag', 'release', 'delete') for kind, _ in api.writes))
+                if fault == 'stale-after-tag':
+                    self.assertEqual([value for kind, value in api.writes if kind == 'tag'], [SHA, 'c' * 40])
+                else:
+                    self.assertFalse(any(kind in ('tag', 'release', 'delete') for kind, _ in api.writes))
 
     def test_success_and_retry_never_delete_or_duplicate_assets(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -205,6 +231,21 @@ class ReleaseTests(unittest.TestCase):
             self.assertEqual(sum(kind == 'upload' for kind, _ in api.writes), count)
             self.assertIn('manual-kept.zip', api.uploaded)
 
+    def test_same_source_new_run_reuses_original_verified_generation(self):
+        with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
+            original, rebuilt = Path(first), Path(second)
+            fixture(original, run='42')
+            fixture(rebuilt, run='43')
+            api = FakeGitHub()
+            release.publish(api, original, SHA, '42')
+            before, writes = api.publication.copy(), list(api.writes)
+            result = release.publish(api, rebuilt, SHA, '43')
+            self.assertEqual(result, before)
+            self.assertEqual(api.publication, before)
+            self.assertEqual(api.writes, writes)
+            self.assertIn('/actions/runs/42', result['body'])
+            self.assertEqual(json.loads(api.uploaded[f'XenTerm-Next-Flutter-{SHA}-BUILD.json']['data'])['build_run'], '42')
+
     def test_tag_update_uses_an_exact_flutter_lease(self):
         with patch.object(release.GitHub, 'command') as command:
             release.GitHub().promote_tag(SHA, 'c' * 40)
@@ -212,6 +253,15 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn('--force-with-lease=refs/tags/flutter-beta:' + 'c' * 40, args)
         self.assertIn(SHA + ':refs/tags/flutter-beta', args)
         self.assertFalse(any('refs/heads/' in value for value in args))
+
+    def test_previous_tag_object_is_fetched_before_any_promotion_can_need_rollback(self):
+        with patch.object(release.GitHub, 'command') as command:
+            release.GitHub().preserve_tag_object('c' * 40)
+        self.assertEqual(command.call_args_list[0].args, ('git', 'fetch', '--no-tags', 'origin', 'c' * 40))
+        self.assertEqual(command.call_args_list[1].args, ('git', 'cat-file', '-e', 'c' * 40))
+        with patch.object(release.GitHub, 'command') as command:
+            release.GitHub().preserve_tag_object('')
+        command.assert_not_called()
 
 
 if __name__ == '__main__':

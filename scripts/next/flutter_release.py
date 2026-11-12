@@ -63,8 +63,13 @@ def source_gate(sha, run_id, run, current, jobs):
         raise ValueError('Only the current Flutter source and its own product CI may publish')
     for name in REQUIRED_JOBS:
         matches = [job for job in jobs if job.get('name') == name]
-        if (len(matches) != 1 or matches[0].get('head_sha') != sha or
-                matches[0].get('status') != 'completed' or matches[0].get('conclusion') != 'success'):
+        if not matches or (len(matches) > 1 and any(type(job.get('id')) is not int for job in matches)):
+            raise ValueError('Missing or ambiguous product gate: ' + name)
+        # A failed-job retry keeps successful jobs from earlier attempts. Read
+        # all attempts, then require each job's latest execution to have passed.
+        latest = max(matches, key=lambda job: (job.get('run_attempt', 0), job.get('started_at', ''), job.get('id', 0)))
+        if (latest.get('head_sha') != sha or latest.get('status') != 'completed' or
+                latest.get('conclusion') != 'success'):
             raise ValueError('Missing successful product gate: ' + name)
 
 
@@ -165,7 +170,7 @@ class GitHub:
     def check(self, sha, run_id):
         run = self.api(f'actions/runs/{run_id}')
         current = self.api(f'git/ref/heads/{BRANCH}')['object']['sha']
-        jobs = [job for page in self.pages(f'actions/runs/{run_id}/jobs?per_page=100') for job in page['jobs']]
+        jobs = [job for page in self.pages(f'actions/runs/{run_id}/jobs?filter=all&per_page=100') for job in page['jobs']]
         source_gate(sha, run_id, run, current, jobs)
 
     def release(self, sha):
@@ -192,27 +197,30 @@ class GitHub:
             '--method', 'POST', '--input', str(path), '-H', 'Content-Type: application/octet-stream', timeout=180)
         return json.loads(raw)
 
-    def verify(self, asset, path, checksum):
+    def download(self, asset, destination):
         current = self.api(f'releases/assets/{asset["id"]}')
-        if (current.get('id') != asset['id'] or current.get('name') != path.name or
-                current.get('state') != 'uploaded' or current.get('size') != path.stat().st_size):
-            raise ValueError('Remote asset identity mismatch: ' + path.name)
-        # Verify downloaded bytes even for an idempotent retry. A draft's
-        # browser_download_url may use an untagged URL until it is published.
-        with tempfile.TemporaryFile() as target:
+        if (type(asset.get('id')) is not int or current.get('id') != asset['id'] or
+                current.get('name') != asset['name'] or current.get('state') != 'uploaded' or
+                type(current.get('size')) is not int or current['size'] <= 0 or
+                current['size'] != asset.get('size')):
+            raise ValueError('Remote asset identity mismatch: ' + asset['name'])
+        with destination.open('xb') as target:
             subprocess.run(['gh', 'api', f'repos/{REPOSITORY}/releases/assets/{asset["id"]}',
                             '-H', 'Accept: application/octet-stream'], stdout=target, check=True, timeout=180)
-            if target.tell() != path.stat().st_size:
-                raise ValueError('Remote asset byte count mismatch: ' + path.name)
-            target.seek(0)
-            value = hashlib.sha256()
-            for block in iter(lambda: target.read(1024 * 1024), b''):
-                value.update(block)
-            if value.hexdigest() != checksum:
+            if target.tell() != current['size']:
+                raise ValueError('Remote asset byte count mismatch: ' + asset['name'])
+
+    def verify(self, asset, path, checksum):
+        # A draft's browser_download_url may use an untagged URL. Always read
+        # the authenticated asset ID and verify bytes, including retry assets.
+        with tempfile.TemporaryDirectory() as temp:
+            downloaded = Path(temp) / path.name
+            self.download(asset, downloaded)
+            if downloaded.stat().st_size != path.stat().st_size or digest(downloaded) != checksum:
                 raise ValueError('Remote asset checksum mismatch: ' + path.name)
 
-    def tag(self):
-        result = self.command('git', 'ls-remote', 'origin', f'refs/tags/{TAG}', timeout=30)
+    def tag(self, name=None):
+        result = self.command('git', 'ls-remote', 'origin', f'refs/tags/{name or TAG}', timeout=30)
         return result.split()[0] if result else ''
 
     def promote_tag(self, sha, old):
@@ -220,6 +228,59 @@ class GitHub:
         # command targets only Flutter's rolling tag, never either product branch.
         self.command('git', '-c', 'credential.helper=', '-c', 'credential.helper=!gh auth git-credential',
                      'push', f'--force-with-lease=refs/tags/{TAG}:{old}', 'origin', f'{sha}:refs/tags/{TAG}', timeout=60)
+
+    def preserve_tag_object(self, expected):
+        if expected:
+            # Publisher checkout is shallow and ls-remote does not fetch the
+            # previous object. Download it before any write so reverse leases
+            # can actually restore both lightweight and annotated tags.
+            self.command('git', 'fetch', '--no-tags', 'origin', expected, timeout=60)
+            self.command('git', 'cat-file', '-e', expected, timeout=15)
+
+
+def release_body(metadata, hashes, tag=TAG):
+    sha, run_id = metadata['source_sha'], metadata['build_run']
+    links = '\n'.join(f'- [{name}](https://github.com/{REPOSITORY}/releases/download/{tag}/{name})' for name in hashes)
+    return (f'XenTerm Next Flutter 独立预览版；与 GPUI beta 分开维护，基于 [XenTerm](https://github.com/ixbaicn/XenTerm)，保留 MIT 归属。\n\n'
+            f'源码 SHA: `{sha}`\n上游快照: `{metadata["upstream_snapshot"]}`\n'
+            f'应用版本: `{metadata["runtime_version"]}`\n'
+            f'构建与安装验收: https://github.com/{REPOSITORY}/actions/runs/{run_id}\n\n'
+            'Windows x64 同时提供 portable ZIP 和 MSI，附带应用目录内的微软 VC++ 运行库。MSI 数字版本由应用版本时间戳无损编码；安装、升级、卸载已分别在默认和自定义目录通过。\n'
+            'Windows 产物未签名；macOS Apple Silicon 仅 ad-hoc 签名、未公证；Linux x64 基于 Ubuntu 22.04。请核对 SHA256SUMS。\n'
+            '验证使用 GitHub 托管 runner；干净 Windows、标准用户、真实 SSH/SFTP 和替代 GPUI 的功能对等验收仍需独立完成。\n'
+            '以下链接指向同一源码和同一次构建；滚动渠道保留当前和上一代，更早完整构建经下载验真后保留到历史 Release。\n\n' + links)
+
+
+def reuse_published(api, current, assets, metadata, hashes):
+    """A fresh CI run of an already released SHA reuses verified original bytes.
+
+    Recompilation can change MSI GUIDs and archive timestamps. Run IDs remain
+    strict provenance; never overwrite or pretend the old bytes came from the
+    new run. Re-download every original asset and verify its original CI instead.
+    """
+    sha = metadata['source_sha']
+    if current.get('draft') is not False or api.tag() != sha:
+        return None
+    known = {asset['name']: asset for asset in assets}
+    if not set(hashes).issubset(known):
+        return None
+    with tempfile.TemporaryDirectory() as temp:
+        directory = Path(temp)
+        for name in hashes:
+            api.download(known[name], directory / name)
+        original = json.loads((directory / f'XenTerm-Next-Flutter-{sha}-BUILD.json').read_text(encoding='utf-8'))
+        original_run = original.get('build_run')
+        old_metadata, old_hashes = verify_packages(directory, sha, original_run)
+        if (old_metadata['runtime_version'] != metadata['runtime_version'] or
+                old_metadata['upstream_snapshot'] != metadata['upstream_snapshot'] or
+                current.get('body') != release_body(old_metadata, old_hashes)):
+            raise ValueError('Published source generation has inconsistent provenance')
+        api.check(sha, original_run)
+        api.check(sha, metadata['build_run'])
+        if api.tag() != sha:
+            raise ValueError('Flutter tag changed during existing-generation verification')
+    print(f'Reused verified Flutter source {sha} from original build {original_run}; current CI build {metadata["build_run"]}.')
+    return current
 
 
 def publish(api, directory, sha, run_id):
@@ -231,6 +292,9 @@ def publish(api, directory, sha, run_id):
     known = {asset['name']: asset for asset in assets}
     if len(known) != len(assets):
         raise ValueError('Duplicate release asset names')
+    reused = reuse_published(api, release, assets, metadata, hashes)
+    if reused is not None:
+        return reused
     for name, checksum in hashes.items():
         api.check(sha, run_id)
         path = directory / name
@@ -238,25 +302,32 @@ def publish(api, directory, sha, run_id):
             known[name] = api.upload(path, rid)
         api.verify(known[name], path, checksum)
     old = api.tag()
+    api.preserve_tag_object(old)
     api.check(sha, run_id)
     api.promote_tag(sha, old)
-    api.check(sha, run_id)
-    if api.tag() != sha:
-        raise ValueError('Flutter tag changed concurrently')
-    links = '\n'.join(f'- [{name}](https://github.com/{REPOSITORY}/releases/download/{TAG}/{name})' for name in hashes)
-    body = (f'XenTerm Next Flutter 独立预览版；与 GPUI beta 分开维护，基于 [XenTerm](https://github.com/ixbaicn/XenTerm)，保留 MIT 归属。\n\n'
-            f'源码 SHA: `{sha}`\n上游快照: `{metadata["upstream_snapshot"]}`\n'
-            f'应用版本: `{metadata["runtime_version"]}`\n'
-            f'构建与安装验收: https://github.com/{REPOSITORY}/actions/runs/{run_id}\n\n'
-            'Windows x64 同时提供 portable ZIP 和 MSI，附带应用目录内的微软 VC++ 运行库。MSI 数字版本由应用版本时间戳无损编码；安装、升级、卸载已分别在默认和自定义目录通过。\n'
-            'Windows 产物未签名；macOS Apple Silicon 仅 ad-hoc 签名、未公证；Linux x64 基于 Ubuntu 22.04。请核对 SHA256SUMS。\n'
-            '验证使用 GitHub 托管 runner；干净 Windows、标准用户、真实 SSH/SFTP 和替代 GPUI 的功能对等验收仍需独立完成。\n'
-            '以下链接指向同一源码和同一次构建；旧资产保留用于回退。\n\n' + links)
+    try:
+        api.check(sha, run_id)
+        if api.tag() != sha:
+            raise ValueError('Flutter tag changed concurrently')
+    except Exception:
+        # Restore only our own tag write. The reverse lease also refuses a
+        # concurrent manual update; an initially absent tag is deleted by lease.
+        if api.tag() == sha and old != sha:
+            api.promote_tag(old, sha)
+        raise
+    body = release_body(metadata, hashes)
     api.api(f'releases/{rid}', 'PATCH', {'name': f'XenTerm Next Flutter beta ({sha[:12]})',
         'target_commitish': sha, 'body': body, 'draft': False, 'prerelease': True, 'make_latest': 'false'})
     actual = api.api(f'releases/{rid}')
     if actual.get('draft') is not False or actual.get('body') != body or api.tag() != sha:
         raise ValueError('Flutter publication readback mismatch; retaining all assets')
+    # Rotation archives complete old generations before removing their exact
+    # asset IDs. Manual assets and the previous complete generation stay put.
+    from flutter_release_archive import archive_old_generations
+    try:
+        archive_old_generations(api, actual, sha, run_id, old)
+    except Exception as error:
+        print('Current Flutter release verified; historical rotation retained assets: ' + type(error).__name__)
     return actual
 
 
