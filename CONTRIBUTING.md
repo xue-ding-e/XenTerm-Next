@@ -2,6 +2,8 @@
 
 ## Independent repository branch policy (xue-ding-e/XenTerm-Next)
 
+- Product scope: the owner confirmed dual GPUI/Flutter maintenance on 2026-11-02. `main` retains GPUI and `flutter-next` maintains Flutter. Keep both products until Flutter covers GPUI and Next enhancements and passes installation, upgrade, uninstall, configuration compatibility and actual-use acceptance. Track evidence separately in [#17](https://github.com/xue-ding-e/XenTerm-Next/issues/17); builds or partial tests do not authorize replacement or publication.
+
 This section applies only to the independently maintained XenTerm Next repository, not to upstream's branch policy. The Check official upstream mirror (read-only) workflow checks drift daily at 09:00 UTC (17:00 Asia/Shanghai), with manual dispatch also available. It reports current or pending synchronization, fails on divergence or detected concurrent updates, never executes upstream code, and never writes any remote refs, tags or releases. Actual mirror fast-forwards use the existing authorized connector after ancestry and expected-SHA checks, followed by a ref readback; no new workflow credentials are configured. A successful read-only check does not mean a pending update has been synchronized. GitHub may delay scheduled runs.
 
 - `main` is the maintained user branch and retains all verified custom features. New commits have one parent; prefer rebase for updates and integration. Preserve logical commits for independent features or fixes. Use squash only to tidy necessary fixups within one feature, not to collapse independent features or unrelated large file sets into one commit.
