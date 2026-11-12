@@ -5,19 +5,20 @@
 .DESCRIPTION
     Stages apps/xenterm/build/windows/x64/runner/Release (the Flutter release
     bundle with xenterm_bridge.dll already copied in by bundle_native.sh),
-    harvests it with heat.exe, and links a per-machine MSI with candle/light
+    harvests it with heat.exe, and links a per-user Next Flutter MSI with candle/light
     from WiX Toolset 3.14.
 
     Installer behaviour (see packaging/windows/main.wxs):
-      * installs to %ProgramFiles%\XenTerm (per-machine, elevated)
+      * installs to %LOCALAPPDATA%\XenTerm Next Flutter (per-user, no elevation)
       * Start Menu shortcut, Add/Remove Programs entry with icon
-      * major upgrade over any older XenTerm MSI (fixed UpgradeCode)
+      * major upgrade only within the independent Next Flutter UpgradeCode
       * silent install / uninstall: msiexec /i <msi> /qn  and  msiexec /x <msi> /qn
       * silent custom directory: msiexec /i <msi> /qn INSTALLFOLDER="D:\XenTerm"
 
     The portable zip is a separate artifact and keeps working: it lives in a
     user-chosen folder and keeps its profile next to the executable, while this
-    MSI installs read-only program files and the core falls back to %APPDATA%.
+    MSI uses a writable per-user directory and the bridge keeps its isolated
+    config-flutter-next profile beside the executable. Uninstall preserves it.
 
     WiX is not vendored. Locally/CI install the pinned toolchain first with
     `pwsh scripts/install-wix.ps1` (or pass -WixBin). This script never
@@ -37,7 +38,7 @@
     [package] version. The full -Version is kept in the installer description.
 
 .PARAMETER OutputDir
-    Directory the final xenterm-<version>-windows-x86_64.msi is written to.
+    Directory the final xenterm-next-flutter-<version>-windows-x86_64.msi is written to.
     Defaults to the repository root (same as package_desktop.sh).
 
 .PARAMETER WixBin
@@ -48,7 +49,7 @@
     WiX. Useful for script checks on machines without WiX.
 
 .PARAMETER KeepWorkDir
-    Keep target/wix/installer (staged files and WiX intermediates) for debugging.
+    Keep target/wix/next-flutter-installer (staged files and WiX intermediates) for debugging.
 
 .EXAMPLE
     pwsh scripts/install-wix.ps1            # once, installs pinned WiX 3.14.1
@@ -143,7 +144,7 @@ function Copy-ReleaseBundle {
     $robocopyArgs = @(
         $SourceDir, $DestinationDir,
         "/E",
-        "/XD", "config",
+        "/XD", "config", "config-flutter-next", "log",
         "/XF", "*.pdb", "xenterm_app.exe",
         "/NFL", "/NDL", "/NJH", "/NJS", "/NP",
         "/R:1", "/W:1"
@@ -185,9 +186,9 @@ Assert-MsiProductVersion -Value $ProductVersion
 $iconRel = "assets\xenterm.ico"
 $licenseRel = "packaging\windows\LICENSE.rtf"
 $mainWxsRel = "packaging\windows\main.wxs"
-$workRel = "target\wix\installer"
+$workRel = "target\wix\next-flutter-installer"
 $stageRel = "$workRel\stage"
-$msiName = "xenterm-$Version-windows-x86_64.msi"
+$msiName = "xenterm-next-flutter-$Version-windows-x86_64.msi"
 $finalMsi = Join-Path $OutputDir $msiName
 
 foreach ($rel in @($mainWxsRel, $licenseRel, $iconRel)) {
@@ -201,7 +202,7 @@ if (-not (Test-Path -LiteralPath $BundleDir)) {
 
 # The bundle must contain the executable, the FFI bridge and Flutter's data dir;
 # anything less would produce an MSI that installs a broken application.
-$requiredFiles = @("xenterm.exe", "xenterm_bridge.dll")
+$requiredFiles = @("xenterm.exe", "xenterm-cli.exe", "xenterm_bridge.dll")
 $requiredDirs = @("data\flutter_assets")
 foreach ($name in $requiredFiles) {
     $path = Join-Path $BundleDir $name
@@ -245,6 +246,7 @@ if ($DryRun) {
     Write-Host "  staging dir      : $(Join-Path $repoRoot $stageRel)"
     Write-Host "Planned commands (working directory: $repoRoot):"
     Write-Host "  heat.exe dir $stageRel -nologo -cg XenTermFiles -dr INSTALLFOLDER -ag -sfrag -srd -sreg -scom -var var.SourceDir -out $workRel\Files.wxs"
+    Write-Host "  Convert-Flutter-MsiHarvest.ps1 -Path $workRel\Files.wxs"
     Write-Host "  candle.exe -nologo -arch x64 -ext WixUtilExtension -dSourceDir=$stageRel -dProductVersion=$ProductVersion -dAppVersion=$Version -dIconFile=$iconRel -dLicenseRtf=$licenseRel -out $workRel\main.wixobj $mainWxsRel"
     Write-Host "  candle.exe -nologo -arch x64 -dSourceDir=$stageRel -out $workRel\Files.wixobj $workRel\Files.wxs"
     Write-Host "  light.exe -nologo -ext WixUIExtension -ext WixUtilExtension -cultures:en-us -sice:ICE60 -out $workRel\$msiName $workRel\main.wixobj $workRel\Files.wixobj"
@@ -288,9 +290,10 @@ try {
         -var var.SourceDir -out "$workRel\Files.wxs" 2>&1 | Write-Host
     if ($LASTEXITCODE -ne 0) { throw "heat.exe failed with exit code $LASTEXITCODE" }
 
+    & (Join-Path $repoRoot "scripts\next\Convert-Flutter-MsiHarvest.ps1") -Path "$workRel\Files.wxs"
+
     Write-Host "Compiling the installer (candle.exe)..."
-    # -ext WixUtilExtension is required at compile time for the
-    # util:CloseApplication element in main.wxs.
+    # No name-only process-close action: upstream and GPUI use the same exe name.
     & $candle -nologo -arch x64 -ext WixUtilExtension `
         "-dSourceDir=$stageRel" "-dProductVersion=$ProductVersion" "-dAppVersion=$Version" `
         "-dIconFile=$iconRel" "-dLicenseRtf=$licenseRel" `
