@@ -199,9 +199,14 @@ class TerminalView extends StatefulWidget {
   State<TerminalView> createState() => _TerminalViewState();
 }
 
+// Carry prompt ownership with the snapshot, independent of parent/child
+// rebuild order. Native prompt IDs can be reused by a replacement session.
+typedef _TerminalFrame = ({int generation, Map<String, dynamic> screen});
+
 class _TerminalViewState extends State<TerminalView>
     with WidgetsBindingObserver {
   TerminalSession? _session;
+  int _sessionGeneration = 0;
   Timer? _poll;
   bool _pollFast = false;
 
@@ -209,7 +214,7 @@ class _TerminalViewState extends State<TerminalView>
   bool _foreground = true;
 
   Map<String, dynamic>? _screen;
-  final ValueNotifier<Map<String, dynamic>?> _frame = ValueNotifier(null);
+  final ValueNotifier<_TerminalFrame?> _frame = ValueNotifier(null);
   final ValueNotifier<TerminalPanelData> _tools = ValueNotifier(
     const TerminalPanelData(),
   );
@@ -270,6 +275,8 @@ class _TerminalViewState extends State<TerminalView>
   }
 
   void _start() {
+    // Invalidate prior prompt actions even if starting the session fails.
+    _sessionGeneration++;
     try {
       final session = (widget.sessionStarter ?? _startNative)();
       setState(() {
@@ -371,6 +378,7 @@ class _TerminalViewState extends State<TerminalView>
 
   void _tick() {
     final session = _session;
+    final generation = _sessionGeneration;
     if (session == null || _closed) return;
     final int version;
     final Map<String, dynamic>? parsed;
@@ -387,7 +395,10 @@ class _TerminalViewState extends State<TerminalView>
       _inputSnapshotReady = false;
       return;
     }
-    if (parsed == null || !mounted || !identical(session, _session)) {
+    if (parsed == null ||
+        !mounted ||
+        generation != _sessionGeneration ||
+        !identical(session, _session)) {
       _inputSnapshotReady = false;
       return;
     }
@@ -399,7 +410,7 @@ class _TerminalViewState extends State<TerminalView>
       _promptFocus = null;
       _promptFocusId = null;
     }
-    _frame.value = parsed;
+    _frame.value = (generation: generation, screen: parsed);
     hostOsRegistry.record(widget.host.id, parsed['remoteOs'] as String?);
     final closed = parsed['closed'] != null;
     final nextStatus = closed
@@ -524,6 +535,8 @@ class _TerminalViewState extends State<TerminalView>
 
   @override
   void dispose() {
+    // mounted can remain true during dispose; invalidate before close().
+    _sessionGeneration++;
     _focusGeneration++;
     _promptFocus = null;
     _promptFocusId = null;
@@ -571,13 +584,17 @@ class _TerminalViewState extends State<TerminalView>
   int _rows = 0;
 
   void _answerPrompt(
+    int generation,
     int promptId, {
     required bool accept,
     String? username,
     String? password,
     String? text,
   }) {
-    _session?.answerPrompt(
+    final session = _session;
+    // An old banner/gesture may still exist until the next rendered frame.
+    if (!mounted || session == null || generation != _sessionGeneration) return;
+    session.answerPrompt(
       promptId,
       accept: accept,
       username: username,
@@ -588,6 +605,8 @@ class _TerminalViewState extends State<TerminalView>
   }
 
   void _reconnect() {
+    // Reject retained prompt actions before closing or replacing the session.
+    _sessionGeneration++;
     _focusGeneration++;
     _promptFocus = null;
     _promptFocusId = null;
@@ -827,7 +846,7 @@ class _TerminalViewState extends State<TerminalView>
 /// This widget alone subscribes to the 20 fps frame stream: a snapshot tick
 /// rebuilds only this subtree, never the tools panel or the surrounding chrome.
 class _TerminalCanvas extends StatefulWidget {
-  final ValueListenable<Map<String, dynamic>?> frame;
+  final ValueListenable<_TerminalFrame?> frame;
   final String search;
   final bool starting;
   final String? error;
@@ -840,6 +859,7 @@ class _TerminalCanvas extends StatefulWidget {
   final double inset;
   final VoidCallback onReconnect;
   final void Function(
+    int generation,
     int promptId, {
     required bool accept,
     String? username,
@@ -892,9 +912,12 @@ class _TerminalCanvasState extends State<_TerminalCanvas> {
 
   @override
   Widget build(BuildContext context) {
-    return ValueListenableBuilder<Map<String, dynamic>?>(
+    return ValueListenableBuilder<_TerminalFrame?>(
       valueListenable: widget.frame,
-      builder: (context, screen, _) {
+      builder: (context, frame, _) {
+        final screen = frame?.screen;
+        final generation = frame?.generation;
+        final onAnswerPrompt = widget.onAnswerPrompt;
         final closed = screen?['closed'] != null;
         final prompt = screen?['prompt'] as Map<String, dynamic>?;
         return Stack(
@@ -978,11 +1001,14 @@ class _TerminalCanvasState extends State<_TerminalCanvas> {
                 right: 12,
                 top: 12,
                 child: ConnectionPromptBanner(
-                  // A new challenge must not reuse the previous field state.
-                  key: ValueKey(promptIdOf(screen!)),
+                  // A new challenge must not reuse the previous field state,
+                  // including a reused prompt ID from a replacement session.
+                  key: ValueKey((generation, promptIdOf(screen!))),
                   prompt: prompt,
                   onAnswer: (accept, {username, password, text}) {
-                    widget.onAnswerPrompt(
+                    // Capture this frame's owner, not a later widget's owner.
+                    onAnswerPrompt(
+                      generation!,
                       promptIdOf(screen!),
                       accept: accept,
                       username: username,

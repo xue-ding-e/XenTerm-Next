@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/scheduler.dart' show SchedulerBinding, SchedulerPhase;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart' as widgets show Navigator, RawDialogRoute;
 import 'package:flutter_test/flutter_test.dart';
@@ -19,6 +20,10 @@ import 'package:xenterm_app/theme/app_theme.dart';
 class _RecordingSession implements TerminalSession {
   final List<int> sent = [];
   final List<int> answeredPromptIds = [];
+  // Synthetic payloads only. Keep every argument to detect cross-session leaks.
+  final List<Map<String, Object?>> answers = [];
+  int snapshotCalls = 0;
+  final snapshotPhases = <SchedulerPhase>[];
   int closes = 0;
   int _version = 1;
   Map<String, dynamic>? _prompt;
@@ -37,6 +42,8 @@ class _RecordingSession implements TerminalSession {
 
   @override
   Map<String, dynamic>? snapshot() {
+    snapshotCalls++;
+    snapshotPhases.add(SchedulerBinding.instance.schedulerPhase);
     if (readFailure == 'snapshot') throw StateError('synthetic snapshot failure');
     if (readFailure == 'empty') return null;
     return {
@@ -75,6 +82,13 @@ class _RecordingSession implements TerminalSession {
     String? text,
   }) {
     answeredPromptIds.add(promptId);
+    answers.add({
+      'promptId': promptId,
+      'accept': accept,
+      'username': username,
+      'password': password,
+      'text': text,
+    });
     return true;
   }
 
@@ -110,6 +124,18 @@ class _WorkspaceState extends State<_Workspace> {
   final bus = TerminalCommandBus();
   final fieldFocus = FocusNode(debugLabel: 'unrelated-field');
   final sessions = [_RecordingSession(), _RecordingSession()];
+  // Existing tests keep their original per-pane session. Reconnect cases
+  // explicitly queue distinct replacements without changing other fixtures.
+  final replacementSessions = <int, List<_RecordingSession>>{};
+  final starts = <int>[0, 0];
+
+  _RecordingSession startSession(int index) {
+    starts[index]++;
+    final queue = replacementSessions[index];
+    if (queue != null && queue.isNotEmpty) return queue.removeAt(0);
+    return sessions[index];
+  }
+
   late String? selected = widget.initialActive;
   bool covered = false;
 
@@ -154,7 +180,7 @@ class _WorkspaceState extends State<_Workspace> {
                   fonts: fonts,
                   commandBus: bus,
                   active: !covered && selected == _hosts[i].id,
-                  sessionStarter: () => sessions[i],
+                  sessionStarter: () => startSession(i),
                 ),
               ),
           ],
@@ -260,8 +286,211 @@ Future<void> _unmount(WidgetTester tester) async {
   await tester.pump();
 }
 
+// DRAFT: these regressions have not been compiled or run. Flutter 3.47.7
+// AutomatedTestWidgetsFlutterBinding distinguishes pump() from
+// pump(Duration.zero): only the latter elapses the fake timer queue before
+// drawing. This intentionally exercises both reconnect frame orderings.
+Finder _reconnectBanner() => find.descendant(
+  of: _pane(0),
+  matching: find.byType(ConnectionPromptBanner),
+);
+
+Finder _reconnectAction() => find.descendant(
+  of: find.descendant(
+    of: _pane(0),
+    matching: find.byType(TerminalToolsPanel),
+  ),
+  matching: find.text('Reconnect'),
+);
+
+Finder _continueAction() => find.descendant(
+  of: _reconnectBanner(),
+  matching: find.text('Continue'),
+);
+
+Map<String, dynamic> _reconnectPrompt(String kind) => {
+  'id': 1,
+  'kind': kind,
+  if (kind == 'credential') ...{
+    'need_user': true,
+    'need_password': true,
+    'user': '',
+  } else ...{
+    'prompt': 'Synthetic verification challenge',
+    'echo': false,
+  },
+};
+
+Future<void> _enterReconnectFields(
+  WidgetTester tester,
+  String kind,
+  String marker,
+) async {
+  final fields = _promptField(0);
+  expect(fields, findsNWidgets(kind == 'credential' ? 2 : 1));
+  if (kind == 'credential') {
+    await tester.enterText(fields.at(0), 'synthetic-$marker-user');
+    await tester.enterText(fields.at(1), 'synthetic-$marker-password');
+  } else {
+    await tester.enterText(fields.at(0), 'synthetic-$marker-code');
+  }
+}
+
+Map<String, Object?> _reconnectAnswer(String kind, String marker) => {
+  'promptId': 1,
+  'accept': true,
+  'username': kind == 'credential' ? 'synthetic-$marker-user' : '',
+  'password': kind == 'credential' ? 'synthetic-$marker-password' : '',
+  'text': kind == 'credential' ? '' : 'synthetic-$marker-code',
+};
+
 void main() {
   tearDown(windowActivity.wake);
+
+  for (final kind in ['credential', 'mfa']) {
+    for (final blankFrame in [false, true]) {
+      testWidgets(
+        'reconnect $kind same-id prompt clears fields ${blankFrame ? "after blank frame" : "before first frame"}',
+        (tester) async {
+          expect(tester.binding, isA<AutomatedTestWidgetsFlutterBinding>());
+          final workspace = await _mount(tester);
+          addTearDown(() => _unmount(tester));
+          final a = workspace.sessions[0];
+          final b = _RecordingSession()..setPrompt(_reconnectPrompt(kind));
+          expect(b, isNot(same(a)));
+          workspace.replacementSessions[0] = [b];
+          a.setPrompt(_reconnectPrompt(kind));
+          await tester.pump(const Duration(milliseconds: 250));
+          await tester.pump();
+          expect(_reconnectBanner(), findsOneWidget);
+          expect(tester.widget<ConnectionPromptBanner>(
+            _reconnectBanner(),
+          ).prompt['id'], 1);
+          await _enterReconnectFields(tester, kind, 'old');
+          final oldTexts = tester.widgetList<EditableText>(
+            _promptField(0),
+          ).map((field) => field.controller.text).toList();
+          expect(oldTexts, kind == 'credential'
+              ? ['synthetic-old-user', 'synthetic-old-password']
+              : ['synthetic-old-code']);
+          final oldReads = a.snapshotCalls;
+          expect(oldReads, greaterThan(0));
+          expect(b.snapshotCalls, 0);
+          expect(_reconnectAction().hitTestable(), findsOneWidget);
+
+          await tester.tap(_reconnectAction());
+          // A genuine toolbar tap must synchronously start B, before a frame.
+          expect(workspace.starts[0], 2);
+          expect(workspace.replacementSessions[0], isEmpty);
+          expect(a.closes, 1);
+          expect(b.closes, 0);
+          expect(b.snapshotCalls, 0);
+          expect(a.answers, isEmpty);
+          expect(b.answers, isEmpty);
+          if (blankFrame) {
+            // Do not advance fake time: render null before the zero-delay poll.
+            await tester.pump();
+            // The frame drew null. Its focus post-frame callback then reads B
+            // without rebuilding the banner until the next frame.
+            expect(_reconnectBanner(), findsNothing);
+            expect(b.snapshotCalls, 1);
+            expect(b.snapshotPhases, [SchedulerPhase.postFrameCallbacks]);
+          }
+          // Run the zero-delay poll before drawing this frame. In the direct
+          // case there has been NO intervening null-banner frame.
+          await tester.pump(Duration.zero);
+          expect(b.snapshotCalls, 1);
+          expect(b.snapshotPhases, [blankFrame
+              ? SchedulerPhase.postFrameCallbacks : SchedulerPhase.idle]);
+          expect(a.snapshotCalls, oldReads);
+          expect(_reconnectBanner(), findsOneWidget);
+          expect(tester.widget<ConnectionPromptBanner>(
+            _reconnectBanner(),
+          ).prompt, equals(_reconnectPrompt(kind)));
+          final fields = _promptField(0);
+          expect(fields, findsNWidgets(kind == 'credential' ? 2 : 1));
+          expect(tester.widgetList<EditableText>(fields)
+              .map((field) => field.controller.text),
+              everyElement(isEmpty));
+
+          await _enterReconnectFields(tester, kind, 'new');
+          expect(_continueAction().hitTestable(), findsOneWidget);
+          await tester.tap(_continueAction());
+          expect(a.answers, isEmpty);
+          expect(b.answers, [_reconnectAnswer(kind, 'new')]);
+          expect(workspace.sessions[1].answers, isEmpty);
+          await _unmount(tester);
+          expect(a.closes, 1);
+          expect(b.closes, 1);
+        },
+      );
+    }
+  }
+
+  testWidgets(
+    'reconnect rejects old Continue pointer-up before rebuild',
+    (tester) async {
+      expect(tester.binding, isA<AutomatedTestWidgetsFlutterBinding>());
+      final workspace = await _mount(tester);
+      addTearDown(() => _unmount(tester));
+      final a = workspace.sessions[0];
+      final b = _RecordingSession()..setPrompt(_reconnectPrompt('credential'));
+      workspace.replacementSessions[0] = [b];
+      a.setPrompt(_reconnectPrompt('credential'));
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.pump();
+      await _enterReconnectFields(tester, 'credential', 'old');
+      expect(tester.widgetList<EditableText>(_promptField(0))
+          .map((field) => field.controller.text),
+          ['synthetic-old-user', 'synthetic-old-password']);
+      expect(_continueAction().hitTestable(), findsOneWidget);
+      expect(_reconnectAction().hitTestable(), findsOneWidget);
+      final oldBanner = tester.state(_reconnectBanner());
+      final oldReads = a.snapshotCalls;
+      final held = await tester.startGesture(
+        tester.getCenter(_continueAction()),
+        pointer: 71,
+      );
+      var pointerDown = true;
+      addTearDown(() async {
+        if (pointerDown) await held.cancel();
+      });
+      // Supported pointer dispatch, not a captured/direct onAnswer invocation.
+      // Neither this tap nor up() pumps. Two different controls/pointers are
+      // necessary so reconnect can finish while the old Continue is held.
+      await tester.tap(_reconnectAction(), pointer: 72);
+      expect(workspace.starts[0], 2);
+      expect(workspace.replacementSessions[0], isEmpty);
+      expect(a.closes, 1);
+      expect(b.closes, 0);
+      expect(b.snapshotCalls, 0);
+      expect(tester.state(_reconnectBanner()), same(oldBanner));
+      expect(a.answers, isEmpty);
+      expect(b.answers, isEmpty);
+      await held.up();
+      pointerDown = false;
+      expect(b.snapshotCalls, 0);
+      expect(a.snapshotCalls, oldReads);
+      expect(a.answers, isEmpty);
+      expect(b.answers, isEmpty,
+        reason: 'A held Continue must not answer newly started session B.');
+      // Flush B normally and show that a fresh answer is still accepted.
+      await tester.pump(Duration.zero);
+      expect(b.snapshotCalls, 1);
+      expect(tester.widget<ConnectionPromptBanner>(
+        _reconnectBanner(),
+      ).prompt, equals(_reconnectPrompt('credential')));
+      await _enterReconnectFields(tester, 'credential', 'new');
+      await tester.tap(_continueAction());
+      expect(a.answers, isEmpty);
+      expect(b.answers, [_reconnectAnswer('credential', 'new')]);
+      expect(workspace.sessions[1].answers, isEmpty);
+      await _unmount(tester);
+      expect(a.closes, 1);
+      expect(b.closes, 1);
+    },
+  );
+
 
   for (final first in [0, 1]) {
     testWidgets('existing tab ${1 - first} takes input from tab $first', (

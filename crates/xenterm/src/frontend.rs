@@ -49,9 +49,27 @@ enum PendingPrompt {
     },
 }
 
+impl PendingPrompt {
+    fn cancel(self) {
+        // SessionEvent is Clone: dropping this copy alone need not drop the
+        // sender. Explicit cancellation also settles retained responder clones.
+        match self {
+            Self::HostKey { responder, .. } => responder.respond(false),
+            Self::Credential { responder, .. } => responder.respond(None),
+            Self::Mfa { responder, .. } => responder.respond(None),
+        }
+    }
+}
+
 struct PromptEntry {
     id: u64,
     prompt: PendingPrompt,
+}
+
+#[derive(Default)]
+struct TerminalPromptState {
+    closing: bool,
+    pending: Option<PromptEntry>,
 }
 
 struct SessionLog {
@@ -117,7 +135,7 @@ pub struct TerminalSession {
     version: AtomicU64,
     status: Mutex<String>,
     closed: Mutex<Option<String>>,
-    prompt: Mutex<Option<PromptEntry>>,
+    prompt: Mutex<TerminalPromptState>,
     prompt_seq: AtomicU64,
     log: Mutex<Option<SessionLog>>,
     /// Latest remote resource sample (SSH monitor channel) and its lifecycle.
@@ -358,7 +376,7 @@ impl TerminalSession {
             version: AtomicU64::new(1),
             status: Mutex::new(String::new()),
             closed: Mutex::new(None),
-            prompt: Mutex::new(None),
+            prompt: Mutex::new(TerminalPromptState::default()),
             prompt_seq: AtomicU64::new(1),
             log: Mutex::new(log),
             resource: Mutex::new(None),
@@ -401,6 +419,7 @@ impl TerminalSession {
                             pump.version.fetch_add(1, Ordering::SeqCst);
                         }
                         SessionEvent::Closed(reason) => {
+                            pump.stop_prompts();
                             // A transport error may report Closed before the SSH
                             // worker's cleanup snapshot. This pump exits here, so
                             // settle cached rows before the readonly Flutter card
@@ -538,6 +557,8 @@ impl TerminalSession {
                         _ => {}
                     }
                 }
+                // EOF has no Closed event. It still ends prompt ownership.
+                pump.stop_prompts();
             })
             .map_err(|error| error.to_string())?;
 
@@ -545,9 +566,39 @@ impl TerminalSession {
     }
 
     fn set_prompt(&self, prompt: PendingPrompt) {
-        let id = self.prompt_seq.fetch_add(1, Ordering::SeqCst);
-        if let Ok(mut slot) = self.prompt.lock() {
-            *slot = Some(PromptEntry { id, prompt });
+        let mut state = match self.prompt.lock() {
+            Ok(state) => state,
+            Err(poisoned) => {
+                drop(poisoned.into_inner());
+                self.close();
+                prompt.cancel();
+                return;
+            }
+        };
+        let cancelled = if state.closing {
+            Some(prompt)
+        } else {
+            let id = self.prompt_seq.fetch_add(1, Ordering::SeqCst);
+            state.pending.replace(PromptEntry { id, prompt }).map(|entry| entry.prompt)
+        };
+        drop(state);
+        // Never wake a receiver while holding the prompt state lock.
+        if let Some(prompt) = cancelled {
+            prompt.cancel();
+        }
+        self.version.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn stop_prompts(&self) {
+        let pending = {
+            // Poison recovery only closes the lifecycle; it never accepts an
+            // answer or reopens a session whose state may be inconsistent.
+            let mut state = self.prompt.lock().unwrap_or_else(|p| p.into_inner());
+            state.closing = true;
+            state.pending.take()
+        };
+        if let Some(entry) = pending {
+            entry.prompt.cancel();
         }
         self.version.fetch_add(1, Ordering::SeqCst);
     }
@@ -611,7 +662,7 @@ impl TerminalSession {
             .prompt
             .lock()
             .ok()
-            .and_then(|slot| slot.as_ref().map(pending_prompt_json));
+            .and_then(|state| state.pending.as_ref().map(pending_prompt_json));
         let status = self
             .status
             .lock()
@@ -673,7 +724,10 @@ impl TerminalSession {
     }
 
     pub fn close(&self) {
+        // Close input admission before waking an authentication waiter. The
+        // worker still performs its existing disconnect and credential cleanup.
         self.handle.close();
+        self.stop_prompts();
     }
 
     /// Answers the current prompt (no-op when the id no longer matches).
@@ -687,37 +741,58 @@ impl TerminalSession {
         password: Option<String>,
         text: Option<String>,
     ) {
-        let entry = self
-            .prompt
-            .lock()
-            .ok()
-            .and_then(|mut slot| match slot.as_ref() {
-                Some(entry) if entry.id == id => slot.take(),
-                _ => None,
-            });
-        let Some(entry) = entry else { return };
-        match entry.prompt {
-            PendingPrompt::HostKey { responder, .. } => responder.respond(accept),
+        let _ = self.try_answer_prompt(id, accept, username, password, text);
+    }
+
+    /// True means the matching prompt's oneshot accepted this answer, not that
+    /// authentication succeeded. Taking the prompt under the lifecycle lock
+    /// claims the answer: a concurrent close cannot revoke an already claimed
+    /// answer, which may finish sending after close returns. Sending is outside
+    /// both locks because a receiver's waker may reenter this session.
+    pub fn try_answer_prompt(
+        &self,
+        id: u64,
+        accept: bool,
+        username: Option<String>,
+        password: Option<String>,
+        text: Option<String>,
+    ) -> bool {
+        let mut state = match self.prompt.lock() {
+            Ok(state) => state,
+            Err(poisoned) => {
+                drop(poisoned.into_inner());
+                self.close();
+                return false;
+            }
+        };
+        if state.closing || state.pending.as_ref().map(|entry| entry.id) != Some(id) {
+            return false;
+        }
+        let entry = state.pending.take().expect("matched pending prompt");
+        drop(state);
+        let accepted = match entry.prompt {
+            PendingPrompt::HostKey { responder, .. } => responder.try_respond(accept),
             PendingPrompt::Credential {
                 responder, user, ..
             } => {
                 if accept {
                     let user = username.filter(|u| !u.is_empty()).unwrap_or(user);
                     let reply: CredentialReply = (user, password.unwrap_or_default(), false);
-                    responder.respond(Some(reply));
+                    responder.try_respond(Some(reply))
                 } else {
-                    responder.respond(None);
+                    responder.try_respond(None)
                 }
             }
             PendingPrompt::Mfa { responder, .. } => {
                 if accept {
-                    responder.respond(text);
+                    responder.try_respond(text)
                 } else {
-                    responder.respond(None);
+                    responder.try_respond(None)
                 }
             }
-        }
+        };
         self.version.fetch_add(1, Ordering::SeqCst);
+        accepted
     }
 }
 
@@ -1614,10 +1689,10 @@ mod input_admission_tests {
         config.kind = SessionKind::Ssh;
         let terminal =
             TerminalSession::start_adhoc(runtime.handle(), config, false, 80, 24, 100).unwrap();
-        assert!(terminal.prompt.lock().unwrap().is_none());
+        assert!(terminal.prompt.lock().unwrap().pending.is_none());
         assert!(!terminal.send_input(b"before-prompt-event"));
         let (tx, mut rx) = tokio::sync::oneshot::channel();
-        *terminal.prompt.lock().unwrap() = Some(PromptEntry {
+        terminal.prompt.lock().unwrap().pending = Some(PromptEntry {
             id: 7,
             prompt: PendingPrompt::Mfa {
                 prompt: "synthetic challenge".into(),
@@ -1627,8 +1702,296 @@ mod input_admission_tests {
         });
         terminal.answer_prompt(7, true, None, None, Some("fixture-answer".into()));
         assert_eq!(rx.try_recv().unwrap(), Some("fixture-answer".into()));
-        assert!(terminal.prompt.lock().unwrap().is_none());
+        assert!(terminal.prompt.lock().unwrap().pending.is_none());
         assert!(!terminal.send_input(b"after-answer-before-auth-finishes"));
         terminal.close();
+    }
+
+    fn dormant_terminal() -> (tokio::runtime::Runtime, Arc<TerminalSession>) {
+        // Real frontend and admission methods, but no SSH worker is polled.
+        // These tests do not exercise transport shutdown or credential cleanup.
+        let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let mut config = crate::config::Session::new_empty();
+        config.kind = SessionKind::Ssh;
+        let terminal =
+            TerminalSession::start_adhoc(runtime.handle(), config, false, 80, 24, 100).unwrap();
+        (runtime, terminal)
+    }
+
+    fn mfa_prompt(responder: MfaResponder) -> PendingPrompt {
+        PendingPrompt::Mfa { prompt: "synthetic challenge".into(), echo: false, responder }
+    }
+
+    fn prompt_id(terminal: &TerminalSession) -> u64 {
+        terminal.prompt.lock().unwrap().pending.as_ref().unwrap().id
+    }
+
+    fn assert_bounded_test_completion<F>(name: &'static str, test: F)
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(test));
+            let _ = done_tx.send(result);
+        });
+        let outcome = done_rx.recv_timeout(std::time::Duration::from_secs(30));
+        // Never join after the deadline: an inner join, poll or waker may be
+        // deadlocked. Detaching does not stop that worker or its child threads;
+        // these regressions still require a process-level hard timeout.
+        drop(worker);
+        match outcome {
+            Ok(Ok(())) => {}
+            Ok(Err(payload)) => std::panic::resume_unwind(payload),
+            Err(error) => panic!("{name} did not complete within 30 seconds: {error}"),
+        }
+    }
+
+    #[test]
+    fn responders_report_real_delivery_once_and_reject_dropped_receivers() {
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        let responder = HostKeyResponder::new(tx);
+        let clone = responder.clone();
+        assert!(responder.try_respond(true));
+        assert!(rx.try_recv().unwrap());
+        assert!(!clone.try_respond(false));
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let responder = HostKeyResponder::new(tx);
+        drop(rx);
+        assert!(!responder.try_respond(true));
+
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        let responder = CredentialResponder::new(tx);
+        let clone = responder.clone();
+        assert!(responder.try_respond(Some(("fixture".into(), "synthetic".into(), false))));
+        assert_eq!(rx.try_recv().unwrap(), Some(("fixture".into(), "synthetic".into(), false)));
+        assert!(!clone.try_respond(None));
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let responder = CredentialResponder::new(tx);
+        drop(rx);
+        assert!(!responder.try_respond(None));
+
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        let responder = MfaResponder::new(tx);
+        let clone = responder.clone();
+        assert!(responder.try_respond(None));
+        assert_eq!(rx.try_recv().unwrap(), None);
+        assert!(!clone.try_respond(Some("late".into())));
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let responder = MfaResponder::new(tx);
+        drop(rx);
+        assert!(!responder.try_respond(Some("synthetic".into())));
+    }
+
+    #[test]
+    fn close_cancels_all_prompt_kinds_before_or_after_install_despite_clones() {
+        for close_first in [false, true] {
+            let (_runtime, terminal) = dormant_terminal();
+            let (tx, mut rx) = tokio::sync::oneshot::channel();
+            let responder = HostKeyResponder::new(tx);
+            if close_first { terminal.close(); }
+            terminal.set_prompt(PendingPrompt::HostKey {
+                host: "synthetic.invalid".into(), port: 22, key_type: "synthetic".into(),
+                fingerprint: "synthetic".into(), changed: false, responder: responder.clone(),
+            });
+            terminal.close();
+            assert!(!rx.try_recv().unwrap());
+            assert!(!responder.try_respond(true));
+            assert!(terminal.prompt.lock().unwrap().pending.is_none());
+            assert!(!terminal.send_input(b"after-host-key-close"));
+
+            let (_runtime, terminal) = dormant_terminal();
+            let (tx, mut rx) = tokio::sync::oneshot::channel();
+            let responder = CredentialResponder::new(tx);
+            if close_first { terminal.close(); }
+            terminal.set_prompt(PendingPrompt::Credential {
+                host: "synthetic.invalid".into(), user: "fixture".into(),
+                need_user: false, need_password: true, responder: responder.clone(),
+            });
+            terminal.close();
+            assert_eq!(rx.try_recv().unwrap(), None);
+            assert!(!responder.try_respond(Some(("fixture".into(), "late".into(), false))));
+            assert!(terminal.prompt.lock().unwrap().pending.is_none());
+            assert!(!terminal.send_input(b"after-credential-close"));
+
+            let (_runtime, terminal) = dormant_terminal();
+            let (tx, mut rx) = tokio::sync::oneshot::channel();
+            let responder = MfaResponder::new(tx);
+            if close_first { terminal.close(); }
+            terminal.set_prompt(mfa_prompt(responder.clone()));
+            terminal.close();
+            assert_eq!(rx.try_recv().unwrap(), None);
+            assert!(!responder.try_respond(Some("late".into())));
+            assert!(terminal.prompt.lock().unwrap().pending.is_none());
+            assert!(!terminal.try_answer_prompt(1, true, None, None, Some("late".into())));
+            assert!(!terminal.send_input(b"after-mfa-close"));
+        }
+    }
+
+    #[test]
+    fn prompt_answers_reject_stale_duplicate_missing_and_disconnected_receivers() {
+        let (_runtime, terminal) = dormant_terminal();
+        assert!(!terminal.try_answer_prompt(1, true, None, None, None));
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        terminal.set_prompt(mfa_prompt(MfaResponder::new(tx)));
+        let id = prompt_id(&terminal);
+        assert!(!terminal.try_answer_prompt(id + 1, true, None, None, Some("stale".into())));
+        assert!(matches!(rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
+        assert!(terminal.try_answer_prompt(id, true, None, None, Some("synthetic".into())));
+        assert_eq!(rx.try_recv().unwrap(), Some("synthetic".into()));
+        assert!(!terminal.try_answer_prompt(id, true, None, None, Some("duplicate".into())));
+        assert!(!terminal.send_input(b"answer-does-not-admit-input"));
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        terminal.set_prompt(mfa_prompt(MfaResponder::new(tx)));
+        let id = prompt_id(&terminal);
+        drop(rx);
+        assert!(!terminal.try_answer_prompt(id, true, None, None, Some("unreceived".into())));
+        assert!(terminal.prompt.lock().unwrap().pending.is_none());
+
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        terminal.set_prompt(mfa_prompt(MfaResponder::new(tx)));
+        assert!(terminal.try_answer_prompt(prompt_id(&terminal), false, None, None, None));
+        assert_eq!(rx.try_recv().unwrap(), None);
+        terminal.close();
+    }
+
+    #[test]
+    fn replacing_a_prompt_explicitly_cancels_the_previous_responder() {
+        let (_runtime, terminal) = dormant_terminal();
+        let (tx, mut old_rx) = tokio::sync::oneshot::channel();
+        let old = MfaResponder::new(tx);
+        terminal.set_prompt(mfa_prompt(old.clone()));
+        let old_id = prompt_id(&terminal);
+        let (tx, mut new_rx) = tokio::sync::oneshot::channel();
+        terminal.set_prompt(mfa_prompt(MfaResponder::new(tx)));
+        assert_eq!(old_rx.try_recv().unwrap(), None);
+        assert!(!old.try_respond(Some("late".into())));
+        assert!(!terminal.try_answer_prompt(old_id, true, None, None, Some("stale".into())));
+        terminal.close();
+        assert_eq!(new_rx.try_recv().unwrap(), None);
+    }
+
+    #[test]
+    fn concurrent_close_and_answer_settle_once_without_reopening_input() {
+        assert_bounded_test_completion("concurrent_close_and_answer_settle_once_without_reopening_input", || {
+            for _ in 0..32 {
+                let (_runtime, terminal) = dormant_terminal();
+                let (tx, mut rx) = tokio::sync::oneshot::channel();
+                terminal.set_prompt(mfa_prompt(MfaResponder::new(tx)));
+                let id = prompt_id(&terminal);
+                let barrier = Arc::new(std::sync::Barrier::new(3));
+                let answer_session = terminal.clone();
+                let answer_barrier = barrier.clone();
+                let answer = std::thread::spawn(move || {
+                    answer_barrier.wait();
+                    answer_session.try_answer_prompt(id, true, None, None, Some("synthetic".into()))
+                });
+                let close_session = terminal.clone();
+                let close_barrier = barrier.clone();
+                let close = std::thread::spawn(move || {
+                    close_barrier.wait();
+                    close_session.close();
+                });
+                barrier.wait();
+                let accepted = answer.join().unwrap();
+                close.join().unwrap();
+                // A previously claimed answer may finish after close. Either
+                // ordering is valid, but there must be no stranded oneshot.
+                assert_eq!(rx.try_recv().unwrap(), accepted.then(|| "synthetic".into()));
+                assert!(!terminal.try_answer_prompt(id, true, None, None, Some("late".into())));
+                assert!(!terminal.send_input(b"race-completed"));
+            }
+        });
+    }
+
+    #[test]
+    fn concurrent_close_and_prompt_install_always_cancel_retained_clones() {
+        assert_bounded_test_completion("concurrent_close_and_prompt_install_always_cancel_retained_clones", || {
+            for _ in 0..32 {
+                let (_runtime, terminal) = dormant_terminal();
+                let (tx, mut rx) = tokio::sync::oneshot::channel();
+                let responder = MfaResponder::new(tx);
+                let retained = responder.clone();
+                let barrier = Arc::new(std::sync::Barrier::new(3));
+                let install_session = terminal.clone();
+                let install_barrier = barrier.clone();
+                let install = std::thread::spawn(move || {
+                    install_barrier.wait();
+                    install_session.set_prompt(mfa_prompt(responder));
+                });
+                let close_session = terminal.clone();
+                let close_barrier = barrier.clone();
+                let close = std::thread::spawn(move || {
+                    close_barrier.wait();
+                    close_session.close();
+                });
+                barrier.wait();
+                install.join().unwrap();
+                close.join().unwrap();
+                assert_eq!(rx.try_recv().unwrap(), None);
+                assert!(!retained.try_respond(Some("late".into())));
+                let state = terminal.prompt.lock().unwrap();
+                assert!(state.closing && state.pending.is_none());
+            }
+        });
+    }
+
+    #[test]
+    fn oneshot_wake_can_reenter_responder_and_close_without_held_locks() {
+        assert_bounded_test_completion("oneshot_wake_can_reenter_responder_and_close_without_held_locks", || {
+            use std::future::Future;
+            use std::pin::Pin;
+            use std::sync::atomic::AtomicBool;
+            use std::task::{Context, Wake, Waker};
+
+            struct Reenter {
+                terminal: Arc<TerminalSession>,
+                responder: MfaResponder,
+                woke: AtomicBool,
+            }
+            impl Wake for Reenter {
+                fn wake(self: Arc<Self>) {
+                    assert!(!self.responder.try_respond(Some("duplicate".into())));
+                    self.terminal.close();
+                    self.woke.store(true, Ordering::SeqCst);
+                }
+            }
+
+            let (_runtime, terminal) = dormant_terminal();
+            let (tx, mut rx) = tokio::sync::oneshot::channel();
+            let responder = MfaResponder::new(tx);
+            terminal.set_prompt(mfa_prompt(responder.clone()));
+            let wake = Arc::new(Reenter { terminal: terminal.clone(), responder, woke: AtomicBool::new(false) });
+            let waker = Waker::from(wake.clone());
+            let mut cx = Context::from_waker(&waker);
+            assert!(Pin::new(&mut rx).poll(&mut cx).is_pending());
+            assert!(terminal.try_answer_prompt(prompt_id(&terminal), true, None, None, Some("synthetic".into())));
+            assert!(wake.woke.load(Ordering::SeqCst));
+            assert_eq!(rx.try_recv().unwrap(), Some("synthetic".into()));
+            assert!(terminal.prompt.lock().unwrap().closing);
+            assert!(!terminal.send_input(b"after-reentrant-close"));
+        });
+    }
+
+    #[test]
+    fn poisoned_prompt_state_cancels_and_never_accepts_late_answers() {
+        let (_runtime, terminal) = dormant_terminal();
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        let responder = MfaResponder::new(tx);
+        terminal.set_prompt(mfa_prompt(responder.clone()));
+        let id = prompt_id(&terminal);
+        let poison = terminal.clone();
+        assert!(std::thread::spawn(move || {
+            let _guard = poison.prompt.lock().unwrap();
+            panic!("synthetic prompt poison");
+        }).join().is_err());
+        assert!(!terminal.try_answer_prompt(id, true, None, None, Some("untrusted".into())));
+        assert_eq!(rx.try_recv().unwrap(), None);
+        assert!(!responder.try_respond(Some("late".into())));
+        let (tx, mut late_rx) = tokio::sync::oneshot::channel();
+        terminal.set_prompt(mfa_prompt(MfaResponder::new(tx)));
+        assert_eq!(late_rx.try_recv().unwrap(), None);
+        assert!(!terminal.send_input(b"after-poison"));
     }
 }
