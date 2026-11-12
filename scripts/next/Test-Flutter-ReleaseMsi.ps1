@@ -330,9 +330,17 @@ function Get-OtherProductsSnapshot {
     param($Installer, [string[]] $OwnedCodes = @())
     foreach ($code in @(Get-MsiStringList $Installer 'Products' $null | Sort-Object)) {
         if ($code -in $OwnedCodes) { continue }
-        $version = $Installer.GetType().InvokeMember('ProductInfo', 'GetProperty', $null, $Installer, @($code, 'VersionString'))
-        $location = $Installer.GetType().InvokeMember('ProductInfo', 'GetProperty', $null, $Installer, @($code, 'InstallLocation'))
-        "$code|$(Get-MsiProductState $Installer $code)|$version|$location"
+        $state = Get-MsiProductState $Installer $code
+        # Products also enumerates advertised registrations. Their installed
+        # properties may be unavailable; preserve their identity/state instead
+        # of querying ProductInfo as though they were installed packages.
+        if ($state -ne 5) {
+            "$code|$state|<not-installed>|<not-installed>"
+            continue
+        }
+        $version = $Installer.GetType().InvokeMember('ProductInfo', 'GetProperty', $null, $Installer, @([string]$code, [string]'VersionString'))
+        $location = $Installer.GetType().InvokeMember('ProductInfo', 'GetProperty', $null, $Installer, @([string]$code, [string]'InstallLocation'))
+        "$code|$state|$version|$location"
     }
 }
 
@@ -377,7 +385,12 @@ function Invoke-InstalledCli {
         $stderr = Join-Path $TaskDirectory "$Phase-$probe.stderr.log"
         $process = Start-Process -FilePath $cli -ArgumentList @("--$probe") -WorkingDirectory $TaskDirectory `
             -Wait -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdout -RedirectStandardError $stderr
-        if ($process.ExitCode -ne 0) { throw "Installed CLI --$probe failed; see $stderr." }
+        $process.Refresh()
+        if ($null -eq $process.ExitCode -or $process.ExitCode -ne 0) {
+            $diagnostic = if (Test-Path -LiteralPath $stderr) { Get-Content -LiteralPath $stderr -Raw -Encoding UTF8 } else { '<no stderr>' }
+            $exitText = if ($null -eq $process.ExitCode) { '<missing>' } else { [string]$process.ExitCode }
+            throw "Installed CLI --$probe failed with exit code $exitText. stderr: $diagnostic"
+        }
         $output = (Get-Content -LiteralPath $stdout -Raw -Encoding UTF8).Trim()
         if ($probe -eq 'version') {
             if ($output -cne "xenterm $RuntimeVersion") { throw 'Installed CLI runtime version mismatch.' }
@@ -500,7 +513,9 @@ try {
     Assert-UpgradeFamily $installer $result.upgrade_code
     foreach ($name in @('XENTERM_DATA_DIR', 'MEATSHELL_DATA_DIR')) {
         $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
-        [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+        # PowerShell can coerce $null to an empty string on modern .NET. An
+        # empty data-dir override is deliberately invalid; remove the key.
+        [Environment]::SetEnvironmentVariable($name, [NullString]::Value, 'Process')
     }
     # Track before invoking msiexec: a failed command may still have registered
     # a product. Cleanup is exclusively by these two verified, previously absent IDs.
@@ -565,7 +580,8 @@ try {
         [void] [Runtime.InteropServices.Marshal]::FinalReleaseComObject($installer)
     }
     foreach ($name in $savedEnvironment.Keys) {
-        [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name], 'Process')
+        $restoreValue = if ($null -eq $savedEnvironment[$name]) { [NullString]::Value } else { $savedEnvironment[$name] }
+        [Environment]::SetEnvironmentVariable($name, $restoreValue, 'Process')
     }
     # No name-based process termination, directory deletion or manual registry
     # edits. Only native uninstall of tracked fixture/candidate ProductCodes.

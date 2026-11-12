@@ -78,6 +78,30 @@ try {
         'archive' { Assert-PortableArchive $request.archive $request.stem }
         'version' { Assert-ReleaseProductVersion $request.version }
         'path' { $value = Assert-PathWithin $request.path $request.directory }
+        'native-inventory' {
+            # Read-only native enumeration: never install, reconfigure or
+            # output the user's product names, versions or locations.
+            $nativeInstaller = New-Object -ComObject WindowsInstaller.Installer
+            try {
+                $snapshot = @(Get-OtherProductsSnapshot $nativeInstaller)
+                $codes = @(Get-MsiStringList $nativeInstaller 'Products' $null)
+                $value = @{ count = $snapshot.Count; complete = ($snapshot.Count -eq $codes.Count) }
+            } finally { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($nativeInstaller) }
+        }
+        'environment-clear' {
+            $name = 'XENTERM_MSI_LIFECYCLE_ENV_PROBE'
+            try {
+                [Environment]::SetEnvironmentVariable($name, 'fixture', 'Process')
+                $setters = @($ast.FindAll({param($n)
+                    $n -is [Management.Automation.Language.InvokeMemberExpressionAst] -and
+                    $n.Member.Extent.Text -eq 'SetEnvironmentVariable' -and
+                    $n.Arguments[0].Extent.Text -eq '$name'
+                }, $true))
+                if (-not $setters.Count) { throw 'Missing production environment clear call.' }
+                . ([scriptblock]::Create($setters[0].Extent.Text))
+                $value = @{ removed = -not [Environment]::GetEnvironmentVariables('Process').Contains($name) }
+            } finally { [Environment]::SetEnvironmentVariable($name, [NullString]::Value, 'Process') }
+        }
         'msi-identity' {
             # Inject database rows, never COM/msiexec. This executes the same
             # candidate identity/component checks against deliberately bad MSIs.
@@ -259,6 +283,16 @@ class ReleaseMsiWindowsHelperTests(unittest.TestCase):
 
 @unittest.skipUnless(POWERSHELL and os.name == 'nt', 'Windows PowerShell helper checks require Windows')
 class ReleaseMsiArtifactTests(unittest.TestCase):
+    def test_native_installer_inventory_preserves_advertised_registrations(self):
+        result = helper('native-inventory')
+        self.assertTrue(result['ok'], result)
+        self.assertTrue(result['value']['complete'])
+
+    def test_data_directory_override_is_removed_not_set_to_an_empty_string(self):
+        result = helper('environment-clear')
+        self.assertTrue(result['ok'], result)
+        self.assertTrue(result['value']['removed'])
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='xenterm-release-msi-test-')
         self.addCleanup(self.temp.cleanup)
