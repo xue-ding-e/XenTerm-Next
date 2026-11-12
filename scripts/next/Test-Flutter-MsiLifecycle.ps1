@@ -2,7 +2,8 @@
 # This is not a clean-Windows, standard-user, GUI, SSH or data-migration test.
 [CmdletBinding()]
 param([Parameter(Mandatory = $true)][string] $ArtifactDirectory,
-      [Parameter(Mandatory = $true)][string] $WixBin)
+      [Parameter(Mandatory = $true)][string] $WixBin,
+      [ValidateSet('custom', 'default')][string] $InstallLocation = 'custom')
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_OS -ne 'Windows') {
@@ -11,7 +12,15 @@ if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_OS -ne 'Windows') {
 $root = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 $sourceSha = 'a8aa668d6df0c2616dc8b0e72f55ee9a495d83a0'
 $temp = Join-Path $env:RUNNER_TEMP ('xenterm-msi-lifecycle-' + [guid]::NewGuid())
-$install = Join-Path $temp 'installed'
+$install = if ($InstallLocation -eq 'default') {
+    Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'XenTerm Next Flutter'
+} else {
+    Join-Path $temp 'installed'
+}
+if (Test-Path -LiteralPath $install) { throw 'Refusing to use an existing installation/profile directory.' }
+if (Get-ItemProperty 'HKCU:\Software\XenTerm-Next\Flutter' -Name InstallLocation -ErrorAction SilentlyContinue) {
+    throw 'Refusing to follow a pre-existing installer location registry value.'
+}
 $activeMsi = $null
 # No inherited override may redirect this fixture outside its temporary install.
 Remove-Item Env:XENTERM_DATA_DIR -ErrorAction SilentlyContinue
@@ -22,6 +31,10 @@ function Invoke-FixtureMsi {
     if ($process.ExitCode -ne 0) { throw "msiexec did not finish without reboot: $($process.ExitCode)" }
 }
 $installer = New-Object -ComObject WindowsInstaller.Installer
+[xml] $recipe = Get-Content (Join-Path $root 'packaging/windows/main.wxs') -Raw
+$upgradeCode = $recipe.DocumentElement.Product.GetAttribute('UpgradeCode')
+$related = $installer.GetType().InvokeMember('RelatedProducts', 'GetProperty', $null, $installer, @($upgradeCode))
+if ($related.Count -ne 0) { throw 'Refusing to alter an existing product in this upgrade family.' }
 function Get-FixtureProductCode {
     param([string] $Msi)
     $db = $installer.GetType().InvokeMember('OpenDatabase', 'InvokeMethod', $null, $installer, @($Msi, 0))
@@ -62,13 +75,15 @@ try {
     if ($firstCode -eq $secondCode) { throw 'Upgrade fixture must have distinct ProductCodes.' }
     Assert-FixtureProductState $firstCode -1
     Assert-FixtureProductState $secondCode -1
-    Invoke-FixtureMsi -Arguments @('/i', "`"$first`"", '/qn', '/norestart', "INSTALLFOLDER=`"$install`"", '/l*v', "`"$temp/install.log`"")
+    $installArguments = @('/i', "`"$first`"", '/qn', '/norestart', '/l*v', "`"$temp/install.log`"")
+    if ($InstallLocation -eq 'custom') { $installArguments += "INSTALLFOLDER=`"$install`"" }
+    Invoke-FixtureMsi -Arguments $installArguments
     $activeMsi = $first
     Assert-FixtureProductState $firstCode 5
     Assert-FixtureProductState $secondCode -1
     $registered = (Get-ItemProperty 'HKCU:\Software\XenTerm-Next\Flutter' -Name InstallLocation).InstallLocation
     if ([System.IO.Path]::GetFullPath($registered).TrimEnd('\') -ne [System.IO.Path]::GetFullPath($install).TrimEnd('\')) {
-        throw 'Registered install location does not match custom directory.'
+        throw 'Registered install location does not match expected directory.'
     }
     $cli = Join-Path $install 'xenterm-cli.exe'
     $version = & $cli --version
@@ -109,7 +124,7 @@ try {
     if (Get-ItemProperty 'HKCU:\Software\XenTerm-Next\Flutter' -Name InstallLocation -ErrorAction SilentlyContinue) {
         throw 'Uninstall left the install-location registry value.'
     }
-    Write-Host "Lifecycle passed for application source $sourceSha; packaging source $env:GITHUB_SHA. No GUI/SSH or standard-user acceptance performed."
+    Write-Host "Lifecycle ($InstallLocation directory) passed for application source $sourceSha; packaging source $env:GITHUB_SHA. No GUI/SSH or standard-user acceptance performed."
 } catch {
     foreach ($log in @(Get-ChildItem -LiteralPath $temp -Filter '*.log' -ErrorAction SilentlyContinue)) {
         Write-Host "Synthetic fixture diagnostic: $($log.Name)"
