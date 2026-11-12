@@ -28,3 +28,27 @@ jobs:
         run: |
           $wix = & ./scripts/install-wix.ps1
           & ./scripts/next/Test-Flutter-Msi.ps1 -WixBin $wix
+  lifecycle:
+    needs: recipe
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: windows-2025
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download verified application baseline (not a new release)
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: 43177639827
+          name: XenTerm-Next-Flutter-a8aa668d6df0c2616dc8b0e72f55ee9a495d83a0-windows-x86_64
+          path: ${{ runner.temp }}/xenterm-baseline-artifact
+      - name: Isolated real-file lifecycle fixture
+        shell: pwsh
+        run: |
+          $wix = & ./scripts/install-wix.ps1
+          & ./scripts/next/Test-Flutter-MsiLifecycle.ps1 -ArtifactDirectory "$env:RUNNER_TEMP/xenterm-baseline-artifact" -WixBin $wix

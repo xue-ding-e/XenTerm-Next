@@ -40,6 +40,19 @@ class MsiIdentityTests(unittest.TestCase):
         self.assertIn('@("xenterm.exe", "xenterm-cli.exe", "xenterm_bridge.dll")', script)
         self.assertIn('$msiName = "xenterm-next-flutter-$Version-windows-x86_64.msi"', script)
 
+    def test_lifecycle_stays_on_disposable_runner_and_pins_binary_provenance(self):
+        script = (ROOT / 'scripts/next/Test-Flutter-MsiLifecycle.ps1').read_text()
+        for required in ("$env:GITHUB_ACTIONS -ne 'true'", "$env:RUNNER_OS -ne 'Windows'",
+                         "$env:RUNNER_TEMP", "a8aa668d6df0c2616dc8b0e72f55ee9a495d83a0",
+                         "runtime.binary_sha256", "SYNTHETIC PROFILE MUST SURVIVE",
+                         "'/norestart'", "-ProductVersion 0.1.0", "-ProductVersion 0.1.1"):
+            self.assertIn(required, script)
+        workflow = (ROOT / '.github/workflows/next-flutter-msi-validation.yml').read_text()
+        self.assertIn('needs: recipe', workflow)
+        self.assertIn('github.event.pull_request.head.repo.full_name == github.repository', workflow)
+        self.assertIn('run-id: 43177639827', workflow)
+        self.assertNotIn('contents: write', workflow)
+
 
 if __name__ == '__main__':
     unittest.main()
