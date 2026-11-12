@@ -24,6 +24,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart' as widgets show ModalRoute;
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 import '../../bridge/native_bridge.dart';
@@ -217,6 +218,7 @@ class _TerminalViewState extends State<TerminalView>
   bool _starting = true;
   TerminalSessionStatus _status = TerminalSessionStatus.connecting;
   int _lastVersion = 0;
+  bool _inputSnapshotReady = false;
   int _quietTicks = 0;
   DateTime _lastPanelPublish = DateTime.fromMillisecondsSinceEpoch(0);
   String _search = '';
@@ -231,6 +233,17 @@ class _TerminalViewState extends State<TerminalView>
 
   final FocusNode _focus = FocusNode(debugLabel: 'terminal');
   final FocusNode _searchFocus = FocusNode(debugLabel: 'terminal-search');
+  int _focusGeneration = 0;
+  FocusNode? _promptFocus;
+  int? _promptFocusId;
+
+  int? get _pendingPromptId {
+    final screen = _screen;
+    if (screen == null || screen['closed'] != null || screen['prompt'] == null) {
+      return null;
+    }
+    return promptIdOf(screen);
+  }
 
   @override
   void initState() {
@@ -266,10 +279,11 @@ class _TerminalViewState extends State<TerminalView>
         _closed = false;
         _status = TerminalSessionStatus.connecting;
         _lastVersion = 0;
+        _inputSnapshotReady = false;
       });
       _frame.value = null;
       _syncPolling();
-      _focus.requestFocus();
+      _requestTerminalFocus();
     } catch (error) {
       setState(() {
         _error = error is NativeBridgeError ? error.message : '$error';
@@ -358,16 +372,33 @@ class _TerminalViewState extends State<TerminalView>
   void _tick() {
     final session = _session;
     if (session == null || _closed) return;
-    final version = session.version;
-    if (version == _lastVersion) {
-      _quietTicks++;
+    final int version;
+    final Map<String, dynamic>? parsed;
+    try {
+      version = session.version;
+      if (version == _lastVersion && _inputSnapshotReady) {
+        _quietTicks++;
+        return;
+      }
+      parsed = session.snapshot();
+    } catch (_) {
+      // A failed refresh cannot establish whether authentication is pending.
+      // Keep ordinary input blocked until the existing poll reads successfully.
+      _inputSnapshotReady = false;
+      return;
+    }
+    if (parsed == null || !mounted || !identical(session, _session)) {
+      _inputSnapshotReady = false;
       return;
     }
     _lastVersion = version;
-    final parsed = session.snapshot();
-    if (parsed == null || !mounted) return;
+    _inputSnapshotReady = true;
     _quietTicks = 0;
     _screen = parsed;
+    if (_pendingPromptId != _promptFocusId) {
+      _promptFocus = null;
+      _promptFocusId = null;
+    }
     _frame.value = parsed;
     hostOsRegistry.record(widget.host.id, parsed['remoteOs'] as String?);
     final closed = parsed['closed'] != null;
@@ -435,7 +466,7 @@ class _TerminalViewState extends State<TerminalView>
     if (bus.sequence == _lastCommand) return;
     _lastCommand = bus.sequence;
     _send([...utf8.encode(command.text), if (command.sendEnter) 13]);
-    _focus.requestFocus();
+    _requestTerminalFocus();
   }
 
   @override
@@ -443,13 +474,44 @@ class _TerminalViewState extends State<TerminalView>
     final foreground = state == AppLifecycleState.resumed;
     if (foreground == _foreground) return;
     _foreground = foreground;
+    if (!foreground) _focusGeneration++;
     _syncPolling();
+    // A pane first mounted while the app was inactive never requested focus.
+    // Resume it only if no field currently owns focus; keep search/prompt input.
+    final primaryFocus = FocusManager.instance.primaryFocus;
+    if (foreground &&
+        (primaryFocus == null ||
+            primaryFocus == _focus.enclosingScope ||
+            primaryFocus == FocusManager.instance.rootScope)) {
+      _requestTerminalFocus();
+    }
   }
 
   @override
   void didUpdateWidget(TerminalView oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.active != widget.active) _syncPolling();
+    if (oldWidget.active != widget.active) {
+      _syncPolling();
+      if (widget.active) {
+        _requestTerminalFocus();
+      } else {
+        _focusGeneration++;
+        final promptId = _pendingPromptId;
+        final primaryFocus = FocusManager.instance.primaryFocus;
+        // Inline authentication fields belong to the terminal focus subtree.
+        // Preserve their owner before unfocus clears it on a tab switch.
+        _promptFocus = promptId != null &&
+                primaryFocus != null &&
+                primaryFocus.ancestors.contains(_focus)
+            ? primaryFocus
+            : null;
+        _promptFocusId = _promptFocus == null ? null : promptId;
+        // Offstage keeps focus alive. Release only this pane's nodes, including
+        // pending requests, without clearing the newly selected pane's focus.
+        _focus.unfocus();
+        _searchFocus.unfocus();
+      }
+    }
     if (oldWidget.commandBus != widget.commandBus) {
       oldWidget.commandBus?.removeListener(_onCommand);
       widget.commandBus?.addListener(_onCommand);
@@ -462,6 +524,9 @@ class _TerminalViewState extends State<TerminalView>
 
   @override
   void dispose() {
+    _focusGeneration++;
+    _promptFocus = null;
+    _promptFocusId = null;
     widget.commandBus?.removeListener(_onCommand);
     widget.settings?.removeListener(_onSettings);
     HardwareKeyboard.instance.removeHandler(_globalKey);
@@ -478,7 +543,19 @@ class _TerminalViewState extends State<TerminalView>
 
   void _send(List<int> bytes) {
     final session = _session;
-    if (session == null || bytes.isEmpty) return;
+    if (!mounted || session == null || bytes.isEmpty) return;
+    // A background pane is not polling, and a foreground prompt can arrive
+    // between polls. Check the session before any ordinary input is sent.
+    _tick();
+    // Authentication answers use answerPrompt, never ordinary PTY input. This
+    // also guards snippets/commands if the terminal retains residual focus.
+    if (!mounted ||
+        !identical(session, _session) ||
+        _closed ||
+        !_inputSnapshotReady ||
+        _pendingPromptId != null) {
+      return;
+    }
     session.send(bytes);
     _requestFastPoll();
   }
@@ -511,6 +588,9 @@ class _TerminalViewState extends State<TerminalView>
   }
 
   void _reconnect() {
+    _focusGeneration++;
+    _promptFocus = null;
+    _promptFocusId = null;
     _poll?.cancel();
     _poll = null;
     _pollFast = false;
@@ -522,6 +602,7 @@ class _TerminalViewState extends State<TerminalView>
       _starting = true;
       _status = TerminalSessionStatus.connecting;
       _lastVersion = 0;
+      _inputSnapshotReady = false;
       _quietTicks = 0;
     });
     _frame.value = null;
@@ -529,11 +610,81 @@ class _TerminalViewState extends State<TerminalView>
     _start();
   }
 
+  /// Restore focus after sibling panes have released theirs. A newer request,
+  /// tab/lifecycle change, or an intervening field/dialog must win instead.
+  void _requestTerminalFocus({
+    FocusNode? expectedFocus,
+    int? expectedGeneration,
+  }) {
+    if (!mounted || !widget.active || !_foreground) return;
+    if (expectedGeneration != null && expectedGeneration != _focusGeneration) {
+      return;
+    }
+    final previousFocus = expectedFocus ?? FocusManager.instance.primaryFocus;
+    final generation = ++_focusGeneration;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      bool isCurrent() =>
+          mounted &&
+          generation == _focusGeneration &&
+          widget.active &&
+          _foreground;
+      if (!isCurrent() || widgets.ModalRoute.of(context)?.isCurrent == false) return;
+      // Activation's zero-delay poll may not have run yet. Reuse its guarded
+      // read before restoring a field from the previously visible prompt.
+      // This single refresh does not start or reschedule the poll timer.
+      final session = _session;
+      _tick();
+      if (!isCurrent() ||
+          !identical(session, _session) ||
+          !_inputSnapshotReady) {
+        return;
+      }
+      final manager = FocusManager.instance;
+      // Another field may have requested focus in this same frame, without
+      // becoming primary yet. Commit it before deciding whether to restore.
+      manager.applyFocusChangesIfNeeded();
+      if (!isCurrent() || widgets.ModalRoute.of(context)?.isCurrent == false) return;
+      final currentFocus = manager.primaryFocus;
+      if (currentFocus != null &&
+          currentFocus != previousFocus &&
+          currentFocus != _focus &&
+          currentFocus != _focus.enclosingScope) {
+        return;
+      }
+      final promptId = _pendingPromptId;
+      if (promptId != null) {
+        final promptFocus = _promptFocus;
+        final promptFocusId = _promptFocusId;
+        _promptFocus = null;
+        _promptFocusId = null;
+        if (promptFocusId == promptId &&
+            promptFocus != null &&
+            promptFocus.context != null &&
+            promptFocus.ancestors.contains(_focus) &&
+            promptFocus.canRequestFocus) {
+          promptFocus.requestFocus();
+        }
+        // A missing/replaced field must never turn authentication keystrokes
+        // into normal terminal input. Let the user select the current field.
+        return;
+      }
+      _focus.requestFocus();
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
   /// Terminal input is captured by a global hardware-key handler gated on this
-  /// pane's primary focus, so other shortcuts never fire mid-terminal and the
-  /// encoding does not depend on the focus chain's event dispatch.
+  /// pane's visibility, lifecycle and primary focus. Offstage alone does not
+  /// stop keys, and encoding must not depend on the focus chain's dispatch.
   bool _globalKey(KeyEvent event) {
-    if (!_focus.hasPrimaryFocus) return false;
+    if (!mounted ||
+        !widget.active ||
+        !_foreground ||
+        !_focus.hasPrimaryFocus ||
+        !_inputSnapshotReady ||
+        _pendingPromptId != null) {
+      return false;
+    }
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) return false;
     if (HardwareKeyboard.instance.isControlPressed &&
         HardwareKeyboard.instance.isShiftPressed &&
@@ -596,10 +747,9 @@ class _TerminalViewState extends State<TerminalView>
                 _resize(cols, rows);
                 return Focus(
                   focusNode: _focus,
-                  autofocus: true,
                   child: GestureDetector(
                     behavior: HitTestBehavior.opaque,
-                    onTap: _focus.requestFocus,
+                    onTap: _requestTerminalFocus,
                     child: _TerminalCanvas(
                       frame: _frame,
                       search: _search,
@@ -640,11 +790,18 @@ class _TerminalViewState extends State<TerminalView>
                 onSearch: _onSearch,
                 onClear: () {
                   _send(const [0x0c]);
-                  _focus.requestFocus();
+                  _requestTerminalFocus();
                 },
                 onCopy: () async {
+                  final restoreFocus = _focus.hasPrimaryFocus;
+                  final generation = _focusGeneration;
                   await copyScreenText(_screen);
-                  _focus.requestFocus();
+                  if (restoreFocus) {
+                    _requestTerminalFocus(
+                      expectedFocus: _focus,
+                      expectedGeneration: generation,
+                    );
+                  }
                 },
                 onReconnect: _reconnect,
                 snippets: _snippets,
@@ -653,7 +810,7 @@ class _TerminalViewState extends State<TerminalView>
                     ...utf8.encode(snippet.command),
                     if (snippet.sendEnter) 13,
                   ]);
-                  _focus.requestFocus();
+                  _requestTerminalFocus();
                 },
               ),
             ),
@@ -821,6 +978,8 @@ class _TerminalCanvasState extends State<_TerminalCanvas> {
                 right: 12,
                 top: 12,
                 child: ConnectionPromptBanner(
+                  // A new challenge must not reuse the previous field state.
+                  key: ValueKey(promptIdOf(screen!)),
                   prompt: prompt,
                   onAnswer: (accept, {username, password, text}) {
                     widget.onAnswerPrompt(
