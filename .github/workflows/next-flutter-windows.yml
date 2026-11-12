@@ -65,8 +65,8 @@ jobs:
           python scripts/next/run_flutter_maintenance_regressions.py --suite flutter --expected-source "$env:GITHUB_SHA"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       # Explicit library selection covers 13 tunnel, 3 settings, 15 protocol,
-      # 9 frontend and 1 Windows ConPTY regression, plus 3 bridge tests across 2 targets.
-      - name: Test exact Rust maintenance regressions (44 required)
+      # 9 frontend, 3 encoding and 1 Windows ConPTY regression, plus 3 bridge tests across 2 targets.
+      - name: Test exact Rust maintenance regressions (47 required)
         shell: pwsh
         run: |
           python scripts/next/run_flutter_maintenance_regressions.py --suite rust --expected-source "$env:GITHUB_SHA"
