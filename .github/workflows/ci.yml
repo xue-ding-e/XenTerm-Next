@@ -37,7 +37,7 @@ jobs:
         include:
           - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, name: Linux desktop, toolchain: "1.99.1" }
           - { os: windows-latest, target: x86_64-pc-windows-msvc, name: Windows desktop, toolchain: stable }
-          - { os: macos-14, target: aarch64-apple-darwin, name: macOS desktop, toolchain: stable }
+          - { os: macos-15, target: aarch64-apple-darwin, name: macOS desktop, toolchain: stable }
     steps:
       - uses: actions/checkout@v4
       - name: Install Linux desktop development libraries
@@ -58,6 +58,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: desktop-check-${{ matrix.target }}
+          cache-on-failure: true
       # Keep the upstream stable/MSVC Windows configuration. Debug checking
       # avoids the release-only fxc.exe shader compilation and package tooling.
       - run: cargo check --locked --target ${{ matrix.target }} --jobs 2
@@ -209,7 +210,7 @@ jobs:
       fail-fast: false
       max-parallel: 1
       matrix:
-        os: [ubuntu-22.04, windows-latest, macos-14]
+        os: [ubuntu-22.04, windows-latest, macos-15]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -230,6 +231,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: migration-cli-${{ runner.os }}
+          cache-on-failure: true
       - name: Test runtime version contract
         run: cargo test --locked --no-default-features --features headless version::tests --jobs 2
       # Synthetic independent profiles only; no GUI dependencies or real credentials.
@@ -524,7 +526,7 @@ jobs:
     name: macOS PKG choices and payload
     needs: installer-windows
     if: ${{ !cancelled() }}
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4

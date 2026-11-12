@@ -53,7 +53,7 @@ jobs:
         include:
           - {os: windows-latest, target: x86_64-pc-windows-msvc, platform: windows-x86_64}
           - {os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, platform: linux-x86_64}
-          - {os: macos-14, target: aarch64-apple-darwin, platform: macos-aarch64}
+          - {os: macos-15, target: aarch64-apple-darwin, platform: macos-aarch64}
     env:
       SOURCE_SHA: ${{ inputs.source_sha }}
       CI_RUN_ID: ${{ inputs.ci_run }}
@@ -112,6 +112,10 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: '"RUSTFLAGS=-C target-feature=+crt-static" >> $env:GITHUB_ENV'
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: next-gpui-release-${{ matrix.target }}
+          cache-on-failure: true
       - name: Build locked release
         # Windows must leave time for native MSI acceptance and always evidence.
         timeout-minutes: ${{ matrix.os == 'windows-latest' && 70 || 90 }}
