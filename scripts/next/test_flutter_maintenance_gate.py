@@ -85,9 +85,9 @@ EXPECTED_INPUT_CORE_TESTS = (
 EXPECTED_ENCODING_TESTS = (
     "terminal::encoding::tests::gbk_round_trip_and_split_decode",
     "terminal::encoding::tests::unknown_label_falls_back_to_utf8",
-    "terminal::local::tests::conpty_read_boundary_keeps_utf8_codepoints",
 )
 EXPECTED_WINDOWS_CORE_TESTS = (
+    "terminal::local::tests::conpty_read_boundary_keeps_utf8_codepoints",
     "terminal::terminal_windows_tests::conpty_powershell_preserves_long_unicode_output",
 )
 EXPECTED_INPUT_BRIDGE_TESTS = (
@@ -314,8 +314,8 @@ class MaintenanceGateTests(unittest.TestCase):
         self.assertEqual(core, (EXPECTED_CORE_TARGET, gate.TUNNEL_TESTS + gate.SETTINGS_TESTS + EXPECTED_INPUT_CORE_TESTS + EXPECTED_ENCODING_TESTS))
         self.assertEqual(settings, (EXPECTED_SETTINGS_TARGET, gate.BRIDGE_TESTS))
         self.assertEqual(bridge_input, (EXPECTED_BRIDGE_LIB_TARGET, EXPECTED_INPUT_BRIDGE_TESTS))
-        self.assertEqual([len(tests) for _, tests in gate.RUST_GROUPS], [43, 1, 2])
-        self.assertEqual(len({name for _, tests in gate.RUST_GROUPS for name in tests}), 46)
+        self.assertEqual([len(tests) for _, tests in gate.RUST_GROUPS], [42, 1, 2])
+        self.assertEqual(len({name for _, tests in gate.RUST_GROUPS for name in tests}), 45)
 
     def test_target_assertions_reject_consistent_constant_and_group_drift(self):
         # Mutate both the constant and routing table so a self-referential
@@ -433,7 +433,7 @@ class MaintenanceGateTests(unittest.TestCase):
                 self.assertEqual(exact, [*gate.TUNNEL_TESTS, *gate.SETTINGS_TESTS, *EXPECTED_INPUT_CORE_TESTS, *EXPECTED_ENCODING_TESTS,
                                          *gate.BRIDGE_TESTS, *EXPECTED_INPUT_BRIDGE_TESTS])
                 self.assertNotIn(EXPECTED_WINDOWS_CORE_TESTS[0], exact)
-                self.assertIn("suite=rust count=46", captured.getvalue())
+                self.assertIn("suite=rust count=45", captured.getvalue())
                 self.assertIn(f"PLATFORM_EXCLUDED platform={platform} requires=win32 name={EXPECTED_WINDOWS_CORE_TESTS[0]}", captured.getvalue())
 
     def test_each_input_dart_case_requires_a_visible_non_skipped_first_pass(self):
@@ -565,7 +565,7 @@ class EncodingGateTests(unittest.TestCase):
                 expected.extend([*target, name, "--", "--exact", "--test-threads=1", "--nocapture"]
                                 for name in names)
             self.assertEqual(commands, expected)
-            self.assertIn(f"suite=rust count={47 if platform == 'win32' else 46}", captured.getvalue())
+            self.assertIn(f"suite=rust count={47 if platform == 'win32' else 45}", captured.getvalue())
 
     def test_encoding_commands_and_existing_scope_are_exact(self):
         self.assertEqual(gate.ENCODING_TESTS, EXPECTED_ENCODING_TESTS)
@@ -574,16 +574,27 @@ class EncodingGateTests(unittest.TestCase):
                 self.simulate(platform)
 
     def test_each_encoding_result_fails_closed(self):
-        for name in EXPECTED_ENCODING_TESTS:
+        for name in (*EXPECTED_ENCODING_TESTS, EXPECTED_WINDOWS_CORE_TESTS[0]):
             for fault in ("zero", "ignored", "wrong_name", "failure",
                           "failure_with_success_text", "not_executed"):
                 with self.subTest(name=name, fault=fault):
                     self.simulate(rejected=name, fault=fault)
 
     def test_each_encoding_inventory_entry_is_required(self):
-        for name in EXPECTED_ENCODING_TESTS:
+        for name in (*EXPECTED_ENCODING_TESTS, EXPECTED_WINDOWS_CORE_TESTS[0]):
             with self.subTest(name=name):
                 self.simulate(rejected=name, fault="missing_inventory")
+
+    def test_conpty_oracle_rejects_omission_or_misspelled_selection(self):
+        name = EXPECTED_WINDOWS_CORE_TESTS[0]
+        for replacement in (None, "synthetic_misspelled_conpty_filter"):
+            names = tuple(replacement if item == name else item
+                          for item in gate.WINDOWS_INPUT_TESTS
+                          if item != name or replacement is not None)
+            with self.subTest(replacement=replacement):
+                with patch.object(gate, "WINDOWS_INPUT_TESTS", names):
+                    with self.assertRaises((AssertionError, RuntimeError)):
+                        self.simulate()
 
     def test_oracle_rejects_omission_or_misspelled_selection(self):
         # Prove the command oracle detects silent non-scheduling and filter drift.

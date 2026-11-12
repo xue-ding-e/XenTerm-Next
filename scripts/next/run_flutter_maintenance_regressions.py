@@ -113,9 +113,10 @@ INPUT_ADMISSION_TESTS = (
 ENCODING_TESTS = (
     "terminal::encoding::tests::gbk_round_trip_and_split_decode",
     "terminal::encoding::tests::unknown_label_falls_back_to_utf8",
-    "terminal::local::tests::conpty_read_boundary_keeps_utf8_codepoints",
 )
 WINDOWS_INPUT_TESTS = (
+    # This decoder boundary fixture lives in #[cfg(all(test, windows))].
+    "terminal::local::tests::conpty_read_boundary_keeps_utf8_codepoints",
     "terminal::terminal_windows_tests::conpty_powershell_preserves_long_unicode_output",
 )
 BRIDGE_INPUT_TESTS = (
