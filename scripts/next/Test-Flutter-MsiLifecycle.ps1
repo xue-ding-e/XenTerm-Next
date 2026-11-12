@@ -13,6 +13,9 @@ $sourceSha = 'a8aa668d6df0c2616dc8b0e72f55ee9a495d83a0'
 $temp = Join-Path $env:RUNNER_TEMP ('xenterm-msi-lifecycle-' + [guid]::NewGuid())
 $install = Join-Path $temp 'installed'
 $activeMsi = $null
+# No inherited override may redirect this fixture outside its temporary install.
+Remove-Item Env:XENTERM_DATA_DIR -ErrorAction SilentlyContinue
+Remove-Item Env:MEATSHELL_DATA_DIR -ErrorAction SilentlyContinue
 function Invoke-FixtureMsi {
     param([string[]] $Arguments)
     $process = Start-Process msiexec.exe -ArgumentList $Arguments -Wait -PassThru
@@ -23,10 +26,12 @@ function Get-FixtureProductCode {
     param([string] $Msi)
     $db = $installer.GetType().InvokeMember('OpenDatabase', 'InvokeMethod', $null, $installer, @($Msi, 0))
     $view = $db.OpenView("SELECT Value FROM Property WHERE Property='ProductCode'")
-    $view.Execute()
+    [void] $view.Execute()
     $record = $view.Fetch()
     $code = $record.GetType().InvokeMember('StringData', 'GetProperty', $null, $record, @(1))
-    $view.Close()
+    [void] $view.Close()
+    $code = ([string]$code).Trim()
+    if ($code -notmatch '^\{[0-9A-Fa-f-]{36}\}$') { throw 'MSI has an invalid ProductCode.' }
     return $code
 }
 function Assert-FixtureProductState {
@@ -66,6 +71,12 @@ try {
     if ($LASTEXITCODE -ne 0 -or $version -ne "xenterm $($runtime.core_version)") { throw 'Installed CLI version mismatch.' }
     # A synthetic marker stands in for user data; no sessions or credentials.
     $profile = Join-Path $install 'config-flutter-next'
+    $infoText = & $cli --config-info
+    if ($LASTEXITCODE -ne 0) { throw 'Installed CLI profile inspection failed.' }
+    $info = $infoText | ConvertFrom-Json
+    if ([System.IO.Path]::GetFullPath($info.data_dir) -ne [System.IO.Path]::GetFullPath($profile) -or $info.session_count -ne 0) {
+        throw 'Installed CLI profile escaped its isolated empty directory.'
+    }
     New-Item -ItemType Directory -Path $profile -Force | Out-Null
     $marker = Join-Path $profile 'lifecycle-fixture.txt'
     Set-Content $marker 'SYNTHETIC PROFILE MUST SURVIVE'

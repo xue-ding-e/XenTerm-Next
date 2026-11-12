@@ -1,4 +1,4 @@
-name: Next Flutter MSI recipe validation (no installation or release)
+name: Next Flutter MSI validation (isolated CI installation, no release)
 on:
   pull_request:
     branches: [flutter-next]
