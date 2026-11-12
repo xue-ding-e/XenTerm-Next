@@ -34,6 +34,18 @@ class MsiIdentityTests(unittest.TestCase):
         self.assertFalse(self.product.findall('.//{http://schemas.microsoft.com/wix/UtilExtension}CloseApplication'))
         self.assertFalse(self.product.findall('.//w:RemoveFile', NS))
 
+    def test_custom_install_location_is_restored_before_costing(self):
+        search = self.product.find("w:Property[@Id='PREVIOUSINSTALLFOLDER']/w:RegistrySearch", NS)
+        self.assertIsNotNone(search)
+        self.assertEqual(search.get('Key'), r'Software\XenTerm-Next\Flutter')
+        self.assertEqual(search.get('Name'), 'InstallLocation')
+        restore = self.product.find("w:SetProperty[@Id='INSTALLFOLDER']", NS)
+        self.assertEqual(restore.get('Before'), 'CostInitialize')
+        self.assertEqual(restore.get('Sequence'), 'both')
+        self.assertEqual(restore.text, 'NOT INSTALLFOLDER AND PREVIOUSINSTALLFOLDER')
+        saved = self.product.find(".//w:Component[@Id='InstallLocation']/w:RegistryValue", NS)
+        self.assertEqual(saved.get('Value'), '[INSTALLFOLDER]')
+
     def test_staging_excludes_both_profiles_and_logs(self):
         script = (ROOT / 'apps/xenterm/tool/package_windows_installer.ps1').read_text()
         self.assertIn('"/XD", "config", "config-flutter-next", "log"', script)

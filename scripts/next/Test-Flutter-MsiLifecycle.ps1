@@ -66,6 +66,10 @@ try {
     $activeMsi = $first
     Assert-FixtureProductState $firstCode 5
     Assert-FixtureProductState $secondCode -1
+    $registered = (Get-ItemProperty 'HKCU:\Software\XenTerm-Next\Flutter' -Name InstallLocation).InstallLocation
+    if ([System.IO.Path]::GetFullPath($registered).TrimEnd('\') -ne [System.IO.Path]::GetFullPath($install).TrimEnd('\')) {
+        throw 'Registered install location does not match custom directory.'
+    }
     $cli = Join-Path $install 'xenterm-cli.exe'
     $version = & $cli --version
     if ($LASTEXITCODE -ne 0 -or $version -ne "xenterm $($runtime.core_version)") { throw 'Installed CLI version mismatch.' }
@@ -86,7 +90,7 @@ try {
     $marker = Join-Path $profile 'lifecycle-fixture.txt'
     Set-Content $marker 'SYNTHETIC PROFILE MUST SURVIVE'
     $markerHash = (Get-FileHash $marker).Hash
-    Invoke-FixtureMsi -Arguments @('/i', "`"$second`"", '/qn', '/norestart', "INSTALLFOLDER=`"$install`"", '/l*v', "`"$temp/upgrade.log`"")
+    Invoke-FixtureMsi -Arguments @('/i', "`"$second`"", '/qn', '/norestart', '/l*v', "`"$temp/upgrade.log`"")
     $activeMsi = $second
     Assert-FixtureProductState $firstCode -1
     Assert-FixtureProductState $secondCode 5
@@ -102,10 +106,14 @@ try {
         if (Test-Path (Join-Path $install $name)) { throw "Uninstall left managed binary: $name" }
     }
     if ((Get-FileHash $marker).Hash -ne $markerHash) { throw 'Uninstall changed profile marker.' }
+    if (Get-ItemProperty 'HKCU:\Software\XenTerm-Next\Flutter' -Name InstallLocation -ErrorAction SilentlyContinue) {
+        throw 'Uninstall left the install-location registry value.'
+    }
     Write-Host "Lifecycle passed for application source $sourceSha; packaging source $env:GITHUB_SHA. No GUI/SSH or standard-user acceptance performed."
 } catch {
     foreach ($log in @(Get-ChildItem -LiteralPath $temp -Filter '*.log' -ErrorAction SilentlyContinue)) {
         Write-Host "Synthetic fixture diagnostic: $($log.Name)"
+        Select-String -LiteralPath $log.FullName -Pattern 'INSTALLFOLDER|RemoveFiles|Return value 3' | ForEach-Object { Write-Host $_.Line }
         Get-Content -LiteralPath $log.FullName -Tail 80 | Write-Host
     }
     throw
