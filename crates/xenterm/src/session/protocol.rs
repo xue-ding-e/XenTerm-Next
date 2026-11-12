@@ -31,9 +31,9 @@ pub enum ResourceMonitorState {
 }
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 
 use crate::config::{PortForward, Secret};
@@ -231,18 +231,99 @@ pub enum SessionEvent {
 
 // --- The handle a driver holds ------------------------------------------------
 
+/// Every command producer, including terminal-query replies, uses this sender.
+/// The underlying queue is private so clones cannot bypass SSH input admission.
+#[derive(Clone)]
+pub struct SessionCommandSender {
+    sender: UnboundedSender<SessionCommand>,
+    input: Arc<Mutex<InputState>>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum InputState {
+    Starting,
+    Ready,
+    Closed,
+}
+
+/// No command payload is retained in an error or printed by its Debug output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionSendError {
+    InputNotReady,
+    Closed,
+}
+
+/// Only the SSH worker owns this token. It deliberately does not keep a command
+/// sender alive: dropping all drivers must still disconnect the command queue.
+pub(crate) struct SessionInputReady(Arc<Mutex<InputState>>);
+
+impl SessionInputReady {
+    pub(crate) fn mark_ready(self) {
+        if let Ok(mut input) = self.0.lock() {
+            // A queued Close is final even if authentication finishes later.
+            if *input == InputState::Starting {
+                *input = InputState::Ready;
+            }
+        };
+    }
+}
+
+impl SessionCommandSender {
+    /// Local PTY, serial and Telnet retain their existing immediate type-ahead.
+    pub fn channel() -> (Self, UnboundedReceiver<SessionCommand>) {
+        Self::with_state(InputState::Ready)
+    }
+
+    pub(crate) fn awaiting_shell() -> (Self, UnboundedReceiver<SessionCommand>, SessionInputReady) {
+        let (sender, receiver) = Self::with_state(InputState::Starting);
+        let ready = SessionInputReady(sender.input.clone());
+        (sender, receiver, ready)
+    }
+
+    fn with_state(state: InputState) -> (Self, UnboundedReceiver<SessionCommand>) {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        (
+            Self {
+                sender,
+                input: Arc::new(Mutex::new(state)),
+            },
+            receiver,
+        )
+    }
+
+    pub fn send(&self, command: SessionCommand) -> Result<(), SessionSendError> {
+        // Keep admission and enqueue in the same critical section as Close and
+        // mark_ready. A late ready token cannot reopen a closed session, and a
+        // concurrent RawInput cannot slip into the queue behind Close.
+        let mut input = self.input.lock().map_err(|_| SessionSendError::Closed)?;
+        if *input == InputState::Closed {
+            return Err(SessionSendError::Closed);
+        }
+        if matches!(&command, SessionCommand::RawInput(_)) && *input != InputState::Ready {
+            return Err(SessionSendError::InputNotReady);
+        }
+        if matches!(&command, SessionCommand::Close) {
+            *input = InputState::Closed;
+        }
+        self.sender
+            .send(command)
+            .map_err(|_| SessionSendError::Closed)
+    }
+}
+
 /// Handle retained by the driver to talk to a running session.
 pub struct SessionHandle {
     #[allow(dead_code)] // used by future resize / reconnect flows
     pub tab_id: String,
-    pub commands: UnboundedSender<SessionCommand>,
+    pub commands: SessionCommandSender,
     #[allow(dead_code)] // keep alive; detach on Drop is fine for v0.1
     pub join: JoinHandle<()>,
 }
 
 impl SessionHandle {
-    pub fn send_raw(&self, bytes: Vec<u8>) {
-        let _ = self.commands.send(SessionCommand::RawInput(bytes));
+    /// True means accepted into the worker queue, not delivered to the remote.
+    pub fn send_raw(&self, bytes: Vec<u8>) -> bool {
+        self.commands.send(SessionCommand::RawInput(bytes)).is_ok()
     }
 
     pub fn resize(&self, cols: u32, rows: u32) {
@@ -488,3 +569,7 @@ pub struct TabRoute {
 
 /// Tab id → its current delivery route. Shared with the pump threads.
 pub type TabRoutes = Arc<std::sync::Mutex<HashMap<String, Arc<std::sync::Mutex<TabRoute>>>>>;
+
+#[cfg(test)]
+#[path = "input_admission_tests.rs"]
+mod input_admission_tests;

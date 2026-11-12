@@ -21,7 +21,9 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use crate::config::Session;
 use crate::i18n::t;
-use crate::session::protocol::{ProcessKillResult, SessionCommand, SessionEvent, SessionHandle};
+use crate::session::protocol::{
+    ProcessKillResult, SessionCommand, SessionCommandSender, SessionEvent, SessionHandle,
+};
 
 /// Spawn a serial-port session. See module docs for why the signature mirrors
 /// `spawn_session` (minus the PTY size, which a serial line has no notion of).
@@ -30,7 +32,7 @@ pub fn spawn_serial_session(
     tab_id: String,
     session: Session,
 ) -> (SessionHandle, UnboundedReceiver<SessionEvent>) {
-    let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<SessionCommand>();
+    let (cmd_tx, cmd_rx) = SessionCommandSender::channel();
     let (evt_tx, evt_rx) = mpsc::unbounded_channel::<SessionEvent>();
 
     let evt_for_task = evt_tx.clone();
