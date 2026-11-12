@@ -32,7 +32,9 @@ function Invoke-FixtureMsi {
 }
 $installer = New-Object -ComObject WindowsInstaller.Installer
 [xml] $recipe = Get-Content (Join-Path $root 'packaging/windows/main.wxs') -Raw
-$upgradeCode = $recipe.DocumentElement.Product.GetAttribute('UpgradeCode')
+# WiX accepts bare GUIDs; Windows Installer automation requires braced GUIDs.
+# Parse before calling COM so an invalid recipe fails closed before installation.
+$upgradeCode = ([guid] $recipe.DocumentElement.Product.GetAttribute('UpgradeCode')).ToString('B').ToUpperInvariant()
 $related = $installer.GetType().InvokeMember('RelatedProducts', 'GetProperty', $null, $installer, @($upgradeCode))
 if ($related.Count -ne 0) { throw 'Refusing to alter an existing product in this upgrade family.' }
 function Get-FixtureProductCode {
