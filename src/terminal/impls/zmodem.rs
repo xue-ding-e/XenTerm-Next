@@ -4,7 +4,7 @@
 //! send. We implement just enough of the protocol to receive: reply to ZRQINIT
 //! with ZRINIT, accept ZFILE, drive the transfer with ZRPOS/ZACK, collect the
 //! ZDATA subpackets into a local file, and finish on ZEOF/ZFIN. Files land in
-//! the user's Downloads directory (FinalShell style).
+//! the configured download directory, falling back to the user's Downloads.
 //!
 //! We advertise CANFC32, so the sender uses CRC-32 binary frames; the CRC-16
 //! paths are implemented for completeness but rarely exercised.
@@ -596,11 +596,23 @@ fn is_close_byte(b: u8) -> bool {
         | b'0'..=b'9' | b'a'..=b'f')
 }
 
-/// Where received files go: the user's Downloads dir, else a temp fallback.
+/// Honor the same download setting as SFTP, then use Downloads or a temp fallback.
 fn download_dir() -> PathBuf {
-    directories::UserDirs::new()
-        .and_then(|u| u.download_dir().map(|p| p.to_path_buf()))
-        .unwrap_or_else(|| std::env::temp_dir().join("xenterm"))
+    let configured = crate::config::ConfigStore::load()
+        .ok()
+        .map(|store| store.download_dir().to_owned());
+    select_download_dir(configured.as_deref(), || {
+        directories::UserDirs::new()
+            .and_then(|u| u.download_dir().map(|p| p.to_path_buf()))
+            .unwrap_or_else(|| std::env::temp_dir().join("xenterm"))
+    })
+}
+
+fn select_download_dir(configured: Option<&str>, fallback: impl FnOnce() -> PathBuf) -> PathBuf {
+    match configured.map(str::trim).filter(|path| !path.is_empty()) {
+        Some(path) => PathBuf::from(path),
+        None => fallback(),
+    }
 }
 
 /// Reduce a sender-supplied name to a safe basename inside the download dir.
@@ -687,6 +699,21 @@ fn crc32_of(data: &[u8]) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn configured_download_directory_precedes_system_defaults() {
+        let configured = "  custom downloads/中文 directory  ";
+        assert_eq!(
+            select_download_dir(Some(configured), || panic!("configured path must win")),
+            PathBuf::from("custom downloads/中文 directory")
+        );
+        for configured in [None, Some(""), Some(" \t\n")] {
+            assert_eq!(
+                select_download_dir(configured, || PathBuf::from("system-downloads")),
+                PathBuf::from("system-downloads")
+            );
+        }
+    }
 
     #[test]
     fn crc16_known_vector() {
