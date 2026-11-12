@@ -100,6 +100,7 @@ fi
 PREFIX="$(readlink -m -- "$PREFIX")"
 [[ "$PREFIX" != *'='* && "$PREFIX" != *[[:cntrl:]]* ]] ||
     die "the resolved installation prefix cannot contain '=' or control characters"
+[ "$PREFIX" != / ] || die "refusing to install into /; choose a real prefix"
 
 # Keep installer state separate from application profiles. Never source state as
 # shell code: it is a small numeric options record plus a SHA-256 file manifest.
@@ -177,7 +178,11 @@ remove_owned_files() {
         [[ "$digest" =~ ^[0-9a-f]{64}$ ]] && owned_path "$path" || die "invalid installer manifest (desktop location may have changed)"
         [ "$(readlink -m -- "$path")" = "$path" ] || die "managed path now traverses a symlink: $path"
         if [ -e "$path" ] || [ -L "$path" ]; then
-            [ ! -L "$path" ] || { echo "preserved replaced symlink: $path" >&2; failed=1; continue; }
+            if [ -L "$path" ] || [ ! -f "$path" ]; then
+                echo "preserved replaced file: $path" >&2
+                failed=1
+                continue
+            fi
             current="$(sha256sum < "$path")"; current="${current%% *}"
             if [ "$current" = "$digest" ]; then
                 verified+=("$path")
@@ -225,6 +230,7 @@ path_blocks() {
         [ ! -e "$rc" ] || [ -f "$rc" ] || die "shell configuration is not a regular file: $rc"
         [ -f "$rc" ] || continue
         [ -w "$rc" ] || die "shell configuration is not writable: $rc"
+        [ -r "$rc" ] || die "shell configuration is not readable: $rc"
         # Do not rewrite unrelated files (including their original final newline).
         grep -Fxq -- "$BLOCK_START" "$rc" || continue
         temporary="$(mktemp)"
@@ -244,10 +250,38 @@ path_blocks() {
     done
 }
 
+# Validate shell files before staging or replacing any installed payload. The
+# editing pass repeats the checks so an unsafe rc cannot cause a partial install.
+validate_shell_configuration() {
+    "$USER_INSTALL" || return 0
+    [ "$ADD_PATH" = 1 ] || [ "$PREVIOUS_PATH" = 1 ] || return 0
+    local rc
+    for rc in "${RC_FILES[@]}"; do
+        [ ! -L "$rc" ] || die "refusing to edit a symlink: $rc"
+        [ ! -e "$rc" ] || [ -f "$rc" ] || die "shell configuration is not a regular file: $rc"
+        [ ! -f "$rc" ] || [ -w "$rc" ] || die "shell configuration is not writable: $rc"
+        [ ! -f "$rc" ] || [ -r "$rc" ] || die "shell configuration is not readable: $rc"
+    done
+}
+validate_shell_configuration
+
+# Removing a file requires a writable parent, even when installer state itself
+# is writable. Choose escalation before removing the first managed file.
+uninstall_needs_sudo() {
+    local digest path parent
+    [ -w "$STATE_DIR" ] || return 0
+    while IFS=$'\t' read -r digest path; do
+        [ -e "$path" ] || [ -L "$path" ] || continue
+        parent="${path%/*}"
+        [ -w "$parent" ] && [ -x "$parent" ] || return 0
+    done < "$MANIFEST"
+    return 1
+}
+
 SUDO=()
 if "$UNINSTALL"; then
     [ -f "$MANIFEST" ] || { echo "No managed installation at $PREFIX"; exit 0; }
-    if [ ! -w "$STATE_DIR" ]; then
+    if [ "$(id -u)" -ne 0 ] && uninstall_needs_sudo; then
         "$USER_INSTALL" && die "installation is not writable"
         command -v sudo >/dev/null 2>&1 || die "sudo required to uninstall this installation"
         sudo -v; SUDO=(sudo)

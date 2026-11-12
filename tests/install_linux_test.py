@@ -143,6 +143,61 @@ sys.exit(int(os.environ.get('FIXTURE_CACHE_EXIT', '0')))
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return desktop
 
+    def test_root_prefix_and_resolved_root_are_rejected_before_install(self):
+        alias = self.root / 'root-alias'
+        alias.symlink_to('/', target_is_directory=True)
+        for prefix in ('/', alias):
+            with self.subTest(prefix=prefix):
+                result = self.run_installer('--prefix', prefix, success=False)
+                self.assertIn('refusing to install into /', result.stderr)
+                self.assertEqual(self.commands('install'), [])
+                self.assertEqual(self.commands('sudo'), [])
+
+    def test_replaced_managed_directory_preserves_every_other_file(self):
+        self.run_installer('--user')
+        prefix = self.home / '.local'
+        target = prefix / 'bin/xenterm'
+        icon = prefix / 'share/icons/hicolor/512x512/apps/xenterm.png'
+        original_icon = icon.read_bytes()
+        target.unlink()
+        target.mkdir()
+        marker = target / 'foreign-data'
+        marker.write_text('must survive')
+        result = self.run_installer('--user', '--uninstall', success=False)
+        self.assertIn('preserved replaced file', result.stderr)
+        self.assertEqual(marker.read_text(), 'must survive')
+        self.assertEqual(icon.read_bytes(), original_icon)
+        self.assertTrue((prefix / 'share/xenterm/installer/files.sha256').is_file())
+
+    def test_unreadable_shell_file_fails_before_creating_installation(self):
+        if os.geteuid() == 0:
+            self.skipTest('permission checks require a non-root fixture runner')
+        rc = self.home / '.bashrc'
+        rc.write_text('export KEEP_ME=1\n')
+        rc.chmod(0o200)
+        self.addCleanup(rc.chmod, 0o600)
+        result = self.run_installer('--user', success=False)
+        self.assertIn('shell configuration is not readable', result.stderr)
+        self.assertEqual(self.commands('install'), [])
+        self.assertFalse((self.home / '.local/bin/xenterm').exists())
+
+    def test_uninstall_preflights_all_parent_permissions_before_first_removal(self):
+        if os.geteuid() == 0:
+            self.skipTest('permission checks require a non-root fixture runner')
+        self.run_installer('--user')
+        prefix = self.home / '.local'
+        binary = prefix / 'bin/xenterm'
+        icon_dir = prefix / 'share/icons/hicolor/512x512/apps'
+        icon = icon_dir / 'xenterm.png'
+        before = {path: path.read_bytes() for path in (binary, icon, self.home / '.bashrc')}
+        icon_dir.chmod(0o555)
+        self.addCleanup(icon_dir.chmod, 0o755)
+        result = self.run_installer('--user', '--uninstall', success=False)
+        self.assertIn('installation is not writable', result.stderr)
+        self.assertEqual(self.commands('sudo'), [])
+        for path, content in before.items():
+            self.assertEqual(path.read_bytes(), content)
+
     def test_disabled_xdg_desktop_is_valid_headless_install(self):
         self.make_tool("xdg-user-dir", f"print({str(self.home)!r})")
         self.run_installer("--user")
