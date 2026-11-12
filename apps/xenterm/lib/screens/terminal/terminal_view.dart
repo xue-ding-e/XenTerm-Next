@@ -244,7 +244,9 @@ class _TerminalViewState extends State<TerminalView>
 
   int? get _pendingPromptId {
     final screen = _screen;
-    if (screen == null || screen['closed'] != null || screen['prompt'] == null) {
+    if (screen == null ||
+        screen['closed'] != null ||
+        screen['prompt'] == null) {
       return null;
     }
     return promptIdOf(screen);
@@ -301,7 +303,9 @@ class _TerminalViewState extends State<TerminalView>
 
   TerminalSession _startNative() {
     final bridge = NativeBridge.tryLoad();
-    if (bridge == null) throw NativeBridgeError(NativeBridge.unavailableMessage());
+    if (bridge == null) {
+      throw NativeBridgeError(NativeBridge.unavailableMessage());
+    }
     final handle = widget.host.ephemeral
         ? bridge.startAdhocSession({
             ...widget.host.toAdhocPayload(),
@@ -511,7 +515,8 @@ class _TerminalViewState extends State<TerminalView>
         final primaryFocus = FocusManager.instance.primaryFocus;
         // Inline authentication fields belong to the terminal focus subtree.
         // Preserve their owner before unfocus clears it on a tab switch.
-        _promptFocus = promptId != null &&
+        _promptFocus =
+            promptId != null &&
                 primaryFocus != null &&
                 primaryFocus.ancestors.contains(_focus)
             ? primaryFocus
@@ -647,7 +652,9 @@ class _TerminalViewState extends State<TerminalView>
           generation == _focusGeneration &&
           widget.active &&
           _foreground;
-      if (!isCurrent() || widgets.ModalRoute.of(context)?.isCurrent == false) return;
+      if (!isCurrent() || widgets.ModalRoute.of(context)?.isCurrent == false) {
+        return;
+      }
       // Activation's zero-delay poll may not have run yet. Reuse its guarded
       // read before restoring a field from the previously visible prompt.
       // This single refresh does not start or reschedule the poll timer.
@@ -662,7 +669,9 @@ class _TerminalViewState extends State<TerminalView>
       // Another field may have requested focus in this same frame, without
       // becoming primary yet. Commit it before deciding whether to restore.
       manager.applyFocusChangesIfNeeded();
-      if (!isCurrent() || widgets.ModalRoute.of(context)?.isCurrent == false) return;
+      if (!isCurrent() || widgets.ModalRoute.of(context)?.isCurrent == false) {
+        return;
+      }
       final currentFocus = manager.primaryFocus;
       if (currentFocus != null &&
           currentFocus != previousFocus &&
@@ -1009,7 +1018,7 @@ class _TerminalCanvasState extends State<_TerminalCanvas> {
                     // Capture this frame's owner, not a later widget's owner.
                     onAnswerPrompt(
                       generation!,
-                      promptIdOf(screen!),
+                      promptIdOf(screen),
                       accept: accept,
                       username: username,
                       password: password,
@@ -1026,7 +1035,9 @@ class _TerminalCanvasState extends State<_TerminalCanvas> {
 }
 
 String _displayError(BuildContext context, String error) =>
-    error == NativeBridge.unavailableMessage() ? AppLanguage.tr(context, error) : error;
+    error == NativeBridge.unavailableMessage()
+    ? AppLanguage.tr(context, error)
+    : error;
 
 int promptIdOf(Map<String, dynamic> screen) {
   final prompt = screen['prompt'] as Map<String, dynamic>?;
