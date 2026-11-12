@@ -198,17 +198,17 @@ class MaintenanceGateTests(unittest.TestCase):
             "Verify dependency resolution did not rewrite the lockfile",
             "Analyze Flutter",
             "Test exact Flutter maintenance regressions (48 required)",
-            "Test exact Rust maintenance regressions (47 required)",
+            "Test exact Rust maintenance regressions (47 Windows, 45 Unix)",
             "Build Rust bridge and CLI/MCP companion",
             "Test Flutter",
-            "Build Flutter Windows",
+            "Build Flutter desktop",
             "Bundle native bridge",
             "Smoke test packaged native bridge with isolated data",
         ]
         positions = [workflow.index(f"- name: {name}\n") for name in steps]
         self.assertEqual(positions, sorted(positions))
 
-    def test_validation_ref_has_only_readonly_validation_workflows(self):
+    def test_product_builds_are_readonly_and_only_flutter_publisher_can_write(self):
         root = Path(__file__).resolve().parents[2]
         workflows = root / ".github/workflows"
         files = list(workflows.glob("*.yml")) + list(workflows.glob("*.yaml"))
@@ -222,16 +222,25 @@ class MaintenanceGateTests(unittest.TestCase):
         for forbidden in ("contents: write", "gh release", "msiexec", "upload-artifact", "pull_request_target", "  push:"):
             self.assertNotIn(forbidden, msi)
         workflow = (workflows / "next-flutter-windows.yml").read_text()
-        self.assertIn("branches: [flutter-next, validation/flutter-maintenance-20261102]", workflow)
-        self.assertIn("github.ref == 'refs/heads/validation/flutter-maintenance-20261102'", workflow)
+        self.assertIn("branches: [flutter-next]", workflow)
         self.assertIn("permissions:\n  contents: read", workflow)
         self.assertIn("persist-credentials: false", workflow)
         self.assertIn('cancel-in-progress: false', workflow)
-        self.assertNotIn('contents: write', workflow)
+        build, publisher = workflow.split('\n  publish:\n')
+        self.assertNotIn('contents: write', build)
+        self.assertEqual(publisher.count('contents: write'), 1)
+        self.assertIn("github.ref == 'refs/heads/flutter-next'", publisher)
+        self.assertIn('needs: [prepare, build, install, verify]', publisher)
+        self.assertIn("github.event_name == 'push'", publisher)
+        self.assertIn('inputs.publish', publisher)
+        for platform in ('windows-x86_64', 'linux-x86_64', 'macos-aarch64'):
+            self.assertIn('platform: ' + platform, build)
+        self.assertIn('location: [default, custom]', build)
+        self.assertIn('Test-Flutter-ReleaseMsi.ps1', build)
         self.assertNotIn('gh release', workflow)
         self.assertNotIn('validation/flutter-*', workflow)
         for suite in ("rust", "flutter"):
-            self.assertIn(f'--suite {suite} --expected-source "$env:GITHUB_SHA"', workflow)
+            self.assertIn(f'--suite {suite} --expected-source "' + '${{ needs.prepare.outputs.source_sha }}"', workflow)
 
     @staticmethod
     def flutter_output(*, names=None, omit=None, skipped=None, failed=None, done=True):

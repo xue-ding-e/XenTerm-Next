@@ -9,6 +9,7 @@
 #   XT_CHANNEL   force the channel during branch derivation (beta|alpha|dev);
 #                ignored when XT_VERSION or a tag already decided the version
 #   GITHUB_REF_TYPE / GITHUB_REF_NAME / GITHUB_SHA   CI checkout context
+#   SOURCE_DATE_EPOCH   optional reproducible prerelease timestamp (Unix seconds)
 #
 # Authority order (§2): XT_VERSION > git tag > branch derivation > dev fallback.
 #
@@ -151,7 +152,7 @@ else
             # The rolling `beta` tag (release.yml recreates it on every main
             # push) marks a channel, not a release: pin the channel here and
             # let the branch derivation below finish the version string.
-            beta)
+            beta|flutter-beta)
                 CHANNEL=beta
                 ;;
             v[0-9]*.[0-9]*.[0-9]*)
@@ -211,7 +212,11 @@ if [ -z "${VERSION:-}" ]; then
         else
             SOURCE="branch"
         fi
-        TIMESTAMP="$(date -u +%s)"
+        # Release retries must produce the same runtime version for the same
+        # source. CI supplies its commit timestamp; local builds keep now.
+        TIMESTAMP="${SOURCE_DATE_EPOCH:-$(date -u +%s)}"
+        printf '%s' "$TIMESTAMP" | grep -Eq '^[0-9]{10}$' \
+            || die "SOURCE_DATE_EPOCH must be ten decimal Unix timestamp digits"
         VERSION="xt-$CHANNEL-$HASH-T$TIMESTAMP"
     fi
 fi

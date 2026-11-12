@@ -33,13 +33,20 @@
 断言并完成两条实现的行为对照，是替换 GPUI 前尚未完成的验收门槛。
 
 独立 `flutter-next` 分支保留上游 MIT 许可证和作者归属，不替换 GPUI `main`
-发布或更新渠道。Windows 工作流仅在该分支推送或手动运行时上传试用制品，不发布、
-删除任何 release。必须完整解压 ZIP，不能只取 exe。需要 Windows 10/11 x64 及 Microsoft Visual C++
-x64 运行库，**不是完全自包含包**。附带 `Start-Flutter-Preview.ps1` 检查最低运行库
-版本（记录在 `WINDOWS-RUNTIME.json`），不自动下载、安装或提权。运行库只从
-[微软官方](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist)获取。
-遵循 [Flutter Windows 分发说明](https://docs.flutter.dev/platform-integration/windows/building)，
-未核实再分发许可前不从开发机复制微软运行库；干净 Windows 运行仍未实测。
+发布或更新渠道。独立 [Flutter beta 下载入口](https://github.com/xue-ding-e/XenTerm-Next/releases/tag/flutter-beta)
+提供 Windows x64 portable ZIP 和 MSI、Linux x64 tar.gz、macOS Apple Silicon ZIP。
+推送 `flutter-next` 后，三平台串行构建、指定维护回归、桥接加载、MSI 默认/自定义目录的
+安装、升级和卸载全部通过，才会发布当前同 SHA 的产物；PR 只验证，不发布。
+手动运行可关闭 `publish` 仅验证。发布附带每平台及总 BUILD.json、SHA256SUMS，旧资产保留。
+MSI 数字版本无损编码应用版本中的时间戳，升级族与 GPUI、上游完全独立。
+
+Windows 需要 Windows 10/11 x64，必须完整解压 ZIP，不能只取 exe。构建从托管 runner
+的 Visual Studio 可再分发目录附带微软 VC++ x64 运行库，记录在 `WINDOWS-RUNTIME.json`，
+无须另从 DLL 网站下载。`Start-Flutter-Preview.ps1` 可验证应用目录内的运行库；不自动下载、
+安装或提权。分发依据见 [微软说明](https://learn.microsoft.com/en-us/cpp/windows/redistributing-visual-cpp-files)
+及 [Flutter Windows 分发说明](https://docs.flutter.dev/platform-integration/windows/building)。
+Windows 未签名；macOS 为 ad-hoc 签名、未公证；Linux 基于 Ubuntu 22.04。
+干净 Windows、标准用户和真实 SSH/SFTP 使用仍须独立验收。
 
 GUI 默认使用 exe 旁的
 `config-flutter-next`；目录不可写会报错，不回退到 GPUI 数据，也不自动迁移。
@@ -58,8 +65,9 @@ GUI 默认使用 exe 旁的
 不要指向生产配置。打包不扩大 MCP 权限，也不自动启动服务；GUI/CLI 同时访问配置
 及凭据的行为仍待验证。
 
-**验证状态：**合成运行文件的 Python 打包测试已通过；本试用线 Rust/Flutter 编译、
-Windows 启动及上述命令尚未实测。产出试用包不等于可以替代 GPUI。替代前必须逐项验证
+**验证状态：**每次发布的确切源码、构建及安装验收链接以该次 Release 的 BUILD.json 为准。
+既有 Windows 编译及桥接烟测记录见 [CI](https://github.com/xue-ding-e/XenTerm-Next/actions/runs/43188461718)，
+旧 MSI 配方验证不代替本次候选安装包验收。产出试用包不等于可以替代 GPUI。替代前必须逐项验证
 SSH/认证/密钥、SFTP/远程安全编辑、代理/多跳（含不打开 GUI 连接的 CLI/MCP）、
 CLI/MCP 权限、端口转发、重连、终端输入/输入法/历史、配置隔离和完整 Windows 依赖。
 GPUI 现有能力必须全部保留，不能只凭功能同名判定等价。

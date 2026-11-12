@@ -6,6 +6,18 @@ with the distribution, the text is kept in the repository next to the asset (for
 example `assets/fonts/`) and is also embedded in the asset itself where the
 licence allows that.
 
+## Microsoft Visual C++ runtime (Windows Flutter packages)
+
+Windows Flutter distributions include unmodified x64 runtime DLLs from the
+build runner's Visual Studio `Microsoft.VC143.CRT` redistributable directory.
+Copyright Microsoft Corporation. These components are Microsoft Distributable
+Code and are subject to the applicable Visual Studio license terms, not XenTerm's
+MIT license. `WINDOWS-RUNTIME.json` records their source directory, versions and
+SHA-256 hashes. No files from Windows system directories are redistributed.
+
+See [Microsoft's redistribution guidance](https://learn.microsoft.com/en-us/cpp/windows/redistributing-visual-cpp-files)
+and [Visual Studio 2022 distributable code](https://learn.microsoft.com/en-us/visualstudio/releases/2022/redistribution).
+
 ## Twemoji — colour emoji artwork
 
 Colour emoji are rendered from Twemoji graphics embedded in the Rust core.

@@ -1,76 +1,154 @@
-name: Next Flutter Windows preview (artifacts only)
+name: Next Flutter CI and beta
 
-# This is deliberately separate from GPUI's beta publisher and updater.
-# Inherited upstream workflows are retained under .github/upstream-workflows.
+# Flutter owns flutter-beta; GPUI's main/beta and upstream automation stay separate.
 on:
   push:
-    branches: [flutter-next, validation/flutter-maintenance-20261102]
+    branches: [flutter-next]
+  pull_request:
+    branches: [flutter-next]
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the verified current flutter-next source to flutter-beta
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
+# Preserve the existing one-heavy-workflow budget, including active uploads.
 concurrency:
   group: next-product-heavy
   cancel-in-progress: false
 
 jobs:
-  windows:
-    if: github.repository == 'xue-ding-e/XenTerm-Next' && (github.ref == 'refs/heads/flutter-next' || github.ref == 'refs/heads/validation/flutter-maintenance-20261102')
-    runs-on: windows-2025
-    timeout-minutes: 60
-    env:
-      # Match the repository identity recorded in all 87 hosted lock entries.
-      # Keep package versions/checksums pinned; do not silently switch registries.
-      PUB_HOSTED_URL: https://pub.flutter-io.cn
-      XT_CHANNEL: dev
-      XT_BASH: 'C:\Program Files\Git\bin\bash.exe'
+  prepare:
+    name: Prepare
+    if: github.repository == 'xue-ding-e/XenTerm-Next'
+    runs-on: ubuntu-22.04
+    outputs:
+      source_sha: ${{ steps.version.outputs.source_sha }}
+      xt_version: ${{ steps.version.outputs.xt_version }}
+      msi_version: ${{ steps.version.outputs.msi_version }}
+      upstream_sha: ${{ steps.version.outputs.upstream_sha }}
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@1.99.1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify release policy and packaging contracts
+        run: python -m unittest discover -s scripts/next -p 'test_*.py'
+      - name: Validate GitHub Actions syntax with pinned actionlint
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl -fsSL https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz -o actionlint.tar.gz
+          echo '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  actionlint.tar.gz' | sha256sum --check
+          tar -xzf actionlint.tar.gz actionlint
+          cd "$GITHUB_WORKSPACE"
+          "$RUNNER_TEMP/actionlint" -shellcheck= -pyflakes= .github/workflows/*.yml
+      - name: Resolve one canonical version for every platform
+        id: version
+        shell: bash
+        env:
+          XT_CHANNEL: beta
+        run: |
+          set -euo pipefail
+          GITHUB_SHA=$(git rev-parse HEAD)
+          SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)
+          export GITHUB_SHA SOURCE_DATE_EPOCH
+          XT_VERSION=$(bash scripts/version.sh)
+          export XT_VERSION
+          python - <<'PY'
+          import importlib.util, os, sys
+          sys.path.insert(0, 'scripts/next')
+          from flutter_release import runtime_details
+          spec = importlib.util.spec_from_file_location('pack', 'scripts/next/package_flutter_windows.py')
+          pack = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(pack)
+          sha, version = os.environ['GITHUB_SHA'], os.environ['XT_VERSION']
+          values = {'source_sha': sha, 'xt_version': version,
+                    'msi_version': runtime_details(version, sha), 'upstream_sha': pack.UPSTREAM_SHA}
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as stream:
+              for key, value in values.items():
+                  stream.write(f'{key}={value}\n')
+          print(values)
+          PY
+
+  build:
+    name: Desktop (${{ matrix.platform }})
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - {os: windows-2025, platform: windows-x86_64, flutter: windows, bundle: apps/xenterm/build/windows/x64/runner/Release, bridge: xenterm_bridge.dll, cli: xenterm-cli.exe}
+          - {os: ubuntu-22.04, platform: linux-x86_64, flutter: linux, bundle: apps/xenterm/build/linux/x64/release/bundle, bridge: lib/libxenterm_bridge.so, cli: xenterm-cli}
+          - {os: macos-15, platform: macos-aarch64, flutter: macos, bundle: apps/xenterm/build/macos/Build/Products/Release/xenterm_app.app, bridge: Contents/Frameworks/libxenterm_bridge.dylib, cli: Contents/MacOS/xenterm-cli}
+    env:
+      # Preserve the hosted registry identity and checksums in pubspec.lock.
+      PUB_HOSTED_URL: https://pub.flutter-io.cn
+      XT_VERSION: ${{ needs.prepare.outputs.xt_version }}
+      XT_CHANNEL: beta
+      XT_BASH: ${{ matrix.flutter == 'windows' && 'C:\Program Files\Git\bin\bash.exe' || 'bash' }}
+      SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config cmake ninja-build clang libgtk-3-dev liblzma-dev libstdc++-12-dev libudev-dev libdbus-1-dev xvfb
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: next-flutter-${{ matrix.platform }}
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+        with:
+          arch: x64
+          vsversion: '2022'
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.47.7'
           channel: stable
           cache: true
-      - name: Verify source and artifact-only workflow policy
-        shell: pwsh
-        run: |
-          git rev-parse HEAD
-          rustc --version
-          flutter --version
-          python -m unittest discover -s scripts/next -p 'test_*.py'
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Resolve canonical runtime version
+      - name: Verify exact checkout and release policy
         shell: bash
         run: |
           set -euo pipefail
-          echo "XT_VERSION=$(bash scripts/version.sh)" >> "$GITHUB_ENV"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          rustc --version
+          flutter --version
+          python -m unittest discover -s scripts/next -p 'test_*.py'
       - name: Resolve and verify Flutter dependencies
         working-directory: apps/xenterm
         run: flutter pub get --enforce-lockfile
       - name: Verify dependency resolution did not rewrite the lockfile
         working-directory: apps/xenterm
         run: git diff --exit-code -- pubspec.lock
-      # Analyze and these injected-source tests do not need the native DLL.
-      # Fail fast here; keep the complete suite and packaged-DLL smoke below.
+      # Injected-source Dart tests fail before native compilation. Keep the
+      # complete suite and packaged-DLL smoke after the native release build.
       - name: Analyze Flutter
         working-directory: apps/xenterm
         run: flutter analyze
       - name: Test exact Flutter maintenance regressions (48 required)
-        shell: pwsh
-        run: |
-          python scripts/next/run_flutter_maintenance_regressions.py --suite flutter --expected-source "$env:GITHUB_SHA"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      # Explicit library selection covers 13 tunnel, 3 settings, 15 protocol,
-      # 9 frontend, 3 encoding and 1 Windows ConPTY regression, plus 3 bridge tests across 2 targets.
-      - name: Test exact Rust maintenance regressions (47 required)
-        shell: pwsh
-        run: |
-          python scripts/next/run_flutter_maintenance_regressions.py --suite rust --expected-source "$env:GITHUB_SHA"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        run: python scripts/next/run_flutter_maintenance_regressions.py --suite flutter --expected-source "${{ needs.prepare.outputs.source_sha }}"
+      - name: Test exact Rust maintenance regressions (47 Windows, 45 Unix)
+        run: python scripts/next/run_flutter_maintenance_regressions.py --suite rust --expected-source "${{ needs.prepare.outputs.source_sha }}"
       - name: Test Rust bridge
         run: cargo test --locked -p xenterm-bridge
       - name: Test CLI profile isolation
@@ -80,48 +158,144 @@ jobs:
       - name: Test Flutter
         working-directory: apps/xenterm
         run: flutter test
-      - name: Build Flutter Windows
+      - name: Build Flutter desktop
         working-directory: apps/xenterm
-        run: flutter build windows --release
+        run: flutter build ${{ matrix.flutter }} --release
       - name: Bundle native bridge
         shell: bash
         run: bash apps/xenterm/tool/bundle_native.sh
       - name: Bundle and verify CLI/MCP companion
-        shell: pwsh
+        shell: bash
+        env:
+          BUNDLE: ${{ matrix.bundle }}
+          CLI_PATH: ${{ matrix.cli }}
         run: |
-          $cli = "$env:GITHUB_WORKSPACE\target\release\xenterm.exe"
-          $actual = & $cli --version
-          if ($LASTEXITCODE -ne 0 -or $actual -ne "xenterm $env:XT_VERSION") { throw "CLI version mismatch: $actual" }
-          Copy-Item $cli apps/xenterm/build/windows/x64/runner/Release/xenterm-cli.exe
+          set -euo pipefail
+          SOURCE=target/release/xenterm
+          if [ "$RUNNER_OS" = Windows ]; then SOURCE="$SOURCE.exe"; fi
+          test "$("$SOURCE" --version)" = "xenterm $XT_VERSION"
+          cp "$SOURCE" "$BUNDLE/$CLI_PATH"
       - name: Smoke test packaged native bridge with isolated data
-        shell: pwsh
-        working-directory: apps/xenterm
+        shell: bash
+        env:
+          BRIDGE_PATH: ${{ matrix.bundle }}/${{ matrix.bridge }}
         run: |
-          $env:XENTERM_BRIDGE_PATH = "$env:GITHUB_WORKSPACE\apps\xenterm\build\windows\x64\runner\Release\xenterm_bridge.dll"
-          $env:XENTERM_DATA_DIR = Join-Path $env:RUNNER_TEMP "flutter-smoke-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          set -euo pipefail
+          export XENTERM_BRIDGE_PATH="$GITHUB_WORKSPACE/$BRIDGE_PATH"
+          export XENTERM_DATA_DIR="$RUNNER_TEMP/flutter-smoke-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          if [ "$RUNNER_OS" = Windows ]; then
+            export XENTERM_BRIDGE_PATH="$(cygpath -w "$XENTERM_BRIDGE_PATH")"
+            export XENTERM_DATA_DIR="$(cygpath -w "$XENTERM_DATA_DIR")"
+          fi
+          cd apps/xenterm
           flutter test test/native_bridge_smoke_test.dart
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Verify Windows resources and record runtime prerequisite
+      - name: Bundle Microsoft app-local CRT and verify Windows resources
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $bundle = 'apps/xenterm/build/windows/x64/runner/Release'
+          $bundle = '${{ matrix.bundle }}'
           $gui = (Get-Item "$bundle/xenterm.exe").VersionInfo
-          if ($gui.FileVersion -ne $env:XT_VERSION -or $gui.ProductVersion -ne $env:XT_VERSION) { throw 'GUI resource version differs from CLI/bridge' }
-          $vc = @('HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\VisualStudio\14.0\VC\Runtimes\x64') | ForEach-Object {
-            $entry = Get-ItemProperty $_ -ErrorAction SilentlyContinue
-            if ($entry -and $entry.Installed -eq 1) { [version]($entry.Version -replace '^v', '') }
-          } | Sort-Object -Descending | Select-Object -First 1
-          if (-not $vc) { throw 'Cannot establish Microsoft VC++ runtime prerequisite' }
-          $hashes = @{}
-          foreach ($file in @('xenterm.exe', 'xenterm-cli.exe', 'xenterm_bridge.dll')) {
-            $hashes[$file] = (Get-FileHash "$bundle/$file" -Algorithm SHA256).Hash.ToLowerInvariant()
-          }
-          @{core_version=$env:XT_VERSION; source_sha=$env:GITHUB_SHA; minimum_vc_runtime=$vc.ToString(); windows='Windows 10/11 x64'; runtime_mode='external-prerequisite'; binary_sha256=$hashes; clean_windows_tested=$false} | ConvertTo-Json -Depth 3 | Set-Content "$bundle/WINDOWS-RUNTIME.json" -Encoding utf8NoBOM
-      - name: Package application with explicit runtime prerequisite
-        run: python scripts/next/package_flutter_windows.py --bundle apps/xenterm/build/windows/x64/runner/Release --output dist-flutter --version "$env:XT_VERSION"
+          if ($gui.FileVersion -ne $env:XT_VERSION -or $gui.ProductVersion -ne $env:XT_VERSION) { throw 'GUI/CLI version mismatch' }
+          & ./scripts/next/Bundle-Flutter-VCRuntime.ps1 -BundleDir $bundle -SourceSha $env:SOURCE_SHA -Version $env:XT_VERSION
+      - name: Build independent Flutter MSI
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $wix = & ./scripts/install-wix.ps1
+          & ./scripts/next/Test-Flutter-Msi.ps1 -WixBin $wix
+          $msi = & ./apps/xenterm/tool/package_windows_installer.ps1 -Version $env:XT_VERSION -ProductVersion '${{ needs.prepare.outputs.msi_version }}' -BundleDir '${{ matrix.bundle }}' -OutputDir target/flutter-msi -WixBin $wix
+          if (-not (Test-Path -LiteralPath $msi -PathType Leaf)) { throw 'Missing Flutter MSI' }
+          "FLUTTER_MSI=$msi" >> $env:GITHUB_ENV
+      - name: Package platform with complete provenance
+        shell: bash
+        env:
+          BUNDLE: ${{ matrix.bundle }}
+          PLATFORM: ${{ matrix.platform }}
+          UPSTREAM_SHA: ${{ needs.prepare.outputs.upstream_sha }}
+          MSI_VERSION: ${{ needs.prepare.outputs.msi_version }}
+        run: |
+          set -euo pipefail
+          extra=()
+          if [ "$RUNNER_OS" = Windows ]; then extra=(--msi "$FLUTTER_MSI" --msi-product-version "$MSI_VERSION"); fi
+          python scripts/next/package_flutter_desktop.py --bundle "$BUNDLE" --platform "$PLATFORM" --output dist-flutter --version "$XT_VERSION" --source-sha "$SOURCE_SHA" --run-id "$GITHUB_RUN_ID" --upstream-sha "$UPSTREAM_SHA" "${extra[@]}"
       - uses: actions/upload-artifact@v4
         with:
-          name: XenTerm-Next-Flutter-${{ github.sha }}-windows-x86_64
+          name: flutter-package-${{ matrix.platform }}
           path: dist-flutter/*
           if-no-files-found: error
           retention-days: 14
+
+  install:
+    name: MSI lifecycle (${{ matrix.location }})
+    needs: [prepare, build]
+    runs-on: windows-2025
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        location: [default, custom]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: flutter-package-windows-x86_64
+          path: ${{ runner.temp }}/flutter-artifact
+      - name: Verify actual candidate install, upgrade and uninstall
+        shell: pwsh
+        run: |
+          $wix = & ./scripts/install-wix.ps1
+          & ./scripts/next/Test-Flutter-ReleaseMsi.ps1 -ArtifactDirectory "$env:RUNNER_TEMP/flutter-artifact" -ExpectedSourceSha '${{ needs.prepare.outputs.source_sha }}' -ExpectedRuntimeVersion '${{ needs.prepare.outputs.xt_version }}' -InstallLocation '${{ matrix.location }}' -WixBin $wix -EvidencePath "$env:RUNNER_TEMP/flutter-msi-${{ matrix.location }}.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flutter-msi-evidence-${{ matrix.location }}
+          path: ${{ runner.temp }}/flutter-msi-${{ matrix.location }}.json
+          if-no-files-found: error
+          retention-days: 14
+
+  verify:
+    name: Verify complete release
+    needs: [prepare, build, install]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: flutter-package-*
+          merge-multiple: true
+          path: dist-flutter
+      - name: Check all platform sources, versions and checksums
+        run: python scripts/next/flutter_release.py --directory dist-flutter --source-sha '${{ needs.prepare.outputs.source_sha }}' --run-id '${{ github.run_id }}' --verify-only
+
+  publish:
+    name: Publish Flutter beta
+    needs: [prepare, build, install, verify]
+    if: >-
+      github.repository == 'xue-ding-e/XenTerm-Next' &&
+      github.ref == 'refs/heads/flutter-next' &&
+      (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: flutter-package-*
+          merge-multiple: true
+          path: dist-flutter
+      - name: Verify downloads and promote only the current Flutter source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/next/flutter_release.py --directory dist-flutter --source-sha '${{ needs.prepare.outputs.source_sha }}' --run-id '${{ github.run_id }}'

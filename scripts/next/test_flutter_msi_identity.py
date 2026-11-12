@@ -59,10 +59,10 @@ class MsiIdentityTests(unittest.TestCase):
                          "runtime.binary_sha256", "SYNTHETIC PROFILE MUST SURVIVE",
                          "'/norestart'", "-ProductVersion 0.1.0", "-ProductVersion 0.1.1"):
             self.assertIn(required, script)
-        workflow = (ROOT / '.github/workflows/next-flutter-msi-validation.yml').read_text()
-        self.assertIn('needs: recipe', workflow)
+        workflow = (ROOT / '.github/workflows/next-flutter-windows.yml').read_text()
+        self.assertIn('needs: [prepare, build]', workflow)
         self.assertIn('max-parallel: 1', workflow)
-        self.assertIn('install-location: [custom, default]', workflow)
+        self.assertIn('location: [default, custom]', workflow)
         self.assertIn('Refusing to use an existing installation/profile directory.', script)
         self.assertIn('Refusing to follow a pre-existing installer location registry value.', script)
         self.assertIn('Refusing to alter an existing product in this upgrade family.', script)
@@ -70,9 +70,11 @@ class MsiIdentityTests(unittest.TestCase):
         self.assertIn('if ($relatedCount -ne 0)', script)
         self.assertIn("([guid] $recipe.DocumentElement.Product.GetAttribute('UpgradeCode')).ToString('B').ToUpperInvariant()", script)
         self.assertIn("if ($InstallLocation -eq 'custom') { $installArguments +=", script)
-        self.assertIn('github.event.pull_request.head.repo.full_name == github.repository', workflow)
-        self.assertIn('run-id: 43177639827', workflow)
-        self.assertNotIn('contents: write', workflow)
+        self.assertIn('Test-Flutter-ReleaseMsi.ps1', workflow)
+        self.assertIn('name: flutter-package-windows-x86_64', workflow)
+        self.assertIn('ExpectedSourceSha', workflow)
+        self.assertNotIn('run-id: 43177639827', workflow)
+        self.assertNotIn('contents: write', workflow.split('\n  publish:\n')[0])
 
 
 if __name__ == '__main__':

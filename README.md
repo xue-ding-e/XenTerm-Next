@@ -35,17 +35,27 @@ tests are **not equivalent coverage**: porting applicable old assertions and
 running both behavior suites is an outstanding replacement gate.
 
 This independent `flutter-next` line preserves upstream MIT attribution and does
-not replace the GPUI `main` release or its update channel. The Windows workflow
-runs only on this branch (or manual dispatch) and uploads experimental artifacts;
-it never publishes or removes releases. Extract the **entire** portable ZIP, not
-just the executable. **Windows 10/11 x64 and Microsoft Visual C++ x64 runtime
-are prerequisites**: this is not a fully self-contained archive. Use the included
-`Start-Flutter-Preview.ps1` gate; the minimum runtime version is recorded in
-`WINDOWS-RUNTIME.json`. It never downloads or installs software. Obtain the runtime
-only from [Microsoft](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist).
-This follows [Flutter's Windows distribution requirements](https://docs.flutter.dev/platform-integration/windows/building);
-Microsoft redistributables are not copied from a developer machine or redistributed
-without a verified license entitlement. Clean Windows execution remains untested.
+not replace the GPUI `main` release or its update channel. The independent
+[Flutter beta downloads](https://github.com/xue-ding-e/XenTerm-Next/releases/tag/flutter-beta)
+provide Windows x64 portable ZIP and MSI, Linux x64 tar.gz and macOS Apple Silicon ZIP.
+Each push to `flutter-next` builds platforms sequentially and requires the exact
+maintenance regressions, packaged bridge loading and MSI install/upgrade/uninstall
+in both default and custom directories before publishing the current source.
+Pull requests only validate; manual dispatch can disable `publish`. Per-platform
+and combined BUILD.json/SHA256SUMS identify the same source and build; old assets
+are preserved. MSI's numeric version losslessly encodes the application version's
+timestamp and its upgrade family is independent of GPUI and upstream.
+
+Windows requires Windows 10/11 x64. Extract the **entire** portable ZIP, not just
+the executable. Microsoft VC++ x64 DLLs come from the hosted runner's Visual Studio
+redistributable directory, with provenance in `WINDOWS-RUNTIME.json`; no third-party
+DLL download is needed. The included `Start-Flutter-Preview.ps1` validates app-local
+runtime files without downloading, installing or elevating. See
+[Microsoft's redistribution guidance](https://learn.microsoft.com/en-us/cpp/windows/redistributing-visual-cpp-files)
+and [Flutter's Windows distribution requirements](https://docs.flutter.dev/platform-integration/windows/building).
+Windows packages are unsigned; macOS is ad-hoc signed and not notarized; Linux is
+built on Ubuntu 22.04. Clean Windows, standard-user and real SSH/SFTP acceptance
+remain separate work.
 
 The GUI uses `config-flutter-next` beside `xenterm.exe`; an
 unwritable directory is an error, not a fallback to existing GPUI data. An explicit
@@ -65,9 +75,11 @@ Do not point this preview at production profiles. MCP permissions are not expand
 by packaging; no service is auto-started. Before simultaneous GUI/CLI use, profile
 concurrency and credential access still need verification.
 
-**Validation status:** Python packaging tests pass with synthetic runtime files.
-Rust/Flutter compilation, Windows launch, and the example above are **not yet
-verified** for this preview. An artifact build is not a claim of GPUI parity.
+**Validation status:** use each Release's BUILD.json for its exact source and
+build/installation evidence. Earlier Windows compilation and bridge smoke passed
+in [CI](https://github.com/xue-ding-e/XenTerm-Next/actions/runs/43188461718);
+old MSI recipe tests do not replace acceptance of the current candidate package.
+An artifact build is not a claim of GPUI parity.
 Replacement requires behavior tests for SSH/authentication and keys, SFTP and safe
 remote editing, proxy/jump chains (including CLI/MCP without a GUI connection),
 CLI/MCP authorization, port forwarding, reconnect, terminal input/IME/history,
