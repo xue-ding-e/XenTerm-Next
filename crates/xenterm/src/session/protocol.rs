@@ -371,11 +371,22 @@ impl HostKeyResponder {
 
     /// Deliver the user's decision (`true` = trust). Idempotent.
     pub fn respond(&self, accept: bool) {
-        if let Ok(mut guard) = self.0.lock() {
-            if let Some(tx) = guard.take() {
-                let _ = tx.send(accept);
+        let _ = self.try_respond(accept);
+    }
+
+    /// True means the pending receiver accepted the answer, not that SSH
+    /// authentication succeeded. Sending may wake the receiver synchronously.
+    pub(crate) fn try_respond(&self, accept: bool) -> bool {
+        let tx = match self.0.lock() {
+            Ok(mut guard) => guard.take(),
+            Err(poisoned) => {
+                let tx = poisoned.into_inner().take();
+                // A poisoned responder must not grant trust or retain a waiter.
+                drop(tx);
+                return false;
             }
-        }
+        };
+        tx.map(|tx| tx.send(accept).is_ok()).unwrap_or(false)
     }
 }
 
@@ -403,11 +414,21 @@ impl CredentialResponder {
 
     /// Deliver the user's answer (`None` = cancelled). Idempotent.
     pub fn respond(&self, reply: Option<CredentialReply>) {
-        if let Ok(mut guard) = self.0.lock() {
-            if let Some(tx) = guard.take() {
-                let _ = tx.send(reply);
+        let _ = self.try_respond(reply);
+    }
+
+    /// Claims the sender once and reports actual oneshot acceptance. No lock
+    /// is held while sending, including when the receiver wakes synchronously.
+    pub(crate) fn try_respond(&self, reply: Option<CredentialReply>) -> bool {
+        let tx = match self.0.lock() {
+            Ok(mut guard) => guard.take(),
+            Err(poisoned) => {
+                let tx = poisoned.into_inner().take();
+                drop(tx);
+                return false;
             }
-        }
+        };
+        tx.map(|tx| tx.send(reply).is_ok()).unwrap_or(false)
     }
 }
 
@@ -430,11 +451,21 @@ impl MfaResponder {
 
     /// Deliver the user's answer (`None` = cancelled). Idempotent.
     pub fn respond(&self, reply: Option<String>) {
-        if let Ok(mut guard) = self.0.lock() {
-            if let Some(tx) = guard.take() {
-                let _ = tx.send(reply);
+        let _ = self.try_respond(reply);
+    }
+
+    /// Claims the sender once and reports actual oneshot acceptance. No lock
+    /// is held while sending, including when the receiver wakes synchronously.
+    pub(crate) fn try_respond(&self, reply: Option<String>) -> bool {
+        let tx = match self.0.lock() {
+            Ok(mut guard) => guard.take(),
+            Err(poisoned) => {
+                let tx = poisoned.into_inner().take();
+                drop(tx);
+                return false;
             }
-        }
+        };
+        tx.map(|tx| tx.send(reply).is_ok()).unwrap_or(false)
     }
 }
 

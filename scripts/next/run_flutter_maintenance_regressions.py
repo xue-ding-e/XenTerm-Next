@@ -78,6 +78,11 @@ INPUT_OWNERSHIP_DART_TESTS = (
     "activation read failure (snapshot) blocks input until refreshed",
     "activation read failure (empty) blocks input until refreshed",
     "rapid A B A routes input and disposal cancels pending focus",
+    "reconnect credential same-id prompt clears fields before first frame",
+    "reconnect credential same-id prompt clears fields after blank frame",
+    "reconnect mfa same-id prompt clears fields before first frame",
+    "reconnect mfa same-id prompt clears fields after blank frame",
+    "reconnect rejects old Continue pointer-up before rebuild",
 )
 INPUT_ADMISSION_TESTS = (
     "session::protocol::input_admission_tests::send_raw_reports_actual_admission_and_closed_receiver",
@@ -96,12 +101,21 @@ INPUT_ADMISSION_TESTS = (
     "session::protocol::input_admission_tests::regressions::starting_ssh_rejects_cloned_command_sender_input",
     "session::protocol::input_admission_tests::regressions::rejected_startup_input_is_never_replayed_after_admission_opens",
     "frontend::input_admission_tests::answering_a_prompt_does_not_make_terminal_input_ready",
+    "frontend::input_admission_tests::responders_report_real_delivery_once_and_reject_dropped_receivers",
+    "frontend::input_admission_tests::close_cancels_all_prompt_kinds_before_or_after_install_despite_clones",
+    "frontend::input_admission_tests::prompt_answers_reject_stale_duplicate_missing_and_disconnected_receivers",
+    "frontend::input_admission_tests::replacing_a_prompt_explicitly_cancels_the_previous_responder",
+    "frontend::input_admission_tests::concurrent_close_and_answer_settle_once_without_reopening_input",
+    "frontend::input_admission_tests::concurrent_close_and_prompt_install_always_cancel_retained_clones",
+    "frontend::input_admission_tests::oneshot_wake_can_reenter_responder_and_close_without_held_locks",
+    "frontend::input_admission_tests::poisoned_prompt_state_cancels_and_never_accepts_late_answers",
 )
 WINDOWS_INPUT_TESTS = (
     "terminal::terminal_windows_tests::conpty_powershell_preserves_long_unicode_output",
 )
 BRIDGE_INPUT_TESTS = (
     "input_admission_tests::ffi_rejects_ssh_input_before_worker_or_prompt_pump_runs",
+    "input_admission_tests::ffi_prompt_answer_rejects_live_handle_without_prompt_and_removed_handle",
 )
 
 CORE = ("cargo", "test", "--locked", "-p", "xenterm", "--lib")

@@ -792,19 +792,20 @@ pub extern "C" fn xenterm_session_resize(handle: u64, cols: u32, rows: u32) -> i
 
 #[no_mangle]
 pub extern "C" fn xenterm_session_close(handle: u64) -> i32 {
-    match sessions().lock() {
-        Ok(mut map) => match map.remove(&handle) {
-            Some(session) => {
-                session.close();
-                1
-            }
-            None => 0,
-        },
-        Err(_) => 0,
+    // Cancelling a prompt may synchronously wake its receiver. Do not retain
+    // the registry lock across close, even if that wake reenters the bridge.
+    let removed = sessions().lock().ok().and_then(|mut map| map.remove(&handle));
+    match removed {
+        Some(session) => {
+            session.close();
+            1
+        }
+        None => 0,
     }
 }
 
-/// Answers the session's current prompt. Returns 1 when it was delivered.
+/// Returns 1 only when the matching prompt's oneshot accepted the answer.
+/// This is not an authentication-success or receiver-processing acknowledgement.
 #[no_mangle]
 pub extern "C" fn xenterm_session_answer_prompt(
     handle: u64,
@@ -825,10 +826,9 @@ pub extern "C" fn xenterm_session_answer_prompt(
     let pass = opt(password);
     let text = opt(text);
     match session(handle) {
-        Some(session) => {
-            session.answer_prompt(prompt_id, accept != 0, user, pass, text);
-            1
-        }
+        Some(session) => i32::from(session.try_answer_prompt(
+            prompt_id, accept != 0, user, pass, text,
+        )),
         None => 0,
     }
 }
@@ -1676,5 +1676,38 @@ mod input_admission_tests {
         terminal.close();
         drop(runtime);
         assert_eq!(accepted, 0);
+    }
+
+    #[test]
+    fn ffi_prompt_answer_rejects_live_handle_without_prompt_and_removed_handle() {
+        // This exercises the real FFI return value without polling any SSH
+        // worker, reading a profile or claiming transport-cancellation coverage.
+        let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let mut config = xenterm::config::Session::new_empty();
+        config.kind = xenterm::config::SessionKind::Ssh;
+        let terminal =
+            TerminalSession::start_adhoc(runtime.handle(), config, false, 80, 24, 100).unwrap();
+        let handle = NEXT_HANDLE.fetch_add(1, Ordering::SeqCst);
+        sessions().lock().unwrap().insert(handle, terminal);
+        let answer = || xenterm_session_answer_prompt(
+            handle, 42, 1, std::ptr::null(), std::ptr::null(), std::ptr::null(),
+        );
+        let without_prompt = answer();
+        let closed = xenterm_session_close(handle);
+        let after_close = answer();
+        let repeated_close = xenterm_session_close(handle);
+        // Do not rely on the close function under test for fixture cleanup.
+        // Release the registry lock before closing any leftover session.
+        let leftover = sessions().lock().unwrap().remove(&handle);
+        if let Some(terminal) = leftover {
+            terminal.close();
+        }
+        drop(runtime);
+        // Cleanup precedes assertions so the pre-fix failure does not retain
+        // this synthetic registry entry or a dormant runtime.
+        assert_eq!(without_prompt, 0);
+        assert_eq!(closed, 1);
+        assert_eq!(after_close, 0);
+        assert_eq!(repeated_close, 0);
     }
 }
