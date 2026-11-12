@@ -1,0 +1,30 @@
+name: Next Flutter MSI recipe validation (no installation or release)
+on:
+  pull_request:
+    branches: [flutter-next]
+    paths:
+      - 'packaging/windows/**'
+      - 'apps/xenterm/tool/package_windows_installer.ps1'
+      - 'scripts/next/*Msi*.ps1'
+      - 'scripts/next/test_flutter_msi_identity.py'
+      - '.github/workflows/next-flutter-msi-validation.yml'
+permissions:
+  contents: read
+concurrency:
+  group: next-flutter-msi-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+jobs:
+  recipe:
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Static identity regression checks
+        run: python -m unittest discover -s scripts/next -p test_flutter_msi_identity.py
+      - name: Compile and validate a synthetic MSI (never installed)
+        shell: pwsh
+        run: |
+          $wix = & ./scripts/install-wix.ps1
+          & ./scripts/next/Test-Flutter-Msi.ps1 -WixBin $wix

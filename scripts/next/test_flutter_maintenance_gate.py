@@ -208,12 +208,20 @@ class MaintenanceGateTests(unittest.TestCase):
         positions = [workflow.index(f"- name: {name}\n") for name in steps]
         self.assertEqual(positions, sorted(positions))
 
-    def test_validation_ref_has_one_readonly_artifact_workflow(self):
+    def test_validation_ref_has_only_readonly_validation_workflows(self):
         root = Path(__file__).resolve().parents[2]
         workflows = root / ".github/workflows"
         files = list(workflows.glob("*.yml")) + list(workflows.glob("*.yaml"))
-        self.assertEqual([file.name for file in files], ["next-flutter-windows.yml"])
-        workflow = files[0].read_text()
+        self.assertEqual(sorted(file.name for file in files),
+                         ["next-flutter-msi-validation.yml", "next-flutter-windows.yml"])
+        msi = (workflows / "next-flutter-msi-validation.yml").read_text()
+        for required in ("contents: read", "persist-credentials: false",
+                         "timeout-minutes: 15", "branches: [flutter-next]",
+                         "Test-Flutter-Msi.ps1"):
+            self.assertIn(required, msi)
+        for forbidden in ("contents: write", "gh release", "msiexec", "upload-artifact", "pull_request_target", "  push:"):
+            self.assertNotIn(forbidden, msi)
+        workflow = (workflows / "next-flutter-windows.yml").read_text()
         self.assertIn("branches: [flutter-next, validation/flutter-maintenance-20261102]", workflow)
         self.assertIn("github.ref == 'refs/heads/validation/flutter-maintenance-20261102'", workflow)
         self.assertIn("permissions:\n  contents: read", workflow)

@@ -11,36 +11,35 @@
     $(var.LicenseRtf)      packaging/windows/LICENSE.rtf
   and compiles the harvested file list from heat.exe as a second source file.
 
-  ProductCode is regenerated for every build (Id="*"); UpgradeCode is fixed so
-  every XenTerm MSI upgrades any older XenTerm MSI in place. A per-machine
-  install into Program Files is intentionally *not* the portable layout: a
-  portable zip keeps its profile in the extracted folder, while this MSI
-  installs read-only program files only (the core then uses %APPDATA%).
-  The installer creates both a Start Menu entry and a desktop shortcut, using
-  the real XenTerm icon for the executable, the shortcuts and Add/Remove.
+  This Next Flutter upgrade family is independent of upstream XenTerm and GPUI.
+  Keep its UpgradeCode and shortcut component GUIDs stable across future releases.
+  Per-user LocalAppData installation keeps the bridge's adjacent
+  config-flutter-next profile writable without elevation. The profile is never
+  harvested or deleted on uninstall. This recipe still needs Windows execution
+  and install/upgrade/uninstall acceptance before enabling installer delivery.
 -->
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
      xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
     <Product
         Id="*"
-        Name="XenTerm"
+        Name="XenTerm Next Flutter"
         Manufacturer="xenterm contributors"
         Language="1033"
         Codepage="1252"
         Version="$(var.ProductVersion)"
-        UpgradeCode="6E8F2A1B-3C4D-4E5F-9A0B-1C2D3E4F5A6B">
+        UpgradeCode="D308C8B0-2E75-4F13-B4A8-7DD705095893">
 
         <Package
             Id="*"
             Keywords="Installer"
-            Description="XenTerm - SSH/SFTP/terminal client (Flutter UI + Rust core)"
+            Description="XenTerm Next Flutter - SSH/SFTP/terminal client (Flutter UI + Rust core)"
             Comments="$(var.AppVersion)"
             Manufacturer="xenterm contributors"
             InstallerVersion="500"
             Languages="1033"
             Compressed="yes"
-            InstallScope="perMachine"
-            InstallPrivileges="elevated"
+            InstallScope="perUser"
+            InstallPrivileges="limited"
             SummaryCodepage="1252"/>
 
         <MediaTemplate EmbedCab="yes" CompressionLevel="high"/>
@@ -55,57 +54,40 @@
         <MajorUpgrade
             Schedule="afterInstallInitialize"
             AllowSameVersionUpgrades="yes"
-            DowngradeErrorMessage="A newer version of XenTerm is already installed. Setup will now exit."/>
+            DowngradeErrorMessage="A newer version of XenTerm Next Flutter is already installed. Setup will now exit."/>
 
         <Icon Id="ProductICO" SourceFile="$(var.IconFile)"/>
         <Property Id="ARPPRODUCTICON" Value="ProductICO"/>
 
-        <!--
-          Close a running XenTerm (or an MCP client keeping the exe alive)
-          during an upgrade. Without this Windows Installer can only schedule
-          the locked executables for replacement on the next reboot.
-        -->
-        <util:CloseApplication
-            Id="CloseRunningXenTerm"
-            Target="xenterm.exe"
-            Description="XenTerm is still running. Close XenTerm and any MCP client using it, then click Retry. Choose Ignore to close it automatically."
-            PromptToContinue="yes"
-            CloseMessage="yes"
-            ElevatedCloseMessage="yes"
-            Timeout="10"
-            TerminateProcess="0"
-            RebootPrompt="no">WIX_UPGRADE_DETECTED</util:CloseApplication>
+        <!-- Do not close processes by the shared xenterm.exe basename: that
+             could affect GPUI or upstream. Windows Installer handles files in
+             this product; users must close this installation before upgrading. -->
 
         <!-- Populate Programs and Features -> Install location. -->
         <Property Id="ARPINSTALLLOCATION" Secure="yes"/>
         <!-- INSTALLFOLDER is the public directory property; Secure makes a
              silent override (msiexec /i ... INSTALLFOLDER=...) survive the
-             elevation boundary too. -->
+             installer UI boundary too. -->
         <Property Id="INSTALLFOLDER" Secure="yes"/>
 
         <Directory Id="TARGETDIR" Name="SourceDir">
-            <Directory Id="ProgramFiles64Folder">
-                <Directory Id="INSTALLFOLDER" Name="XenTerm"/>
+            <Directory Id="LocalAppDataFolder">
+                <Directory Id="INSTALLFOLDER" Name="XenTerm Next Flutter"
+                    ComponentGuidGenerationSeed="C548E41D-C5EE-4F4E-9F8A-6CE16261AFEF"/>
             </Directory>
-            <!--
-              All-users Start Menu folder: the package is per-machine, so
-              ProgramMenuFolder resolves to the shared menu. The component
-              keypath is HKCU (the canonical WiX shortcut layout) because
-              shortcuts are user-profile data; ICE38/43/57 otherwise reject a
-              per-machine keypath next to a shortcut.
-            -->
+            <!-- Per-user Start Menu shortcut with an independent HKCU keypath. -->
             <Directory Id="ProgramMenuFolder">
-                <Directory Id="XenTermMenuFolder" Name="XenTerm">
-                    <Component Id="StartMenuShortcut" Guid="{7F1C4E7A-2D6B-4A8E-9C33-5B1D0A6F2E81}">
+                <Directory Id="XenTermMenuFolder" Name="XenTerm Next Flutter">
+                    <Component Id="StartMenuShortcut" Guid="{135D4B2E-181F-4213-B52B-108C12763A33}">
                         <Shortcut Id="XenTermStartMenuShortcut"
-                            Name="XenTerm"
-                            Description="XenTerm - SSH/SFTP/terminal client"
+                            Name="XenTerm Next Flutter"
+                            Description="XenTerm Next Flutter - SSH/SFTP/terminal client"
                             Target="[INSTALLFOLDER]xenterm.exe"
                             WorkingDirectory="INSTALLFOLDER"
                             Icon="ProductICO"/>
                         <RemoveFolder Id="RemoveXenTermMenuFolder" On="uninstall"/>
                         <RegistryValue Root="HKCU"
-                            Key="Software\XenTerm"
+                            Key="Software\XenTerm-Next\Flutter"
                             Name="StartMenuShortcut"
                             Type="integer"
                             Value="1"
@@ -113,21 +95,17 @@
                     </Component>
                 </Directory>
             </Directory>
-            <!--
-              Desktop shortcut. The package is per-machine, so DesktopFolder
-              resolves to the shared (Public) desktop. The keypath is HKCU for
-              the same ICE38/43/57 reason as the Start Menu component above.
-            -->
+            <!-- Per-user desktop shortcut; never owns the upstream shortcut. -->
             <Directory Id="DesktopFolder">
-                <Component Id="DesktopShortcut" Guid="{B4D7E2C9-8A31-4F6E-9B52-6C0A1E3D8F47}">
+                <Component Id="DesktopShortcut" Guid="{378C47BD-20D6-4222-A18B-2D8B45CE7B36}">
                     <Shortcut Id="XenTermDesktopShortcut"
-                        Name="XenTerm"
-                        Description="XenTerm - SSH/SFTP/terminal client"
+                        Name="XenTerm Next Flutter"
+                        Description="XenTerm Next Flutter - SSH/SFTP/terminal client"
                         Target="[INSTALLFOLDER]xenterm.exe"
                         WorkingDirectory="INSTALLFOLDER"
                         Icon="ProductICO"/>
                     <RegistryValue Root="HKCU"
-                        Key="Software\XenTerm"
+                        Key="Software\XenTerm-Next\Flutter"
                         Name="DesktopShortcut"
                         Type="integer"
                         Value="1"
@@ -137,7 +115,7 @@
         </Directory>
 
         <!-- ComponentGroup "XenTermFiles" comes from heat.exe (harvested bundle). -->
-        <Feature Id="MainProgram" Title="XenTerm" Level="1">
+        <Feature Id="MainProgram" Title="XenTerm Next Flutter" Level="1">
             <ComponentGroupRef Id="XenTermFiles"/>
             <ComponentRef Id="StartMenuShortcut"/>
             <ComponentRef Id="DesktopShortcut"/>
