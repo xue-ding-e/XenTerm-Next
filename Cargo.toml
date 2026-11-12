@@ -35,7 +35,8 @@ thiserror = "1"
 directories = "5"
 chrono = { version = "0.4", features = ["serde"] }
 sysinfo = "0.33"
-uuid = { version = "1", features = ["v4", "serde"] }
+# uuid 1.28 requires Rust 1.89; preserve the verified Rust 1.88 headless path.
+uuid = { version = "=1.23.1", features = ["v4", "serde"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-util", "net", "time", "fs", "signal"] }
 # russh 0.61.2 fixes RUSTSEC-2026-0154 (unbounded ssh-agent frame allocation;
 # unreachable here, see audit.toml history). The ring feature keeps the crypto
