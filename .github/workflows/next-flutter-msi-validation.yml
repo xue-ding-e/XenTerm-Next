@@ -1,7 +1,5 @@
 name: Next Flutter MSI recipe validation (no installation or release)
 on:
-  push:
-    branches: [fix/flutter-msi-identity]
   pull_request:
     branches: [flutter-next]
     paths:

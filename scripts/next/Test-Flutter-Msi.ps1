@@ -37,6 +37,22 @@ try {
         }
     }
     if ($xml.SelectNodes('//w:RemoveFile', $ns).Count) { throw 'Unexpected file deletion rule.' }
+    # A second source location and changed file bytes must keep component
+    # identity stable. heat-generated IDs/absolute build paths are not identity.
+    $secondStage = Join-Path $temp 'different-source-root'
+    Copy-Item (Join-Path $work 'stage') $secondStage -Recurse
+    Set-Content (Join-Path $secondStage 'xenterm.exe') 'CHANGED SYNTHETIC BUILD BYTES'
+    $secondHarvest = Join-Path $temp 'Files-again.wxs'
+    & (Join-Path $WixBin 'heat.exe') dir $secondStage -nologo -cg XenTermFiles -dr INSTALLFOLDER -ag -sfrag -srd -sreg -scom -var var.SourceDir -out $secondHarvest
+    if ($LASTEXITCODE -ne 0) { throw 'Second harvest failed.' }
+    & (Join-Path $PSScriptRoot 'Convert-Flutter-MsiHarvest.ps1') -Path $secondHarvest
+    [xml] $secondXml = Get-Content $secondHarvest -Raw
+    $secondNs = [System.Xml.XmlNamespaceManager]::new($secondXml.NameTable)
+    $secondNs.AddNamespace('w', 'http://schemas.microsoft.com/wix/2006/wi')
+    $firstGuids = @($components | ForEach-Object { $_.GetAttribute('Guid') } | Sort-Object)
+    $secondGuids = @($secondXml.SelectNodes('//w:Component', $secondNs) | ForEach-Object { $_.GetAttribute('Guid') } | Sort-Object)
+    if (Compare-Object $firstGuids $secondGuids) { throw 'Component GUIDs changed with build location/content.' }
+    if (@($firstGuids | Select-Object -Unique).Count -ne $firstGuids.Count) { throw 'Duplicate component GUIDs.' }
     if (-not (Test-Path (Join-Path $temp 'xenterm-next-flutter-v0.1.0-windows-x86_64.msi'))) {
         throw 'Validated fixture MSI missing.'
     }
