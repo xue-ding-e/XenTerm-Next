@@ -15,11 +15,14 @@ is only an entry point and does not define a second policy.
 - `docs/`, `packaging/`, `scripts/` — design notes, packaging recipes and
   release helpers.
 
-The old GPUI UI no longer exists; do not reintroduce GPUI code, paths or
-documentation. The maintainers rebuilt the repository history in October 2026
-because both the UI and the Rust core were rewritten. Contributors do not need
-to migrate or replay old commits: start from `main` and submit normal changes.
-Never rewrite shared history as part of an ordinary change.
+This layout describes the `flutter-next` product, not the whole independent
+XenTerm Next repository. The owner confirmed dual GPUI/Flutter maintenance on
+2026-11-02: `main` retains GPUI and `flutter-next` maintains Flutter. Do not remove
+GPUI or replay upstream's history replacement into either maintained branch.
+Flutter must cover GPUI features and Next enhancements and pass installation,
+upgrade, uninstall, configuration compatibility and actual-use acceptance before
+replacing GPUI. Partial tests or successful builds are not replacement acceptance.
+See the independent-repository scope in the contribution guide and [#17](https://github.com/xue-ding-e/XenTerm-Next/issues/17).
 
 ## Before you write
 
@@ -35,7 +38,8 @@ Never rewrite shared history as part of an ordinary change.
   conventional commits, e.g. `fix(ssh): 修正跳板链断开后未回收会话`.
 - Keep the diff focused, report verification honestly (passed / failed / not run
   / blocked by environment), and never expose credentials or real session data.
-- PRs: fork → branch from `main` → Draft → convert to Ready for review yourself
+- PRs: select the correct product base (`flutter-next` here; GPUI uses `main`) →
+  topic branch → Draft → convert to Ready for review yourself
   when the work is done; maintainers merge with squash or rebase. Follow the
   contribution guide for the full flow.
 

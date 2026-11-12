@@ -7,6 +7,16 @@
 感谢你帮助改进 XenTerm。本指南说明问题反馈、Pull Request、验证要求和评审标准，是协作规则的
 唯一出处；[AGENTS.md](AGENTS.md) 只是 AI 助手的入口。
 
+## 独立 XenTerm Next 仓库范围
+
+对于 `xue-ding-e/XenTerm-Next`，维护者于 2026-11-02 确认双线维护：`main` 保留 GPUI，
+`flutter-next` 维护 Flutter。下文结构和上游历史说明只描述 Flutter 产品线。Flutter PR 从
+`flutter-next` 开始，不从 GPUI 的 `main` 开始，也不重放上游历史置换。
+Flutter 完整覆盖 GPUI 功能与 Next 自有增强，并通过安装、升级、卸载、配置兼容和实际使用验收前，
+继续保留和维护两条产品线。在 [#17](https://github.com/xue-ding-e/XenTerm-Next/issues/17) 分别记录证据。
+自有维护分支保持线性，按独立功能保留可读提交，squash 只整理同功能 fixup；`upstream-main`
+原样保留官方历史。修复按架构独立评估，保留作者和许可证，发布及生产部署仍须独立授权。
+
 ## 项目结构
 
 XenTerm 由 Rust 核心与 Flutter 桌面界面组成：
@@ -18,8 +28,8 @@ XenTerm 由 Rust 核心与 Flutter 桌面界面组成：
 | `apps/xenterm/native/` | `xenterm-bridge`，界面与核心之间的 FFI 桥接 crate |
 | `packaging/`、`scripts/`、`docs/` | 打包配方、构建与发布脚本、设计文档 |
 
-由于界面与 Rust 核心都经过重写，维护者已在 2026 年 10 月重建过一次仓库历史。贡献者无需迁移或
-重放旧提交：从当前 `main` 开始正常提交即可。除维护者统一协调外，不要改写共享历史。
+上游 `ixbaicn/XenTerm` 在重写界面与 Rust 核心后，于 2026 年 10 月重建过一次仓库历史。
+其贡献者从上游 `main` 开始；这不是替换 Next 历史的指令。除维护者统一协调外，不要改写共享历史。
 
 参与本项目即表示你愿意遵守[行为准则](CODE_OF_CONDUCT.md)。
 
@@ -41,7 +51,8 @@ XenTerm 由 Rust 核心与 Flutter 桌面界面组成：
 
 ## Pull Request 流程
 
-1. Fork 仓库，从当前 `main` 开分支，分支名与改动对应（`fix/...`、`feat/...`、`docs/...`）。
+1. 先选择目标仓库和产品基线，再开主题分支（`fix/...`、`feat/...`、`docs/...`）：Next Flutter
+   使用 `flutter-next`，Next GPUI 使用 `main`，上游贡献使用上游 `main`。
 2. 保持范围聚焦。同一轮相似修复合并到一个 PR，不要拆成大量细碎 PR；也不要为了减少 PR 数量
    把无关改动强行拼在一起。需要拆分时说明边界和依赖，便于独立评审。
 3. 保持 PR 可合并。请求评审前 rebase 到目标分支，解决冲突并重新检查受影响的代码和测试；
@@ -50,8 +61,8 @@ XenTerm 由 Rust 核心与 Flutter 桌面界面组成：
    **Draft 转为 Ready for review**。只留言“已完成”不会触发评审；旧提交上的绿色检查也不等于
    当前提交已验证。若迟迟没有反馈，先说明 PR 状态和已做的操作，不要猜测机器人名称或反复切换状态。
 5. 维护者评审通过后，单个主题优先用 **Squash and merge** 合并；多个提交各自完整时可用
-   **Rebase and merge**。来自 fork 本身不是添加 merge commit 的理由。合并后从最新 `main`
-   开始下一项任务，不继续复用旧分支历史。
+   **Rebase and merge**。来自 fork 本身不是添加 merge commit 的理由。Next 的 squash 仅整理
+   同功能 fixup，保留独立提交。合并后从更新后的对应产品基线开始下一项任务，不复用旧分支历史。
 6. 相互依赖或改动同一区域的 PR 请互相链接并说明顺序；改写共享分支前先协调。
 
 ## 提交信息规范

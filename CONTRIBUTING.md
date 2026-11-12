@@ -8,6 +8,20 @@ Thanks for helping improve XenTerm. This guide covers problem reports, pull
 requests, verification and review standards; it is the source of truth for
 collaboration rules, while [AGENTS.md](AGENTS.md) is only an AI entry point.
 
+## Independent XenTerm Next scope
+
+For `xue-ding-e/XenTerm-Next`, the owner confirmed dual-product maintenance on
+2026-11-02: `main` retains GPUI; `flutter-next` maintains Flutter. The layout and
+upstream history notes below describe the Flutter line only. Start Flutter PRs
+from `flutter-next`, not the GPUI `main`; do not replay upstream history replacement.
+Keep both products until Flutter covers GPUI features and Next enhancements and
+passes installation, upgrade, uninstall, configuration compatibility and actual-use
+acceptance. Track evidence separately in [#17](https://github.com/xue-ding-e/XenTerm-Next/issues/17).
+Keep maintained branches linear with readable independent commits; squash only
+same-feature fixups. `upstream-main` preserves official history unchanged.
+Evaluate fixes for each architecture, preserve authorship and licenses, and keep
+release publication and production deployment under separate authorization.
+
 ## Project layout
 
 XenTerm is a Rust core with a Flutter desktop UI:
@@ -19,9 +33,9 @@ XenTerm is a Rust core with a Flutter desktop UI:
 | `apps/xenterm/native/` | `xenterm-bridge`, the FFI bridge between UI and core |
 | `packaging/`, `scripts/`, `docs/` | Packaging recipes, build/release helpers, design notes |
 
-The UI and the Rust core were both rewritten, so the maintainers rebuilt the
-repository history once in October 2026. Contributors do not need to migrate or
-replay old commits: start from current `main` and submit normal changes. Do not
+Upstream `ixbaicn/XenTerm` rewrote its UI and Rust core and rebuilt its
+repository history once in October 2026. Its contributors start from upstream
+`main`; this is not an instruction to replace Next history. Do not
 rewrite shared history unless you are a maintainer coordinating it.
 
 Everyone taking part follows the [Code of Conduct](CODE_OF_CONDUCT.md).
@@ -51,7 +65,9 @@ Everyone taking part follows the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Pull requests
 
-1. Fork and branch from current `main` (`fix/...`, `feat/...`, `docs/...`).
+1. Select the target repository and product base, then open a topic branch
+   (`fix/...`, `feat/...`, `docs/...`): Next Flutter uses `flutter-next`, Next GPUI
+   uses `main`, and upstream contributions use upstream `main`.
 2. Keep the scope focused; batch repeated fixes instead of many tiny PRs and do
    not force unrelated changes together. When splitting, state boundaries and
    dependencies so each part can be reviewed.
@@ -65,7 +81,8 @@ Everyone taking part follows the [Code of Conduct](CODE_OF_CONDUCT.md).
    and what you tried instead of guessing bot names or toggling drafts.
 5. Maintainers merge reviewed topics with **Squash and merge**, or **Rebase and
    merge** when several complete commits should be kept. A fork is not a reason
-   for a merge commit. After merging, start the next task from updated `main`.
+   for a merge commit. For Next, squash only same-feature fixups and retain
+   independent commits. After merging, start from the updated selected product base.
 6. Link related PRs and state their order; coordinate before rewriting a shared
    branch.
 
