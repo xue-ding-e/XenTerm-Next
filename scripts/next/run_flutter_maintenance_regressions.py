@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import sys
 
 
 TUNNEL_TESTS = (
@@ -47,9 +48,74 @@ DART_TESTS = (
     "minimizing pauses reads and waking refreshes the final state",
 )
 
+INPUT_OWNERSHIP_DART_TESTS = (
+    "existing tab 1 takes input from tab 0",
+    "existing tab 0 takes input from tab 1",
+    "covered workspace rejects even residual terminal focus",
+    "initially inactive panes neither autofocus nor accept input",
+    "inactive lifecycle blocks hardware input until resumed",
+    "mounting while inactive restores input on first resume",
+    "resuming leaves an existing search field focused",
+    "search typing never reaches either PTY",
+    "explicit background commands preserve visible tab ownership",
+    "same-frame field request beats pending terminal restoration",
+    "delayed copy does not steal focus after switching tabs",
+    "delayed copy does not steal focus after clicking a field",
+    "modal route blocks queued terminal restoration (requestFocus=true)",
+    "modal route blocks queued terminal restoration (requestFocus=false)",
+    "inline credential field keeps its identity across A B A",
+    "pending prompt blocks residual focus and ordinary send paths",
+    "new hidden prompt blocks commands without disabling background input",
+    "new unpolled prompt blocks ordinary clear input",
+    "new unpolled prompt blocks ordinary snippet input",
+    "new unpolled prompt blocks ordinary hardware input",
+    "prompt replaced while hidden never restores the old field",
+    "unfocusable saved prompt field does not fall back to PTY",
+    "competing field wins over queued inline prompt restoration",
+    "new hidden prompt without a saved field never focuses PTY",
+    "resolved hidden prompt releases its field for terminal input",
+    "activation read failure (version) blocks input until refreshed",
+    "activation read failure (snapshot) blocks input until refreshed",
+    "activation read failure (empty) blocks input until refreshed",
+    "rapid A B A routes input and disposal cancels pending focus",
+)
+INPUT_ADMISSION_TESTS = (
+    "session::protocol::input_admission_tests::send_raw_reports_actual_admission_and_closed_receiver",
+    "session::protocol::input_admission_tests::prompt_answers_do_not_open_the_command_gate",
+    "session::protocol::input_admission_tests::non_ssh_type_ahead_stays_available_before_the_worker_reads",
+    "session::protocol::input_admission_tests::ready_shell_keeps_text_sudo_and_terminal_query_replies",
+    "session::protocol::input_admission_tests::controls_remain_usable_during_startup",
+    "session::protocol::input_admission_tests::close_before_ready_cannot_be_reopened_by_the_worker",
+    "session::protocol::input_admission_tests::close_after_ready_closes_all_sender_clones",
+    "session::protocol::input_admission_tests::dropped_readiness_token_never_opens_input",
+    "session::protocol::input_admission_tests::readiness_token_does_not_keep_the_command_queue_connected",
+    "session::protocol::input_admission_tests::poisoned_admission_lock_fails_closed",
+    "session::protocol::input_admission_tests::concurrent_ready_and_close_cannot_reopen_input",
+    "session::protocol::input_admission_tests::concurrent_input_is_never_enqueued_behind_close",
+    "session::protocol::input_admission_tests::regressions::starting_ssh_rejects_handle_input_before_any_prompt_event",
+    "session::protocol::input_admission_tests::regressions::starting_ssh_rejects_cloned_command_sender_input",
+    "session::protocol::input_admission_tests::regressions::rejected_startup_input_is_never_replayed_after_admission_opens",
+    "frontend::input_admission_tests::answering_a_prompt_does_not_make_terminal_input_ready",
+)
+WINDOWS_INPUT_TESTS = (
+    "terminal::terminal_windows_tests::conpty_powershell_preserves_long_unicode_output",
+)
+BRIDGE_INPUT_TESTS = (
+    "input_admission_tests::ffi_rejects_ssh_input_before_worker_or_prompt_pump_runs",
+)
+
 CORE = ("cargo", "test", "--locked", "-p", "xenterm", "--lib")
 BRIDGE = ("cargo", "test", "--locked", "-p", "xenterm-bridge", "--test", "settings")
-RUST_GROUPS = ((CORE, TUNNEL_TESTS + SETTINGS_TESTS), (BRIDGE, BRIDGE_TESTS))
+BRIDGE_LIB = ("cargo", "test", "--locked", "-p", "xenterm-bridge", "--lib")
+RUST_GROUPS = (
+    (CORE, TUNNEL_TESTS + SETTINGS_TESTS + INPUT_ADMISSION_TESTS),
+    (BRIDGE, BRIDGE_TESTS),
+    (BRIDGE_LIB, BRIDGE_INPUT_TESTS),
+)
+DART_GROUPS = (
+    (("test/runtime_tunnels_test.dart", "test/runtime_tunnel_loader_test.dart"), DART_TESTS),
+    (("test/terminal_input_ownership_test.dart",), INPUT_OWNERSHIP_DART_TESTS),
+)
 
 
 def checked(command, *, timeout, runner=subprocess.run, cwd=None):
@@ -67,13 +133,20 @@ def verify_source(expected, actual):
 
 
 def verify_inventory(output, expected):
-    listed = set(re.findall(r"^([A-Za-z0-9_:]+): test$", output, re.MULTILINE))
-    missing = set(expected) - listed
+    listed = re.findall(r"^([A-Za-z0-9_:]+): test$", output, re.MULTILINE)
+    if len(set(expected)) != len(expected) or len(set(listed)) != len(listed):
+        raise RuntimeError("duplicate Rust regression inventory or required name")
+    missing = set(expected) - set(listed)
     if missing:
         raise RuntimeError("required regressions were not discovered: " + ", ".join(sorted(missing)))
 
 
 def verify_single_pass(output, name):
+    # --nocapture can print between this prefix and the final 'ok'. Pair the
+    # unique selected test name with the strict libtest summary below.
+    reported = re.findall(r"^test ([A-Za-z0-9_:]+) \.\.\.", output, re.MULTILINE)
+    if reported != [name]:
+        raise RuntimeError(f"{name}: expected exactly the named Rust regression")
     summaries = re.findall(
         r"test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out",
         output,
@@ -82,8 +155,10 @@ def verify_single_pass(output, name):
         raise RuntimeError(f"{name}: expected exactly one non-ignored passing test")
 
 
-def verify_flutter_results(output):
+def verify_flutter_results(output, expected=DART_TESTS):
     """Check the machine reporter, not a substring such as 'All tests passed'."""
+    if len(set(expected)) != len(expected):
+        raise RuntimeError("duplicate required Flutter regression")
     starts = {}
     finished = {}
     done = []
@@ -96,7 +171,7 @@ def verify_flutter_results(output):
             continue
         if event.get("type") == "testStart":
             test = event.get("test", {})
-            if test.get("name") in DART_TESTS:
+            if test.get("name") in expected:
                 name = test["name"]
                 if name in starts.values() or test["id"] in starts:
                     raise RuntimeError(f"duplicate Flutter regression: {name}")
@@ -111,7 +186,7 @@ def verify_flutter_results(output):
             raise RuntimeError(f"Flutter reported an uncaught test error: {event.get('testID')}")
         elif event.get("type") == "done":
             done.append(event.get("success"))
-    missing = set(DART_TESTS) - set(starts.values())
+    missing = set(expected) - set(starts.values())
     if missing:
         raise RuntimeError("required Flutter regressions were not discovered: " + ", ".join(sorted(missing)))
     for test_id, name in starts.items():
@@ -129,16 +204,24 @@ def run_regressions(expected_source, *, suite="rust", runner=subprocess.run):
     if suite == "flutter":
         # Windows Flutter is a .bat launcher and needs cmd.exe; never use shell
         # interpolation of user input. The source id is verified above, not run.
-        import os
-        command = ["flutter", "test", "--reporter", "json", "test/runtime_tunnels_test.dart", "test/runtime_tunnel_loader_test.dart"]
-        if os.name == "nt":
-            command = ["cmd.exe", "/d", "/c", *command]
-        output = checked(command, timeout=600, runner=runner, cwd=Path("apps/xenterm"))
-        verify_flutter_results(output)
-        count = len(DART_TESTS)
+        count = 0
+        for paths, tests in DART_GROUPS:
+            command = ["flutter", "test", "--reporter", "json", *paths]
+            if sys.platform == "win32":
+                command = ["cmd.exe", "/d", "/c", *command]
+            output = checked(command, timeout=600, runner=runner, cwd=Path("apps/xenterm"))
+            verify_flutter_results(output, tests)
+            count += len(tests)
+            print(f"MAINTENANCE_FLUTTER_GROUP_PASS files={','.join(paths)} count={len(tests)}", flush=True)
     else:
         count = 0
+        if sys.platform != "win32":
+            for name in WINDOWS_INPUT_TESTS:
+                print(f"MAINTENANCE_REGRESSION_PLATFORM_EXCLUDED platform={sys.platform} requires=win32 name={name}", flush=True)
         for cargo, tests in RUST_GROUPS:
+            # ConPTY is a Windows-only library module, not an integration target.
+            if cargo == CORE and sys.platform == "win32":
+                tests = tests + WINDOWS_INPUT_TESTS
             inventory = checked([*cargo, "--", "--list"], timeout=1200, runner=runner)
             verify_inventory(inventory, tests)
             for name in tests:
