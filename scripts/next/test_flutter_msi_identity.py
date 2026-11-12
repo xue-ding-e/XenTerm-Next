@@ -66,6 +66,8 @@ class MsiIdentityTests(unittest.TestCase):
         self.assertIn('Refusing to use an existing installation/profile directory.', script)
         self.assertIn('Refusing to follow a pre-existing installer location registry value.', script)
         self.assertIn('Refusing to alter an existing product in this upgrade family.', script)
+        self.assertIn("InvokeMember('Count', 'GetProperty', $null, $related, $null)", script)
+        self.assertIn('if ($relatedCount -ne 0)', script)
         self.assertIn("([guid] $recipe.DocumentElement.Product.GetAttribute('UpgradeCode')).ToString('B').ToUpperInvariant()", script)
         self.assertIn("if ($InstallLocation -eq 'custom') { $installArguments +=", script)
         self.assertIn('github.event.pull_request.head.repo.full_name == github.repository', workflow)

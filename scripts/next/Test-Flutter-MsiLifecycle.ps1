@@ -36,7 +36,14 @@ $installer = New-Object -ComObject WindowsInstaller.Installer
 # Parse before calling COM so an invalid recipe fails closed before installation.
 $upgradeCode = ([guid] $recipe.DocumentElement.Product.GetAttribute('UpgradeCode')).ToString('B').ToUpperInvariant()
 $related = $installer.GetType().InvokeMember('RelatedProducts', 'GetProperty', $null, $installer, @($upgradeCode))
-if ($related.Count -ne 0) { throw 'Refusing to alter an existing product in this upgrade family.' }
+# PowerShell's adapted Count can count the COM wrapper itself as one.
+# Read the MSI StringList property explicitly; never interpret a COM error as empty.
+$countValue = $related.GetType().InvokeMember('Count', 'GetProperty', $null, $related, $null)
+if ($null -eq $countValue) { throw 'RelatedProducts returned no Count.' }
+$relatedCount = [int] $countValue
+if ($relatedCount -lt 0) { throw 'RelatedProducts returned an invalid Count.' }
+Write-Host "Existing upgrade-family products: $relatedCount"
+if ($relatedCount -ne 0) { throw 'Refusing to alter an existing product in this upgrade family.' }
 function Get-FixtureProductCode {
     param([string] $Msi)
     $db = $installer.GetType().InvokeMember('OpenDatabase', 'InvokeMethod', $null, $installer, @($Msi, 0))
