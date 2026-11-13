@@ -5,6 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from contextlib import redirect_stdout
+from unittest.mock import patch
 import zipfile
 
 import flutter_platform_release as publisher
@@ -117,6 +118,24 @@ class Repository:
 
 
 class PlatformReleaseTest(unittest.TestCase):
+    def test_actions_download_uses_json_negotiation_and_checks_the_zip_digest(self):
+        api = publisher.GitHub()
+        archive = b'synthetic artifact bytes'
+        item = dict(id=58, name=f'flutter-package-{LINUX}', expired=False,
+                    digest='sha256:' + hashlib.sha256(archive).hexdigest())
+
+        def download(command, *, stdout, **kwargs):
+            self.assertIn('Accept: application/vnd.github+json', command)
+            self.assertTrue(command[2].endswith('/actions/artifacts/58/zip'))
+            stdout.write(archive)
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'artifact.zip'
+            with patch.object(api, 'api', return_value={'artifacts': [item]}), \
+                    patch.object(publisher.subprocess, 'run', side_effect=download):
+                api.artifact(50, LINUX, path)
+            self.assertEqual(path.read_bytes(), archive)
+
     def test_first_platform_releases_and_later_successes_append(self):
         repo = Repository()
         repo.build(WINDOWS, 10)

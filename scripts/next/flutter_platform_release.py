@@ -185,9 +185,9 @@ class GitHub:
     def assets(self, rid):
         return [asset for page in self.pages(f'releases/{rid}/assets?per_page=100') for asset in page]
 
-    def download(self, endpoint, destination):
+    def download(self, endpoint, destination, *, accept='application/octet-stream'):
         with destination.open('xb') as stream:
-            subprocess.run(['gh', 'api', f'repos/{REPOSITORY}/{endpoint}', '-H', 'Accept: application/octet-stream'],
+            subprocess.run(['gh', 'api', f'repos/{REPOSITORY}/{endpoint}', '-H', f'Accept: {accept}'],
                            stdout=stream, check=True, timeout=180)
 
     def artifact(self, run_id, platform, destination):
@@ -196,7 +196,10 @@ class GitHub:
             matches = [item for item in data['artifacts'] if item['name'] == f'flutter-package-{platform}' and not item['expired']]
             if matches:
                 item = max(matches, key=lambda value: value['id'])
-                self.download(f'actions/artifacts/{item["id"]}/zip', destination)
+                # Actions negotiates JSON before redirecting to the artifact ZIP.
+                # Release assets instead require octet-stream to return bytes.
+                self.download(f'actions/artifacts/{item["id"]}/zip', destination,
+                              accept='application/vnd.github+json')
                 if item.get('digest') and item['digest'] != 'sha256:' + sha256(destination):
                     raise ValueError('Downloaded artifact digest mismatch')
                 return
