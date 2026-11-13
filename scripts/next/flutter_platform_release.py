@@ -12,6 +12,7 @@ import subprocess
 import tempfile
 import time
 from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 import zipfile
 
 from flutter_release import BRANCH, REPOSITORY, digest as sha256, full_sha as source_sha, runtime_details
@@ -21,6 +22,11 @@ PRODUCERS = {
     'linux-x86_64': '.github/workflows/next-flutter-linux.yml',
     'macos-aarch64': '.github/workflows/next-flutter-macos.yml',
 }
+RELEASES_URL = f'https://github.com/{REPOSITORY}/releases'
+PLATFORM_NAMES = {'windows-x86_64': 'Windows x64', 'linux-x86_64': 'Linux x64',
+                  'macos-aarch64': 'macOS Apple Silicon'}
+PACKAGE_LABELS = {'windows-x86_64': ('MSI 安装包', '便携 ZIP'),
+                  'linux-x86_64': ('tar.gz',), 'macos-aarch64': ('ZIP',)}
 
 
 def asset_names(sha, platform):
@@ -245,8 +251,16 @@ class GitHub:
 
 
 def release_body(sha, receipts, tag):
-    lines = [f'XenTerm Next Flutter beta，源码 `{sha}`。各平台独立验收，成功后追加到本版本。',
-             '', '基于 [XenTerm](https://github.com/ixbaicn/XenTerm)，保留 MIT 许可证与原作者归属。', '']
+    lines = ['**下载**', '']
+    for platform in PRODUCERS:
+        if platform not in receipts:
+            continue
+        _, packages, _ = asset_names(sha, platform)
+        links = [f'[{label}]({RELEASES_URL}/download/{tag}/{name})'
+                 for name, label in zip(sorted(packages), PACKAGE_LABELS[platform], strict=True)]
+        lines.append(f'- **{PLATFORM_NAMES[platform]}** · ' + ' · '.join(links))
+    lines += ['', f'源码 `{sha}`。各平台独立验收，通过后追加到本版本。',
+              '', '基于 [XenTerm](https://github.com/ixbaicn/XenTerm)，保留 MIT 许可证与原作者归属。', '']
     details = {
         'windows-x86_64': 'Windows ZIP/MSI 未签名，包含应用目录内的微软运行库。',
         'linux-x86_64': 'Linux 构建基于 Ubuntu 22.04。',
@@ -255,8 +269,9 @@ def release_body(sha, receipts, tag):
     for platform, receipt in sorted(receipts.items()):
         lines += [f'**{platform}** — `{receipt["runtime_version"]}`',
                   f'构建与验收：[CI {receipt["build_run"]}](https://github.com/{REPOSITORY}/actions/runs/{receipt["build_run"]})', '']
-        _, _, names = asset_names(sha, platform)
-        lines += [f'- [{name}](https://github.com/{REPOSITORY}/releases/download/{tag}/{name})' for name in names]
+        stem, _, _ = asset_names(sha, platform)
+        lines += [f'- [BUILD.json]({RELEASES_URL}/download/{tag}/{stem}-BUILD.json)',
+                  f'- [SHA-256]({RELEASES_URL}/download/{tag}/{stem}.sha256)']
         lines += ['', details[platform], '']
     lines += ['每个平台的 BUILD.json 与 .sha256 记录该平台的来源和校验信息。']
     return '\n'.join(lines) + '\n'
@@ -371,7 +386,41 @@ def reconcile(api):
     return results
 
 
+def verify_release_index(result):
+    sha = result['source_sha']
+    tag = f'flutter-beta-{sha[:12]}'
+    index_path = f'/{REPOSITORY}/releases'
+    expected = [f'{index_path}/tag/{tag}"']
+    for platform in result['platforms']:
+        _, packages, _ = asset_names(sha, platform)
+        expected += [f'{index_path}/download/{tag}/{name}"' for name in packages]
+    # The web index can lag behind the Releases API. Check the public page
+    # after publication and retry briefly while GitHub updates its cache.
+    request = Request(RELEASES_URL, headers={'Cache-Control': 'no-cache',
+                                            'User-Agent': 'XenTerm-Next-release-verification'})
+    for delay in (0, 2, 5, 10, 20):
+        if delay:
+            time.sleep(delay)
+        try:
+            with urlopen(request, timeout=15) as response:
+                page = response.read().decode('utf-8')
+        except OSError as error:
+            print(f'Cannot read the public Releases page yet: {error}', flush=True)
+            continue
+        if all(link in page for link in expected):
+            print(f'Verified {tag} and its package links on {RELEASES_URL}', flush=True)
+            return
+    raise RuntimeError(f'{tag} or its package links are missing from {RELEASES_URL}')
+
+
 if __name__ == '__main__':
     if os.environ.get('GITHUB_REPOSITORY') != REPOSITORY or os.environ.get('GITHUB_REF') != f'refs/heads/{BRANCH}':
         raise ValueError('Platform publishing is restricted to the maintained Flutter branch')
-    print(json.dumps({'releases': reconcile(GitHub())}, ensure_ascii=False))
+    releases = reconcile(GitHub())
+    print(json.dumps({'releases': releases}, ensure_ascii=False), flush=True)
+    # A delayed build for an older SHA may publish on a later index page.
+    # Only require the current source to appear on the first page.
+    head = os.environ.get('GITHUB_SHA')
+    current = next((item for item in reversed(releases) if item['source_sha'] == head), None)
+    if current:
+        verify_release_index(current)

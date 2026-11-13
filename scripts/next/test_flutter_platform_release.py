@@ -118,6 +118,23 @@ class Repository:
 
 
 class PlatformReleaseTest(unittest.TestCase):
+    def test_public_index_requires_the_release_and_each_download_link(self):
+        tag = f'flutter-beta-{SOURCE[:12]}'
+        _, packages, _ = publisher.asset_names(SOURCE, WINDOWS)
+        release_link = f'<a href="/{publisher.REPOSITORY}/releases/tag/{tag}">Flutter beta</a>'
+        package_links = [f'<a href="{publisher.RELEASES_URL}/download/{tag}/{name}">Download</a>'
+                         for name in packages]
+        result = dict(source_sha=SOURCE, platforms=[WINDOWS])
+        with patch.object(publisher, 'urlopen') as open_page, patch.object(publisher.time, 'sleep'):
+            response = open_page.return_value.__enter__.return_value
+            response.read.return_value = (release_link + package_links[0]).encode()
+            with redirect_stdout(io.StringIO()), self.assertRaisesRegex(RuntimeError, 'package links'):
+                publisher.verify_release_index(result)
+            response.read.return_value = (release_link + ''.join(package_links)).encode()
+            with redirect_stdout(io.StringIO()):
+                publisher.verify_release_index(result)
+            self.assertEqual(open_page.call_args.args[0].full_url, publisher.RELEASES_URL)
+
     def test_actions_download_uses_json_negotiation_and_checks_the_zip_digest(self):
         api = publisher.GitHub()
         archive = b'synthetic artifact bytes'
@@ -142,6 +159,7 @@ class PlatformReleaseTest(unittest.TestCase):
         publisher.reconcile(repo)
         release = repo.release(SOURCE)
         self.assertFalse(release['draft'])
+        self.assertIn('**Windows x64** · [MSI 安装包]', release['body'].split('\n')[2])
         self.assertEqual(len(repo.assets(release['id'])), 4)
         windows = repo.assets(release['id'])
         # The original Windows Actions artifact may expire after publishing.
