@@ -9,6 +9,8 @@
 
 ## 独立 XenTerm Next 仓库范围
 
+Next 的日常开发、修复、CI/CD、发布和仓库清理只操作 `xue-ding-e/XenTerm-Next`。`xue-ding-e/XenTerm` 和 `ixbaicn/XenTerm` 在 Next 任务中仅供只读参考；对其中任何一个仓库写入，都须另有明确点名该仓库的请求。GPUI 进入 `main`，Flutter 进入 `flutter-next`，用 rebase 或 cherry-pick 整理后正常快进推送。两条产品线均禁止使用 `git merge` 或新增 merge commit。
+
 对于 `xue-ding-e/XenTerm-Next`，维护者于 2026-11-02 确认双线维护：`main` 保留 GPUI，
 `flutter-next` 维护 Flutter。下文结构和上游历史说明只描述 Flutter 产品线。Flutter PR 从
 `flutter-next` 开始，不从 GPUI 的 `main` 开始，也不重放上游历史置换。
@@ -16,6 +18,8 @@ Flutter 完整覆盖 GPUI 功能与 Next 自有增强，并通过安装、升级
 继续保留和维护两条产品线。在 [#17](https://github.com/xue-ding-e/XenTerm-Next/issues/17) 分别记录证据。
 自有维护分支保持线性，按独立功能保留可读提交，squash 只整理同功能 fixup；`upstream-main`
 原样保留官方历史。修复按架构独立评估，保留作者和许可证，发布及生产部署仍须独立授权。
+
+- 公开标签用于发布。临时恢复快照保存在公开标签列表之外。
 
 ## 项目结构
 

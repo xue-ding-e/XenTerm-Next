@@ -29,6 +29,7 @@ See the independent-repository scope in the contribution guide and [#17](https:/
 - Verify the checkout, remotes, current branch, target repository and PR
   base/head. An issue's source repository does not by itself grant permission to
   modify it. Resolve conflicting targets first; leave unrelated worktrees alone.
+- Follow the contribution guide's Next-only write scope and linear branch policy.
 - Run the checks that match the change (from the repository root):
   - `cargo check --locked`
   - `cargo test --locked`

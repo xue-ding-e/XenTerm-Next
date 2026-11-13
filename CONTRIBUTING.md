@@ -10,6 +10,8 @@ collaboration rules, while [AGENTS.md](AGENTS.md) is only an AI entry point.
 
 ## Independent XenTerm Next scope
 
+Routine development, fixes, CI/CD, releases and repository cleanup for Next target only `xue-ding-e/XenTerm-Next`. Treat `xue-ding-e/XenTerm` and `ixbaicn/XenTerm` as read-only for Next work. Changes to either require a separate request that names the repository. Integrate GPUI changes into `main` and Flutter changes into `flutter-next` using rebase or cherry-pick and a normal fast-forward push. Never run `git merge` or add a merge commit to either product branch.
+
 For `xue-ding-e/XenTerm-Next`, the owner confirmed dual-product maintenance on
 2026-11-02: `main` retains GPUI; `flutter-next` maintains Flutter. The layout and
 upstream history notes below describe the Flutter line only. Start Flutter PRs
@@ -21,6 +23,8 @@ Keep maintained branches linear with readable independent commits; squash only
 same-feature fixups. `upstream-main` preserves official history unchanged.
 Evaluate fixes for each architecture, preserve authorship and licenses, and keep
 release publication and production deployment under separate authorization.
+
+- Keep public tags for releases. Store temporary recovery snapshots outside the public tag list.
 
 ## Project layout
 
