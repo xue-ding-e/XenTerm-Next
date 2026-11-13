@@ -1,0 +1,37 @@
+name: Next Flutter platform publisher
+
+on:
+  push:
+    branches: [flutter-next]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Pending wakeups may coalesce. Every execution reconciles all ready producer
+# runs, so a superseded notification cannot lose a successful platform.
+concurrency:
+  group: next-flutter-platform-publisher
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository == 'xue-ding-e/XenTerm-Next' && github.ref == 'refs/heads/flutter-next'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test platform reconciliation
+        run: python -m unittest discover -s scripts/next -p 'test_flutter_platform_release.py'
+      - name: Publish ready platforms and append later successes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/next/flutter_platform_release.py

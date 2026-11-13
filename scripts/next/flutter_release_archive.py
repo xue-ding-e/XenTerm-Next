@@ -146,7 +146,11 @@ def archive_old_generations(api, rolling_release, current_sha, current_run, keep
                          if (match := GENERATION.fullmatch(name)) and match[1] not in protected})
     results = []
     for sha in candidates:
-        names = generation_names(sha, release.PLATFORMS)
+        scope = tuple(platform for platform in release.PLATFORMS
+                      if f'XenTerm-Next-Flutter-{sha}-{platform}-BUILD.json' in source_index)
+        if not scope:
+            continue
+        names = generation_names(sha, scope)
         try:
             sources = owned_assets([item for values in source_index.values() for item in values], names)
         except ValueError:
@@ -167,7 +171,7 @@ def archive_old_generations(api, rolling_release, current_sha, current_run, keep
                 run = metadata.get('build_run')
                 if not isinstance(run, str) or not run.isdigit() or int(run) <= 0:
                     continue
-                metadata, hashes = release.verify_packages(directory, sha, run)
+                metadata, hashes = release.verify_packages(directory, sha, run, scope)
             except (ValueError, KeyError, TypeError):
                 continue
             run_object = api.api(f'actions/runs/{run}')
@@ -177,7 +181,7 @@ def archive_old_generations(api, rolling_release, current_sha, current_run, keep
             try:
                 # An old successful run is evaluated against its own source,
                 # never against today's flutter-next branch head.
-                release.source_gate(sha, run, run_object, sha, jobs)
+                release.source_gate(sha, run, run_object, sha, jobs, release.platform_jobs(scope))
             except ValueError:
                 continue
             if set(hashes) != names:

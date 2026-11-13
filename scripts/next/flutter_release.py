@@ -19,8 +19,20 @@ BRANCH = 'flutter-next'
 TAG = 'flutter-beta'
 WORKFLOW = '.github/workflows/next-flutter-windows.yml'
 PLATFORMS = ('windows-x86_64', 'linux-x86_64', 'macos-aarch64')
+WINDOWS_PLATFORMS = ('windows-x86_64',)
 REQUIRED_JOBS = ('Prepare', *(f'Desktop ({p})' for p in PLATFORMS),
                  'MSI lifecycle (default)', 'MSI lifecycle (custom)', 'Verify complete release')
+
+
+def platform_jobs(platforms):
+    platforms = tuple(platforms)
+    if (not platforms or len(set(platforms)) != len(platforms) or
+            any(platform not in PLATFORMS for platform in platforms) or
+            'windows-x86_64' not in platforms):
+        raise ValueError('Invalid Flutter release platform scope')
+    verification = 'Verify Windows release' if platforms == WINDOWS_PLATFORMS else 'Verify complete release'
+    return ('Prepare', *(f'Desktop ({p})' for p in platforms),
+            'MSI lifecycle (default)', 'MSI lifecycle (custom)', verification)
 
 
 def digest(path):
@@ -49,7 +61,7 @@ def runtime_details(version, sha):
     return f'{epoch >> 24}.{(epoch >> 16) & 255}.{epoch & 65535}'
 
 
-def source_gate(sha, run_id, run, current, jobs):
+def source_gate(sha, run_id, run, current, jobs, required_jobs=REQUIRED_JOBS):
     full_sha(sha)
     if (not str(run_id).isdigit() or int(run_id) <= 0 or
             str(run.get('id')) != str(run_id) or
@@ -61,7 +73,7 @@ def source_gate(sha, run_id, run, current, jobs):
             run.get('status') not in ('in_progress', 'completed') or
             run.get('conclusion') not in (None, 'success')):
         raise ValueError('Only the current Flutter source and its own product CI may publish')
-    for name in REQUIRED_JOBS:
+    for name in required_jobs:
         matches = [job for job in jobs if job.get('name') == name]
         if not matches or (len(matches) > 1 and any(type(job.get('id')) is not int for job in matches)):
             raise ValueError('Missing or ambiguous product gate: ' + name)
@@ -73,15 +85,17 @@ def source_gate(sha, run_id, run, current, jobs):
             raise ValueError('Missing successful product gate: ' + name)
 
 
-def verify_packages(directory, sha, run_id):
+def verify_packages(directory, sha, run_id, platforms=PLATFORMS):
     full_sha(sha)
     if not str(run_id).isdigit() or int(run_id) <= 0:
         raise ValueError('Expected a positive product build run ID')
+    platforms = tuple(platforms)
+    required = platform_jobs(platforms)
     prefix = f'XenTerm-Next-Flutter-{sha}'
     expected = set()
     receipts = []
     version = upstream = None
-    for platform in PLATFORMS:
+    for platform in platforms:
         stem = f'{prefix}-{platform}'
         receipt_path = directory / (stem + '-BUILD.json')
         receipt = json.loads(receipt_path.read_text(encoding='utf-8-sig'))
@@ -130,7 +144,7 @@ def verify_packages(directory, sha, run_id):
                 'channel': TAG, 'repository': REPOSITORY, 'source_sha': sha,
                 'upstream_snapshot': upstream, 'runtime_version': version,
                 'build_run': str(run_id), 'platforms': receipts,
-                'validation': {'required_jobs': list(REQUIRED_JOBS),
+                'validation': {'required_jobs': list(required),
                                'windows_msi': 'install, upgrade, uninstall; default and custom paths',
                                'limits': 'Hosted runners; no clean-Windows, standard-user, real SSH/SFTP or GPUI replacement acceptance.'},
                 'upstream': 'https://github.com/ixbaicn/XenTerm', 'license': 'MIT'}
@@ -152,6 +166,9 @@ def verify_packages(directory, sha, run_id):
 
 
 class GitHub:
+    def __init__(self, platforms=PLATFORMS):
+        self.required_jobs = platform_jobs(platforms)
+
     def command(self, *args, **kwargs):
         return subprocess.check_output(args, text=True, encoding='utf-8', **kwargs).strip()
 
@@ -171,7 +188,7 @@ class GitHub:
         run = self.api(f'actions/runs/{run_id}')
         current = self.api(f'git/ref/heads/{BRANCH}')['object']['sha']
         jobs = [job for page in self.pages(f'actions/runs/{run_id}/jobs?filter=all&per_page=100') for job in page['jobs']]
-        source_gate(sha, run_id, run, current, jobs)
+        source_gate(sha, run_id, run, current, jobs, self.required_jobs)
 
     def release(self, sha):
         releases = [r for page in self.pages('releases?per_page=100') for r in page if r.get('tag_name') == TAG]
@@ -246,12 +263,20 @@ class GitHub:
 def release_body(metadata, hashes, tag=TAG):
     sha, run_id = metadata['source_sha'], metadata['build_run']
     links = '\n'.join(f'- [{name}](https://github.com/{REPOSITORY}/releases/download/{tag}/{name})' for name in hashes)
+    available = {receipt['platform'] for receipt in metadata['platforms']}
+    platform_note = '本次发布包含 Windows x64；其发布不依赖 Linux/macOS 的排队或验证。\n'
+    if len(available) > 1:
+        platform_note = '本次已验证平台：' + ', '.join(sorted(available)) + '。\n'
+    if 'macos-aarch64' in available:
+        platform_note += 'macOS Apple Silicon 仅 ad-hoc 签名、未公证。\n'
+    if 'linux-x86_64' in available:
+        platform_note += 'Linux x64 基于 Ubuntu 22.04。\n'
     return (f'XenTerm Next Flutter 独立预览版；与 GPUI beta 分开维护，基于 [XenTerm](https://github.com/ixbaicn/XenTerm)，保留 MIT 归属。\n\n'
             f'源码 SHA: `{sha}`\n上游快照: `{metadata["upstream_snapshot"]}`\n'
             f'应用版本: `{metadata["runtime_version"]}`\n'
             f'构建与安装验收: https://github.com/{REPOSITORY}/actions/runs/{run_id}\n\n'
             'Windows x64 同时提供 portable ZIP 和 MSI，附带应用目录内的微软 VC++ 运行库。MSI 数字版本由应用版本时间戳无损编码；安装、升级、卸载已分别在默认和自定义目录通过。\n'
-            'Windows 产物未签名；macOS Apple Silicon 仅 ad-hoc 签名、未公证；Linux x64 基于 Ubuntu 22.04。请核对 SHA256SUMS。\n'
+            + platform_note + 'Windows 产物未签名。请核对 SHA256SUMS。\n'
             '验证使用 GitHub 托管 runner；干净 Windows、标准用户、真实 SSH/SFTP 和替代 GPUI 的功能对等验收仍需独立完成。\n'
             '以下链接指向同一源码和同一次构建；滚动渠道保留当前和上一代，更早完整构建经下载验真后保留到历史 Release。\n\n' + links)
 
@@ -275,7 +300,8 @@ def reuse_published(api, current, assets, metadata, hashes):
             api.download(known[name], directory / name)
         original = json.loads((directory / f'XenTerm-Next-Flutter-{sha}-BUILD.json').read_text(encoding='utf-8'))
         original_run = original.get('build_run')
-        old_metadata, old_hashes = verify_packages(directory, sha, original_run)
+        old_scope = tuple(receipt['platform'] for receipt in original.get('platforms', []))
+        old_metadata, old_hashes = verify_packages(directory, sha, original_run, old_scope)
         if (old_metadata['runtime_version'] != metadata['runtime_version'] or
                 old_metadata['upstream_snapshot'] != metadata['upstream_snapshot'] or
                 current.get('body') != release_body(old_metadata, old_hashes)):
@@ -288,8 +314,8 @@ def reuse_published(api, current, assets, metadata, hashes):
     return current
 
 
-def publish(api, directory, sha, run_id):
-    metadata, hashes = verify_packages(directory, sha, run_id)
+def publish(api, directory, sha, run_id, platforms=PLATFORMS):
+    metadata, hashes = verify_packages(directory, sha, run_id, platforms)
     api.check(sha, run_id)
     release = api.release(sha)
     rid = release['id']
@@ -343,12 +369,14 @@ if __name__ == '__main__':
     parser.add_argument('--source-sha', required=True)
     parser.add_argument('--run-id', required=True)
     parser.add_argument('--verify-only', action='store_true')
+    parser.add_argument('--windows-only', action='store_true')
     args = parser.parse_args()
+    selected_platforms = WINDOWS_PLATFORMS if args.windows_only else PLATFORMS
     if args.verify_only:
-        metadata, hashes = verify_packages(args.directory, args.source_sha, args.run_id)
+        metadata, hashes = verify_packages(args.directory, args.source_sha, args.run_id, selected_platforms)
         print(json.dumps({'source_sha': metadata['source_sha'], 'assets': list(hashes)}))
     else:
         if os.environ.get('GITHUB_REPOSITORY') != REPOSITORY:
             raise ValueError('Flutter publication is restricted to the maintained repository')
-        result = publish(GitHub(), args.directory, args.source_sha, args.run_id)
+        result = publish(GitHub(selected_platforms), args.directory, args.source_sha, args.run_id, selected_platforms)
         print(result['html_url'])

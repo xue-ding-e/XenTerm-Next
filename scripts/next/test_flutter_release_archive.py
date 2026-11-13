@@ -15,10 +15,10 @@ CURRENT, PREVIOUS, OLD, OTHER = ('c' * 40, 'b' * 40, 'a' * 40, 'd' * 40)
 UPSTREAM = 'e' * 40
 
 
-def generation(directory, sha, run):
+def generation(directory, sha, run, platforms=release.PLATFORMS):
     directory.mkdir()
     version = f'xt-beta-{sha[:7]}-T{1794480000 + int(run)}'
-    for platform in release.PLATFORMS:
+    for platform in platforms:
         stem = f'XenTerm-Next-Flutter-{sha}-{platform}'
         names = [stem + ('.tar.gz' if platform.startswith('linux') else '.zip')]
         if platform == 'windows-x86_64':
@@ -40,7 +40,7 @@ def generation(directory, sha, run):
         (directory / (stem + '.sha256')).write_text(''.join(
             f'{item["sha256"]}  {item["name"]}\n' for item in sorted(files, key=lambda item: item['name'])),
             encoding='utf-8')
-    metadata, hashes = release.verify_packages(directory, sha, str(run))
+    metadata, hashes = release.verify_packages(directory, sha, str(run), platforms)
     return metadata, {name: (directory / name).read_bytes() for name in hashes}
 
 
@@ -74,7 +74,7 @@ class FakeGitHub:
         self.contents[asset['id']] = data
         return copy.deepcopy(asset)
 
-    def add_generation(self, sha, run, files):
+    def add_generation(self, sha, run, files, platforms=release.PLATFORMS):
         for name, contents in files.items():
             self.add_asset(1, name, contents)
         self.runs[str(run)] = {
@@ -86,7 +86,7 @@ class FakeGitHub:
         self.jobs[str(run)] = [
             {'id': index + 1, 'name': name, 'head_sha': sha, 'run_attempt': 1,
              'started_at': '2026-11-12T00:00:00Z', 'status': 'completed', 'conclusion': 'success'}
-            for index, name in enumerate(release.REQUIRED_JOBS)]
+            for index, name in enumerate(release.platform_jobs(platforms))]
 
     def lookup(self, aid):
         for rid, assets in self.storage.items():
@@ -247,6 +247,21 @@ class ArchiveTests(unittest.TestCase):
                 self.assertEqual(events[index - 1][:3], ('get-asset', 1, event[2]))
                 self.assertIn(('verify', 1, event[3]), before)
         self.assertIn(('pages', 'actions/runs/700/jobs?filter=all&per_page=100'), events)
+
+    def test_windows_only_generation_is_archived_without_requiring_unix_assets(self):
+        api = FakeGitHub()
+        generations = {}
+        for sha, run in ((CURRENT, '900'), (PREVIOUS, '800'), (OLD, '700')):
+            _, files = generation(self.directory / ('windows-' + sha), sha, run, release.WINDOWS_PLATFORMS)
+            generations[sha] = files
+            api.add_generation(sha, run, files, release.WINDOWS_PLATFORMS)
+        rolling = copy.deepcopy(api.releases[1])
+        result = archive.archive_old_generations(api, rolling, CURRENT, '900', PREVIOUS)
+        self.assertEqual(result[0]['deleted_assets'], 6)
+        self.assertEqual({asset['name'] for asset in api.storage[2].values()}, set(generations[OLD]))
+        kept = {asset['name'] for asset in api.storage[1].values()}
+        for sha in (CURRENT, PREVIOUS):
+            self.assertTrue(set(generations[sha]).issubset(kept))
 
     def test_failed_upload_is_recoverable_and_retry_reuses_verified_assets(self):
         self.api.fail_upload_at = 5

@@ -14,8 +14,8 @@ UPSTREAM = 'b' * 40
 VERSION = 'xt-beta-1234567-T1794480000'
 
 
-def fixture(directory, run='42'):
-    for platform in release.PLATFORMS:
+def fixture(directory, run='42', platforms=release.PLATFORMS):
+    for platform in platforms:
         stem = f'XenTerm-Next-Flutter-{SHA}-{platform}'
         names = [stem + ('.tar.gz' if platform.startswith('linux') else '.zip')]
         if platform == 'windows-x86_64':
@@ -109,6 +109,49 @@ class FakeGitHub:
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_windows_release_requires_only_its_own_complete_packages(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            fixture(directory, platforms=release.WINDOWS_PLATFORMS)
+            metadata, hashes = release.verify_packages(directory, SHA, '42', release.WINDOWS_PLATFORMS)
+            self.assertEqual(len(hashes), 6)
+            self.assertEqual([r['platform'] for r in metadata['platforms']], ['windows-x86_64'])
+            self.assertEqual(metadata['validation']['required_jobs'], list(release.platform_jobs(release.WINDOWS_PLATFORMS)))
+            api = FakeGitHub()
+            release.publish(api, directory, SHA, '42', release.WINDOWS_PLATFORMS)
+            self.assertFalse(api.publication['draft'])
+            self.assertIn('-windows-x86_64.msi', api.publication['body'])
+            self.assertNotIn('-macos-aarch64.zip', api.publication['body'])
+
+    def test_secondary_platform_jobs_cannot_hold_windows_gate(self):
+        run, _ = ci()
+        required = release.platform_jobs(release.WINDOWS_PLATFORMS)
+        jobs = [{'name': name, 'head_sha': SHA, 'status': 'completed', 'conclusion': 'success'} for name in required]
+        jobs.append({'name': 'Desktop (macos-aarch64)', 'head_sha': SHA,
+                     'status': 'queued', 'conclusion': None})
+        release.source_gate(SHA, '42', run, SHA, jobs, required)
+        jobs[1]['conclusion'] = 'failure'
+        with self.assertRaises(ValueError):
+            release.source_gate(SHA, '42', run, SHA, jobs, required)
+
+    def test_windows_scope_does_not_accept_missing_msi_or_unchecked_unix_files(self):
+        for fault in ('missing-msi', 'extra-platform'):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as temp:
+                directory = Path(temp)
+                fixture(directory, platforms=release.WINDOWS_PLATFORMS)
+                if fault == 'missing-msi':
+                    next(directory.glob('*.msi')).unlink()
+                else:
+                    (directory / 'unverified-linux.tar.gz').write_bytes(b'unverified')
+                with self.assertRaises((ValueError, FileNotFoundError)):
+                    release.verify_packages(directory, SHA, '42', release.WINDOWS_PLATFORMS)
+
+    def test_release_scope_must_include_windows_and_known_unique_platforms(self):
+        for scope in ((), ('linux-x86_64',), ('windows-x86_64', 'unknown'),
+                      ('windows-x86_64', 'windows-x86_64')):
+            with self.subTest(scope=scope), self.assertRaises(ValueError):
+                release.platform_jobs(scope)
+
     def test_lossless_ordered_installer_version_and_source_binding(self):
         epoch = 1794480000
         expected = f'{epoch >> 24}.{(epoch >> 16) & 255}.{epoch & 65535}'

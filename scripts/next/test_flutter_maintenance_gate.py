@@ -213,7 +213,8 @@ class MaintenanceGateTests(unittest.TestCase):
         workflows = root / ".github/workflows"
         files = list(workflows.glob("*.yml")) + list(workflows.glob("*.yaml"))
         self.assertEqual(sorted(file.name for file in files),
-                         ["next-flutter-msi-validation.yml", "next-flutter-windows.yml"])
+                         ["next-flutter-linux.yml", "next-flutter-macos.yml", "next-flutter-msi-validation.yml",
+                          "next-flutter-publish.yml", "next-flutter-windows.yml"])
         msi = (workflows / "next-flutter-msi-validation.yml").read_text()
         for required in ("contents: read", "persist-credentials: false",
                          "timeout-minutes: 15", "branches: [flutter-next]",
@@ -221,26 +222,37 @@ class MaintenanceGateTests(unittest.TestCase):
             self.assertIn(required, msi)
         for forbidden in ("contents: write", "gh release", "msiexec", "upload-artifact", "pull_request_target", "  push:"):
             self.assertNotIn(forbidden, msi)
-        workflow = (workflows / "next-flutter-windows.yml").read_text()
-        self.assertIn("branches: [flutter-next]", workflow)
-        self.assertIn("permissions:\n  contents: read", workflow)
-        self.assertIn("persist-credentials: false", workflow)
-        self.assertIn('cancel-in-progress: false', workflow)
-        build, publisher = workflow.split('\n  publish:\n')
-        self.assertNotIn('contents: write', build)
+        publisher = (workflows / 'next-flutter-publish.yml').read_text()
         self.assertEqual(publisher.count('contents: write'), 1)
         self.assertIn("github.ref == 'refs/heads/flutter-next'", publisher)
-        self.assertIn('needs: [prepare, build, install, verify]', publisher)
-        self.assertIn("github.event_name == 'push'", publisher)
-        self.assertIn('inputs.publish', publisher)
+        self.assertIn('cancel-in-progress: false', publisher)
+        self.assertIn('python scripts/next/flutter_platform_release.py', publisher)
         for platform in ('windows-x86_64', 'linux-x86_64', 'macos-aarch64'):
-            self.assertIn('platform: ' + platform, build)
-        self.assertIn('location: [default, custom]', build)
-        self.assertIn('Test-Flutter-ReleaseMsi.ps1', build)
-        self.assertNotIn('gh release', workflow)
-        self.assertNotIn('validation/flutter-*', workflow)
-        for suite in ("rust", "flutter"):
-            self.assertIn(f'--suite {suite} --expected-source "' + '${{ needs.prepare.outputs.source_sha }}"', workflow)
+            os_name = platform.split('-')[0]
+            workflow = (workflows / f'next-flutter-{os_name}.yml').read_text()
+            build, request = workflow.split('\n  request-release:\n')
+            self.assertIn('branches: [flutter-next]', build)
+            self.assertIn('permissions:\n  contents: read', build)
+            self.assertIn('persist-credentials: false', build)
+            self.assertIn(f'group: next-flutter-{os_name}-', build)
+            self.assertIn(f'platform: {platform}', build)
+            self.assertNotIn('contents: write', workflow)
+            self.assertNotIn('actions: write', build)
+            self.assertNotIn('extra[@]', build)
+            self.assertIn('actions: write', request)
+            self.assertIn("github.ref == 'refs/heads/flutter-next'", request)
+            self.assertIn("github.event_name == 'push'", request)
+            self.assertIn('inputs.publish', request)
+            self.assertIn('next-flutter-publish.yml/dispatches', request)
+            if os_name == 'windows':
+                self.assertIn('needs: [prepare, build, install, verify]', request)
+                self.assertIn('location: [default, custom]', build)
+                self.assertIn('Test-Flutter-ReleaseMsi.ps1', build)
+                self.assertIn('--windows-only --verify-only', build)
+            else:
+                self.assertIn('needs: [prepare, build]', request)
+            for suite in ("rust", "flutter"):
+                self.assertIn(f'--suite {suite} --expected-source "' + '${{ needs.prepare.outputs.source_sha }}"', build)
 
     @staticmethod
     def flutter_output(*, names=None, omit=None, skipped=None, failed=None, done=True):

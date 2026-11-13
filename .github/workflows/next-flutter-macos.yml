@@ -1,0 +1,207 @@
+name: Next Flutter macOS CI and beta
+
+# This platform builds and requests publication independently of other platforms.
+on:
+  push:
+    branches: [flutter-next]
+  pull_request:
+    branches: [flutter-next]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish this platform after its checks pass
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+# Keep secondary platform work in a separate queue from Windows delivery.
+concurrency:
+  group: next-flutter-macos-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare
+    if: github.repository == 'xue-ding-e/XenTerm-Next'
+    runs-on: ubuntu-22.04
+    outputs:
+      source_sha: ${{ steps.version.outputs.source_sha }}
+      xt_version: ${{ steps.version.outputs.xt_version }}
+      msi_version: ${{ steps.version.outputs.msi_version }}
+      upstream_sha: ${{ steps.version.outputs.upstream_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify release policy and packaging contracts
+        run: python -m unittest discover -s scripts/next -p 'test_*.py'
+      - name: Validate GitHub Actions syntax with pinned actionlint
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl -fsSL https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz -o actionlint.tar.gz
+          echo '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  actionlint.tar.gz' | sha256sum --check
+          tar -xzf actionlint.tar.gz actionlint
+          cd "$GITHUB_WORKSPACE"
+          "$RUNNER_TEMP/actionlint" -shellcheck= -pyflakes= .github/workflows/*.yml
+      - name: Resolve one canonical version for every platform
+        id: version
+        shell: bash
+        env:
+          XT_CHANNEL: beta
+        run: |
+          set -euo pipefail
+          GITHUB_SHA=$(git rev-parse HEAD)
+          SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)
+          export GITHUB_SHA SOURCE_DATE_EPOCH
+          XT_VERSION=$(bash scripts/version.sh)
+          export XT_VERSION
+          python - <<'PY'
+          import importlib.util, os, sys
+          sys.path.insert(0, 'scripts/next')
+          from flutter_release import runtime_details
+          spec = importlib.util.spec_from_file_location('pack', 'scripts/next/package_flutter_windows.py')
+          pack = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(pack)
+          sha, version = os.environ['GITHUB_SHA'], os.environ['XT_VERSION']
+          values = {'source_sha': sha, 'xt_version': version,
+                    'msi_version': runtime_details(version, sha), 'upstream_sha': pack.UPSTREAM_SHA}
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as stream:
+              for key, value in values.items():
+                  stream.write(f'{key}={value}\n')
+          print(values)
+          PY
+
+  build:
+    name: Desktop (${{ matrix.platform }})
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - {os: macos-15, platform: macos-aarch64, flutter: macos, bundle: apps/xenterm/build/macos/Build/Products/Release/xenterm_app.app, bridge: Contents/Frameworks/libxenterm_bridge.dylib, cli: Contents/MacOS/xenterm-cli}
+    env:
+      # Preserve the hosted registry identity and checksums in pubspec.lock.
+      PUB_HOSTED_URL: https://pub.flutter-io.cn
+      XT_VERSION: ${{ needs.prepare.outputs.xt_version }}
+      XT_CHANNEL: beta
+      XT_BASH: bash
+      SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: next-flutter-${{ matrix.platform }}
+          cache-on-failure: true
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.7'
+          channel: stable
+          cache: true
+      - name: Verify exact checkout and release policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          rustc --version
+          flutter --version
+          python -m unittest discover -s scripts/next -p 'test_*.py'
+      - name: Resolve and verify Flutter dependencies
+        working-directory: apps/xenterm
+        run: flutter pub get --enforce-lockfile
+      - name: Verify dependency resolution did not rewrite the lockfile
+        working-directory: apps/xenterm
+        run: git diff --exit-code -- pubspec.lock
+      # Injected-source Dart tests fail before native compilation. Keep the
+      # complete suite and packaged-DLL smoke after the native release build.
+      - name: Analyze Flutter
+        working-directory: apps/xenterm
+        run: flutter analyze
+      - name: Test exact Flutter maintenance regressions (48 required)
+        run: python scripts/next/run_flutter_maintenance_regressions.py --suite flutter --expected-source "${{ needs.prepare.outputs.source_sha }}"
+      - name: Test exact Rust maintenance regressions (47 Windows, 45 Unix)
+        run: python scripts/next/run_flutter_maintenance_regressions.py --suite rust --expected-source "${{ needs.prepare.outputs.source_sha }}"
+      - name: Test Rust bridge
+        run: cargo test --locked -p xenterm-bridge
+      - name: Test CLI profile isolation
+        run: cargo test --locked -p xenterm --bin xenterm
+      - name: Build Rust bridge and CLI/MCP companion
+        run: cargo build --release --locked -p xenterm-bridge -p xenterm
+      - name: Test Flutter
+        working-directory: apps/xenterm
+        run: flutter test
+      - name: Build Flutter desktop
+        working-directory: apps/xenterm
+        run: flutter build ${{ matrix.flutter }} --release
+      - name: Bundle native bridge
+        shell: bash
+        run: bash apps/xenterm/tool/bundle_native.sh
+      - name: Bundle and verify CLI/MCP companion
+        shell: bash
+        env:
+          BUNDLE: ${{ matrix.bundle }}
+          CLI_PATH: ${{ matrix.cli }}
+        run: |
+          set -euo pipefail
+          SOURCE=target/release/xenterm
+          test "$("$SOURCE" --version)" = "xenterm $XT_VERSION"
+          cp "$SOURCE" "$BUNDLE/$CLI_PATH"
+      - name: Smoke test packaged native bridge with isolated data
+        shell: bash
+        env:
+          BRIDGE_PATH: ${{ matrix.bundle }}/${{ matrix.bridge }}
+        run: |
+          set -euo pipefail
+          export XENTERM_BRIDGE_PATH="$GITHUB_WORKSPACE/$BRIDGE_PATH"
+          export XENTERM_DATA_DIR="$RUNNER_TEMP/flutter-smoke-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          cd apps/xenterm
+          flutter test test/native_bridge_smoke_test.dart
+      - name: Package platform with complete provenance
+        shell: bash
+        env:
+          BUNDLE: ${{ matrix.bundle }}
+          XENTERM_PACKAGE_PLATFORM: ${{ matrix.platform }}
+          UPSTREAM_SHA: ${{ needs.prepare.outputs.upstream_sha }}
+        run: |
+          set -euo pipefail
+          python scripts/next/package_flutter_desktop.py --bundle "$BUNDLE" --platform "$XENTERM_PACKAGE_PLATFORM" --output dist-flutter --version "$XT_VERSION" --source-sha "$SOURCE_SHA" --run-id "$GITHUB_RUN_ID" --upstream-sha "$UPSTREAM_SHA"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flutter-package-${{ matrix.platform }}
+          path: dist-flutter/*
+          if-no-files-found: error
+          retention-days: 14
+
+  request-release:
+    name: Release requested (macos-aarch64)
+    needs: [prepare, build]
+    if: >-
+      github.repository == 'xue-ding-e/XenTerm-Next' &&
+      github.ref == 'refs/heads/flutter-next' &&
+      (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Reconcile all successful platform packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api --method POST repos/${{ github.repository }}/actions/workflows/next-flutter-publish.yml/dispatches -f ref=flutter-next

@@ -34,20 +34,18 @@ The original CLI/MCP/SSH/SFTP and GPUI regression tests remain byte-for-byte in
 tests are **not equivalent coverage**: porting applicable old assertions and
 running both behavior suites is an outstanding replacement gate.
 
-This independent `flutter-next` line preserves upstream MIT attribution and does
-not replace the GPUI `main` release or its update channel. The independent
-[Flutter beta downloads](https://github.com/xue-ding-e/XenTerm-Next/releases/tag/flutter-beta)
-provide Windows x64 portable ZIP and MSI, Linux x64 tar.gz and macOS Apple Silicon ZIP.
-Each push to `flutter-next` builds platforms sequentially and requires the exact
-maintenance regressions, packaged bridge loading and MSI install/upgrade/uninstall
-in both default and custom directories before publishing the current source.
-Pull requests only validate; manual dispatch can disable `publish`. Per-platform
-and combined BUILD.json/SHA256SUMS identify the same source and build. The rolling
-channel keeps the current and previous generation. Older complete builds are
-copied to independent historical Releases and downloaded/verified before their
-rolling copies are removed. Rerunning an already released SHA verifies and reuses
-the original published build. MSI's numeric version losslessly encodes the application version's
-timestamp and its upgrade family is independent of GPUI and upstream.
+The independent `flutter-next` line preserves upstream MIT attribution.
+On each push to `flutter-next`, Windows, Linux and macOS build and validate
+independently. The first successful platform publishes a
+[Flutter beta prerelease](https://github.com/xue-ding-e/XenTerm-Next/releases?q=flutter-beta-) for that source commit.
+Later successes append their packages to the same release. Each platform has
+its own BUILD.json and SHA-256 checksums, and reruns keep previously released
+packages for that commit. Pull requests only validate. Manual runs can disable
+`publish` to validate without releasing.
+
+Windows delivers a portable ZIP and an MSI after install, upgrade and uninstall
+checks in default and custom directories. MSI's numeric version encodes the
+application timestamp and uses an upgrade family separate from GPUI and upstream.
 
 Windows requires Windows 10/11 x64. Extract the **entire** portable ZIP, not just
 the executable. Microsoft VC++ x64 DLLs come from the hosted runner's Visual Studio
@@ -56,8 +54,8 @@ DLL download is needed. The included `Start-Flutter-Preview.ps1` validates app-l
 runtime files without downloading, installing or elevating. See
 [Microsoft's redistribution guidance](https://learn.microsoft.com/en-us/cpp/windows/redistributing-visual-cpp-files)
 and [Flutter's Windows distribution requirements](https://docs.flutter.dev/platform-integration/windows/building).
-Windows packages are unsigned; macOS is ad-hoc signed and not notarized; Linux is
-built on Ubuntu 22.04. Clean Windows, standard-user and real SSH/SFTP acceptance
+Windows packages are unsigned. Separate-workflow macOS artifacts are ad-hoc signed
+and not notarized; Linux is built on Ubuntu 22.04. Clean Windows, standard-user and real SSH/SFTP acceptance
 remain separate work.
 
 The GUI uses `config-flutter-next` beside `xenterm.exe`; an

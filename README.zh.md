@@ -32,22 +32,21 @@
 当前 workspace 的自动测试入口。新 Flutter 测试**不等于旧行为已覆盖**；迁移适用
 断言并完成两条实现的行为对照，是替换 GPUI 前尚未完成的验收门槛。
 
-独立 `flutter-next` 分支保留上游 MIT 许可证和作者归属，不替换 GPUI `main`
-发布或更新渠道。独立 [Flutter beta 下载入口](https://github.com/xue-ding-e/XenTerm-Next/releases/tag/flutter-beta)
-提供 Windows x64 portable ZIP 和 MSI、Linux x64 tar.gz、macOS Apple Silicon ZIP。
-推送 `flutter-next` 后，三平台串行构建、指定维护回归、桥接加载、MSI 默认/自定义目录的
-安装、升级和卸载全部通过，才会发布当前同 SHA 的产物；PR 只验证，不发布。
-手动运行可关闭 `publish` 仅验证。发布附带每平台及总 BUILD.json、SHA256SUMS。
-滚动渠道保留当前和上一代；更早的完整构建先复制、下载验真并发布到独立历史 Release，
-再移除滚动页中的对应副本，保留可恢复的历史下载。同一 SHA 重跑会验证并复用原已发布构建。
-MSI 数字版本无损编码应用版本中的时间戳，升级族与 GPUI、上游完全独立。
+独立 `flutter-next` 分支保留上游 MIT 许可证和作者归属。每次推送 `flutter-next` 后，
+Windows、Linux 和 macOS 独立构建和验收。首个通过的平台为当前源码提交创建
+[Flutter beta 预发布](https://github.com/xue-ding-e/XenTerm-Next/releases?q=flutter-beta-)，后续通过的平台把包追加到同一个 Release。
+每个平台附带自己的 BUILD.json 与 SHA-256 校验文件，同一提交重跑会保留已经发布的包。
+PR 只做验证，手动运行可以关闭 `publish`。
+
+Windows 的便携 ZIP 和 MSI 在默认和自定义目录的安装、升级、卸载验收通过后发布。
+MSI 数字版本编码应用时间戳，升级族与 GPUI、上游独立。
 
 Windows 需要 Windows 10/11 x64，必须完整解压 ZIP，不能只取 exe。构建从托管 runner
 的 Visual Studio 可再分发目录附带微软 VC++ x64 运行库，记录在 `WINDOWS-RUNTIME.json`，
 无须另从 DLL 网站下载。`Start-Flutter-Preview.ps1` 可验证应用目录内的运行库；不自动下载、
 安装或提权。分发依据见 [微软说明](https://learn.microsoft.com/en-us/cpp/windows/redistributing-visual-cpp-files)
 及 [Flutter Windows 分发说明](https://docs.flutter.dev/platform-integration/windows/building)。
-Windows 未签名；macOS 为 ad-hoc 签名、未公证；Linux 基于 Ubuntu 22.04。
+Windows 未签名。独立工作流生成的 macOS 产物为 ad-hoc 签名、未公证，Linux 基于 Ubuntu 22.04。
 干净 Windows、标准用户和真实 SSH/SFTP 使用仍须独立验收。
 
 GUI 默认使用 exe 旁的
