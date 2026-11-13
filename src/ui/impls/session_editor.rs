@@ -40,6 +40,45 @@ use gpui_kit::assets::IconName;
 use crate::config::{ConfigStore, Session};
 use crate::core::{SessionDraft, SessionDraftError};
 
+#[cfg(test)]
+#[path = "session_editor_button_tests.rs"]
+mod button_tests;
+#[path = "session_editor_key_import.rs"]
+mod key_import;
+
+/// An editor-only action must activate its focused button, not the surrounding
+/// Dialog's default Confirm (which closes the editor and clears its secrets).
+/// In locked gpui-pre 0.3.8, bound actions run before raw KeyDown. Consuming
+/// Confirm therefore leaves the native KeyUp click unarmed: one press, one action.
+fn editor_action_button(
+    id: &'static str,
+    enabled: bool,
+    activate: impl Fn(&gpui_kit::ClickEvent, &mut Window, &mut gpui_kit::App) + 'static,
+) -> Button {
+    let activate = Rc::new(activate);
+    Button::new(id)
+        .debug_selector(move || id.into())
+        .disabled(!enabled)
+        .on_click({
+            let activate = activate.clone();
+            move |event, window, cx| {
+                if enabled {
+                    activate(event, window, cx);
+                }
+            }
+        })
+        .on_action(
+            move |_: &gpui_kit::component::dialog::Confirm, window, cx| {
+                cx.stop_propagation();
+                // Custom action listeners are separate from the toolkit's disabled
+                // click path. Never let keyboard activation bypass that state.
+                if enabled {
+                    activate(&gpui_kit::ClickEvent::default(), window, cx);
+                }
+            },
+        )
+}
+
 /// What the editor asks the shell to do when it closes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum EditorOutcome {
@@ -80,6 +119,7 @@ pub(crate) struct SessionEditor {
     /// Read-only, disposable previews. They never feed a replacement input or its undo history.
     secret_previews: [Option<Entity<TextareaState>>; 2],
     reset_previews: bool,
+    key_import: key_import::KeyImportState,
     /// Weak handles only: hidden/replaced keyed fields retain no extra input state.
     text_fields:
         Rc<RefCell<std::collections::HashMap<&'static str, gpui_kit::WeakEntity<TextFieldState>>>>,
@@ -260,6 +300,7 @@ impl SessionEditor {
             password: None,
             secret_previews: [None, None],
             reset_previews: false,
+            key_import: Default::default(),
             text_fields: Rc::new(RefCell::new(std::collections::HashMap::new())),
         }
     }
@@ -279,6 +320,7 @@ impl SessionEditor {
             password: None,
             secret_previews: [None, None],
             reset_previews: false,
+            key_import: Default::default(),
             text_fields: Rc::new(RefCell::new(std::collections::HashMap::new())),
         }
     }
@@ -368,6 +410,9 @@ impl SessionEditor {
 
     /// Only finish the dialog after the store has accepted the change on disk.
     fn save(&mut self, cx: &Context<Self>) {
+        if self.key_import.busy() {
+            return;
+        }
         // The forwarding rows hold their own text, so it is copied into the draft first:
         // what the save reads is the draft, and a row typed into but never copied across
         // would be a rule the form showed and the file did not have.
@@ -420,6 +465,7 @@ impl SessionEditor {
     /// text storage is not zeroizable, so do not claim that this erases every heap copy.
     /// No clipboard write occurs: copying a revealed selection is a separate user action.
     pub(crate) fn clear_sensitive_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.key_import.cancel();
         self.clear_secret_previews(window, cx);
         if let Some(input) = self.password.take() {
             input.update(cx, |input, cx| {
@@ -710,6 +756,9 @@ impl SessionEditor {
                     editor.update(cx, |editor, cx| {
                         // Changing transport/auth must not restore a previously visible secret.
                         editor.reset_previews = true;
+                        if editor.key_import.busy() {
+                            editor.key_import.cancel();
+                        }
                         cx.notify();
                     });
                 }
@@ -1195,6 +1244,9 @@ impl Render for SessionEditor {
         let kind_value = draft.borrow().kind.clone();
         let is_serial = kind_value == "serial";
         let is_ssh = kind_value == "ssh";
+        if !is_ssh && self.key_import.busy() {
+            self.key_import.cancel();
+        }
 
         let store_for_name = self.store.clone();
         let name = self.text("name", |d| d.name.clone(), |d, v| d.name = v);
@@ -1300,6 +1352,7 @@ impl Render for SessionEditor {
         };
         let saved_password = self.saved_secret_field(0, cx);
         let saved_key = self.saved_secret_field(1, cx);
+        let key_import = self.key_import_field(cx);
         let key_path = self.text(
             "private_key_path",
             |d| d.private_key_path.clone(),
@@ -1442,7 +1495,8 @@ impl Render for SessionEditor {
                             "使用私钥认证时填写。",
                             "Used when authenticating with a key.",
                         )),
-                );
+                )
+                .item(SettingItem::new(crate::i18n::t("私钥内容", "Private-key contents"), key_import));
         } else {
             // Telnet: a password can be needed, a key cannot.
             credentials = credentials.item(
@@ -1584,6 +1638,7 @@ impl Render for SessionEditor {
             .debug_selector(|| "editor-save".to_string())
             .icon(IconName::Check)
             .label(crate::i18n::t("保存", "Save"))
+            .disabled(self.key_import.busy())
             .primary()
             .on_click(cx.listener(|this, _, window, cx| {
                 // Buttons deliberately keep the input focused, so Blur is not a
@@ -1693,13 +1748,13 @@ mod tests {
     use std::{fs, path::PathBuf};
 
     /// A disposable database with no user-config lookup, backups, or keyring access.
-    struct StoreFixture {
+    pub(super) struct StoreFixture {
         directory: PathBuf,
-        store: Rc<RefCell<ConfigStore>>,
+        pub(super) store: Rc<RefCell<ConfigStore>>,
     }
 
     impl StoreFixture {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
             let directory =
                 std::env::temp_dir().join(format!("xenterm-editor-test-{}", uuid::Uuid::new_v4()));
             fs::create_dir_all(&directory).unwrap();
@@ -1736,7 +1791,7 @@ mod tests {
             }
         }
 
-        fn disk_sessions(&self) -> Vec<Session> {
+        pub(super) fn disk_sessions(&self) -> Vec<Session> {
             let connection = rusqlite::Connection::open(&self.store.borrow().path).unwrap();
             let mut statement = connection
                 .prepare("SELECT data FROM sessions ORDER BY ordinal")

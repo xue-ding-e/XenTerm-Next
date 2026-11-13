@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
 use anyhow::{anyhow, ensure, Result};
-use russh::keys::{decode_secret_key, PrivateKey};
+use russh::keys::PrivateKey;
 use crate::config::{AuthMethod, Session};
 use super::known_hosts::HostKeySnapshot;
 
@@ -28,13 +28,8 @@ impl FrozenAuthentication {
             let text = session.private_key_inline.as_str();
             ensure!(!text.trim().is_empty(), "frozen private key bytes are missing");
             let pass = session.password.as_str();
-            let key = if crate::ssh::ppk::is_ppk(text.as_bytes()) {
-                crate::ssh::ppk::decode_ppk(text.as_bytes(), pass)
-                    .map_err(|_| anyhow!("frozen private key could not be parsed"))?
-            } else {
-                decode_secret_key(text, if pass.is_empty() { None } else { Some(pass) })
-                    .map_err(|_| anyhow!("frozen private key could not be parsed"))?
-            };
+            let key = crate::ssh::key_import::decode_saved_inline(text, pass)
+                .map_err(|_| anyhow!("frozen private key could not be parsed"))?;
             ensure!(keys.insert(session.id.clone(), Arc::new(key)).is_none(), "duplicate SSH identity in frozen route");
         }
         Ok(Self { keys, trust: Arc::new(HostKeySnapshot::from_text(trust_text)), proxy })

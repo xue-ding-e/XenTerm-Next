@@ -92,6 +92,8 @@ panels, so they stay attached to the window whose sessions they belong to.
 - **Ordered SSH bastions** — add saved SSH sessions on the session editor’s SSH bastions page, move any hop earlier/later, or remove it. The displayed order is outermost first; each hop uses its own credentials. Existing `jump_session_id` configurations still work, including nested legacy routes.
 - **SSH authentication** — password, private key, passphrase-protected key, and
   keyboard-interactive for 2FA / OTP prompts.
+- **Import SSH keys** — drop a private-key file or paste its contents in the
+  session editor. Saving the session stores the key encrypted.
 - **PuTTY `.ppk` keys** — PPK v2/v3 is decrypted and verified in memory; no `puttygen`
   round-trip.
 - **Outbound proxies** — SOCKS5 (`socks5://`, `socks5h://`) and HTTP/HTTPS CONNECT, set

@@ -82,6 +82,23 @@ pub(crate) fn decode_ppk(input: &[u8], passphrase: &str) -> Result<PrivateKey> {
     ppk_to_openssh(&ppk)
 }
 
+/// Inspect an imported container without deriving an encrypted key. The same
+/// parser applies all size and Argon2 work limits used at connection time.
+pub(crate) fn validate_import(input: &[u8]) -> Result<bool> {
+    let ppk = parse_ppk(input)?;
+    if let PublicParts::Rsa { e, n } = PublicParts::parse(&ppk.public, &ppk.algorithm)? {
+        crate::ssh::key_import::check_rsa_public(string_value(n)?, string_value(e)?)
+            .map_err(|_| anyhow!("RSA parameters exceed import limits"))?;
+    }
+    let encrypted = ppk.encryption != "none";
+    if !encrypted {
+        let key = decode_ppk(input, "")?;
+        crate::ssh::key_import::check_key_parameters(&key)
+            .map_err(|_| anyhow!("RSA parameters exceed import limits"))?;
+    }
+    Ok(encrypted)
+}
+
 fn parse_ppk(input: &[u8]) -> Result<Ppk> {
     if input.len() > MAX_PPK_SIZE {
         bail!("PPK file is too large");
@@ -198,7 +215,7 @@ fn decode_base64_lines<'a>(
     if count > MAX_PPK_SIZE / 4 {
         bail!("PPK {section} section contains too many lines");
     }
-    let mut encoded = String::new();
+    let mut encoded = Zeroizing::new(String::new());
     for _ in 0..count {
         encoded.push_str(
             lines
@@ -208,7 +225,7 @@ fn decode_base64_lines<'a>(
         );
     }
     base64::engine::general_purpose::STANDARD
-        .decode(encoded)
+        .decode(encoded.as_bytes())
         .with_context(|| format!("invalid base64 in PPK {section} section"))
 }
 

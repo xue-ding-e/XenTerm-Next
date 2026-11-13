@@ -10653,6 +10653,8 @@ dependencies = [
  "libc",
  "md5 0.7.0",
  "mimalloc",
+ "pkcs1",
+ "pkcs8",
  "portable-pty",
  "rand 0.8.8",
  "regex",

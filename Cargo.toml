@@ -65,6 +65,11 @@ keyring = { version = "3", default-features = false }
 # Zeroes password buffers on drop so plaintext credentials don't linger in
 # freed heap memory (core dumps / debuggers / /proc/pid/mem).
 zeroize = "1"
+# Inspect encrypted PKCS#8 containers without decrypting them during import.
+# This exact parser version is already used by russh in Cargo.lock.
+pkcs8 = { version = "=0.11.0", features = ["std", "pem", "encryption"] }
+# Borrow RSA integer fields before any big-integer key conversion.
+pkcs1 = "=0.8.0-rc.4"
 # SOCKS5 proxy tunnelling for SSH/SFTP in network-restricted environments.
 # (HTTP CONNECT proxies are handled in src/proxy.rs without an extra crate.)
 tokio-socks = "0.5"
@@ -116,7 +121,8 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 jemallocator = "0.5"
 
 [target.'cfg(unix)'.dependencies]
-# Drop uploads open regular files without following a swapped symlink/FIFO.
+# Drop uploads and imported keys open regular files without following a
+# swapped symlink/FIFO. Already in the locked graph.
 libc = "0.2"
 
 # Embeds assets/xenterm.ico into the .exe so Explorer / taskbar / shortcuts

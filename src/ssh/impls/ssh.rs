@@ -13,7 +13,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, Context, Result};
 use russh::client::{self, Handle, Handler, Msg};
 use russh::keys::key::PrivateKeyWithHashAlg;
-use russh::keys::{decode_secret_key, load_secret_key, HashAlg, PrivateKey, PublicKey};
+use russh::keys::{load_secret_key, HashAlg, PrivateKey, PublicKey};
 use russh::{Channel, ChannelId, ChannelMsg, Disconnect};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
@@ -141,11 +141,7 @@ pub(crate) fn load_session_private_key(session: &Session, pass: &str) -> Result<
     let pass = if pass.is_empty() { None } else { Some(pass) };
     let inline = session.private_key_inline.as_str().trim();
     if !inline.is_empty() {
-        if crate::ssh::ppk::is_ppk(inline.as_bytes()) {
-            return crate::ssh::ppk::decode_ppk(inline.as_bytes(), pass.unwrap_or_default())
-                .context("failed to parse pasted PuTTY private key");
-        }
-        return decode_secret_key(inline, pass).context("failed to parse pasted private key");
+        return crate::ssh::key_import::decode_saved_inline(inline, pass.unwrap_or_default());
     }
 
     let raw = session.private_key_path.trim();
@@ -183,11 +179,17 @@ pub(crate) async fn load_session_private_key_offthread(
     session: &Session,
     pass: &str,
 ) -> Result<PrivateKey> {
+    let permit = crate::ssh::key_import::work_permit()
+        .await
+        .map_err(|_| anyhow!("private-key worker unavailable"))?;
     let session = session.clone();
     let pass = Zeroizing::new(pass.to_string());
-    tokio::task::spawn_blocking(move || load_session_private_key(&session, &pass))
-        .await
-        .context("private-key loader task failed")?
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        load_session_private_key(&session, &pass)
+    })
+    .await
+    .context("private-key loader task failed")?
 }
 
 /// Format a byte count as a human-readable string.

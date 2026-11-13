@@ -5,6 +5,8 @@ pub(crate) use connection::{network_stage, disconnect_ssh};
 pub(crate) mod known_hosts;
 #[path = "impls/ppk.rs"]
 pub(crate) mod ppk;
+#[path = "impls/key_import.rs"]
+pub(crate) mod key_import;
 #[path = "impls/proxy.rs"]
 pub(crate) mod proxy;
 #[path = "impls/storage.rs"]
