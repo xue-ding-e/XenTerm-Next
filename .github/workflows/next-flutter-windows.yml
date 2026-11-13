@@ -41,6 +41,15 @@ jobs:
           python-version: '3.12'
       - name: Verify release policy and packaging contracts
         run: python -m unittest discover -s scripts/next -p 'test_*.py'
+      - name: Check Next commit attribution
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Keep release tags out of the version resolver's checkout.
+          if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+            git fetch --unshallow --no-tags origin "$(git rev-parse HEAD)"
+          fi
+          python scripts/check_next_commit_attribution.py
       - name: Validate GitHub Actions syntax with pinned actionlint
         shell: bash
         run: |

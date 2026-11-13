@@ -12,6 +12,8 @@ collaboration rules, while [AGENTS.md](AGENTS.md) is only an AI entry point.
 
 Routine development, fixes, CI/CD, releases and repository cleanup for Next target only `xue-ding-e/XenTerm-Next`. Treat `xue-ding-e/XenTerm` and `ixbaicn/XenTerm` as read-only for Next work. Changes to either require a separate request that names the repository. Integrate GPUI changes into `main` and Flutter changes into `flutter-next` using rebase or cherry-pick and a normal fast-forward push. Never run `git merge` or add a merge commit to either product branch.
 
+Check Git author, committer and co-author identities before submitting. Preserve credit for real contributors and avoid automatic bot attribution for AI assistance. Product CI checks for Codex bot attribution.
+
 For `xue-ding-e/XenTerm-Next`, the owner confirmed dual-product maintenance on
 2026-11-02: `main` retains GPUI; `flutter-next` maintains Flutter. The layout and
 upstream history notes below describe the Flutter line only. Start Flutter PRs

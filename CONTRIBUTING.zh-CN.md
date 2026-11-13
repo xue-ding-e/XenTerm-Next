@@ -11,6 +11,8 @@
 
 Next 的日常开发、修复、CI/CD、发布和仓库清理只操作 `xue-ding-e/XenTerm-Next`。`xue-ding-e/XenTerm` 和 `ixbaicn/XenTerm` 在 Next 任务中仅供只读参考；对其中任何一个仓库写入，都须另有明确点名该仓库的请求。GPUI 进入 `main`，Flutter 进入 `flutter-next`，用 rebase 或 cherry-pick 整理后正常快进推送。两条产品线均禁止使用 `git merge` 或新增 merge commit。
 
+提交前核对 Git 作者、提交者和共同作者。保留真实贡献者署名，AI 辅助不得自动附加机器人作者或共同作者。产品 CI 会检查 Codex 机器人署名。
+
 对于 `xue-ding-e/XenTerm-Next`，维护者于 2026-11-02 确认双线维护：`main` 保留 GPUI，
 `flutter-next` 维护 Flutter。下文结构和上游历史说明只描述 Flutter 产品线。Flutter PR 从
 `flutter-next` 开始，不从 GPUI 的 `main` 开始，也不重放上游历史置换。
