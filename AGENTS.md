@@ -27,7 +27,7 @@ an entry point, not a separate policy.
 
 ## Independent repository branch entry point
 
-For `xue-ding-e/XenTerm-Next`, first read the [branch policy](CONTRIBUTING.md#independent-repository-branch-policy-xue-ding-exenterm-next) ([中文](CONTRIBUTING.zh-CN.md#独立仓库的分支约定xue-ding-exenterm-next)). Keep custom development on linear `main`, with separate logical commits for independent features and rebase-based integration; squash only same-feature fixups. An ordinary “merge” request means linear integration, not a merge commit, unless the user explicitly requests preserving merge nodes. `upstream-main` is an unchanged official mirror and retains the official graph. A fetch never authorizes integrating or overwriting custom work.
+For `xue-ding-e/XenTerm-Next`, first read the [branch policy](CONTRIBUTING.md#independent-repository-branch-policy-xue-ding-exenterm-next) ([中文](CONTRIBUTING.zh-CN.md#独立仓库的分支约定xue-ding-exenterm-next)). Before writing, check that the target is XenTerm Next and use the matching linear product branch. Keep separate commits for independent features and squash only same-feature fixups. `upstream-main` is an unchanged official mirror and retains the official graph. A fetch never authorizes integrating or overwriting custom work.
 
 ## Dual-product maintenance for XenTerm Next
 
