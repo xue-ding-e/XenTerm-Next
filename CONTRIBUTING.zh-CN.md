@@ -4,6 +4,8 @@
 
 Next 的日常开发、修复、CI/CD、发布和仓库清理只操作 `xue-ding-e/XenTerm-Next`。`xue-ding-e/XenTerm` 和 `ixbaicn/XenTerm` 在 Next 任务中仅供只读参考；对其中任何一个仓库写入，都须另有明确点名该仓库的请求。GPUI 进入 `main`，Flutter 进入 `flutter-next`，用 rebase 或 cherry-pick 整理后正常快进推送。两条产品线均禁止使用 `git merge` 或新增 merge commit。
 
+提交前核对 Git 作者、提交者和共同作者。保留真实贡献者署名，AI 辅助不得自动附加机器人作者或共同作者。产品 CI 会检查 Codex 机器人署名。
+
 - 产品范围：维护者于 2026-11-02 确认 GPUI 与 Flutter 双线维护；`main` 保留 GPUI，`flutter-next` 维护 Flutter。Flutter 完整覆盖 GPUI 功能与 Next 自有增强，并通过安装、升级、卸载、配置兼容和实际使用验收前，两条产品线继续保留和维护。在 [#17](https://github.com/xue-ding-e/XenTerm-Next/issues/17) 分别记录证据；构建或局部测试通过不授权替换或发布。
 
 此节仅适用于独立维护的 XenTerm Next，不代表上游项目的分支约定。Check official upstream mirror (read-only) 工作流每天北京时间 17:00 检查漂移，也可手动运行。它报告已跟上或待同步状态，分叉或检测到并发更新时失败；不执行上游代码，不写任何远端分支、标签或发布。实际镜像快进使用现有已授权连接器，先核对祖先关系及预期旧 SHA，再更新并回读；不为工作流配置新凭据。只读检查成功不代表待同步更新已写入镜像。GitHub 定时任务可能延迟。

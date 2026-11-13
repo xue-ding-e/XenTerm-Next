@@ -23,11 +23,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  commit-attribution:
+    name: Check Next commit attribution
+    if: github.repository == 'xue-ding-e/XenTerm-Next'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - run: python3 scripts/check_next_commit_attribution.py
+
   # One runner at a time: serialize both matrix children and job families.
   # Ordering-only needs use !cancelled() so an earlier failure still leaves
   # independent regressions running and red; cancellation stops queued work.
   desktop:
     name: ${{ matrix.name }}
+    needs: commit-attribution
+    if: ${{ !cancelled() && (github.repository != 'xue-ding-e/XenTerm-Next' || needs.commit-attribution.result == 'success') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     strategy:
