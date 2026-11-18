@@ -62,6 +62,8 @@ mod session_list;
 mod session_state;
 #[path = "impls/settings.rs"]
 mod settings;
+#[path = "impls/updates.rs"]
+mod updates;
 #[path = "impls/sftp_panel.rs"]
 mod sftp_panel;
 #[path = "impls/shell.rs"]

@@ -15,6 +15,7 @@ pub(crate) mod ingest;
 pub(crate) mod jump_list;
 pub(crate) mod session_models;
 pub(crate) mod session_runtime;
+pub(crate) mod updates;
 pub(crate) mod webdav;
 
 pub(crate) use ingest::{

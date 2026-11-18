@@ -116,6 +116,7 @@ enum SettingsPageId {
     /// The former 权限 and MCP 服务器 pages, merged: one feature's switches,
     /// its server, and optional execution history belong on one page.
     McpPermissions,
+    About,
 }
 
 /// The sidebar's structure: the multi-page sections a click folds, in display
@@ -146,6 +147,7 @@ const NAV_DIRECT: &[(SettingsPageId, &str, &str, IconName)] = &[
     (SettingsPageId::McpPermissions, "MCP 与权限", "MCP & permissions", IconName::ShieldCheck),
     (SettingsPageId::Files, "文件", "Files", IconName::FolderOpen),
     (SettingsPageId::Sync, "同步", "Sync", IconName::RefreshCw),
+    (SettingsPageId::About, "关于", "About", IconName::Info),
 ];
 
 pub(crate) struct SettingsView {
@@ -348,6 +350,11 @@ impl SettingsView {
     /// Take the next action, if any.
     pub(crate) fn take_action(&mut self) -> Option<SettingsAction> {
         self.pending.take()
+    }
+
+    pub(crate) fn show_about(&mut self, cx: &mut Context<Self>) {
+        self.selected = SettingsPageId::About;
+        cx.notify();
     }
 
     fn commit_text_draft(
@@ -795,8 +802,25 @@ impl Render for SettingsView {
                 .into_any_element();
         }
 
+        if self.selected == SettingsPageId::About {
+            let updates = super::updates::view(cx);
+            let about = v_flex()
+                .id("gpui-about-settings")
+                .size_full()
+                .overflow_y_scroll()
+                .p_6()
+                .gap_3()
+                .child(div().text_xl().font_weight(FontWeight::SEMIBOLD).child("XenTerm Next GPUI"))
+                .child(div().text_sm().text_color(cx.theme().muted_foreground).child(crate::version::VERSION))
+                .children(updates);
+            return h_flex().size_full().min_w_0().child(sidebar)
+                .child(div().flex_1().min_w_0().h_full().child(about))
+                .into_any_element();
+        }
+
         let page = match self.selected {
             SettingsPageId::Wallpaper => unreachable!("wallpaper owns its isolated editor"),
+            SettingsPageId::About => unreachable!("about hosts the desktop updater"),
             SettingsPageId::Interface => {
                 SettingPage::new(crate::i18n::t("界面", "Interface"))
                     .group(self.appearance_group(window, cx))
@@ -2341,6 +2365,7 @@ mod tests {
             SettingsPageId::Files,
             SettingsPageId::Sync,
             SettingsPageId::McpPermissions,
+            SettingsPageId::About,
         ];
         let mut listed: Vec<SettingsPageId> = Vec::new();
         for (_, _, pages) in NAV_SECTIONS {

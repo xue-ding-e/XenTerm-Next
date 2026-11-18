@@ -31,6 +31,10 @@ impl SettingsPage {
         self.view.update(cx, |view, _| view.take_action())
     }
 
+    pub(crate) fn show_about(&mut self, cx: &mut Context<Self>) {
+        self.view.update(cx, |view, cx| view.show_about(cx));
+    }
+
     /// A new view, built after the process language changed. The toolkit bakes
     /// its own placeholders in at construction, so a rebuild is the whole fix —
     /// the shell calls this instead of repainting.

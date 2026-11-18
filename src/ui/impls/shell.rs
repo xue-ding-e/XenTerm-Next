@@ -117,6 +117,7 @@ pub(crate) fn run() -> Result<()> {
             super::dialogs::init(cx);
             // The keymap, in one place: every chord the window answers to.
             super::actions::init(cx);
+            super::updates::init(store.clone(), cx);
             // The taskbar's "新建窗口" task, for *this* entry point: the GPUI window is
             // started with `gpui`, so that is what the task has to pass. Registered
             // before the first window shows, so the entry is there when the taskbar icon
@@ -360,6 +361,9 @@ fn open_main_window(
                 _quick_connect_subscription: None,
             };
             shell.start_persistence_poll(cx);
+            if let Some(updates) = super::updates::view(cx) {
+                cx.observe(&updates, |_, _, cx| cx.notify()).detach();
+            }
             shell
         });
         install_main_window_close_guard(&shell, window, cx);
@@ -800,6 +804,25 @@ impl Render for Shell {
 
         let body_element = self.render_body(cx);
         let status_bar = self.render_status_bar(cx);
+        let update_notice = if self.pages.active != PageId::Settings {
+            super::updates::view(cx).and_then(|updates| {
+                updates.read(cx).available_version().map(|version| {
+                    let label = format!("{} {version}", crate::i18n::t("GPUI 新版可用", "GPUI update available"));
+                    use gpui_kit::component::button::Button;
+                    h_flex().px_3().py_1().border_t_1().border_color(cx.theme().border)
+                        .child(Button::new("gpui-update-notice").label(label).on_click(
+                            cx.listener(|shell, _, window, cx| {
+                                shell.open_page(PageId::Settings, window, cx);
+                                if let Some(page) = &shell.pages.settings {
+                                    page.update(cx, |page, cx| page.show_about(cx));
+                                }
+                            }),
+                        ))
+                })
+            })
+        } else {
+            None
+        };
 
         div()
             .size_full()
@@ -808,6 +831,7 @@ impl Render for Shell {
             .bg(background)
             .child(body_element)
             .children(self.persistence_warning.render(cx))
+            .children(update_notice)
             .child(status_bar)
     }
 }

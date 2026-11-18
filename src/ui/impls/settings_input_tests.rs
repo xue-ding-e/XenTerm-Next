@@ -85,6 +85,19 @@ fn page(view: &Entity<SettingsView>, page: SettingsPageId, cx: &mut VisualTestCo
     draw(cx);
 }
 
+#[gpui_kit::gpui::test]
+fn about_navigation_mounts_the_gpui_update_controls(cx: &mut TestAppContext) {
+    let fixture = Fixture::new();
+    fixture.store.borrow_mut().set_update_check_enabled(false);
+    cx.update(|cx| crate::ui::updates::init(fixture.store.clone(), cx));
+    let (_, cx) = open(cx, &fixture, SettingsPageId::Interface);
+    assert!(cx.debug_bounds("gpui-update-actions").is_none());
+    let about = cx.debug_bounds("settings-nav-About").unwrap();
+    cx.simulate_click(about.center(), gpui_kit::Modifiers::default());
+    draw(cx);
+    assert!(cx.debug_bounds("gpui-update-actions").is_some());
+}
+
 fn focus_value(value: &str, cx: &mut VisualTestContext) {
     cx.update(|window, cx| window.blur(cx));
     for _ in 0..60 {
