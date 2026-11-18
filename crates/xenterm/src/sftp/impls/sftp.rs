@@ -312,6 +312,22 @@ async fn sync_tree_dir(
 // Worker
 // ---------------------------------------------------------------------------
 
+fn sftp_client_config() -> Arc<client::Config> {
+    Arc::new(client::Config {
+        // Keep the idle SFTP connection alive (#160). Without a keepalive, an idle
+        // SFTP connection (no file ops for a while) gets silently dropped by
+        // NAT / firewall / server idle timeouts; afterwards every operation fails
+        // ("folder read failed"). Send a keepalive every 30 s so traffic never
+        // goes quiet; keepalive_max (default 3) still closes a genuinely dead
+        // connection after ~90 s of unanswered keepalives.
+        keepalive_interval: Some(std::time::Duration::from_secs(30)),
+        // Match the shell connection's algorithm set so SFTP reaches the same
+        // legacy servers (#172) instead of failing with "No common algorithm".
+        preferred: crate::ssh::compat_preferred(),
+        ..<_>::default()
+    })
+}
+
 async fn run_sftp(
     session: Session,
     jump: Vec<Session>,
@@ -324,23 +340,7 @@ async fn run_sftp(
     ));
 
     // Open a dedicated SSH connection for SFTP.
-    let config = Arc::new(client::Config {
-        // Keep the idle SFTP connection alive (#160). Without a keepalive, an idle
-        // SFTP connection (no file ops for a while) gets silently dropped by
-        // NAT / firewall / server idle timeouts; afterwards every operation fails
-        // ("folder read failed"). Send a keepalive every 30 s so traffic never
-        // goes quiet; keepalive_max (default 3) still closes a genuinely dead
-        // connection after ~90 s of unanswered keepalives.
-        keepalive_interval: Some(std::time::Duration::from_secs(30)),
-        // Match the shell connection's algorithm set so SFTP reaches the same
-        // legacy servers (#172) instead of failing with "No common algorithm".
-        preferred: russh::Preferred {
-            kex: std::borrow::Cow::Borrowed(crate::ssh::COMPAT_KEX),
-            cipher: std::borrow::Cow::Borrowed(crate::ssh::COMPAT_CIPHER),
-            ..russh::Preferred::DEFAULT
-        },
-        ..<_>::default()
-    });
+    let config = sftp_client_config();
 
     let addr = format!("{}:{}", session.host, session.port);
     // Isolate external-editor files by connection and keep the server in the
@@ -2532,5 +2532,18 @@ mod sanitize_tests {
             validate_editor_text("第一行\nsecond line\n".as_bytes().to_vec()),
             Ok("第一行\nsecond line\n".into())
         );
+    }
+}
+
+#[cfg(test)]
+mod mac_compat_tests {
+    use super::*;
+
+    #[test]
+    fn sftp_config_uses_shared_algorithm_policy() {
+        let config = sftp_client_config();
+        assert_eq!(config.preferred.mac.as_ref(), crate::ssh::COMPAT_MAC);
+        assert_eq!(config.preferred.kex.as_ref(), crate::ssh::COMPAT_KEX);
+        assert_eq!(config.preferred.cipher.as_ref(), crate::ssh::COMPAT_CIPHER);
     }
 }
