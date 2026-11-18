@@ -103,6 +103,7 @@ class _HostDetailsPanelState extends State<HostDetailsPanel> {
   bool _clearKey = false;
   bool _importingKey = false;
   late String _jumpId = widget.host.jumpHostId;
+  late bool _allowLegacyMd5 = widget.host.allowLegacyHmacMd5;
   late String _encoding = widget.host.encoding;
   late List<SessionTriggerRule> _triggers = List.of(widget.host.triggers);
   bool _saving = false;
@@ -118,6 +119,7 @@ class _HostDetailsPanelState extends State<HostDetailsPanel> {
       _port.text = '${widget.host.port}';
       _username.text = widget.host.username;
       _jumpId = widget.host.jumpHostId;
+      _allowLegacyMd5 = widget.host.allowLegacyHmacMd5;
       _encoding = widget.host.encoding;
       _triggers = List.of(widget.host.triggers);
       _saveError = null;
@@ -157,6 +159,7 @@ class _HostDetailsPanelState extends State<HostDetailsPanel> {
     flowControl: widget.host.flowControl,
     hasPassword: widget.host.hasPassword,
     jumpHostId: _jumpId,
+    allowLegacyHmacMd5: _allowLegacyMd5,
     triggers: List.unmodifiable(_triggers),
   );
 
@@ -539,6 +542,20 @@ class _HostDetailsPanelState extends State<HostDetailsPanel> {
                             ),
                           ],
                           const SizedBox(height: 14),
+                          if (widget.host.protocol == 'ssh') ...[
+                            Row(children: [
+                              XtSwitch(
+                                key: const ValueKey('allow-legacy-hmac-md5'),
+                                value: _allowLegacyMd5,
+                                onChanged: (value) => setState(() => _allowLegacyMd5 = value),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(child: Text(AppLanguage.tr(context, 'Allow legacy HMAC-MD5'))),
+                            ]),
+                            Text(AppLanguage.tr(context,
+                              'Enable only if this legacy server requires it. A weak compatibility algorithm; prefer upgrading the server. Other sessions and jump hosts are unaffected.')),
+                            const SizedBox(height: 14),
+                          ],
                           HostSectionTitle(AppLanguage.tr(context, 'Encoding')),
                           const SizedBox(height: 6),
                           XtSelectField<String>(

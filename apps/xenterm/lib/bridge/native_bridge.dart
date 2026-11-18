@@ -1549,6 +1549,7 @@ Future<CoreWriteResult> saveSessionToCore({
   String password = '',
   bool clearPassword = false,
   String jumpHostId = '',
+  bool allowLegacyHmacMd5 = false,
   String encoding = '',
   List<Map<String, dynamic>> triggers = const [],
 }) {
@@ -1577,6 +1578,7 @@ Future<CoreWriteResult> saveSessionToCore({
       'password': password,
       'clear_password': clearPassword,
       'jump_session_id': jumpHostId,
+      'allow_legacy_hmac_md5': allowLegacyHmacMd5,
       if (triggers.isNotEmpty) 'triggers': triggers,
     });
     return CoreWriteResult(

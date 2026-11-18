@@ -64,12 +64,17 @@ impl ConfigStore {
             // Remote snapshots never grant GUI credential-reveal consent.
             if let Some(existing) = candidate.sessions.iter_mut().find(|s| s.id == session.id) {
                 session.allow_secret_reveal = existing.allow_secret_reveal;
+                // An imported snapshot cannot grant a weak-MAC opt-in or carry
+                // consent to a different endpoint under the same session ID.
+                session.allow_legacy_hmac_md5 = existing.allow_legacy_hmac_md5
+                    && existing.host == session.host && existing.port == session.port;
                 if serde_json::to_value(&*existing)? != serde_json::to_value(&*session)? {
                     *existing = session.clone();
                     updated += 1;
                 }
             } else {
                 session.allow_secret_reveal = false;
+                session.allow_legacy_hmac_md5 = false;
                 candidate.sessions.push(session.clone());
                 added += 1;
             }

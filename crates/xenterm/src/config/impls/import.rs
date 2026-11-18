@@ -41,6 +41,7 @@ fn compatibility_warnings(value: &serde_json::Value) -> Result<Vec<ImportWarning
     };
     let legacy = [
         ("session_log", "Legacy session logging preferences were not applied; this XenTerm version does not implement them."),
+        ("allow_legacy_hmac_md5", "Legacy HMAC-MD5 is disabled for imported sessions. Enable it explicitly for the intended host only if required."),
         ("allow_secret_reveal", "Saved-credential reveal is disabled for imported sessions. Enable it explicitly in the local GUI to allow subsequent reveal clicks."),
         ("rdp_domain", "Legacy RDP domain settings were not applied; this XenTerm version does not implement RDP."),
         ("rdp_width", "Legacy RDP width settings were not applied; this XenTerm version does not implement RDP."),
@@ -71,7 +72,7 @@ fn compatibility_warnings(value: &serde_json::Value) -> Result<Vec<ImportWarning
         let entries = sessions
             .iter()
             .filter(|session| {
-                if field == "allow_secret_reveal" {
+                if matches!(field, "allow_secret_reveal" | "allow_legacy_hmac_md5") {
                     session.get(field).and_then(serde_json::Value::as_bool) == Some(true)
                 } else {
                     session.get(field).is_some()
@@ -80,7 +81,7 @@ fn compatibility_warnings(value: &serde_json::Value) -> Result<Vec<ImportWarning
             .count();
         if entries > 0 {
             warnings.push(ImportWarning {
-                code: if field == "allow_secret_reveal" {
+                code: if matches!(field, "allow_secret_reveal" | "allow_legacy_hmac_md5") {
                     "local_permission_reset"
                 } else {
                     "unsupported_session_field"
@@ -205,6 +206,7 @@ fn identity(session: &Session, sessions: &[Session]) -> Result<SessionIdentity> 
             "jump_session_id",
             "jump_session_ids",
             "allow_secret_reveal",
+            "allow_legacy_hmac_md5",
         ] {
             object.remove(key);
         }
@@ -317,8 +319,9 @@ impl ConfigStore {
 
         let mut source_ids = HashSet::new();
         for (index, session) in sessions.iter_mut().enumerate() {
-            // Imported preferences never grant local permission to reveal credentials.
+            // Imported preferences never grant local credential reveal or legacy-MAC consent.
             session.allow_secret_reveal = false;
+            session.allow_legacy_hmac_md5 = false;
             // Match the editor/load normalization for display-only group names,
             // so repeating an import after a reload remains idempotent.
             if super::is_reserved_session_group(session.group.trim()) {

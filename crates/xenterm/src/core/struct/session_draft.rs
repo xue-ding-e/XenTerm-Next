@@ -61,6 +61,7 @@ pub struct SessionDraft {
     pub private_key_inline_mode: bool,
     /// Permit an explicit, local GUI action to reveal saved credentials.
     pub allow_secret_reveal: bool,
+    pub allow_legacy_hmac_md5: bool,
     pub proxy: String,
     /// The folder this session belongs to; empty is the default group.
     pub group: String,
@@ -167,6 +168,7 @@ impl SessionDraft {
             private_key_inline: String::new(),
             private_key_inline_mode: !session.private_key_inline.is_empty(),
             allow_secret_reveal: session.allow_secret_reveal,
+            allow_legacy_hmac_md5: session.allow_legacy_hmac_md5,
             proxy: session.proxy.clone(),
             group: session.group.clone(),
             serial_port: session.serial_port.clone(),
@@ -345,6 +347,7 @@ impl SessionDraft {
             private_key_path,
             private_key_inline,
             allow_secret_reveal: self.allow_secret_reveal,
+            allow_legacy_hmac_md5: self.allow_legacy_hmac_md5,
             proxy: self.proxy.clone(),
             last_used: existing.and_then(|session| session.last_used.clone()),
             group: self.group.clone(),
@@ -785,5 +788,25 @@ mod reveal_preference_tests {
         draft.allow_secret_reveal = true;
         let persisted = serde_json::to_value(draft.to_session(Some(&session))).unwrap();
         assert_eq!(persisted["allow_secret_reveal"], true);
+    }
+}
+
+#[cfg(test)]
+mod legacy_hmac_md5_preference_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_mac_is_off_for_old_sessions_and_round_trips_explicit_consent() {
+        assert!(!SessionDraft::new_ssh().allow_legacy_hmac_md5);
+        let mut value = serde_json::to_value(Session::new_empty()).unwrap();
+        value.as_object_mut().unwrap().remove("allow_legacy_hmac_md5");
+        let original: Session = serde_json::from_value(value).unwrap();
+        assert!(!original.allow_legacy_hmac_md5);
+        let mut draft = SessionDraft::from_session(&original);
+        draft.allow_legacy_hmac_md5 = true;
+        let saved = draft.to_session(Some(&original));
+        assert!(saved.allow_legacy_hmac_md5);
+        let reloaded: Session = serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
+        assert!(SessionDraft::from_session(&reloaded).allow_legacy_hmac_md5);
     }
 }

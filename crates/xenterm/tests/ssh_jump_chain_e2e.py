@@ -119,6 +119,9 @@ class Node:
         self.forwarded = []
         self.interactive = False
         self.transports = []
+        self.mac_algorithms = None
+        self.cipher_algorithms = None
+        self.negotiated_macs = []
         self.listener = socket.socket()
         self.listener.bind(("127.0.0.1", 0))
         self.listener.listen()
@@ -136,12 +139,18 @@ class Node:
     def serve(self, conn):
         disabled = {"pubkeys": ["rsa-sha2-512", "ssh-rsa"]} if self.rsa_sha256_only else None
         transport = paramiko.Transport(conn, disabled_algorithms=disabled)
+        options = transport.get_security_options()
+        if self.mac_algorithms is not None:
+            options.digests = self.mac_algorithms
+        if self.cipher_algorithms is not None:
+            options.ciphers = self.cipher_algorithms
         self.transports.append(transport)
         transport.add_server_key(self.key)
         transport.set_subsystem_handler("sftp", paramiko.SFTPServer, Files)
         server = Server(self)
         try:
             transport.start_server(server=server)
+            self.negotiated_macs.append((transport.local_mac, transport.remote_mac))
             while transport.is_active():
                 channel = transport.accept(0.2)
                 if channel and channel.chanid in server.destinations:

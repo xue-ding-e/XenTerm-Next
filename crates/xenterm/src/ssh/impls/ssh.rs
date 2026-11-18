@@ -1411,7 +1411,7 @@ pub(crate) async fn open_forward_connection(
 ) -> Result<(Handle<ClientHandler>, Vec<Handle<ClientHandler>>)> {
     let (events, event_rx) = mpsc::unbounded_channel();
     drop(event_rx); // Unknown keys fail closed; unattended auth cannot prompt.
-    let config = ssh_client_config();
+    let config = ssh_client_config(&session);
     // This owner activates only the selected local SOCKS rule. Do not install
     // mappings for unrelated saved remote forwards in the server-open handler.
     let (transport_session, transport_jumps) = shell_free_route(session, jump);
@@ -1657,8 +1657,9 @@ where
     // Connect to this hop through its ancestors. Keep every transport alive,
     // including replacement transports created by keyboard-interactive fallback.
     // `Box::pin` breaks the async recursion (connect_ssh → jump → connect_ssh).
+    let jump_config = ssh_client_config(jump);
     let (mut jhandle, mut ancestors_alive) =
-        Box::pin(connect_ssh(jump, ancestors, config.clone(), events))
+        Box::pin(connect_ssh(jump, ancestors, jump_config.clone(), events))
             .await
             .with_context(|| format!("connect jump host {}:{} failed", jump.host, jump.port))?;
     match authenticate_session(
@@ -1666,7 +1667,7 @@ where
         &mut ancestors_alive,
         jump,
         ancestors,
-        config.clone(),
+        jump_config,
         events,
     )
     .await?
@@ -1746,7 +1747,45 @@ pub(crate) const COMPAT_CIPHER: &[russh::cipher::Name] = &[
                                 // negotiation instead of being reachable with a broken cipher.
 ];
 
-fn ssh_client_config() -> Arc<client::Config> {
+// Keep SHA-2 first. Full-length SHA-1 is a last-resort compatibility fallback
+// for older SSH servers, not a reason to enable MD5, truncated MACs or `none`.
+pub(crate) const COMPAT_MAC: &[russh::mac::Name] = &[
+    russh::mac::HMAC_SHA512_ETM,
+    russh::mac::HMAC_SHA256_ETM,
+    russh::mac::HMAC_SHA512,
+    russh::mac::HMAC_SHA256,
+    russh::mac::HMAC_SHA1_ETM,
+    russh::mac::HMAC_SHA1,
+];
+
+/// One algorithm policy for terminal, command, SFTP and every bastion handshake.
+pub(crate) fn compat_preferred() -> russh::Preferred {
+    russh::Preferred {
+        kex: std::borrow::Cow::Borrowed(COMPAT_KEX),
+        cipher: std::borrow::Cow::Borrowed(COMPAT_CIPHER),
+        mac: std::borrow::Cow::Borrowed(COMPAT_MAC),
+        ..russh::Preferred::DEFAULT
+    }
+}
+
+/// Legacy HMAC-MD5 is an explicit policy of ONE connection, never a route-wide
+/// fallback. Keep complete modern/SHA1 preferences ahead of it; never offer none
+/// or truncated MACs. Existing sessions retain the default-off behavior.
+pub(crate) fn mac_preferences(allow_legacy_hmac_md5: bool) -> std::borrow::Cow<'static, [russh::mac::Name]> {
+    if allow_legacy_hmac_md5 {
+        let mut macs = COMPAT_MAC.to_vec();
+        macs.push(russh::mac::HMAC_MD5);
+        std::borrow::Cow::Owned(macs)
+    } else {
+        std::borrow::Cow::Borrowed(COMPAT_MAC)
+    }
+}
+
+pub(crate) fn compat_preferred_for_session(session: &Session) -> russh::Preferred {
+    russh::Preferred { mac: mac_preferences(session.allow_legacy_hmac_md5), ..compat_preferred() }
+}
+
+fn ssh_client_config(session: &Session) -> Arc<client::Config> {
     Arc::new(client::Config {
         // Keep idle connections alive (#160). The terminal usually has the
         // resource-monitor channel streaming every 2 s, but with shell
@@ -1755,11 +1794,7 @@ fn ssh_client_config() -> Arc<client::Config> {
         keepalive_interval: Some(std::time::Duration::from_secs(30)),
         // Match the normal terminal connection exactly, including compatibility
         // fallbacks for older servers and network equipment (#172).
-        preferred: russh::Preferred {
-            kex: std::borrow::Cow::Borrowed(COMPAT_KEX),
-            cipher: std::borrow::Cow::Borrowed(COMPAT_CIPHER),
-            ..russh::Preferred::DEFAULT
-        },
+        preferred: compat_preferred_for_session(session),
         ..<_>::default()
     })
 }
@@ -1830,7 +1865,7 @@ async fn execute_command_inner(
 ) -> Result<CommandExecution> {
     let (events, event_rx) = mpsc::unbounded_channel();
     drop(event_rx);
-    let config = ssh_client_config();
+    let config = ssh_client_config(&session);
     let (mut handle, mut jump_handle) =
         connect_ssh(&session, &jump, config.clone(), &events).await?;
 
@@ -1954,7 +1989,7 @@ async fn run_session(
         session.port
     )));
 
-    let config = ssh_client_config();
+    let config = ssh_client_config(&session);
 
     let (mut handle, mut jump_handle) =
         connect_ssh(&session, &jump, config.clone(), &events).await?;
@@ -4422,5 +4457,55 @@ mod mfa_tests {
         ] {
             assert!(looks_like_mfa(p), "missed an MFA prompt: {p:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod mac_compat_tests {
+    use super::*;
+
+    #[test]
+    fn modern_macs_precede_full_length_sha1_fallbacks() {
+        assert_eq!(COMPAT_MAC, &[
+            russh::mac::HMAC_SHA512_ETM, russh::mac::HMAC_SHA256_ETM,
+            russh::mac::HMAC_SHA512, russh::mac::HMAC_SHA256,
+            russh::mac::HMAC_SHA1_ETM, russh::mac::HMAC_SHA1,
+        ]);
+        assert_eq!(&COMPAT_MAC[..4], russh::Preferred::DEFAULT.mac.as_ref());
+    }
+
+    #[test]
+    fn compatibility_does_not_enable_md5_none_or_truncated_macs() {
+        let names: Vec<&str> = COMPAT_MAC.iter().map(|name| name.as_ref()).collect();
+        assert!(names.iter().all(|name| !name.contains("md5") && !name.contains("-96") && *name != "none"));
+        let unique: std::collections::HashSet<_> = names.iter().collect();
+        assert_eq!(unique.len(), names.len());
+    }
+
+    #[test]
+    fn ssh_config_uses_shared_algorithm_policy() {
+        let config = ssh_client_config(&Session::new_empty());
+        assert_eq!(config.preferred.mac.as_ref(), COMPAT_MAC);
+        assert_eq!(config.preferred.kex.as_ref(), COMPAT_KEX);
+        assert_eq!(config.preferred.cipher.as_ref(), COMPAT_CIPHER);
+    }
+}
+
+#[cfg(test)]
+mod legacy_md5_policy_tests {
+    use super::*;
+
+    #[test]
+    fn md5_is_explicit_last_and_does_not_mutate_defaults() {
+        let mut enabled = Session::new_empty();
+        enabled.allow_legacy_hmac_md5 = true;
+        let enabled_config = ssh_client_config(&enabled);
+        assert_eq!(&enabled_config.preferred.mac[..COMPAT_MAC.len()], COMPAT_MAC);
+        assert_eq!(enabled_config.preferred.mac.last(), Some(&russh::mac::HMAC_MD5));
+        let default_config = ssh_client_config(&Session::new_empty());
+        assert_eq!(default_config.preferred.mac.as_ref(), COMPAT_MAC);
+        assert!(!default_config.preferred.mac.contains(&russh::mac::HMAC_MD5));
+        enabled.allow_legacy_hmac_md5 = false;
+        assert_eq!(ssh_client_config(&enabled).preferred.mac.as_ref(), COMPAT_MAC);
     }
 }

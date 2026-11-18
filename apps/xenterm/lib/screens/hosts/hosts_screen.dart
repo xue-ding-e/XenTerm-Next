@@ -44,6 +44,7 @@ typedef HostSaver = Future<CoreWriteResult> Function({
   String? password,
   bool? clearPassword,
   String? jumpHostId,
+  bool? allowLegacyHmacMd5,
   List<Map<String, dynamic>>? triggers,
 });
 typedef HostDeleter = Future<CoreWriteResult> Function(String id);
@@ -309,6 +310,7 @@ class _HostsScreenState extends State<HostsScreen> {
         password: password,
         clearPassword: clearPassword,
         jumpHostId: host.jumpHostId,
+        allowLegacyHmacMd5: host.allowLegacyHmacMd5,
         encoding: host.encoding,
         triggers: host.triggers.map((t) => t.toCoreJson()).toList(),
       );

@@ -110,6 +110,10 @@ pub struct Session {
     /// Imports reset this permission so a file cannot enable it on another machine.
     #[serde(default)]
     pub allow_secret_reveal: bool,
+    /// Explicit local opt-in for this host only. HMAC-MD5 is a legacy MAC;
+    /// keep disabled unless a known old server requires it.
+    #[serde(default)]
+    pub allow_legacy_hmac_md5: bool,
     /// Optional outbound proxy, e.g. "socks5://127.0.0.1:1080" or
     /// "http://user:pass@host:8080". Empty = use $ALL_PROXY, else direct.
     #[serde(default)]
@@ -242,6 +246,7 @@ impl Session {
             private_key_path: String::new(),
             private_key_inline: Secret::default(),
             allow_secret_reveal: false,
+            allow_legacy_hmac_md5: false,
             proxy: String::new(),
             jump_session_id: String::new(),
             jump_session_ids: Vec::new(),
