@@ -1414,6 +1414,36 @@ pub(crate) const COMPAT_CIPHER: &[russh::cipher::Name] = &[
     // negotiation instead of being reachable with a broken cipher.
 ];
 
+// Preserve modern MAC preference, but reach legacy servers that offer only
+// HMAC-SHA1. Do not offer MD5, truncated MACs or unauthenticated `none`.
+// HMAC negotiation is separate from SHA-1 KEX and RSA host-key signatures.
+pub(crate) const COMPAT_MAC: &[russh::mac::Name] = &[
+    russh::mac::HMAC_SHA512_ETM,
+    russh::mac::HMAC_SHA256_ETM,
+    russh::mac::HMAC_SHA512,
+    russh::mac::HMAC_SHA256,
+    russh::mac::HMAC_SHA1_ETM,
+    russh::mac::HMAC_SHA1,
+];
+
+#[cfg(test)]
+mod mac_compatibility_tests {
+    use super::*;
+
+    #[test]
+    fn modern_defaults_stay_first_and_sha1_is_only_a_fallback() {
+        let config = ssh_client_config();
+        let defaults = russh::Preferred::DEFAULT.mac;
+        assert!(config.preferred.mac.starts_with(defaults.as_ref()));
+        assert_eq!(&config.preferred.mac[defaults.len()..],
+                   &[russh::mac::HMAC_SHA1_ETM, russh::mac::HMAC_SHA1]);
+        for name in config.preferred.mac.iter() {
+            assert!(russh::mac::Name::try_from(name.as_ref()).is_ok());
+            assert!(!matches!(name.as_ref(), "none" | "hmac-md5" | "hmac-md5-96" | "hmac-sha1-96"));
+        }
+    }
+}
+
 fn ssh_client_config() -> Arc<client::Config> {
     Arc::new(client::Config {
         // Keep idle connections alive (#160). The terminal usually has the
@@ -1426,6 +1456,7 @@ fn ssh_client_config() -> Arc<client::Config> {
         preferred: russh::Preferred {
             kex: std::borrow::Cow::Borrowed(COMPAT_KEX),
             cipher: std::borrow::Cow::Borrowed(COMPAT_CIPHER),
+            mac: std::borrow::Cow::Borrowed(COMPAT_MAC),
             ..russh::Preferred::DEFAULT
         },
         ..<_>::default()

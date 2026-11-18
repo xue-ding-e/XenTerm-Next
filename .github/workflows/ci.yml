@@ -276,7 +276,7 @@ jobs:
       - name: Install headless test system dependency
         timeout-minutes: 10
         run: sudo apt-get update && sudo apt-get install --no-install-recommends -y nginx
-      - run: python -m pip install cryptography paramiko "mcp>=2.3,<3"
+      - run: python -m pip install cryptography paramiko==5.1.0 "mcp>=2.3,<3"
       # Prove the missing saved -D lifecycle against the fixed pre-feature
       # binary, not a mocked error. Both binaries run only loopback fixtures.
       - name: Reproduce missing dynamic tunnels on the fixed baseline
@@ -320,6 +320,9 @@ jobs:
           sha256sum target/debug/xenterm | awk '{print "candidate_binary_sha256=" $1}' >> dynamic-tunnel-evidence/sources.txt
           timeout 240s python tests/dynamic_tunnel_e2e.py --exe target/debug/xenterm 2>&1 | tee dynamic-tunnel-evidence/candidate-stdio-cli.log
           timeout 240s python tests/dynamic_tunnel_http_e2e.py --exe target/debug/xenterm 2>&1 | tee dynamic-tunnel-evidence/candidate-http.log
+      - name: Verify modern and legacy SSH MAC negotiation
+        timeout-minutes: 5
+        run: python tests/ssh_mac_e2e.py --exe target/debug/xenterm
       - run: python tests/ssh_stack_e2e.py --exe target/debug/xenterm
       - run: python tests/ssh_jump_chain_e2e.py --exe target/debug/xenterm --stage-timeouts
       - run: python tests/stdio_mcp_e2e.py --exe target/debug/xenterm
@@ -371,9 +374,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m pip install cryptography paramiko
+      - run: python -m pip install cryptography paramiko==5.1.0
       - run: cargo test --locked --no-default-features --features headless command_stack_tests
       - run: cargo build --locked --no-default-features --features headless
+      - name: Verify Windows SSH MAC negotiation
+        timeout-minutes: 5
+        run: python tests/ssh_mac_e2e.py --exe target/debug/xenterm.exe
       - run: python tests/ssh_stack_e2e.py --exe target/debug/xenterm.exe
       - run: python tests/migration_modes_e2e.py --exe target/debug/xenterm.exe
       - run: python tests/migration_preview_e2e.py --exe target/debug/xenterm.exe
