@@ -56,6 +56,7 @@ void main() {
                 String? password,
                 bool? clearPassword,
                 String? jumpHostId,
+                bool? allowLegacyHmacMd5,
                 List<Map<String, dynamic>>? triggers,
               }) async {
                 saved = {
@@ -130,6 +131,7 @@ void main() {
                 String? password,
                 bool? clearPassword,
                 String? jumpHostId,
+                bool? allowLegacyHmacMd5,
                 List<Map<String, dynamic>>? triggers,
               }) async {
                 saveCalls++;
@@ -194,6 +196,7 @@ void main() {
                 String? password,
                 bool? clearPassword,
                 String? jumpHostId,
+                bool? allowLegacyHmacMd5,
                 List<Map<String, dynamic>>? triggers,
               }) async {
                 saved = {
@@ -304,6 +307,7 @@ void main() {
                 String? password,
                 bool? clearPassword,
                 String? jumpHostId,
+                bool? allowLegacyHmacMd5,
                 List<Map<String, dynamic>>? triggers,
               }) async {
                 hosts = [
@@ -365,6 +369,7 @@ void main() {
                 String? password,
                 bool? clearPassword,
                 String? jumpHostId,
+                bool? allowLegacyHmacMd5,
                 List<Map<String, dynamic>>? triggers,
               }) async {
                 savedTriggers = triggers;
@@ -467,6 +472,7 @@ void main() {
                 String? password,
                 bool? clearPassword,
                 String? jumpHostId,
+                bool? allowLegacyHmacMd5,
                 List<Map<String, dynamic>>? triggers,
               }) async {
                 saveCalls++;
@@ -631,6 +637,7 @@ void main() {
                 String? password,
                 bool? clearPassword,
                 String? jumpHostId,
+                bool? allowLegacyHmacMd5,
                 List<Map<String, dynamic>>? triggers,
               }) async {
                 saved = {

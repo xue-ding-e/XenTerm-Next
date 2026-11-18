@@ -173,6 +173,7 @@ pub extern "C" fn xenterm_sessions_json() -> *mut c_char {
                     // material itself never crosses the bridge.
                     "has_inline_key": !s.private_key_inline.is_empty(),
                     "jump_session_id": s.jump_session_id,
+                    "allow_legacy_hmac_md5": s.allow_legacy_hmac_md5,
                     // Terminal charset (WHATWG label); the core falls back to
                     // UTF-8 for unknown labels.
                     "encoding": s.encoding,
@@ -346,6 +347,9 @@ pub extern "C" fn xenterm_session_upsert(json: *const c_char) -> *mut c_char {
             session.password = xenterm::config::Secret::default();
         } else if !password.is_empty() {
             session.password = xenterm::config::Secret::new(password);
+        }
+        if let Some(allowed) = value.get("allow_legacy_hmac_md5").and_then(|v| v.as_bool()) {
+            session.allow_legacy_hmac_md5 = allowed;
         }
         if let Some(jump) = jump_session_id {
             session.jump_session_id = jump.trim().to_string();

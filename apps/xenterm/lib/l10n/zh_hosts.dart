@@ -66,6 +66,8 @@ const Map<String, String> zhHosts = <String, String>{
   'Could not read key: {error}': '无法读取密钥：{error}',
   'Jump host': '跳板机',
   'Encoding': '编码',
+  'Allow legacy HMAC-MD5': '允许旧版 HMAC-MD5',
+  'Enable only if this legacy server requires it. A weak compatibility algorithm; prefer upgrading the server. Other sessions and jump hosts are unaffected.': '仅当此旧服务器必须使用时开启。弱兼容算法，优先升级服务器；不影响其他会话或跳板。',
   'UTF-8 (auto)': 'UTF-8（自动）',
   'Triggers': '触发器',
   'Wait for a prompt, answer automatically. Responses are stored securely; a blank field keeps the saved value.':

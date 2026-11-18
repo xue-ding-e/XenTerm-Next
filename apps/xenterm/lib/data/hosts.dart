@@ -51,6 +51,7 @@ class Host {
 
   /// Another saved SSH host used as this session's jump host (empty = none).
   final String jumpHostId;
+  final bool allowLegacyHmacMd5;
 
   /// Temporary session (local/serial quick connect) that must not be stored.
   final bool ephemeral;
@@ -84,6 +85,7 @@ class Host {
     this.flowControl = 'none',
     this.hasPassword = false,
     this.jumpHostId = '',
+    this.allowLegacyHmacMd5 = false,
     this.ephemeral = false,
     this.adhocPassword = '',
     this.triggers = const [],
@@ -117,6 +119,7 @@ class Host {
       flowControl: (json['flow_control'] as String?) ?? 'none',
       hasPassword: json['has_password'] == true,
       jumpHostId: (json['jump_session_id'] as String?) ?? '',
+      allowLegacyHmacMd5: json['allow_legacy_hmac_md5'] == true,
       triggers: ((json['triggers'] as List?) ?? const [])
           .cast<Map<String, dynamic>>()
           .map(SessionTriggerRule.fromCoreJson)
@@ -162,6 +165,7 @@ class Host {
     flowControl: flowControl,
     hasPassword: hasPassword ?? this.hasPassword,
     jumpHostId: jumpHostId,
+    allowLegacyHmacMd5: allowLegacyHmacMd5,
     ephemeral: ephemeral,
     adhocPassword: adhocPassword,
     triggers: triggers,

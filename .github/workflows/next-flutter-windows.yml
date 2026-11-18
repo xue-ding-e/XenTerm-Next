@@ -154,6 +154,12 @@ jobs:
         run: python scripts/next/run_flutter_maintenance_regressions.py --suite flutter --expected-source "${{ needs.prepare.outputs.source_sha }}"
       - name: Test exact Rust maintenance regressions (51 Windows, 49 Unix)
         run: python scripts/next/run_flutter_maintenance_regressions.py --suite rust --expected-source "${{ needs.prepare.outputs.source_sha }}"
+      - name: Verify vendored legacy MAC implementation
+        run: cargo test --locked -p russh --lib --no-default-features --features ring,rsa,flate2 md5_compat_tests
+      - name: Verify persisted legacy MAC consent boundaries
+        run: cargo test --locked -p xenterm --lib legacy_hmac_md5
+      - name: Verify per-connection legacy MAC opt-in
+        run: cargo test --locked -p xenterm --lib legacy_md5_policy_tests
       - name: Test Rust bridge
         run: cargo test --locked -p xenterm-bridge
       - name: Test CLI profile isolation

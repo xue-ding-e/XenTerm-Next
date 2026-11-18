@@ -168,6 +168,7 @@ fn portable_roundtrip_preserves_every_supported_session_field_across_keys_and_di
             private_key_path: format!("C:\\synthetic\\{id}.key"),
             private_key_inline: Secret::new(format!("synthetic-inline-key-{id}")),
             allow_secret_reveal: true,
+            allow_legacy_hmac_md5: false,
             proxy: format!("socks5h://fixture:synthetic-proxy-{id}%40:p@ss@127.0.0.1:1080"),
             jump_session_id: if id == "ssh-password" {
                 "ssh-interactive".into()
@@ -2260,4 +2261,16 @@ fn ordinary_keyring_partial_saves_preserve_legacy_ordinals_and_explicit_reorders
         assert_eq!(raw_disk_snapshot(&store)["sessions"][0][0], "0");
     }
     fake_keyring::clear();
+}
+
+#[test]
+fn imported_legacy_hmac_md5_permission_requires_local_opt_in() {
+    let mut store = temp_store();
+    let mut source = session("legacy-md5-import");
+    source.allow_legacy_hmac_md5 = true;
+    let raw = serde_json::json!({"sessions": [source]}).to_string();
+    let preview = store.import_json_preview(&raw, true).unwrap();
+    assert!(preview.warnings.iter().any(|warning| warning.field == "allow_legacy_hmac_md5"));
+    store.import_json(&raw).unwrap();
+    assert!(!store.sessions()[0].allow_legacy_hmac_md5);
 }

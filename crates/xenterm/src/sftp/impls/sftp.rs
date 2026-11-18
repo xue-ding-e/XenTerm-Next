@@ -312,7 +312,7 @@ async fn sync_tree_dir(
 // Worker
 // ---------------------------------------------------------------------------
 
-fn sftp_client_config() -> Arc<client::Config> {
+fn sftp_client_config(session: &Session) -> Arc<client::Config> {
     Arc::new(client::Config {
         // Keep the idle SFTP connection alive (#160). Without a keepalive, an idle
         // SFTP connection (no file ops for a while) gets silently dropped by
@@ -323,7 +323,7 @@ fn sftp_client_config() -> Arc<client::Config> {
         keepalive_interval: Some(std::time::Duration::from_secs(30)),
         // Match the shell connection's algorithm set so SFTP reaches the same
         // legacy servers (#172) instead of failing with "No common algorithm".
-        preferred: crate::ssh::compat_preferred(),
+        preferred: crate::ssh::compat_preferred_for_session(session),
         ..<_>::default()
     })
 }
@@ -340,7 +340,7 @@ async fn run_sftp(
     ));
 
     // Open a dedicated SSH connection for SFTP.
-    let config = sftp_client_config();
+    let config = sftp_client_config(&session);
 
     let addr = format!("{}:{}", session.host, session.port);
     // Isolate external-editor files by connection and keep the server in the
@@ -2541,7 +2541,7 @@ mod mac_compat_tests {
 
     #[test]
     fn sftp_config_uses_shared_algorithm_policy() {
-        let config = sftp_client_config();
+        let config = sftp_client_config(&Session::new_empty());
         assert_eq!(config.preferred.mac.as_ref(), crate::ssh::COMPAT_MAC);
         assert_eq!(config.preferred.kex.as_ref(), crate::ssh::COMPAT_KEX);
         assert_eq!(config.preferred.cipher.as_ref(), crate::ssh::COMPAT_CIPHER);
