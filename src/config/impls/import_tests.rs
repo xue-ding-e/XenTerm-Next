@@ -2274,3 +2274,46 @@ fn imported_legacy_hmac_md5_permission_requires_local_opt_in() {
     store.import_json(&raw).unwrap();
     assert!(!store.sessions()[0].allow_legacy_hmac_md5);
 }
+
+#[test]
+fn legacy_hmac_md5_snapshot_consent_is_bound_to_the_complete_route() {
+    let mut store = temp_store();
+    let mut hop = session("md5-hop");
+    let mut target = session("md5-target");
+    target.jump_session_ids = vec![hop.id.clone()];
+    target.allow_legacy_hmac_md5 = true;
+    store.upsert_and_save(hop.clone()).unwrap();
+    store.upsert_and_save(target.clone()).unwrap();
+    // Snapshot flags cannot grant or revoke local consent for an unchanged route.
+    let mut incoming = target.clone();
+    incoming.allow_legacy_hmac_md5 = false;
+    assert_eq!(sync_json(&mut store, &native(vec![incoming]), false).unwrap(), (0, 0));
+    assert!(store.sessions().iter().find(|s| s.id == target.id).unwrap().allow_legacy_hmac_md5);
+    // A same-ID bastion endpoint update also revokes targets absent from the snapshot.
+    hop.host = "different-bastion.invalid".into();
+    assert_eq!(sync_json(&mut store, &native(vec![hop]), false).unwrap(), (2, 0));
+    assert!(!store.sessions().iter().find(|s| s.id == target.id).unwrap().allow_legacy_hmac_md5);
+    cleanup(&store);
+}
+
+#[test]
+fn legacy_hmac_md5_snapshot_transport_and_route_changes_revoke_consent() {
+    for change in 0..5 {
+        let mut store = temp_store();
+        let hop = session("md5-hop");
+        store.upsert_and_save(hop.clone()).unwrap();
+        let mut target = session("md5-target");
+        target.allow_legacy_hmac_md5 = true;
+        store.upsert_and_save(target.clone()).unwrap();
+        match change {
+            0 => target.host = "other.invalid".into(),
+            1 => target.port += 1,
+            2 => target.kind = SessionKind::Telnet,
+            3 => target.proxy = "socks5://127.0.0.1:1080".into(),
+            _ => target.jump_session_ids = vec![hop.id.clone()],
+        }
+        sync_json(&mut store, &native(vec![target.clone()]), false).unwrap();
+        assert!(!store.sessions().iter().find(|s| s.id == target.id).unwrap().allow_legacy_hmac_md5);
+        cleanup(&store);
+    }
+}

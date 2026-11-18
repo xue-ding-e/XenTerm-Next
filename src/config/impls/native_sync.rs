@@ -67,7 +67,7 @@ impl ConfigStore {
                 // An imported snapshot cannot grant a weak-MAC opt-in or carry
                 // consent to a different endpoint under the same session ID.
                 session.allow_legacy_hmac_md5 = existing.allow_legacy_hmac_md5
-                    && existing.host == session.host && existing.port == session.port;
+                    && same_legacy_hmac_md5_endpoint(existing, session);
                 if serde_json::to_value(&*existing)? != serde_json::to_value(&*session)? {
                     *existing = session.clone();
                     updated += 1;
@@ -83,6 +83,31 @@ impl ConfigStore {
             super::super::jump_chain::resolve_jump_chain(&candidate.sessions, session)
                 .map_err(|_| anyhow::anyhow!("snapshot contains an invalid SSH jump chain (missing/non-SSH hop, cycle or too many hops)"))?;
         }
+        // Resolve against the complete candidate, not a partially applied snapshot:
+        // changing a bastion under the same ID can change the target endpoint too.
+        let revoke: Vec<usize> = candidate.sessions.iter().enumerate()
+            .filter_map(|(index, session)| {
+                if !session.allow_legacy_hmac_md5 { return None; }
+                let existing = self.cache.sessions.iter().find(|s| s.id == session.id)?;
+                let before = super::super::jump_chain::resolve_jump_chain(&self.cache.sessions, existing).ok();
+                let after = super::super::jump_chain::resolve_jump_chain(&candidate.sessions, session).ok();
+                let unchanged = before.zip(after).is_some_and(|(before, after)| {
+                    before.len() == after.len() && before.iter().zip(&after).all(|(a, b)| {
+                        a.id == b.id && same_legacy_hmac_md5_endpoint(a, b)
+                    })
+                });
+                (!unchanged).then_some(index)
+            }).collect();
+        for index in revoke {
+            let session = &mut candidate.sessions[index];
+            if let Some(existing) = self.cache.sessions.iter().find(|s| s.id == session.id) {
+                // Count rows, not multiple changes to one row.
+                if serde_json::to_value(existing)? == serde_json::to_value(&*session)? {
+                    updated += 1;
+                }
+            }
+            session.allow_legacy_hmac_md5 = false;
+        }
         // Save uses the existing ordered transaction and stale-writer guard,
         // including unchanged snapshots. No destination session is deleted and
         // settings/history/unchanged rows stay byte-for-byte intact. Credentials
@@ -92,4 +117,11 @@ impl ConfigStore {
         }
         Ok((updated, added))
     }
+}
+
+// Local consent is bound to the transport and route, not just a reusable ID.
+fn same_legacy_hmac_md5_endpoint(a: &Session, b: &Session) -> bool {
+    a.kind == b.kind && a.host == b.host && a.port == b.port
+        && a.proxy == b.proxy && a.jump_session_id == b.jump_session_id
+        && a.jump_session_ids == b.jump_session_ids
 }

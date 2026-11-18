@@ -511,12 +511,15 @@ mod session_edit_tests {
         original.id = "keep-me".into();
         original.name = "Prod".into();
         original.allow_secret_reveal = true;
+        original.allow_legacy_hmac_md5 = true;
 
         let copy = duplicate_of(&original);
 
         assert_ne!(copy.id, original.id);
         assert_eq!(copy.name, "Prod copy");
         assert!(!copy.allow_secret_reveal);
+        assert!(!copy.allow_legacy_hmac_md5);
+        assert!(original.allow_legacy_hmac_md5);
         assert!(original.allow_secret_reveal);
         // The original is untouched: both rows would otherwise move together.
         assert_eq!(original.id, "keep-me");
