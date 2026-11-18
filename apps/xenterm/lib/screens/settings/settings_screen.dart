@@ -26,12 +26,15 @@ import '../../terminal/core_settings.dart';
 import '../../theme/app_fonts.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/primitives.dart';
+import 'flutter_update_controls.dart';
 
 class SettingsScreen extends StatefulWidget {
   final bool lightTheme;
   final ValueChanged<bool> onThemeChanged;
   final AppFonts fonts;
   final CoreSettingsController settings;
+  final FlutterUpdateController? updates;
+  final bool openAbout;
 
   /// Test/alternate persistence hook; defaults to the shared controller.
   final Future<String?> Function(Map<String, dynamic> values)? saveSettings;
@@ -45,6 +48,8 @@ class SettingsScreen extends StatefulWidget {
     required this.onThemeChanged,
     required this.fonts,
     required this.settings,
+    this.updates,
+    this.openAbout = false,
     this.saveSettings,
     this.pickDownloadDirectory,
   });
@@ -149,8 +154,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void initState() {
     super.initState();
+    if (widget.openAbout) _tab = _tabs.indexOf('About');
     widget.settings.addListener(_changed);
     if (!widget.settings.loaded) widget.settings.load();
+  }
+
+  @override
+  void didUpdateWidget(SettingsScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.openAbout && !oldWidget.openAbout) _tab = _tabs.indexOf('About');
   }
 
   @override
@@ -397,6 +409,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
         ],
       ),
+      if (widget.updates case final updates?)
+        _SectionCard(
+          title: 'Software update',
+          children: [FlutterUpdateControls(updates: updates)],
+        ),
       _SectionCard(
         title: 'Features',
         children: [

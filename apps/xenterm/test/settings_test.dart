@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 import 'package:xenterm_app/bridge/native_bridge.dart';
 import 'package:xenterm_app/l10n/app_language.dart';
+import 'package:xenterm_app/screens/settings/flutter_update_controls.dart';
 import 'package:xenterm_app/screens/settings/settings_screen.dart';
 import 'package:xenterm_app/terminal/core_settings.dart';
 import 'package:xenterm_app/theme/app_fonts.dart';
@@ -46,6 +47,37 @@ Future<void> _pumpAtWindow(
 }
 
 void main() {
+  testWidgets('About exposes the Flutter manual update control', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    final preferences = await SharedPreferences.getInstance();
+    final updates = FlutterUpdateController(preferences);
+    addTearDown(updates.dispose);
+    final fonts = AppFonts();
+    addTearDown(fonts.dispose);
+    final controller = CoreSettingsController()
+      ..settings = const CoreSettings()
+      ..loaded = true;
+    addTearDown(controller.dispose);
+    await tester.pumpWidget(
+      _app(
+        SettingsScreen(
+          lightTheme: false,
+          onThemeChanged: (_) {},
+          fonts: fonts,
+          settings: controller,
+          updates: updates,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('About').last);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('flutter-check-updates')), findsOneWidget);
+    expect(find.text('Check for updates on startup'), findsOneWidget);
+  });
+
   testWidgets('closed settings ignore a late download folder selection', (
     tester,
   ) async {

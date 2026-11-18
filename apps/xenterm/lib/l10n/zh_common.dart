@@ -16,6 +16,23 @@ const Map<String, String> zhCommon = <String, String>{
   'SFTP': 'SFTP',
   'Shortcuts': '快捷键',
   'About': '关于',
+  'Software update': '软件更新',
+  'Check for updates on startup': '启动时检查更新',
+  'Check for updates': '检查更新',
+  'Checking for Flutter updates…': '正在检查 Flutter 更新…',
+  'No newer Flutter build is available.': '当前没有更新的 Flutter 版本。',
+  'Flutter Beta updates are unavailable for this build or platform.':
+      '当前版本或平台没有 Flutter Beta 更新渠道。',
+  "Couldn't check for updates. Check access to GitHub and try again.":
+      '检查失败，请确认 GitHub 可访问后重试。',
+  'Flutter update available: {version}': 'Flutter 新版可用 {version}',
+  'Download and install': '下载并安装',
+  'Download update': '下载更新包',
+  'Preparing and verifying the update…': '正在准备并校验更新包…',
+  "Couldn't prepare the update. Please try again.": '无法准备更新包，请重试。',
+  'Verified and saved to {path}': '已校验并保存到 {path}',
+  'The Flutter installer is open. Follow the Windows Installer prompts.':
+      '已打开 Flutter 安装程序，请按 Windows 安装提示继续。',
   'Language': '语言',
   'Interface language': '界面语言',
 

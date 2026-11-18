@@ -8,6 +8,7 @@ import 'package:window_manager/window_manager.dart';
 
 import 'data/hosts.dart';
 import 'l10n/app_language.dart';
+import 'screens/settings/flutter_update_controls.dart';
 import 'shell/root_shell.dart';
 import 'shell/window_activity.dart';
 import 'terminal/core_settings.dart';
@@ -105,7 +106,7 @@ Future<void> main() async {
   await configureWindowSurface(windowBackground);
   WindowActivityObserver.install(windowActivity);
 
-  runApp(XenTermApp(fonts: fonts));
+  runApp(XenTermApp(fonts: fonts, updates: FlutterUpdateController(prefs)));
 }
 
 /// Applies the opaque window colour natively where window_manager cannot:
@@ -138,11 +139,13 @@ class XenTermApp extends StatefulWidget {
   /// loads the real sessions from the Rust core).
   final Future<List<Host>> Function()? hostsLoader;
   final CoreSettingsController? settings;
+  final FlutterUpdateController? updates;
   const XenTermApp({
     super.key,
     this.fonts,
     this.hostsLoader,
     this.settings,
+    this.updates,
   });
 
   @override
@@ -165,6 +168,9 @@ class _XenTermAppState extends State<XenTermApp> {
     if (widget.settings == null) _settings.load();
     _restoreTheme();
     _restoreLanguage();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) widget.updates?.start();
+    });
   }
 
   Future<void> _restoreTheme() async {
@@ -204,6 +210,7 @@ class _XenTermAppState extends State<XenTermApp> {
     _fonts.removeListener(_changed);
     if (widget.fonts == null) _fonts.dispose();
     if (widget.settings == null) _settings.dispose();
+    widget.updates?.dispose();
     super.dispose();
   }
 
@@ -234,6 +241,7 @@ class _XenTermAppState extends State<XenTermApp> {
               fonts: _fonts,
               settings: _settings,
               hostsLoader: widget.hostsLoader,
+              updates: widget.updates,
             ),
           ),
         ),

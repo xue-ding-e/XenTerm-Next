@@ -18,6 +18,7 @@ import '../screens/snippets/snippets_screen.dart';
 import '../screens/keychain/keychain_screen.dart';
 import '../screens/logs/logs_screen.dart';
 import '../screens/settings/settings_screen.dart';
+import '../screens/settings/flutter_update_controls.dart';
 import '../screens/terminal/terminal_screen.dart';
 import '../data/hosts.dart';
 import '../terminal/core_settings.dart';
@@ -43,6 +44,7 @@ class RootShell extends StatefulWidget {
   final AppFonts fonts;
   final CoreSettingsController settings;
   final Future<List<Host>> Function()? hostsLoader;
+  final FlutterUpdateController? updates;
 
   const RootShell({
     super.key,
@@ -51,6 +53,7 @@ class RootShell extends StatefulWidget {
     required this.fonts,
     required this.settings,
     this.hostsLoader,
+    this.updates,
   });
 
   @override
@@ -63,6 +66,7 @@ class _RootShellState extends State<RootShell> {
   String? _activeHostId;
   bool _terminalSftp = false;
   bool _railOpen = true;
+  bool _openAbout = false;
   final TerminalCommandBus _commands = TerminalCommandBus();
   final ValueNotifier<int> _newHostRequest = ValueNotifier<int>(0);
 
@@ -139,6 +143,41 @@ class _RootShellState extends State<RootShell> {
               onToggleSidebar: () => setState(() => _railOpen = !_railOpen),
             ),
           ),
+          if (widget.updates case final updates?)
+            ListenableBuilder(
+              listenable: updates,
+              builder: (context, _) {
+                final version = updates.availableVersion;
+                if (version == null ||
+                    (_active == NavDestination.settings &&
+                        _activeHostId == null)) {
+                  return const SizedBox.shrink();
+                }
+                return Align(
+                  alignment: Alignment.centerLeft,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 4,
+                    ),
+                    child: XtActionButton(
+                      label: AppLanguage.tr(
+                        context,
+                        'Flutter update available: {version}',
+                        {'version': version},
+                      ),
+                      variant: XtActionVariant.secondary,
+                      onPressed: () => setState(() {
+                        _active = NavDestination.settings;
+                        _activeHostId = null;
+                        _terminalSftp = false;
+                        _openAbout = true;
+                      }),
+                    ),
+                  ),
+                );
+              },
+            ),
           Expanded(
             child: Row(
               children: [
@@ -161,6 +200,7 @@ class _RootShellState extends State<RootShell> {
                           destinations: _destinations,
                           onSelect: (d) => setState(() {
                             _active = d;
+                            _openAbout = false;
                             // Choosing a screen in the rail parks the session
                             // tabs; clicking a tab in the title bar brings them
                             // back.
@@ -222,6 +262,8 @@ class _RootShellState extends State<RootShell> {
         onThemeChanged: widget.onThemeChanged,
         fonts: widget.fonts,
         settings: widget.settings,
+        updates: widget.updates,
+        openAbout: _openAbout,
       ),
       NavDestination.forwards => const ForwardsScreen(),
       NavDestination.snippets => const SnippetsScreen(),
