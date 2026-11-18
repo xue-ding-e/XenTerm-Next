@@ -1350,6 +1350,35 @@ impl Render for SessionEditor {
                 },
             )
         };
+        let legacy_md5 = {
+            let allowed = draft.borrow().allow_legacy_hmac_md5;
+            let editor = editor.clone();
+            SettingField::element(
+                move |options: &gpui_kit::component::setting::RenderOptions,
+                      _: &mut Window,
+                      _: &mut gpui_kit::App| {
+                    let editor = editor.clone();
+                    div()
+                        .debug_selector(|| "allow-legacy-hmac-md5".into())
+                        .w(px(36.))
+                        .child(
+                            Switch::new("allow-legacy-hmac-md5")
+                                .checked(allowed)
+                                .disabled(options.is_disabled())
+                                .with_size(options.size())
+                                .on_click(move |allowed, _window, cx| {
+                                    if let Some(editor) = editor.upgrade() {
+                                        editor.update(cx, |editor, cx| {
+                                            editor.draft.borrow_mut().allow_legacy_hmac_md5 = *allowed;
+                                            cx.notify();
+                                        });
+                                    }
+                                }),
+                        )
+                        .into_any_element()
+                },
+            )
+        };
         let saved_password = self.saved_secret_field(0, cx);
         let saved_key = self.saved_secret_field(1, cx);
         let key_import = self.key_import_field(cx);
@@ -1507,6 +1536,15 @@ impl Render for SessionEditor {
                     ),
                 ),
             );
+        }
+
+        if is_ssh {
+            credentials = credentials.item(SettingItem::new(
+                crate::i18n::t("允许旧版 HMAC-MD5", "Allow legacy HMAC-MD5"), legacy_md5,
+            ).description(crate::i18n::t(
+                "仅当此旧服务器必须使用时开启。弱兼容算法，优先升级服务器；不影响其他会话或跳板。",
+                "Enable only if this legacy server requires it. A weak compatibility algorithm; prefer upgrading the server. Other sessions and jump hosts are unaffected.",
+            )));
         }
 
         if !is_serial {

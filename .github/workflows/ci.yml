@@ -299,6 +299,8 @@ jobs:
           sha256sum "$baseline/xenterm-baseline" | awk '{print "baseline_binary_sha256=" $1}' >> dynamic-tunnel-evidence/sources.txt
           timeout 180s python tests/dynamic_tunnel_e2e.py --exe "$baseline/xenterm-baseline" --expect-missing 2>&1 | tee dynamic-tunnel-evidence/baseline-red.log
           grep -F 'REPRODUCED: old binary has no no-GUI dynamic-tunnel lifecycle entry point' dynamic-tunnel-evidence/baseline-red.log
+      - name: Verify vendored legacy MAC implementation
+        run: cargo test --locked -p russh --lib --no-default-features --features ring,rsa,flate2 md5_compat_tests
       - name: Headless unit tests (no GUI system dependencies)
         run: env -u ALL_PROXY -u all_proxy -u HTTP_PROXY -u http_proxy -u HTTPS_PROXY -u https_proxy cargo test --locked --no-default-features --features headless
       - run: cargo build --locked --no-default-features --features headless

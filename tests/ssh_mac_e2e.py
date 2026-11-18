@@ -53,6 +53,65 @@ def main():
             assert result.get('isError'), result
             assert not node.auth_attempts, 'MD5-only server reached authentication'
             print('PASS: MD5-only server rejected before authentication')
+
+            # Opt-in must apply to each hop independently, not leak from target
+            # to bastions or from an enabled bastion to its target.
+            for peer in fixture.nodes:
+                peer.mac_algorithms = ('hmac-md5',)
+            for disabled in range(3):
+                for index, item in enumerate(fixture.sessions):
+                    item['allow_legacy_hmac_md5'] = index != disabled
+                fixture.save()
+                attempts_before = [len(peer.transports) for peer in fixture.nodes]
+                for peer in fixture.nodes:
+                    peer.auth_attempts.clear()
+                    peer.negotiated_macs.clear()
+                result = fixture.mcp('run_command', session_id='target',
+                                     command='fixture', timeout_seconds=8)
+                assert result.get('isError'), result
+                assert len(fixture.nodes[disabled].transports) > attempts_before[disabled], 'disabled hop was not reached'
+                assert not fixture.nodes[disabled].auth_attempts, 'MD5 opt-in leaked between hops'
+                for peer in fixture.nodes[:disabled]:
+                    assert peer.negotiated_macs and all(pair == ('hmac-md5', 'hmac-md5') for pair in peer.negotiated_macs)
+                    assert 'password' in peer.auth_attempts, 'earlier enabled hop did not authenticate'
+            print('PASS: each disabled hop refuses MD5 before authentication')
+
+            for item in fixture.sessions:
+                item['allow_legacy_hmac_md5'] = True
+            fixture.save()
+            for offered, expected in [
+                (('hmac-md5',), 'hmac-md5'),
+                (('hmac-md5', 'hmac-sha2-256'), 'hmac-sha2-256'),
+            ]:
+                for peer in fixture.nodes:
+                    peer.mac_algorithms = offered
+                    peer.negotiated_macs.clear()
+                for name in ('outer', 'inner', 'target'):
+                    fixture.command(name)
+                for name in ('outer', 'target'):
+                    result = fixture.mcp('list_remote_files', session_id=name,
+                                         path='.', timeout_seconds=8)
+                    assert not result.get('isError'), result
+                    assert 'fixture.txt' in json.dumps(result['structuredContent']), result
+                for peer in fixture.nodes:
+                    assert peer.negotiated_macs, 'expected an actual handshake'
+                    assert all(pair == (expected, expected) for pair in peer.negotiated_macs), peer.negotiated_macs
+                print(f'PASS: explicit opt-in {expected}, direct/multi-hop and SFTP, both directions')
+            for peer in fixture.nodes:
+                peer.mac_algorithms = ('hmac-md5',)
+                peer.negotiated_macs.clear()
+            fixture.nodes[1].interactive = True
+            try:
+                fixture.command('target')
+                result = fixture.mcp('list_remote_files', session_id='target', path='.', timeout_seconds=8)
+                assert not result.get('isError'), result
+                assert 'fixture.txt' in json.dumps(result['structuredContent']), result
+                assert 'keyboard-interactive' in fixture.nodes[1].auth_attempts
+                for peer in fixture.nodes:
+                    assert peer.negotiated_macs and all(pair == ('hmac-md5', 'hmac-md5') for pair in peer.negotiated_macs)
+                print('PASS: MD5 policy retained through keyboard-interactive bastion fallback')
+            finally:
+                fixture.nodes[1].interactive = False
         finally:
             for node in fixture.nodes:
                 node.close()

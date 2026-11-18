@@ -1325,8 +1325,9 @@ where
     // Connect to this hop through its ancestors. Keep every transport alive,
     // including replacement transports created by keyboard-interactive fallback.
     // `Box::pin` breaks the async recursion (connect_ssh → jump → connect_ssh).
+    let jump_config = ssh_client_config(jump);
     let (mut jhandle, mut ancestors_alive) =
-        Box::pin(connect_ssh(jump, ancestors, config.clone(), events))
+        Box::pin(connect_ssh(jump, ancestors, jump_config.clone(), events))
             .await
             .with_context(|| format!("connect jump host {}:{} failed", jump.host, jump.port))?;
     match authenticate_session(
@@ -1334,7 +1335,7 @@ where
         &mut ancestors_alive,
         jump,
         ancestors,
-        config.clone(),
+        jump_config,
         events,
     )
     .await?
@@ -1432,7 +1433,7 @@ mod mac_compatibility_tests {
 
     #[test]
     fn modern_defaults_stay_first_and_sha1_is_only_a_fallback() {
-        let config = ssh_client_config();
+        let config = ssh_client_config(&Session::new_empty());
         let defaults = russh::Preferred::DEFAULT.mac;
         assert!(config.preferred.mac.starts_with(defaults.as_ref()));
         assert_eq!(&config.preferred.mac[defaults.len()..],
@@ -1444,7 +1445,20 @@ mod mac_compatibility_tests {
     }
 }
 
-fn ssh_client_config() -> Arc<client::Config> {
+/// Legacy HMAC-MD5 is an explicit policy of ONE connection, never a route-wide
+/// fallback. Keep complete modern/SHA1 preferences ahead of it; never offer none
+/// or truncated MACs. Existing sessions retain the default-off behavior.
+pub(crate) fn mac_preferences(allow_legacy_hmac_md5: bool) -> std::borrow::Cow<'static, [russh::mac::Name]> {
+    if allow_legacy_hmac_md5 {
+        let mut macs = COMPAT_MAC.to_vec();
+        macs.push(russh::mac::HMAC_MD5);
+        std::borrow::Cow::Owned(macs)
+    } else {
+        std::borrow::Cow::Borrowed(COMPAT_MAC)
+    }
+}
+
+fn ssh_client_config(session: &Session) -> Arc<client::Config> {
     Arc::new(client::Config {
         // Keep idle connections alive (#160). The terminal usually has the
         // resource-monitor channel streaming every 2 s, but with shell
@@ -1456,7 +1470,7 @@ fn ssh_client_config() -> Arc<client::Config> {
         preferred: russh::Preferred {
             kex: std::borrow::Cow::Borrowed(COMPAT_KEX),
             cipher: std::borrow::Cow::Borrowed(COMPAT_CIPHER),
-            mac: std::borrow::Cow::Borrowed(COMPAT_MAC),
+            mac: mac_preferences(session.allow_legacy_hmac_md5),
             ..russh::Preferred::DEFAULT
         },
         ..<_>::default()
@@ -1561,7 +1575,7 @@ pub(crate) async fn open_forward_connection(
 ) -> Result<(Handle<ClientHandler>, Vec<Handle<ClientHandler>>)> {
     let (events, event_rx) = mpsc::unbounded_channel();
     drop(event_rx); // Unattended unknown keys/missing credentials fail closed.
-    let config = ssh_client_config();
+    let config = ssh_client_config(&session);
     // This owner activates only the selected local SOCKS rule. Do not install
     // mappings for unrelated saved remote forwards in the server-open handler.
     let (transport_session, transport_jumps) = shell_free_route(session, jump);
@@ -1590,11 +1604,11 @@ pub(crate) async fn open_managed_forward_connection(session: &Session, jumps: &[
     anyhow::ensure!(crate::ssh::frozen_auth::trust().is_some(), "managed route requires frozen authentication");
     let (events, receiver) = mpsc::unbounded_channel(); drop(receiver);
     let (target, jumps) = shell_free_route(session, jumps);
-    let config = ssh_client_config();
     let mut connected: Vec<Arc<crate::ssh::connection::ManagedSshConnection<ClientHandler>>> = Vec::new();
     // Saved chains are immediate-first; actual transport creation is outermost
     // bastion to innermost, then target. Only the first hop resolves TCP/proxy.
     for hop in jumps.iter().rev().chain(std::iter::once(&target)) {
+        let config = ssh_client_config(hop);
         let connect = || async {
             let handler = client_handler(hop, &events);
             if let Some(previous) = connected.last() {
@@ -1635,7 +1649,7 @@ async fn execute_command_inner(
 )> {
     let (events, event_rx) = mpsc::unbounded_channel();
     drop(event_rx);
-    let config = ssh_client_config();
+    let config = ssh_client_config(&session);
     let (mut handle, mut jump_handle) =
         connect_ssh(&session, &jump, config.clone(), &events).await?;
 
@@ -1901,7 +1915,7 @@ async fn run_session(
         session.port
     )));
 
-    let config = ssh_client_config();
+    let config = ssh_client_config(&session);
 
     let (mut handle, mut jump_handle) =
         connect_ssh(&session, &jump, config.clone(), &events).await?;
@@ -4813,5 +4827,24 @@ mod unmapped_forwarding_tests {
             finish_result(result, cleanup)
         })
         .await?
+    }
+}
+
+#[cfg(test)]
+mod legacy_md5_policy_tests {
+    use super::*;
+
+    #[test]
+    fn md5_is_explicit_last_and_does_not_mutate_defaults() {
+        let mut enabled = Session::new_empty();
+        enabled.allow_legacy_hmac_md5 = true;
+        let enabled_config = ssh_client_config(&enabled);
+        assert_eq!(&enabled_config.preferred.mac[..COMPAT_MAC.len()], COMPAT_MAC);
+        assert_eq!(enabled_config.preferred.mac.last(), Some(&russh::mac::HMAC_MD5));
+        let default_config = ssh_client_config(&Session::new_empty());
+        assert_eq!(default_config.preferred.mac.as_ref(), COMPAT_MAC);
+        assert!(!default_config.preferred.mac.contains(&russh::mac::HMAC_MD5));
+        enabled.allow_legacy_hmac_md5 = false;
+        assert_eq!(ssh_client_config(&enabled).preferred.mac.as_ref(), COMPAT_MAC);
     }
 }

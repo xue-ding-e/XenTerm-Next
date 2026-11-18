@@ -354,6 +354,7 @@ pub(crate) fn duplicate_of(session: &Session) -> Session {
     copy.id = uuid::Uuid::new_v4().to_string();
     // A new session needs its own explicit local reveal choice.
     copy.allow_secret_reveal = false;
+    copy.allow_legacy_hmac_md5 = false;
     copy.name = format!("{} copy", copy.name);
     copy
 }
