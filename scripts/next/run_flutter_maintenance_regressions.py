@@ -124,11 +124,18 @@ BRIDGE_INPUT_TESTS = (
     "input_admission_tests::ffi_prompt_answer_rejects_live_handle_without_prompt_and_removed_handle",
 )
 
+MAC_COMPAT_TESTS = (
+    "ssh::ssh::mac_compat_tests::modern_macs_precede_full_length_sha1_fallbacks",
+    "ssh::ssh::mac_compat_tests::compatibility_does_not_enable_md5_none_or_truncated_macs",
+    "ssh::ssh::mac_compat_tests::ssh_config_uses_shared_algorithm_policy",
+    "sftp::sftp::mac_compat_tests::sftp_config_uses_shared_algorithm_policy",
+)
+
 CORE = ("cargo", "test", "--locked", "-p", "xenterm", "--lib")
 BRIDGE = ("cargo", "test", "--locked", "-p", "xenterm-bridge", "--test", "settings")
 BRIDGE_LIB = ("cargo", "test", "--locked", "-p", "xenterm-bridge", "--lib")
 RUST_GROUPS = (
-    (CORE, TUNNEL_TESTS + SETTINGS_TESTS + INPUT_ADMISSION_TESTS + ENCODING_TESTS),
+    (CORE, TUNNEL_TESTS + SETTINGS_TESTS + INPUT_ADMISSION_TESTS + ENCODING_TESTS + MAC_COMPAT_TESTS),
     (BRIDGE, BRIDGE_TESTS),
     (BRIDGE_LIB, BRIDGE_INPUT_TESTS),
 )

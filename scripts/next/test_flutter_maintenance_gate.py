@@ -86,6 +86,13 @@ EXPECTED_ENCODING_TESTS = (
     "terminal::encoding::tests::gbk_round_trip_and_split_decode",
     "terminal::encoding::tests::unknown_label_falls_back_to_utf8",
 )
+EXPECTED_MAC_TESTS = (
+    "ssh::ssh::mac_compat_tests::modern_macs_precede_full_length_sha1_fallbacks",
+    "ssh::ssh::mac_compat_tests::compatibility_does_not_enable_md5_none_or_truncated_macs",
+    "ssh::ssh::mac_compat_tests::ssh_config_uses_shared_algorithm_policy",
+    "sftp::sftp::mac_compat_tests::sftp_config_uses_shared_algorithm_policy",
+)
+
 EXPECTED_WINDOWS_CORE_TESTS = (
     "terminal::local::tests::conpty_read_boundary_keeps_utf8_codepoints",
     "terminal::terminal_windows_tests::conpty_powershell_preserves_long_unicode_output",
@@ -136,7 +143,7 @@ class MaintenanceGateTests(unittest.TestCase):
                 output = "a" * 40 + "\n"
             elif command[-1] == "--list":
                 if "xenterm-bridge" not in command:
-                    tests = gate.TUNNEL_TESTS + gate.SETTINGS_TESTS + EXPECTED_INPUT_CORE_TESTS + EXPECTED_ENCODING_TESTS + EXPECTED_WINDOWS_CORE_TESTS
+                    tests = gate.TUNNEL_TESTS + gate.SETTINGS_TESTS + EXPECTED_INPUT_CORE_TESTS + EXPECTED_ENCODING_TESTS + EXPECTED_MAC_TESTS + EXPECTED_WINDOWS_CORE_TESTS
                 elif "--lib" in command:
                     tests = EXPECTED_INPUT_BRIDGE_TESTS
                 else:
@@ -149,13 +156,13 @@ class MaintenanceGateTests(unittest.TestCase):
 
         with patch.object(sys, "platform", "win32"), contextlib.redirect_stdout(io.StringIO()) as captured:
             gate.run_regressions("a" * 40, runner=fake)
-        self.assertEqual(len(commands), 51)  # git + three inventories + 47 exact tests
-        self.assertIn("suite=rust count=47", captured.getvalue())
+        self.assertEqual(len(commands), 55)  # git + three inventories + 51 exact tests
+        self.assertIn("suite=rust count=51", captured.getvalue())
         self.assertNotIn("PLATFORM_EXCLUDED", captured.getvalue())
         exact = [command for command in commands if "--exact" in command]
-        expected = [*gate.TUNNEL_TESTS, *gate.SETTINGS_TESTS, *EXPECTED_INPUT_CORE_TESTS, *EXPECTED_ENCODING_TESTS, *EXPECTED_WINDOWS_CORE_TESTS,
+        expected = [*gate.TUNNEL_TESTS, *gate.SETTINGS_TESTS, *EXPECTED_INPUT_CORE_TESTS, *EXPECTED_ENCODING_TESTS, *EXPECTED_MAC_TESTS, *EXPECTED_WINDOWS_CORE_TESTS,
                     *gate.BRIDGE_TESTS, *EXPECTED_INPUT_BRIDGE_TESTS]
-        self.assertEqual(len(exact), 47)
+        self.assertEqual(len(exact), 51)
         for command, name in zip(exact, expected):
             if name in EXPECTED_INPUT_BRIDGE_TESTS:
                 target = EXPECTED_BRIDGE_LIB_TARGET
@@ -198,7 +205,7 @@ class MaintenanceGateTests(unittest.TestCase):
             "Verify dependency resolution did not rewrite the lockfile",
             "Analyze Flutter",
             "Test exact Flutter maintenance regressions (48 required)",
-            "Test exact Rust maintenance regressions (47 Windows, 45 Unix)",
+            "Test exact Rust maintenance regressions (51 Windows, 49 Unix)",
             "Build Rust bridge and CLI/MCP companion",
             "Test Flutter",
             "Build Flutter desktop",
@@ -338,13 +345,14 @@ class MaintenanceGateTests(unittest.TestCase):
         self.assertEqual(len(set(EXPECTED_INPUT_DART_TESTS)), 34)
         self.assertEqual(gate.INPUT_ADMISSION_TESTS, EXPECTED_INPUT_CORE_TESTS)
         self.assertEqual(gate.WINDOWS_INPUT_TESTS, EXPECTED_WINDOWS_CORE_TESTS)
+        self.assertEqual(gate.MAC_COMPAT_TESTS, EXPECTED_MAC_TESTS)
         self.assertEqual(gate.BRIDGE_INPUT_TESTS, EXPECTED_INPUT_BRIDGE_TESTS)
         core, settings, bridge_input = gate.RUST_GROUPS
-        self.assertEqual(core, (EXPECTED_CORE_TARGET, gate.TUNNEL_TESTS + gate.SETTINGS_TESTS + EXPECTED_INPUT_CORE_TESTS + EXPECTED_ENCODING_TESTS))
+        self.assertEqual(core, (EXPECTED_CORE_TARGET, gate.TUNNEL_TESTS + gate.SETTINGS_TESTS + EXPECTED_INPUT_CORE_TESTS + EXPECTED_ENCODING_TESTS + EXPECTED_MAC_TESTS))
         self.assertEqual(settings, (EXPECTED_SETTINGS_TARGET, gate.BRIDGE_TESTS))
         self.assertEqual(bridge_input, (EXPECTED_BRIDGE_LIB_TARGET, EXPECTED_INPUT_BRIDGE_TESTS))
-        self.assertEqual([len(tests) for _, tests in gate.RUST_GROUPS], [42, 1, 2])
-        self.assertEqual(len({name for _, tests in gate.RUST_GROUPS for name in tests}), 45)
+        self.assertEqual([len(tests) for _, tests in gate.RUST_GROUPS], [46, 1, 2])
+        self.assertEqual(len({name for _, tests in gate.RUST_GROUPS for name in tests}), 49)
 
     def test_target_assertions_reject_consistent_constant_and_group_drift(self):
         # Mutate both the constant and routing table so a self-referential
@@ -379,14 +387,14 @@ class MaintenanceGateTests(unittest.TestCase):
         gate.verify_single_pass("test required ... synthetic captured output\nmore output\nok\n" + summary, "required")
 
     def test_each_new_rust_inventory_name_is_required_before_execution(self):
-        for missing in (*EXPECTED_INPUT_CORE_TESTS, *EXPECTED_ENCODING_TESTS, *EXPECTED_WINDOWS_CORE_TESTS, *EXPECTED_INPUT_BRIDGE_TESTS):
+        for missing in (*EXPECTED_INPUT_CORE_TESTS, *EXPECTED_ENCODING_TESTS, *EXPECTED_MAC_TESTS, *EXPECTED_WINDOWS_CORE_TESTS, *EXPECTED_INPUT_BRIDGE_TESTS):
             exact = []
             def fake(command, **kwargs):
                 if command[0] == "git":
                     output = "a" * 40
                 elif command[-1] == "--list":
                     if "xenterm-bridge" not in command:
-                        tests = gate.TUNNEL_TESTS + gate.SETTINGS_TESTS + EXPECTED_INPUT_CORE_TESTS + EXPECTED_ENCODING_TESTS + EXPECTED_WINDOWS_CORE_TESTS
+                        tests = gate.TUNNEL_TESTS + gate.SETTINGS_TESTS + EXPECTED_INPUT_CORE_TESTS + EXPECTED_ENCODING_TESTS + EXPECTED_MAC_TESTS + EXPECTED_WINDOWS_CORE_TESTS
                     elif "--lib" in command:
                         tests = EXPECTED_INPUT_BRIDGE_TESTS
                     else:
@@ -400,10 +408,10 @@ class MaintenanceGateTests(unittest.TestCase):
             with self.subTest(missing=missing):
                 with patch.object(sys, "platform", "win32"), contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(RuntimeError, "not discovered"):
                     gate.run_regressions("a" * 40, runner=fake)
-                if missing in (*EXPECTED_INPUT_CORE_TESTS, *EXPECTED_ENCODING_TESTS, *EXPECTED_WINDOWS_CORE_TESTS):
+                if missing in (*EXPECTED_INPUT_CORE_TESTS, *EXPECTED_ENCODING_TESTS, *EXPECTED_MAC_TESTS, *EXPECTED_WINDOWS_CORE_TESTS):
                     self.assertEqual(exact, [])
                 else:
-                    self.assertEqual(len(exact), 45)
+                    self.assertEqual(len(exact), 49)
 
     def test_each_auth_lifecycle_case_rejects_zero_ignored_or_wrong_name(self):
         # These are the eight new frontend cases and the new bridge-library case.
@@ -417,7 +425,7 @@ class MaintenanceGateTests(unittest.TestCase):
                         output = "a" * 40
                     elif command[-1] == "--list":
                         if "xenterm-bridge" not in command:
-                            tests = gate.TUNNEL_TESTS + gate.SETTINGS_TESTS + EXPECTED_INPUT_CORE_TESTS + EXPECTED_ENCODING_TESTS + EXPECTED_WINDOWS_CORE_TESTS
+                            tests = gate.TUNNEL_TESTS + gate.SETTINGS_TESTS + EXPECTED_INPUT_CORE_TESTS + EXPECTED_ENCODING_TESTS + EXPECTED_MAC_TESTS + EXPECTED_WINDOWS_CORE_TESTS
                         elif "--lib" in command:
                             tests = EXPECTED_INPUT_BRIDGE_TESTS
                         else:
@@ -446,7 +454,7 @@ class MaintenanceGateTests(unittest.TestCase):
                     output = "a" * 40
                 elif command[-1] == "--list":
                     if "xenterm-bridge" not in command:
-                        tests = gate.TUNNEL_TESTS + gate.SETTINGS_TESTS + EXPECTED_INPUT_CORE_TESTS + EXPECTED_ENCODING_TESTS
+                        tests = gate.TUNNEL_TESTS + gate.SETTINGS_TESTS + EXPECTED_INPUT_CORE_TESTS + EXPECTED_ENCODING_TESTS + EXPECTED_MAC_TESTS
                     elif "--lib" in command:
                         tests = EXPECTED_INPUT_BRIDGE_TESTS
                     else:
@@ -459,10 +467,10 @@ class MaintenanceGateTests(unittest.TestCase):
                 return subprocess.CompletedProcess(command, 0, output, "")
             with self.subTest(platform=platform), patch.object(sys, "platform", platform), contextlib.redirect_stdout(io.StringIO()) as captured:
                 gate.run_regressions("a" * 40, runner=fake)
-                self.assertEqual(exact, [*gate.TUNNEL_TESTS, *gate.SETTINGS_TESTS, *EXPECTED_INPUT_CORE_TESTS, *EXPECTED_ENCODING_TESTS,
+                self.assertEqual(exact, [*gate.TUNNEL_TESTS, *gate.SETTINGS_TESTS, *EXPECTED_INPUT_CORE_TESTS, *EXPECTED_ENCODING_TESTS, *EXPECTED_MAC_TESTS,
                                          *gate.BRIDGE_TESTS, *EXPECTED_INPUT_BRIDGE_TESTS])
                 self.assertNotIn(EXPECTED_WINDOWS_CORE_TESTS[0], exact)
-                self.assertIn("suite=rust count=45", captured.getvalue())
+                self.assertIn("suite=rust count=49", captured.getvalue())
                 self.assertIn(f"PLATFORM_EXCLUDED platform={platform} requires=win32 name={EXPECTED_WINDOWS_CORE_TESTS[0]}", captured.getvalue())
 
     def test_each_input_dart_case_requires_a_visible_non_skipped_first_pass(self):
@@ -535,7 +543,7 @@ class EncodingGateTests(unittest.TestCase):
     def simulate(self, platform="win32", rejected=None, fault=None):
         commands = []
         core_names = (*gate.TUNNEL_TESTS, *gate.SETTINGS_TESTS,
-                      *EXPECTED_INPUT_CORE_TESTS, *EXPECTED_ENCODING_TESTS)
+                      *EXPECTED_INPUT_CORE_TESTS, *EXPECTED_ENCODING_TESTS, *EXPECTED_MAC_TESTS)
         if platform == "win32":
             core_names += EXPECTED_WINDOWS_CORE_TESTS
         groups = ((EXPECTED_CORE_TARGET, core_names),
@@ -594,7 +602,7 @@ class EncodingGateTests(unittest.TestCase):
                 expected.extend([*target, name, "--", "--exact", "--test-threads=1", "--nocapture"]
                                 for name in names)
             self.assertEqual(commands, expected)
-            self.assertIn(f"suite=rust count={47 if platform == 'win32' else 45}", captured.getvalue())
+            self.assertIn(f"suite=rust count={51 if platform == 'win32' else 49}", captured.getvalue())
 
     def test_encoding_commands_and_existing_scope_are_exact(self):
         self.assertEqual(gate.ENCODING_TESTS, EXPECTED_ENCODING_TESTS)

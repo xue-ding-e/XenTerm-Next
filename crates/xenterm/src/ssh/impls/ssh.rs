@@ -1746,6 +1746,27 @@ pub(crate) const COMPAT_CIPHER: &[russh::cipher::Name] = &[
                                 // negotiation instead of being reachable with a broken cipher.
 ];
 
+// Keep SHA-2 first. Full-length SHA-1 is a last-resort compatibility fallback
+// for older SSH servers, not a reason to enable MD5, truncated MACs or `none`.
+pub(crate) const COMPAT_MAC: &[russh::mac::Name] = &[
+    russh::mac::HMAC_SHA512_ETM,
+    russh::mac::HMAC_SHA256_ETM,
+    russh::mac::HMAC_SHA512,
+    russh::mac::HMAC_SHA256,
+    russh::mac::HMAC_SHA1_ETM,
+    russh::mac::HMAC_SHA1,
+];
+
+/// One algorithm policy for terminal, command, SFTP and every bastion handshake.
+pub(crate) fn compat_preferred() -> russh::Preferred {
+    russh::Preferred {
+        kex: std::borrow::Cow::Borrowed(COMPAT_KEX),
+        cipher: std::borrow::Cow::Borrowed(COMPAT_CIPHER),
+        mac: std::borrow::Cow::Borrowed(COMPAT_MAC),
+        ..russh::Preferred::DEFAULT
+    }
+}
+
 fn ssh_client_config() -> Arc<client::Config> {
     Arc::new(client::Config {
         // Keep idle connections alive (#160). The terminal usually has the
@@ -1755,11 +1776,7 @@ fn ssh_client_config() -> Arc<client::Config> {
         keepalive_interval: Some(std::time::Duration::from_secs(30)),
         // Match the normal terminal connection exactly, including compatibility
         // fallbacks for older servers and network equipment (#172).
-        preferred: russh::Preferred {
-            kex: std::borrow::Cow::Borrowed(COMPAT_KEX),
-            cipher: std::borrow::Cow::Borrowed(COMPAT_CIPHER),
-            ..russh::Preferred::DEFAULT
-        },
+        preferred: compat_preferred(),
         ..<_>::default()
     })
 }
@@ -4422,5 +4439,36 @@ mod mfa_tests {
         ] {
             assert!(looks_like_mfa(p), "missed an MFA prompt: {p:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod mac_compat_tests {
+    use super::*;
+
+    #[test]
+    fn modern_macs_precede_full_length_sha1_fallbacks() {
+        assert_eq!(COMPAT_MAC, &[
+            russh::mac::HMAC_SHA512_ETM, russh::mac::HMAC_SHA256_ETM,
+            russh::mac::HMAC_SHA512, russh::mac::HMAC_SHA256,
+            russh::mac::HMAC_SHA1_ETM, russh::mac::HMAC_SHA1,
+        ]);
+        assert_eq!(&COMPAT_MAC[..4], russh::Preferred::DEFAULT.mac.as_ref());
+    }
+
+    #[test]
+    fn compatibility_does_not_enable_md5_none_or_truncated_macs() {
+        let names: Vec<&str> = COMPAT_MAC.iter().map(|name| name.as_ref()).collect();
+        assert!(names.iter().all(|name| !name.contains("md5") && !name.contains("-96") && *name != "none"));
+        let unique: std::collections::HashSet<_> = names.iter().collect();
+        assert_eq!(unique.len(), names.len());
+    }
+
+    #[test]
+    fn ssh_config_uses_shared_algorithm_policy() {
+        let config = ssh_client_config();
+        assert_eq!(config.preferred.mac.as_ref(), COMPAT_MAC);
+        assert_eq!(config.preferred.kex.as_ref(), COMPAT_KEX);
+        assert_eq!(config.preferred.cipher.as_ref(), COMPAT_CIPHER);
     }
 }
